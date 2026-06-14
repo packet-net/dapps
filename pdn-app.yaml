@@ -15,7 +15,7 @@ name: DAPPS
 version: "0.34.1"            # informational, shown in pdn's UI — should track the release tag
 description: Distributed Asynchronous Packet Pub/Sub — store-and-forward messaging over packet radio.
 icon: inbox
-capabilities: [network, web]  # binds its own callsigns over RHPv2; serves its own web UI
+capabilities: [packet, web]  # binds its own callsigns over RHPv2; serves its own web UI
 
 # The .NET daemon pdn supervises while the app is enabled. No `session:` block —
 # DAPPS is not a console verb; it speaks RHPv2 to the node and binds its own
