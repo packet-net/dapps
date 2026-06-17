@@ -389,9 +389,9 @@ public static class DbStartup
 
         logger?.LogInformation(
             "Callsign {Derived} derived from the host node ({EnvVar}={NodeCall}, SSID {Ssid}). " +
-            "If the node already has a {Derived} the RHPv2 listener will probe for a free SSID and keep it. " +
+            "If the node already has a {DerivedDup} the RHPv2 listener will probe for a free SSID and keep it. " +
             "Set DAPPS_CALLSIGN or configure a callsign via the dashboard to pin a different identity.",
-            derived, NodeCallsignEnvVar, Environment.GetEnvironmentVariable(NodeCallsignEnvVar), ssid);
+            derived, NodeCallsignEnvVar, Environment.GetEnvironmentVariable(NodeCallsignEnvVar), ssid, derived);
     }
 
     private static void ClearPendingMarker(SQLiteConnection db, DbSystemOption? markerRow)
