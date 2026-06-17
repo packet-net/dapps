@@ -68,6 +68,15 @@ public static class DbStartup
     /// standalone alongside BPQ/XRouter.</summary>
     public const string NodeCallsignEnvVar = "PDN_NODE_CALLSIGN";
 
+    /// <summary>Injected by a pdn host (node-owned-callsign contract):
+    /// the exact callsign this app must bind on air, e.g.
+    /// <c>M9YYY-7</c>. When set and non-empty the node is the callsign
+    /// authority: DAPPS binds it verbatim with NO self-derivation and NO
+    /// SSID probe. Absent/empty falls back to the legacy
+    /// <see cref="NodeCallsignEnvVar"/> derivation / <c>DAPPS_CALLSIGN</c>
+    /// path so an older node or a standalone install still works.</summary>
+    public const string AppCallsignEnvVar = "PDN_APP_CALLSIGN";
+
     /// <summary>
     /// Every option key EnsureSchemaAndSeed seeds, with its hardcoded
     /// fallback default. Single source of truth for seeding, for the
@@ -189,6 +198,13 @@ public static class DbStartup
             SeedOrApplyEnv(db, options, key, defaultValue, logger);
         }
 
+        // Node-owned-callsign contract: when the pdn host names the
+        // exact callsign to bind (PDN_APP_CALLSIGN), it is the authority -
+        // applied verbatim over the stored Callsign row at EVERY start,
+        // ahead of (and overriding) the legacy self-derivation. Falls
+        // through to DeriveCallsignFromHostNodeIfUnset when absent/empty.
+        ApplyNodeAssignedCallsignIfPresent(db, logger);
+
         DeriveCallsignFromHostNodeIfUnset(db, logger);
 
         ValidateRequiredConfig(db, logger);
@@ -225,6 +241,59 @@ public static class DbStartup
         }
     }
 
+    /// <summary>The exact on-air callsign the pdn host assigned this app
+    /// via <see cref="AppCallsignEnvVar"/>, trimmed; null when the var is
+    /// unset/empty (legacy node or standalone). When non-null the node is
+    /// the callsign authority and DAPPS binds this verbatim - no
+    /// derivation, no SSID probe.</summary>
+    public static string? ReadNodeAssignedCallsign()
+    {
+        var value = Environment.GetEnvironmentVariable(AppCallsignEnvVar);
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    /// <summary>
+    /// Node-owned-callsign contract: if the pdn host set
+    /// <see cref="AppCallsignEnvVar"/> to a non-empty callsign, write it
+    /// to the stored <c>Callsign</c> row (every start - the node owns the
+    /// identity) and clear any leftover derivation-pending marker so the
+    /// RHPv2 listener binds it verbatim and never probe-walks. No-op when
+    /// the var is absent/empty, leaving the legacy derivation /
+    /// <c>DAPPS_CALLSIGN</c> path in charge.
+    /// </summary>
+    private static void ApplyNodeAssignedCallsignIfPresent(SQLiteConnection db, ILogger? logger)
+    {
+        var assigned = ReadNodeAssignedCallsign();
+        if (assigned is null)
+        {
+            return;
+        }
+
+        var options = db.Query<DbSystemOption>("select * from systemoptions;");
+        var callsignRow = options.FirstOrDefault(
+            o => string.Equals(o.Option, "Callsign", StringComparison.OrdinalIgnoreCase));
+        if (callsignRow is null)
+        {
+            db.Insert(new DbSystemOption { Option = "Callsign", Value = assigned });
+        }
+        else if (!string.Equals(callsignRow.Value, assigned, StringComparison.Ordinal))
+        {
+            callsignRow.Value = assigned;
+            db.Update(callsignRow);
+        }
+
+        // The node pinned the identity; nothing is pending confirmation,
+        // and the listener must never walk SSIDs off it.
+        var markerRow = options.FirstOrDefault(
+            o => string.Equals(o.Option, DerivedCallsignPendingKey, StringComparison.OrdinalIgnoreCase));
+        ClearPendingMarker(db, markerRow);
+
+        logger?.LogInformation(
+            "Callsign {Assigned} assigned by the host node ({EnvVar}); binding it verbatim " +
+            "(node-owned-callsign contract - no self-derivation, no SSID probe).",
+            assigned, AppCallsignEnvVar);
+    }
+
     /// <summary>
     /// "DAPPS resides at an SSID of the node callsign": when DAPPS runs
     /// supervised under a pdn node, the host injects
@@ -244,6 +313,16 @@ public static class DbStartup
         var markerRow = options.FirstOrDefault(
             o => string.Equals(o.Option, DerivedCallsignPendingKey, StringComparison.OrdinalIgnoreCase));
         var stored = callsignRow?.Value ?? "";
+
+        // The node-owned-callsign contract wins over everything: if the
+        // host assigned PDN_APP_CALLSIGN it was already written above, so
+        // never self-derive underneath it (this also keeps a pathological
+        // PDN_APP_CALLSIGN=N0CALL from being re-derived).
+        if (ReadNodeAssignedCallsign() is not null)
+        {
+            ClearPendingMarker(db, markerRow); // node pinned the identity - nothing pending
+            return;
+        }
 
         // An explicit DAPPS_CALLSIGN wins over derivation. (It was
         // already applied above; this guard also keeps a pathological

@@ -12,7 +12,7 @@
 manifest: 1
 id: dapps                     # must equal the package directory name
 name: DAPPS
-version: "0.34.1"            # informational, shown in pdn's UI — should track the release tag
+version: "0.34.2"            # informational, shown in pdn's UI — should track the release tag
 description: Distributed Asynchronous Packet Pub/Sub — store-and-forward messaging over packet radio.
 icon: inbox
 capabilities: [packet, web]  # binds its own callsigns over RHPv2; serves its own web UI
@@ -33,16 +33,22 @@ capabilities: [packet, web]  # binds its own callsigns over RHPv2; serves its ow
 #     pinned below stays editable live through the DAPPS dashboard's
 #     /Setup // /Config pages, exactly as standalone.
 #
-# CALLSIGN — no pre-set needed: pdn injects PDN_NODE_CALLSIGN, and while no
-# real callsign is configured DAPPS derives its own identity as
-# <node-base-callsign>-<DAPPS_SSID> (DAPPS_SSID defaults to 7, so node M0XYZ
-# gets DAPPS at M0XYZ-7). If that SSID is already claimed on the node (pdn
-# refuses the listen with errCode 9 "Duplicate socket"), DAPPS probes the
-# next free SSID over RHPv2 (skipping 0 and the node's own SSID) and keeps
-# the first one that binds — the confirmed identity is then stable across
-# restarts. The owner can still pin a different identity via pdn's `apps:`
-# override environment — an explicit DAPPS_CALLSIGN (or a real callsign saved
-# via the dashboard) always wins over derivation and never probes:
+# CALLSIGN — node-owned-callsign contract: a current pdn host injects
+# PDN_APP_CALLSIGN = the exact callsign DAPPS must bind on air, and DAPPS
+# binds it verbatim (no self-derivation, no SSID probe). The node is the
+# callsign authority and re-asserts this value at every start.
+#
+# FALLBACK (older node / standalone): when PDN_APP_CALLSIGN is absent, pdn
+# injects PDN_NODE_CALLSIGN, and while no real callsign is configured DAPPS
+# derives its own identity as <node-base-callsign>-<DAPPS_SSID> (DAPPS_SSID
+# defaults to 7, so node M0XYZ gets DAPPS at M0XYZ-7). If that SSID is
+# already claimed on the node (pdn refuses the listen with errCode 9
+# "Duplicate socket"), DAPPS probes the next free SSID over RHPv2 (skipping 0
+# and the node's own SSID) and keeps the first one that binds — the confirmed
+# identity is then stable across restarts. The owner can still pin a
+# different identity via pdn's `apps:` override environment — an explicit
+# DAPPS_CALLSIGN (or a real callsign saved via the dashboard) always wins
+# over derivation and never probes:
 #
 #   apps:
 #     - id: dapps
@@ -63,6 +69,11 @@ service:
     DAPPS_UPDATE_CHECK_ENABLED: "false"   # the host package owns updates — no self-update nag
     ASPNETCORE_URLS: http://127.0.0.1:18080  # loopback only; must match ui.upstream
     DAPPS_MQTT_PORT: "18831"              # off the well-known 1883 — don't fight a real broker
+
+# Node-prompt command that reaches DAPPS over the air: connecting to the
+# node and typing DAPPS routes the session to this app's bound callsign.
+packet:
+  command: DAPPS
 
 # pdn reverse-proxies /apps/dapps/ to the loopback upstream and shows a launcher tile.
 ui:

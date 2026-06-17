@@ -193,6 +193,7 @@ public sealed class Rhpv2SsidProbeWalkTests : IAsyncLifetime
         "DAPPS_CALLSIGN",
         "DAPPS_ENV_MANAGED",
         "PDN_NODE_CALLSIGN",
+        "PDN_APP_CALLSIGN",
     ];
 
     public ValueTask InitializeAsync()
@@ -306,6 +307,40 @@ public sealed class Rhpv2SsidProbeWalkTests : IAsyncLifetime
         server.ReceivedFrames.OfType<BindMessage>().Should()
             .OnlyContain(b => b.Local == "G0DPB-1", "an explicitly configured callsign never walks");
         ReadOption("Callsign").Should().Be("G0DPB-1", "the stored identity is untouched");
+    }
+
+    [Fact]
+    public async Task NodeAssignedCallsign_On9_NeverWalks_EvenWithPendingMarker()
+    {
+        // Node-owned-callsign contract: PDN_APP_CALLSIGN is set, so the
+        // identity is bound verbatim and must NEVER probe-walk - even if a
+        // stale derivation-pending marker that matches the callsign is
+        // still in the DB. A duplicate refusal keeps the retry/reconnect
+        // behaviour instead of walking SSIDs.
+        await using var server = new MockRhpServer { Handler = RefuseListenOn("M9YYY-7") };
+        server.Start();
+        SeedDb(server.Endpoint.Port, callsign: "M9YYY-7", pendingMarker: "M9YYY-7");
+        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        Environment.SetEnvironmentVariable("PDN_APP_CALLSIGN", "M9YYY-7");
+
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        var service = NewService(store);
+        var ct = TestContext.Current.CancellationToken;
+        await service.StartAsync(ct);
+        try
+        {
+            WaitForFrames(server, count: 4, TimeSpan.FromSeconds(5)); // socket → bind → listen(9) → close
+            await Task.Delay(300, ct);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+
+        server.ReceivedFrames.OfType<BindMessage>().Should()
+            .OnlyContain(b => b.Local == "M9YYY-7",
+                "a node-assigned PDN_APP_CALLSIGN is bound verbatim and never walks");
+        ReadOption("Callsign").Should().Be("M9YYY-7", "the node-assigned identity is untouched");
     }
 
     [Fact]

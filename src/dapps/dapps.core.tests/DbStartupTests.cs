@@ -32,6 +32,7 @@ public sealed class DbStartupTests : IAsyncLifetime
         "DAPPS_SSID",
         "DAPPS_ENV_MANAGED",
         "PDN_NODE_CALLSIGN",
+        "PDN_APP_CALLSIGN",
     ];
 
     public ValueTask InitializeAsync()
@@ -285,6 +286,119 @@ public sealed class DbStartupTests : IAsyncLifetime
         using var c = DbInfo.GetConnection();
         c.Find<DbSystemOption>("Callsign")!.Value.Should().Be("G0TST-1",
             "an explicit DAPPS_CALLSIGN always wins over derivation");
+    }
+
+    // ---- Node-owned-callsign contract (PDN_APP_CALLSIGN) ----
+    //
+    // A current pdn host names the exact callsign DAPPS must bind via
+    // PDN_APP_CALLSIGN. When set and non-empty the node is the authority:
+    // DAPPS binds it verbatim, with no self-derivation and no SSID probe.
+    // Absent/empty falls back to the legacy derivation / DAPPS_CALLSIGN
+    // path so an older node or a standalone install still works.
+
+    [Fact]
+    public void EnsureSchemaAndSeed_PdnAppCallsign_BoundVerbatim_NoPendingMarker()
+    {
+        // The host assigned the on-air identity: it is stored verbatim
+        // and nothing is pending confirmation (so the listener never
+        // probe-walks).
+        Environment.SetEnvironmentVariable("PDN_APP_CALLSIGN", "M9YYY-7");
+
+        DbStartup.EnsureSchemaAndSeed();
+
+        using var c = DbInfo.GetConnection();
+        c.Find<DbSystemOption>("Callsign")!.Value.Should().Be("M9YYY-7");
+        c.Find<DbSystemOption>(DbStartup.DerivedCallsignPendingKey).Should().BeNull(
+            "a node-assigned callsign is pinned - it never probe-walks");
+        DbStartup.ReadNodeAssignedCallsign().Should().Be("M9YYY-7");
+    }
+
+    [Fact]
+    public void EnsureSchemaAndSeed_PdnAppCallsign_WinsOverNodeDerivation()
+    {
+        // Both injected (transitional host): the explicit assignment
+        // wins; DAPPS does NOT self-derive <node>-7 underneath it.
+        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        Environment.SetEnvironmentVariable("PDN_APP_CALLSIGN", "M9YYY-9");
+
+        DbStartup.EnsureSchemaAndSeed();
+
+        using var c = DbInfo.GetConnection();
+        c.Find<DbSystemOption>("Callsign")!.Value.Should().Be("M9YYY-9",
+            "PDN_APP_CALLSIGN is the node's authoritative assignment - no self-derivation");
+        DbStartup.ReadPendingDerivedCallsign().Should().BeNull();
+    }
+
+    [Fact]
+    public void EnsureSchemaAndSeed_PdnAppCallsign_OverridesStoredCallsign_AtEveryStart()
+    {
+        // The node owns the identity: it re-asserts PDN_APP_CALLSIGN over
+        // whatever is stored at every start (even a previously-configured
+        // real callsign), so the host stays authoritative.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.CreateTable<DbSystemOption>();
+            c.Insert(new DbSystemOption { Option = "Callsign", Value = "M0LTE-3" });
+        }
+        Environment.SetEnvironmentVariable("PDN_APP_CALLSIGN", "M9YYY-7");
+
+        DbStartup.EnsureSchemaAndSeed();
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Find<DbSystemOption>("Callsign")!.Value.Should().Be("M9YYY-7");
+        }
+
+        // Restart re-asserts it, and clears a marker too if one appeared.
+        DbStartup.EnsureSchemaAndSeed();
+        using var conn = DbInfo.GetConnection();
+        conn.Find<DbSystemOption>("Callsign")!.Value.Should().Be("M9YYY-7");
+    }
+
+    [Fact]
+    public void EnsureSchemaAndSeed_PdnAppCallsign_ClearsLeftoverPendingMarker()
+    {
+        // A node that previously derived (PDN_NODE_CALLSIGN, marker set)
+        // is upgraded to inject PDN_APP_CALLSIGN: the next start adopts
+        // the assigned identity and drops the stale pending marker so the
+        // listener never walks.
+        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        DbStartup.EnsureSchemaAndSeed();
+        DbStartup.ReadPendingDerivedCallsign().Should().Be("M9YYY-7", "preconditon: derivation pending");
+
+        Environment.SetEnvironmentVariable("PDN_APP_CALLSIGN", "M9YYY-9");
+        DbStartup.EnsureSchemaAndSeed();
+
+        using var c = DbInfo.GetConnection();
+        c.Find<DbSystemOption>("Callsign")!.Value.Should().Be("M9YYY-9");
+        DbStartup.ReadPendingDerivedCallsign().Should().BeNull(
+            "the node-assigned identity is pinned - the stale derivation marker is cleared");
+    }
+
+    [Fact]
+    public void EnsureSchemaAndSeed_PdnAppCallsignEmpty_FallsBackToDerivation()
+    {
+        // Older node / contract not honoured: PDN_APP_CALLSIGN empty, so
+        // the legacy PDN_NODE_CALLSIGN derivation still runs.
+        Environment.SetEnvironmentVariable("PDN_APP_CALLSIGN", "");
+        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+
+        DbStartup.EnsureSchemaAndSeed();
+
+        using var c = DbInfo.GetConnection();
+        c.Find<DbSystemOption>("Callsign")!.Value.Should().Be("M9YYY-7",
+            "an empty PDN_APP_CALLSIGN is not an assignment - fall back to derivation");
+        DbStartup.ReadNodeAssignedCallsign().Should().BeNull("whitespace/empty is treated as unset");
+    }
+
+    [Fact]
+    public void EnsureSchemaAndSeed_PdnAppCallsign_TrimsWhitespace()
+    {
+        Environment.SetEnvironmentVariable("PDN_APP_CALLSIGN", "  M9YYY-7  ");
+
+        DbStartup.EnsureSchemaAndSeed();
+
+        using var c = DbInfo.GetConnection();
+        c.Find<DbSystemOption>("Callsign")!.Value.Should().Be("M9YYY-7");
     }
 
     [Fact]
