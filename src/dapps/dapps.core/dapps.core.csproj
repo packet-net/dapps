@@ -7,6 +7,30 @@
     <AssemblyName>dapps.core</AssemblyName>
   </PropertyGroup>
 
+  <!--
+    Single-file publish: bundle native libraries INTO the one binary and
+    self-extract them at startup. The load-bearing one is SQLite's
+    libe_sqlite3.so (via sqlite-net-pcl → SQLitePCLRaw): without this a
+    PublishSingleFile build emits it as a SIBLING file next to the exe,
+    but DAPPS ships as a single downloaded binary (docs/install.sh drops
+    just /opt/dapps/dapps, nothing alongside), so the native lib is
+    absent at runtime and SQLiteConnection's static ctor dies with
+    "Unable to load shared library 'e_sqlite3'" the first time the
+    daemon touches the DB.
+
+    These properties only take effect during a PublishSingleFile publish,
+    so they're inert for `dotnet build` / `run` / `test`. They live here
+    (not just in the CI / dev-push publish args) so EVERY publish path —
+    CI release, scripts/dev-push, a hand-rolled build-from-source — bakes
+    SQLite into the binary. IncludeAllContentForSelfExtract additionally
+    fixes a System.Diagnostics.Process load failure seen on linux-arm
+    (see #66); the other RIDs absorb full extraction with no downside.
+  -->
+  <PropertyGroup Condition="'$(PublishSingleFile)' == 'true'">
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol.AspNetCore" />
     <PackageReference Include="MQTTnet" />
