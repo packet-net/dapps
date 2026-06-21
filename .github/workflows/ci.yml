@@ -59,10 +59,45 @@ jobs:
         run: dotnet build src/dapps/dapps.sln --no-restore --configuration Release
 
       - name: Test
-        # Microsoft Testing Platform passes args after `--` to the test
-        # runner. `--output detailed` prints per-test results so CI logs
-        # show *which* test failed inline, no artifact-digging needed.
-        run: dotnet test src/dapps/dapps.core.tests/dapps.core.tests.csproj --no-build --configuration Release -- --output detailed
+        # Why a retry loop instead of a single `dotnet test`:
+        #
+        # The test job is the release gate - `build`/`release` run only
+        # when this job's `should_release` output is `true`, and a failed
+        # step short-circuits the rest of the job, so a SINGLE flaky test
+        # silently strands a version-bumped release on the runway (the run
+        # goes red but no binary is ever published). The suite has a known
+        # intermittent failure (~1/683, a broker-port bind race - see
+        # issue #152) that must not be able to block a real release.
+        #
+        # So: run the suite up to N times. A transient flake heals on a
+        # later attempt and the release proceeds; a genuine regression
+        # fails all N and correctly (and loudly) blocks it.
+        #
+        # On every failed attempt we dump the per-test results log to the
+        # console. Under `dotnet test`, MTP writes the failing test NAME
+        # only to that log file (stdout carries just the summary count),
+        # so without this dump a flake is invisible without downloading
+        # the artifact. Printing it makes "which test flaked" greppable in
+        # the job log.
+        run: |
+          set -uo pipefail
+          proj=src/dapps/dapps.core.tests/dapps.core.tests.csproj
+          results=src/dapps/dapps.core.tests/bin/Release/net8.0/TestResults
+          attempts=3
+          for i in $(seq 1 "$attempts"); do
+            echo "::group::Test attempt $i/$attempts"
+            if dotnet test "$proj" --no-build --configuration Release -- --output detailed; then
+              echo "::endgroup::"
+              echo "Tests passed on attempt $i/$attempts."
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "::warning::Test attempt $i/$attempts failed - dumping per-test results (the failing test name lives here, not in stdout):"
+            find "$results" -name '*.log' -print -exec cat {} \; 2>/dev/null || true
+            [ "$i" -lt "$attempts" ] && { echo "Retrying after transient failure..."; sleep 5; }
+          done
+          echo "::error::Tests failed after $attempts attempts - treating as a real failure, not a flake."
+          exit 1
 
       - name: Upload test results on failure
         if: failure()
