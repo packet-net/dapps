@@ -205,6 +205,28 @@ public sealed class GatewayPathBaseTests
             };
 
             var env = self._process.StartInfo.EnvironmentVariables;
+
+            // The child inherits THIS test process's environment, and
+            // sibling tests (DbStartupTests, Rhpv2InboundServiceTests)
+            // mutate DAPPS_*/PDN_* vars process-wide via
+            // Environment.SetEnvironmentVariable. Those classes live in a
+            // different xUnit collection, so they run in PARALLEL with us;
+            // if e.g. PDN_NODE_CALLSIGN happens to be set at the instant we
+            // spawn, DbStartup in the child derives a real callsign, the
+            // fresh-install /Setup journey skips the bearer step (OnGet
+            // sees a configured callsign and 302s to /), and the assertion
+            // for 200 fails - an intermittent flake that depends purely on
+            // parallel timing, not on anything this test does. Scrub every
+            // inherited DAPPS_*/PDN_* key so the subprocess always boots a
+            // pristine first-run state, then set only what we need below.
+            foreach (var key in env.Keys.Cast<string>()
+                         .Where(k => k.StartsWith("DAPPS_", StringComparison.OrdinalIgnoreCase)
+                                  || k.StartsWith("PDN_", StringComparison.OrdinalIgnoreCase))
+                         .ToList())
+            {
+                env.Remove(key);
+            }
+
             // net8 binary on a possibly-newer host runtime; harmless
             // where net8 is the latest installed.
             env["DOTNET_ROLL_FORWARD"] = "LatestMajor";
