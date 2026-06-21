@@ -8,7 +8,7 @@
       Release already exists for v$(Version). Bump this in the same
       PR as the change you want released.
     -->
-    <Version>0.34.2</Version>
+    <Version>0.34.3</Version>
 
     <!--
       sqlite-net-pcl 1.9.x ships a SQLitePCLRaw.lib.e_sqlite3 that lists
