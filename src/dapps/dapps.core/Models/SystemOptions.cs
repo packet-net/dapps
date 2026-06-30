@@ -85,6 +85,43 @@ public class SystemOptions
     /// </summary>
     public int UdpListenPort { get; set; }
 
+    // ---- MeshCore bearer (Phase H1, #154) ----
+
+    /// <summary>Enable the MeshCore Companion-radio bearer. When true, DAPPS
+    /// opens <see cref="MeshCorePort"/>, configures the radio, and carries
+    /// BackhaulMessages over a private channel. Restart required.</summary>
+    public bool MeshCoreEnabled { get; set; }
+
+    /// <summary>Serial port of the attached MeshCore Companion radio.</summary>
+    public string MeshCorePort { get; set; } = "/dev/ttyUSB0";
+
+    /// <summary>Region preset (localisation): <c>uk-narrow</c>, <c>uk-test</c>,
+    /// <c>eu-legacy</c>. Sets frequency/BW/SF/CR and caps TX power.</summary>
+    public string MeshCoreRegion { get; set; } = "uk-test";
+
+    /// <summary>TX power in dBm (capped by the region's regulatory max).</summary>
+    public int MeshCoreTxPowerDbm { get; set; } = 8;
+
+    /// <summary>Local channel slot (0 = public; use 1+ for a private channel).</summary>
+    public int MeshCoreChannelIndex { get; set; } = 1;
+
+    /// <summary>Channel name (local label).</summary>
+    public string MeshCoreChannelName { get; set; } = "dapps";
+
+    /// <summary>Channel PSK: a 32-char hex string (16 bytes) used verbatim, or
+    /// any other value treated as a passphrase and hashed to 16 bytes.</summary>
+    public string MeshCoreChannelPsk { get; set; } = "dapps-default-channel";
+
+    /// <summary>Node advert name set on the radio.</summary>
+    public string MeshCoreNodeName { get; set; } = "DAPPS";
+
+    /// <summary>Self-enforced airtime budget (seconds per trailing hour) — the
+    /// good-citizen governor. Default 30 ≈ 0.83% duty.</summary>
+    public double MeshCoreAirtimeBudgetSecondsPerHour { get; set; } = 30;
+
+    /// <summary>Compress the backhaul payload (zstd + shared dictionary).</summary>
+    public bool MeshCoreCompress { get; set; } = true;
+
     /// <summary>
     /// When true, app-interface clients (MQTT and REST) must present a
     /// valid token; topic / endpoint scope is also enforced against the

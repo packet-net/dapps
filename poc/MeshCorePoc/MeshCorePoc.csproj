@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Independent PoC (issue #137, Phase H1). Deliberately standalone:
+    NOT part of the dapps solution, no reference to dapps.client - the
+    three wire-format files under vendored/ are copied verbatim from
+    dapps.client so this proves the *real* DAPPS bytes survive real RF
+    without dragging in central package management. When this graduates
+    into DAPPS, drop vendored/ and reference dapps.client instead.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>MeshCorePoc</RootNamespace>
+    <AssemblyName>meshcore-poc</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.IO.Ports" Version="8.0.0" />
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
+  </ItemGroup>
+
+</Project>

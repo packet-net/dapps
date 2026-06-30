@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- MeshCore Companion bearer for DAPPS (Phase H1, #154). Serial link to a
+       MeshCore radio carrying BackhaulMessages over a private channel via the
+       binary channel-data path, with compression, an airtime governor, device
+       control and a watchdog. References dapps.client for the real wire format
+       (codec + packetiser) and the bearer seam (IDappsBackhaul/IBackhaulInbox). -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="System.IO.Ports" />
+    <PackageReference Include="ZstdSharp.Port" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\dapps.client\dapps.client.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="dapps.core.tests" />
+  </ItemGroup>
+
+</Project>
