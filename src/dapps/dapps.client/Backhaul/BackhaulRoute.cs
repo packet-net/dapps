@@ -15,4 +15,5 @@ public sealed record BackhaulRoute(
     string Callsign,
     int? BearerPort = null,
     string? UdpEndpoint = null,
-    ConnectScript? ConnectScript = null);
+    ConnectScript? ConnectScript = null,
+    string? MeshCoreChannel = null);

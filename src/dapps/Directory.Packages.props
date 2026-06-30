@@ -59,6 +59,13 @@
          net10.0; we pull the net8.0 build. -->
     <PackageVersion Include="RhpV2.Client" Version="0.2.2" />
 
+    <!-- MeshCore bearer (Phase H1, #154): serial link to a MeshCore
+         Companion radio, plus zstd dictionary compression of the
+         backhaul payload. System.IO.Ports 8.0.0 keeps the net8 LTS /
+         broad-glibc baseline; ZstdSharp.Port is a pure-managed zstd. -->
+    <PackageVersion Include="System.IO.Ports" Version="8.0.0" />
+    <PackageVersion Include="ZstdSharp.Port" Version="0.8.8" />
+
     <!-- Playwright + WebApplicationFactory for the dapps.core.uitests
          project. Drives the real Razor pages + JS in headless Chromium
          against an in-process Kestrel host (real ephemeral port - the

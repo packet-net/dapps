@@ -260,6 +260,13 @@ builder.Services.AddSingleton<UdpDatagramBackhaul>(sp =>
         txGate: sp.GetRequiredService<IDappsTxGate>()));
 builder.Services.AddSingleton<IDappsBackhaul>(sp => sp.GetRequiredService<UdpDatagramBackhaul>());
 builder.Services.AddSingleton<IRouteGossipPort, RouteGossipPort>();
+// MeshCore Companion bearer (#154). Registered before the AGW catch-all so a
+// route carrying a MeshCore channel hint is handled here, not by AGW. Inert
+// (CanHandle=false, no serial port opened) unless MeshCoreEnabled=true;
+// MeshCoreBearerService starts the link + inbound loop.
+builder.Services.AddSingleton<MeshCoreBearer>();
+builder.Services.AddSingleton<IDappsBackhaul>(sp => sp.GetRequiredService<MeshCoreBearer>());
+builder.Services.AddHostedService<MeshCoreBearerService>();
 builder.Services.AddSingleton<IDappsBackhaul>(sp => new Dappsv1SessionBackhaul(
     sp.GetRequiredService<IDappsOutboundTransport>(),
     sp.GetRequiredService<ILoggerFactory>(),
