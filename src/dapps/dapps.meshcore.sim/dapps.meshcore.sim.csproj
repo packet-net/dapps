@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- In-process simulation of a multi-hop MeshCore mesh. Backs the REAL bearer
+       classes (MeshCoreCompanionBackhaul + MeshCoreInbound + transport + reliability)
+       via IMeshCoreLink, so DAPPS logic can be scale-tested over topologies the two
+       bench radios can't reach: multi-hop flood, dedup across paths, flood-scope
+       containment, discovery convergence - without any RF. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\dapps.meshcore\dapps.meshcore.csproj" />
+  </ItemGroup>
+
+</Project>

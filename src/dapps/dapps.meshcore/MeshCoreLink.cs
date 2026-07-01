@@ -13,7 +13,7 @@ namespace dapps.meshcore;
 /// callers see the link's current state; during a reset they get a soft failure
 /// (send returns false, drain returns null) and retry once the link is back.
 /// </summary>
-public sealed class MeshCoreLink : IAsyncDisposable
+public sealed class MeshCoreLink : IAsyncDisposable, IMeshCoreLink
 {
     public enum LinkState { Down, Healthy, Resetting, Failed }
 
