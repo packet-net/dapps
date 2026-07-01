@@ -1,4 +1,5 @@
 using dapps.client.Backhaul;
+using dapps.client.Discovery;
 using dapps.client.Tx;
 using dapps.core.Models;
 using dapps.meshcore;
@@ -21,6 +22,7 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
     private readonly IOptionsMonitor<SystemOptions> _sysOpts;
     private readonly IBackhaulInbox _inbox;
     private readonly IDappsTxGate _txGate;
+    private readonly Database _database;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<MeshCoreBearer> _log;
 
@@ -28,6 +30,13 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
     private MeshCoreCompanionBackhaul? _backhaul;
     private MeshCoreInbound? _inbound;
     private MeshCoreReliability? _reliability;
+
+    // Passive discovery (#27): throttle DB upserts per peer so a chatty channel
+    // doesn't hammer SQLite — we only need to refresh a peer's freshness, not record
+    // every frame. Keyed on the source callsign; guarded by its own lock.
+    private static readonly TimeSpan DiscoveryUpsertThrottle = TimeSpan.FromSeconds(30);
+    private readonly object _discoveryLock = new();
+    private readonly Dictionary<string, DateTime> _lastDiscoveryUpsert = new(StringComparer.OrdinalIgnoreCase);
 
     public bool Enabled { get; private set; }
     public MeshCoreLink? Link => _link;
@@ -61,11 +70,13 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
         IOptionsMonitor<SystemOptions> sysOpts,
         IBackhaulInbox inbox,
         IDappsTxGate txGate,
+        Database database,
         ILoggerFactory loggerFactory)
     {
         _sysOpts = sysOpts;
         _inbox = inbox;
         _txGate = txGate;
+        _database = database;
         _loggerFactory = loggerFactory;
         _log = loggerFactory.CreateLogger<MeshCoreBearer>();
     }
@@ -104,7 +115,8 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
             _link, _inbox, _loggerFactory.CreateLogger<MeshCoreInbound>(),
             reliability,
             sendAck: (ack, c) => backhaul.ResendAsync(ack, opts.LocalCallsign, c),
-            localCallsign: opts.LocalCallsign);
+            localCallsign: opts.LocalCallsign,
+            onPeerHeard: (src, c) => RecordPeerHeardAsync(src, opts, c));
         Enabled = true;
 
         // Reliability resend loop runs alongside the inbound drain loop.
@@ -135,6 +147,61 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
                 }
                 catch (Exception ex) { _log.LogDebug("MeshCore: resend of {0} failed: {1}", msg.Id, ex.Message); }
             }
+        }
+    }
+
+    /// <summary>Passive discovery (#27): record a peer we heard over MeshCore as a
+    /// fresh <see cref="DbDiscoveredPeer"/> so the router can send to it without a
+    /// manual neighbour. Throttled per peer, skips ourselves (a repeater may echo our
+    /// own frames), and never lets a DB fault break the inbound drain loop.</summary>
+    private async Task RecordPeerHeardAsync(string source, MeshCoreBearerOptions opts, CancellationToken ct)
+    {
+        // A repeater re-broadcasting our own frame would otherwise teach us a route to
+        // ourselves. Compare on the base callsign (SSID-insensitive), like the router.
+        if (string.Equals(source.Split('-')[0], opts.LocalCallsign.Split('-')[0], StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var now = DateTime.UtcNow;
+        lock (_discoveryLock)
+        {
+            if (_lastDiscoveryUpsert.TryGetValue(source, out var last) && now - last < DiscoveryUpsertThrottle)
+                return;
+            // Bound the dict: an entry older than the throttle window no longer gates
+            // anything, so drop stale ones (also caps memory if the channel injects
+            // many distinct callsigns). Cheap — runs only when we're about to upsert.
+            if (_lastDiscoveryUpsert.Count > 0)
+            {
+                var cutoff = now - DiscoveryUpsertThrottle;
+                foreach (var k in _lastDiscoveryUpsert.Where(kv => kv.Value < cutoff).Select(kv => kv.Key).ToList())
+                    _lastDiscoveryUpsert.Remove(k);
+            }
+            _lastDiscoveryUpsert[source] = now;
+        }
+
+        var peer = new DbDiscoveredPeer
+        {
+            Callsign = source,
+            Bearer = "meshcore",
+            ChannelKey = opts.ChannelName,
+            ChannelId = 0,
+            LinkClass = LinkClass.MeshCore,
+            CostHint = LinkClassDefaults.CostHint(LinkClass.MeshCore),
+            Hops = 1,
+            TtlSeconds = LinkClassDefaults.AdvertisedTtlSeconds(LinkClass.MeshCore),
+            MeshCoreChannel = opts.ChannelName,
+            LastSeen = now,
+        };
+        try
+        {
+            await _database.UpsertDiscoveredPeer(peer);
+            _log.LogInformation("MeshCore: discovered peer {0} on {1} (cost={2}, ttl={3}s)",
+                source, opts.ChannelName, peer.CostHint, peer.TtlSeconds);
+        }
+        catch (Exception ex)
+        {
+            // Roll back the throttle stamp so the next frame retries the upsert.
+            lock (_discoveryLock) { _lastDiscoveryUpsert.Remove(source); }
+            _log.LogWarning("MeshCore: failed to record discovered peer {0}: {1}", source, ex.Message);
         }
     }
 

@@ -65,12 +65,17 @@ var backhaul = new MeshCoreCompanionBackhaul(
 double dropPct = a.GetDouble("drop-pct", 0);
 Func<BackhaulMessage, bool>? drop = dropPct > 0 ? (_ => Random.Shared.NextDouble() * 100 < dropPct) : null;
 
+// Passive discovery (#27): count the peers we learn about purely from hearing
+// their traffic — the same signal MeshCoreBearer feeds to Database.UpsertDiscoveredPeer
+// in the integrated host. Each node should discover the other with no config.
+var discovery = new DiscoveryRecorder(self, log);
 var inbound = new MeshCoreInbound(
     link, inbox, lf.CreateLogger<MeshCoreInbound>(),
     reliability,
     sendAck: (ack, c) => backhaul.ResendAsync(ack, self, c),
     localCallsign: self,
-    dropForTest: drop);
+    dropForTest: drop,
+    onPeerHeard: (src, c) => { discovery.Note(src); return Task.CompletedTask; });
 var route = new BackhaulRoute(peer, MeshCoreChannel: opts.ChannelName);
 
 var inboundTask = Task.Run(() => inbound.RunAsync(cts.Token));
@@ -122,7 +127,11 @@ var senderTask = Task.Run(async () =>
         }
         catch (Exception ex) { Interlocked.Increment(ref failed); log.LogWarning("TX seq={0} exception: {1}", seq, ex.Message); }
         seq++;
-        try { await Task.Delay(TimeSpan.FromSeconds(intervalSec), cts.Token); } catch { break; }
+        // Jitter the interval (±25%) so two nodes started at the same instant don't
+        // phase-lock their transmit schedules and collide every cycle (half-duplex →
+        // mutual deafness). Real DAPPS traffic is event-driven, not on a fixed clock.
+        var jittered = intervalSec * (0.75 + Random.Shared.NextDouble() * 0.5);
+        try { await Task.Delay(TimeSpan.FromSeconds(jittered), cts.Token); } catch { break; }
     }
 });
 
@@ -153,9 +162,33 @@ log.LogInformation("Airtime used (trailing hr): {0:0.0}s ({1:0.000}% duty); link
 if (reliability is not null)
     log.LogInformation("Reliability: confirmed={0} expired={1} pending={2} (induced drop {3:0.#}%)",
         reliability.Confirmed, reliability.Expired, reliability.PendingCount, dropPct);
+log.LogInformation("Discovery: {0}", discovery.Summary());
 return 0;
 
 // ---------------- helpers ----------------
+
+sealed class DiscoveryRecorder(string self, ILogger log)
+{
+    private readonly object _l = new();
+    private readonly Dictionary<string, int> _heard = new(StringComparer.OrdinalIgnoreCase);
+
+    public void Note(string source)
+    {
+        // Mirror MeshCoreBearer: never learn ourselves (a repeater could echo us).
+        if (string.Equals(source.Split('-')[0], self.Split('-')[0], StringComparison.OrdinalIgnoreCase)) return;
+        int count;
+        lock (_l) { _heard.TryGetValue(source, out count); _heard[source] = ++count; }
+        if (count == 1) log.LogInformation("DISCOVERED peer {0} (first heard over MeshCore, no config)", source);
+    }
+
+    public string Summary()
+    {
+        lock (_l)
+            return _heard.Count == 0
+                ? "no peers discovered"
+                : string.Join(", ", _heard.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}×{kv.Value}"));
+    }
+}
 
 sealed class SoakInbox(string self, ILogger log) : IBackhaulInbox
 {

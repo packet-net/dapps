@@ -59,6 +59,11 @@ public sealed class DbDiscoveredPeer
     /// (UDP only).</summary>
     public string? UdpEndpoint { get; set; }
 
+    /// <summary>MeshCore channel name the peer was heard on (MeshCore bearer only),
+    /// so the router can build a MeshCore route back to a passively-discovered peer
+    /// without a manual neighbour (#27). Null for other bearers.</summary>
+    public string? MeshCoreChannel { get; set; }
+
     public DateTime LastSeen { get; set; }
 
     public static string MakeKey(string callsign, string bearer, string channelKey)
