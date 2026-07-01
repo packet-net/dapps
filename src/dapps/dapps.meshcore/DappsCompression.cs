@@ -11,37 +11,58 @@ namespace dapps.meshcore;
 /// collapses most messages into a single LoRa packet.
 ///
 /// The dictionary is built deterministically from a fixed sample corpus so every
-/// node running the same build derives byte-identical dictionary bytes. Version 1.
-/// A production build should ship a versioned dictionary blob negotiated by id
-/// (#154 / dictionary-versioning) rather than rebuilding from code.
+/// node running the same build derives byte-identical dictionary bytes.
+///
+/// Versioning (#23): each compressed frame carries the dictionary version it was
+/// produced with (see <see cref="MeshCoreChannelTransport"/>), and a node keeps a
+/// registry of every dictionary version it knows. A sender compresses with
+/// <see cref="CurrentDictionaryVersion"/>; a receiver decompresses with the version
+/// named in the frame, or drops the frame if it doesn't hold that dictionary - so a
+/// mixed-version fleet degrades to "can't read newer peers yet" instead of silently
+/// corrupting payloads. When the corpus is retrained, add a new entry to
+/// <see cref="Dictionaries"/> and bump <see cref="CurrentDictionaryVersion"/>, but
+/// NEVER mutate an existing version's bytes - old peers and in-flight frames still
+/// reference it.
 /// </summary>
 public static class DappsCompression
 {
     public enum Mode { None, ZstdDict }
 
-    /// <summary>Dictionary version - both ends must agree. Carried implicitly by
-    /// the build today; negotiate explicitly later.</summary>
-    public const byte DictionaryVersion = 1;
+    /// <summary>The dictionary version this build compresses outbound frames with, and
+    /// stamps into each compressed frame. The highest version in <see cref="Dictionaries"/>.</summary>
+    public const byte CurrentDictionaryVersion = 1;
 
-    private static readonly byte[] Dict = BuildDict();
+    /// <summary>Every dictionary version this build can DECOMPRESS with, keyed by version.
+    /// Retains superseded versions so a node can still read peers that haven't upgraded.</summary>
+    private static readonly IReadOnlyDictionary<byte, byte[]> Dictionaries =
+        new Dictionary<byte, byte[]> { [1] = BuildDictV1() };
+
+    /// <summary>True if this build holds the dictionary for <paramref name="version"/> and
+    /// can therefore decompress a frame stamped with it.</summary>
+    public static bool IsKnownVersion(byte version) => Dictionaries.ContainsKey(version);
 
     public static byte[] Compress(Mode mode, byte[] data)
     {
         if (mode == Mode.None) return data;
         using var c = new ZstdSharp.Compressor(19);
-        c.LoadDictionary(Dict);
+        c.LoadDictionary(Dictionaries[CurrentDictionaryVersion]);
         return c.Wrap(data).ToArray();
     }
 
-    public static byte[] Decompress(Mode mode, byte[] data)
+    /// <summary>Decompress a frame that was compressed with dictionary <paramref name="version"/>.
+    /// Throws <see cref="NotSupportedException"/> if this build doesn't hold that dictionary -
+    /// callers must treat that as an undecodable frame, never feed it to a mismatched
+    /// dictionary (which yields garbage or throws deeper).</summary>
+    public static byte[] Decompress(byte version, byte[] data)
     {
-        if (mode == Mode.None) return data;
+        if (!Dictionaries.TryGetValue(version, out var dict))
+            throw new NotSupportedException($"unknown compression dictionary version {version}");
         using var d = new ZstdSharp.Decompressor();
-        d.LoadDictionary(Dict);
+        d.LoadDictionary(dict);
         return d.Unwrap(data).ToArray();
     }
 
-    private static byte[] BuildDict()
+    private static byte[] BuildDictV1()
     {
         using var ms = new MemoryStream();
         foreach (var m in SampleCorpus())
