@@ -10,6 +10,18 @@ public sealed class MeshCoreBearerOptions
     public bool Enabled { get; set; }
     public string SerialPort { get; set; } = "/dev/ttyUSB0";
     public string Region { get; set; } = "uk-test";
+
+    /// <summary>Deployment model C: when <see cref="Region"/> is "custom", the dedicated
+    /// preset spec (e.g. <c>freq=868.4;bw=62.5;sf=8;cr=8;pwr=14</c>) for a DAPPS-only
+    /// frequency/SF. Ignored for baked regions. See README "Containment".</summary>
+    public string CustomPreset { get; set; } = "";
+
+    /// <summary>Deployment model B: flood-scope key. Empty = unscoped (model A - floods are
+    /// carried network-wide by any same-preset public repeater). Non-empty tells the radio
+    /// to tag our floods with this scope so nodes/repeaters that don't share it drop them,
+    /// containing DAPPS traffic to our own scoped infra. See README "Containment" for the
+    /// firmware caveats.</summary>
+    public string FloodScopeKey { get; set; } = "";
     public byte TxPowerDbm { get; set; } = 8;
     public byte ChannelIndex { get; set; } = 1;
     public string ChannelName { get; set; } = "dapps";
@@ -38,7 +50,18 @@ public sealed class MeshCoreBearerOptions
     public string LocalCallsign { get; set; } = "";
 
     public RegionPreset ResolveRegion() =>
-        Regions.Find(Region) ?? throw new ArgumentException($"unknown MeshCore region '{Region}'");
+        Region.Equals(Regions.CustomName, StringComparison.OrdinalIgnoreCase)
+            ? Regions.ParseCustom(CustomPreset)
+            : Regions.Find(Region) ?? throw new ArgumentException($"unknown MeshCore region '{Region}'");
+
+    /// <summary>Which deployment model this config selects, for logging/observability.
+    /// A = unscoped public preset, B = scoped public preset, C = dedicated/custom preset.</summary>
+    public string DeploymentModel()
+    {
+        bool scoped = !string.IsNullOrWhiteSpace(FloodScopeKey);
+        bool dedicated = Region.Equals(Regions.CustomName, StringComparison.OrdinalIgnoreCase);
+        return dedicated ? "C (dedicated preset)" : scoped ? "B (scoped public preset)" : "A (unscoped public preset)";
+    }
 
     /// <summary>The 16-byte channel secret: a 32-char hex string is used verbatim,
     /// otherwise the value is treated as a passphrase and hashed to 16 bytes.</summary>
@@ -48,5 +71,21 @@ public sealed class MeshCoreBearerOptions
         if (v.Length == 32 && v.All(Uri.IsHexDigit))
             return Convert.FromHexString(v);
         return SHA256.HashData(Encoding.UTF8.GetBytes(v))[..16];
+    }
+
+    /// <summary>The 16-byte flood-scope key (deployment model B), or null when unscoped
+    /// (empty <see cref="FloodScopeKey"/>). A 32-char hex string is used verbatim; any
+    /// other value is treated as a PUBLIC region NAME and hashed as SHA256("#"+name)[..16]
+    /// - the same derivation MeshCore uses for public region keys, so repeaters configured
+    /// with <c>region put &lt;name&gt;</c> (flood-allowed) carry our traffic and everyone
+    /// else drops it. A truly-secret key would be dropped network-wide: the firmware's
+    /// private ($-prefixed) keystore is stubbed in v1.16.x.</summary>
+    public byte[]? ResolveFloodScopeKey()
+    {
+        var v = FloodScopeKey?.Trim() ?? "";
+        if (v.Length == 0) return null;
+        if (v.Length == 32 && v.All(Uri.IsHexDigit))
+            return Convert.FromHexString(v);
+        return SHA256.HashData(Encoding.UTF8.GetBytes("#" + v))[..16];
     }
 }

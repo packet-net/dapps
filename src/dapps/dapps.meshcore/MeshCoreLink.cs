@@ -24,6 +24,7 @@ public sealed class MeshCoreLink : IAsyncDisposable
     private readonly MeshCoreBearerOptions _opts;
     private readonly RegionPreset _region;
     private readonly byte[] _psk;
+    private readonly byte[]? _floodScope;
     private readonly ILogger _log;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -44,6 +45,7 @@ public sealed class MeshCoreLink : IAsyncDisposable
         _log = log;
         _region = opts.ResolveRegion();
         _psk = opts.ResolvePsk();
+        _floodScope = opts.ResolveFloodScopeKey();
     }
 
     public async Task StartAsync(CancellationToken ct)
@@ -68,6 +70,17 @@ public sealed class MeshCoreLink : IAsyncDisposable
             await client.SetTxPowerAsync(Math.Min(_opts.TxPowerDbm, _region.MaxPowerDbm), ct);
             await client.SetNameAsync(_opts.NodeName, ct);
             await client.SetChannelAsync(_opts.ChannelIndex, _opts.ChannelName, _psk, ct);
+            // Deployment model B: apply (or clear) the flood-scope override every configure
+            // - it's RAM-only and reset on the radio reboots our watchdog triggers.
+            var scopeApplied = await client.SetFloodScopeAsync(_floodScope, ct);
+            if (_floodScope is not null)
+            {
+                if (scopeApplied)
+                    _log.LogInformation("MeshCore: flood-scope applied (model B) - floods contained to nodes sharing the scope");
+                else
+                    _log.LogWarning("MeshCore: radio rejected the flood-scope key - firmware too old to scope floods; "
+                        + "traffic will flood UNSCOPED (model A) despite MeshCoreFloodScopeKey being set");
+            }
             self = await client.AppStartAsync(_opts.AppName, ct);
         }
         catch
@@ -82,9 +95,9 @@ public sealed class MeshCoreLink : IAsyncDisposable
         Self = self;
         State = LinkState.Healthy;
         _log.LogInformation(
-            "MeshCore link up: {0} {1:0.000}MHz/{2:0.#}kHz/SF{3}/CR{4} ch[{5}]='{6}' node='{7}' txp={8}dBm",
+            "MeshCore link up: {0} {1:0.000}MHz/{2:0.#}kHz/SF{3}/CR{4} ch[{5}]='{6}' node='{7}' txp={8}dBm model={9}",
             self.PublicKeyHex[..12], self.FreqMhz, self.BwKhz, self.Sf, self.Cr,
-            _opts.ChannelIndex, _opts.ChannelName, _opts.NodeName, self.TxPower);
+            _opts.ChannelIndex, _opts.ChannelName, _opts.NodeName, self.TxPower, _opts.DeploymentModel());
     }
 
     private async Task WatchdogLoopAsync(CancellationToken ct)

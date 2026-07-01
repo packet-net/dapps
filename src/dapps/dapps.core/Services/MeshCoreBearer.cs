@@ -250,6 +250,8 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
         Enabled = true,
         SerialPort = s.MeshCorePort,
         Region = s.MeshCoreRegion,
+        CustomPreset = s.MeshCoreCustomPreset,
+        FloodScopeKey = s.MeshCoreFloodScopeKey,
         TxPowerDbm = (byte)Math.Clamp(s.MeshCoreTxPowerDbm, 0, 30),
         ChannelIndex = (byte)Math.Clamp(s.MeshCoreChannelIndex, 0, 255),
         ChannelName = s.MeshCoreChannelName,

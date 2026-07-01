@@ -41,7 +41,9 @@ public sealed class MeshCoreConfigTests : IAsyncLifetime
         var opts = store.CurrentValue;
         opts.MeshCoreEnabled = true;
         opts.MeshCorePort = "/dev/ttyUSB9";
-        opts.MeshCoreRegion = "uk-narrow";
+        opts.MeshCoreRegion = "custom";
+        opts.MeshCoreCustomPreset = "freq=867.1;bw=125;sf=9;cr=6;pwr=20";
+        opts.MeshCoreFloodScopeKey = "dapps-uk";
         opts.MeshCoreChannelIndex = 3;
         opts.MeshCoreChannelName = "testch";
         opts.MeshCoreChannelPsk = "3135135fd198029d689b64f45df2aae9";
@@ -59,7 +61,9 @@ public sealed class MeshCoreConfigTests : IAsyncLifetime
         var reloaded = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance).CurrentValue;
         reloaded.MeshCoreEnabled.Should().BeTrue();
         reloaded.MeshCorePort.Should().Be("/dev/ttyUSB9");
-        reloaded.MeshCoreRegion.Should().Be("uk-narrow");
+        reloaded.MeshCoreRegion.Should().Be("custom");
+        reloaded.MeshCoreCustomPreset.Should().Be("freq=867.1;bw=125;sf=9;cr=6;pwr=20");
+        reloaded.MeshCoreFloodScopeKey.Should().Be("dapps-uk");
         reloaded.MeshCoreChannelIndex.Should().Be(3);
         reloaded.MeshCoreChannelName.Should().Be("testch");
         reloaded.MeshCoreChannelPsk.Should().Be("3135135fd198029d689b64f45df2aae9");

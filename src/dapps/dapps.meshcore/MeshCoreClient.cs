@@ -26,6 +26,7 @@ public sealed class MeshCoreClient : IAsyncDisposable
     public const byte CMD_SET_RADIO_TX_POWER = 0x0C;
     public const byte CMD_GET_CHANNEL = 0x1F;
     public const byte CMD_SET_CHANNEL = 0x20;
+    public const byte CMD_SET_FLOOD_SCOPE_KEY = 0x36;   // v8+: transient (RAM) flood-scope override
     public const byte CMD_SEND_CHANNEL_DATA = 0x3E;
     public const ushort DATA_TYPE_DEV = 0xFFFF;
 
@@ -231,6 +232,34 @@ public sealed class MeshCoreClient : IAsyncDisposable
         Array.Copy(nameBytes, 0, p, 2, Math.Min(nameBytes.Length, 32));
         Array.Copy(secret16, 0, p, 34, 16);
         await ExchangeAsync(p, [RSP_OK], TimeSpan.FromSeconds(3), ct);
+    }
+
+    /// <summary>Set (or clear) the transient flood-scope key (Companion CMD 0x36, v8+),
+    /// deployment model B. The key is never transmitted - the radio HMACs it to a 2-byte
+    /// transport code and marks our floods scoped, so repeaters/room-servers without a
+    /// matching region silently drop them. <paramref name="key16"/> null/empty/all-zero
+    /// clears the scope (unscoped, model A). RAM-only: reset on radio reboot, so this is
+    /// re-applied on every (re)configure. Returns false (rather than throwing) if the
+    /// firmware rejects the command - i.e. it's too old to support scoping.</summary>
+    public async Task<bool> SetFloodScopeAsync(byte[]? key16, CancellationToken ct)
+    {
+        if (key16 is not null && key16.Length != 0 && key16.Length != 16)
+            throw new ArgumentException("flood-scope key must be 16 bytes", nameof(key16));
+        bool scoped = key16 is { Length: 16 } && key16.Any(b => b != 0);
+        byte[] p;
+        if (scoped)
+        {
+            p = new byte[18];
+            p[0] = CMD_SET_FLOOD_SCOPE_KEY;
+            p[1] = 0x00;              // selector 0 = set/clear scope key
+            key16!.CopyTo(p, 2);
+        }
+        else
+        {
+            p = [CMD_SET_FLOOD_SCOPE_KEY, 0x00];   // len 2 = clear the override -> unscoped
+        }
+        var resp = await ExchangeAsync(p, [RSP_OK, RSP_ERR], TimeSpan.FromSeconds(3), ct);
+        return resp[0] == RSP_OK;
     }
 
     public async Task<ChannelInfo> GetChannelAsync(byte index, CancellationToken ct)

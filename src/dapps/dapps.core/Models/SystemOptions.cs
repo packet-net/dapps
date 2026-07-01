@@ -96,8 +96,19 @@ public class SystemOptions
     public string MeshCorePort { get; set; } = "/dev/ttyUSB0";
 
     /// <summary>Region preset (localisation): <c>uk-narrow</c>, <c>uk-test</c>,
-    /// <c>eu-legacy</c>. Sets frequency/BW/SF/CR and caps TX power.</summary>
+    /// <c>eu-legacy</c>, or <c>custom</c> (deployment model C - use
+    /// <see cref="MeshCoreCustomPreset"/>). Sets frequency/BW/SF/CR and caps TX power.</summary>
     public string MeshCoreRegion { get; set; } = "uk-test";
+
+    /// <summary>Deployment model C: when <see cref="MeshCoreRegion"/> is <c>custom</c>, the
+    /// dedicated-preset spec for a DAPPS-only frequency/SF, e.g.
+    /// <c>freq=868.4;bw=62.5;sf=8;cr=8;pwr=14</c>. Ignored for baked regions.</summary>
+    public string MeshCoreCustomPreset { get; set; } = "";
+
+    /// <summary>Deployment model B: flood-scope key. Empty = unscoped (model A - floods
+    /// carried network-wide by any same-preset public repeater). Non-empty scopes our
+    /// floods so nodes/repeaters not sharing it drop them. See the MeshCore README.</summary>
+    public string MeshCoreFloodScopeKey { get; set; } = "";
 
     /// <summary>TX power in dBm (capped by the region's regulatory max).</summary>
     public int MeshCoreTxPowerDbm { get; set; } = 8;

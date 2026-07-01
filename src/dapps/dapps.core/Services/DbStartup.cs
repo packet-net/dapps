@@ -94,6 +94,8 @@ public static class DbStartup
         ("MeshCoreEnabled", "false"),
         ("MeshCorePort", "/dev/ttyUSB0"),
         ("MeshCoreRegion", "uk-test"),
+        ("MeshCoreCustomPreset", ""),
+        ("MeshCoreFloodScopeKey", ""),
         ("MeshCoreTxPowerDbm", "8"),
         ("MeshCoreChannelIndex", "1"),
         ("MeshCoreChannelName", "dapps"),
