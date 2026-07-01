@@ -84,6 +84,16 @@ public sealed class MeshCoreInbound
                 {
                     var now = DateTime.UtcNow;
                     var r = _rx.Ingest(d.Payload, now);
+                    if (r.Kind == MeshCoreChannelTransport.Kind.Unsupported)
+                    {
+                        // A peer compressed with a dictionary version we don't hold (#23).
+                        // We can't read it and won't ACK it; surface the version gap so an
+                        // operator knows this node needs upgrading.
+                        _log.LogWarning(
+                            "MeshCore: dropped {0} - compressed with a dictionary version this build doesn't have (upgrade needed?)",
+                            r.Header?.Id);
+                        continue;
+                    }
                     if (r.Kind != MeshCoreChannelTransport.Kind.BackhaulComplete) continue;
                     var msg = r.Message!;
 
