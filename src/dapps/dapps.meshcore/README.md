@@ -41,25 +41,25 @@ evidence this is built on.
 
 The bearer is registered in `Program.cs` (before the AGW catch-all) and driven by
 `MeshCoreBearerService`. It is **inert (no serial port opened) unless `MeshCoreEnabled=true`**.
-Configure via `DAPPS_MESHCORE_*` env vars (or the `systemoptions` table):
+Configure via `DAPPS_MESH_CORE_*` env vars (or the `systemoptions` table):
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `DAPPS_MESHCORE_ENABLED` | `false` | turn the bearer on |
-| `DAPPS_MESHCORE_PORT` | `/dev/ttyUSB0` | radio serial port |
-| `DAPPS_MESHCORE_REGION` | `uk-test` | localisation preset (freq/BW/SF/CR + power cap); `custom` = model C |
-| `DAPPS_MESHCORE_CUSTOM_PRESET` | _(empty)_ | model C: when region=`custom`, `freq=868.4;bw=62.5;sf=8;cr=8;pwr=14` |
-| `DAPPS_MESHCORE_FLOOD_SCOPE_KEY` | _(empty)_ | model B: blank = unscoped; set to contain floods (see Containment) |
-| `DAPPS_MESHCORE_TX_POWER_DBM` | `8` | TX power (capped by region) |
-| `DAPPS_MESHCORE_CHANNEL_INDEX` | `1` | radio channel slot |
-| `DAPPS_MESHCORE_CHANNEL_NAME` | `dapps` | channel label |
-| `DAPPS_MESHCORE_CHANNEL_PSK` | `dapps-default-channel` | 32-char hex (16 B) or a passphrase |
-| `DAPPS_MESHCORE_NODE_NAME` | `DAPPS` | radio advert name |
-| `DAPPS_MESHCORE_AIRTIME_BUDGET_SECONDS_PER_HOUR` | `30` | governor budget |
-| `DAPPS_MESHCORE_COMPRESS` | `true` | zstd-dict compression |
-| `DAPPS_MESHCORE_CONGESTION_BACKOFF_FRACTION` | `0.5` | adaptive: refuse sends when channel occupancy ≥ this (0 disables) |
-| `DAPPS_MESHCORE_LBT_GUARD_MS` | `400` | adaptive: listen-before-talk guard in ms (0 disables) |
-| `DAPPS_MESHCORE_RELIABLE_DELIVERY` | `true` | end-to-end ACK + resend of unacked messages (#26) |
+| `DAPPS_MESH_CORE_ENABLED` | `false` | turn the bearer on |
+| `DAPPS_MESH_CORE_PORT` | `/dev/ttyUSB0` | radio serial port |
+| `DAPPS_MESH_CORE_REGION` | `uk-test` | localisation preset (freq/BW/SF/CR + power cap); `custom` = model C |
+| `DAPPS_MESH_CORE_CUSTOM_PRESET` | _(empty)_ | model C: when region=`custom`, `freq=868.4;bw=62.5;sf=8;cr=8;pwr=14` |
+| `DAPPS_MESH_CORE_FLOOD_SCOPE_KEY` | _(empty)_ | model B: blank = unscoped; set to contain floods (see Containment) |
+| `DAPPS_MESH_CORE_TX_POWER_DBM` | `8` | TX power (capped by region) |
+| `DAPPS_MESH_CORE_CHANNEL_INDEX` | `1` | radio channel slot |
+| `DAPPS_MESH_CORE_CHANNEL_NAME` | `dapps` | channel label |
+| `DAPPS_MESH_CORE_CHANNEL_PSK` | `dapps-default-channel` | 32-char hex (16 B) or a passphrase |
+| `DAPPS_MESH_CORE_NODE_NAME` | `DAPPS` | radio advert name |
+| `DAPPS_MESH_CORE_AIRTIME_BUDGET_SECONDS_PER_HOUR` | `30` | governor budget |
+| `DAPPS_MESH_CORE_COMPRESS` | `true` | zstd-dict compression |
+| `DAPPS_MESH_CORE_CONGESTION_BACKOFF_FRACTION` | `0.5` | adaptive: refuse sends when channel occupancy ≥ this (0 disables) |
+| `DAPPS_MESH_CORE_LBT_GUARD_MS` | `400` | adaptive: listen-before-talk guard in ms (0 disables) |
+| `DAPPS_MESH_CORE_RELIABLE_DELIVERY` | `true` | end-to-end ACK + resend of unacked messages (#26) |
 
 Inbound is fully wired: received messages are decoded and delivered to `IBackhaulInbox` (DB + MQTT),
 sender derived from the in-band `LinkSourceCallsign`. Outbound is selected for routes carrying a

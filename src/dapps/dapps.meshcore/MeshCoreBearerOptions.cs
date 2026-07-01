@@ -58,7 +58,7 @@ public sealed class MeshCoreBearerOptions
     /// A = unscoped public preset, B = scoped public preset, C = dedicated/custom preset.</summary>
     public string DeploymentModel()
     {
-        bool scoped = !string.IsNullOrWhiteSpace(FloodScopeKey);
+        bool scoped = ResolveFloodScopeKey() is not null;   // resolved, so an all-zero key reads as unscoped
         bool dedicated = Region.Equals(Regions.CustomName, StringComparison.OrdinalIgnoreCase);
         return dedicated ? "C (dedicated preset)" : scoped ? "B (scoped public preset)" : "A (unscoped public preset)";
     }
@@ -84,8 +84,12 @@ public sealed class MeshCoreBearerOptions
     {
         var v = FloodScopeKey?.Trim() ?? "";
         if (v.Length == 0) return null;
-        if (v.Length == 32 && v.All(Uri.IsHexDigit))
-            return Convert.FromHexString(v);
-        return SHA256.HashData(Encoding.UTF8.GetBytes("#" + v))[..16];
+        var key = (v.Length == 32 && v.All(Uri.IsHexDigit))
+            ? Convert.FromHexString(v)
+            : SHA256.HashData(Encoding.UTF8.GetBytes("#" + v))[..16];
+        // An all-zero key is what the radio treats as "unscoped" (SetFloodScopeAsync sends
+        // the clear frame for it), so report it as unscoped here too - otherwise
+        // DeploymentModel()/the link log would claim model B while the wire is unscoped.
+        return key.All(b => b == 0) ? null : key;
     }
 }

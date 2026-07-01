@@ -62,6 +62,7 @@ public sealed class MeshCoreLink : IAsyncDisposable
         client.PacketHeard += (len, snr) => PacketHeard?.Invoke(len, snr);
 
         SelfInfo self;
+        bool scopeApplied = false;
         try
         {
             client.Open();
@@ -72,7 +73,7 @@ public sealed class MeshCoreLink : IAsyncDisposable
             await client.SetChannelAsync(_opts.ChannelIndex, _opts.ChannelName, _psk, ct);
             // Deployment model B: apply (or clear) the flood-scope override every configure
             // - it's RAM-only and reset on the radio reboots our watchdog triggers.
-            var scopeApplied = await client.SetFloodScopeAsync(_floodScope, ct);
+            scopeApplied = await client.SetFloodScopeAsync(_floodScope, ct);
             if (_floodScope is not null)
             {
                 if (scopeApplied)
@@ -94,10 +95,15 @@ public sealed class MeshCoreLink : IAsyncDisposable
         _client = client;
         Self = self;
         State = LinkState.Healthy;
+        // Report the EFFECTIVE model: if scoping (B) was requested but the radio rejected
+        // the key, the traffic is actually unscoped, so don't headline it as B.
+        var model = _opts.DeploymentModel();
+        if (model.StartsWith("B", StringComparison.Ordinal) && !scopeApplied)
+            model = "A (unscoped - firmware rejected the scope key)";
         _log.LogInformation(
             "MeshCore link up: {0} {1:0.000}MHz/{2:0.#}kHz/SF{3}/CR{4} ch[{5}]='{6}' node='{7}' txp={8}dBm model={9}",
             self.PublicKeyHex[..12], self.FreqMhz, self.BwKhz, self.Sf, self.Cr,
-            _opts.ChannelIndex, _opts.ChannelName, _opts.NodeName, self.TxPower, _opts.DeploymentModel());
+            _opts.ChannelIndex, _opts.ChannelName, _opts.NodeName, self.TxPower, model);
     }
 
     private async Task WatchdogLoopAsync(CancellationToken ct)

@@ -93,6 +93,16 @@ public sealed class MeshCoreDeploymentModelTests
         Convert.ToHexString(key!).ToLowerInvariant().Should().Be(hex);
     }
 
+    [Fact]
+    public void ResolveFloodScopeKey_AllZeroHex_IsUnscoped()
+    {
+        // An all-zero key is what the radio treats as unscoped, so it must resolve to null
+        // (and classify as model A) - not read as a scoped key the label/logs would lie about.
+        var opts = new MeshCoreBearerOptions { FloodScopeKey = new string('0', 32) };
+        opts.ResolveFloodScopeKey().Should().BeNull();
+        opts.DeploymentModel().Should().StartWith("A");
+    }
+
     // ── DeploymentModel classification ─────────────────────────────
 
     [Theory]
