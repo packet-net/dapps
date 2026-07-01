@@ -12,6 +12,7 @@ public sealed record SelfInfo(
 
     public static SelfInfo Parse(byte[] p)
     {
+        if (p.Length < 58) throw new InvalidDataException($"SELF_INFO frame too short ({p.Length} bytes)");
         var pub = p[4..36];
         double freq = BinaryPrimitives.ReadUInt32LittleEndian(p.AsSpan(48, 4)) / 1000.0;
         double bw = BinaryPrimitives.ReadUInt32LittleEndian(p.AsSpan(52, 4)) / 1000.0;
@@ -28,6 +29,7 @@ public sealed record ChannelInfo(byte Index, string Name, byte[] Secret)
 
     public static ChannelInfo Parse(byte[] p)
     {
+        if (p.Length < 50) throw new InvalidDataException($"CHANNEL_INFO frame too short ({p.Length} bytes)");
         byte idx = p[1];
         // The firmware returns a null-terminated name in a 32-byte field whose
         // tail is uninitialised; trim at the first null.
@@ -47,6 +49,7 @@ public sealed record ChannelMessage(
 
     public static ChannelMessage ParseV3(byte[] p)
     {
+        if (p.Length < 11) throw new InvalidDataException($"CHANNEL_MSG_RECV_V3 frame too short ({p.Length} bytes)");
         sbyte snr = unchecked((sbyte)p[1]);
         byte ch = p[4], pathLen = p[5], txtType = p[6];
         uint ts = BinaryPrimitives.ReadUInt32LittleEndian(p.AsSpan(7, 4));
@@ -56,6 +59,7 @@ public sealed record ChannelMessage(
 
     public static ChannelMessage ParseLegacy(byte[] p)
     {
+        if (p.Length < 8) throw new InvalidDataException($"CHANNEL_MSG_RECV frame too short ({p.Length} bytes)");
         byte ch = p[1], pathLen = p[2], txtType = p[3];
         uint ts = BinaryPrimitives.ReadUInt32LittleEndian(p.AsSpan(4, 4));
         string text = p.Length > 8 ? Encoding.UTF8.GetString(p, 8, p.Length - 8) : "";
@@ -71,6 +75,7 @@ public sealed record ChannelData(sbyte Snr, byte ChannelIndex, byte PathLen, ush
 
     public static ChannelData ParseRecv(byte[] p)
     {
+        if (p.Length < 9) throw new InvalidDataException($"CHANNEL_DATA_RECV frame too short ({p.Length} bytes)");
         sbyte snr = unchecked((sbyte)p[1]);
         byte ch = p[4], pathLen = p[5];
         ushort dataType = BinaryPrimitives.ReadUInt16LittleEndian(p.AsSpan(6, 2));

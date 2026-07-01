@@ -101,6 +101,8 @@ public static class DbStartup
         ("MeshCoreNodeName", "DAPPS"),
         ("MeshCoreAirtimeBudgetSecondsPerHour", "30"),
         ("MeshCoreCompress", "true"),
+        ("MeshCoreCongestionBackoffFraction", "0.5"),
+        ("MeshCoreLbtGuardMs", "400"),
         ("AuthRequired", "false"),
         ("UpdateCheckEnabled", "true"),
         ("RoutingAlgorithm", "passive-flood"),

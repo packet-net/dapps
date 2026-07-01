@@ -28,6 +28,8 @@ public sealed class MeshCoreCompanionBackhaul : IDappsBackhaul
     private readonly RegionPreset _region;
     private readonly ILogger _log;
     private readonly MeshCoreChannelTransport _tx = new();
+    private readonly ChannelMonitor _monitor;
+    private readonly double _congestionThreshold;
     private readonly Dictionary<string, DateTime> _recent = new();
     private readonly object _recentLock = new();
 
@@ -40,7 +42,15 @@ public sealed class MeshCoreCompanionBackhaul : IDappsBackhaul
         _log = log;
         _txGate = txGate ?? AlwaysOpenTxGate.Instance;
         _region = opts.ResolveRegion();
+        _monitor = new ChannelMonitor(_region);
+        link.PacketHeard += (len, _) => _monitor.RecordHeard(len, DateTime.UtcNow);
+        // Per-node jitter (±15%) on the congestion threshold so two contending
+        // nodes don't back off in lockstep — fairer channel sharing (#157).
+        _congestionThreshold = Math.Clamp(opts.CongestionBackoffFraction * (0.85 + 0.30 * Random.Shared.NextDouble()), 0, 1);
     }
+
+    /// <summary>Trailing-window channel occupancy (0..1), for observability.</summary>
+    public double Occupancy => _monitor.OccupancyFraction(DateTime.UtcNow);
 
     /// <summary>Handle routes that carry a MeshCore channel hint (positive
     /// bearer selection — no reliance on AGW's "no UDP endpoint" catch-all).</summary>
@@ -57,6 +67,11 @@ public sealed class MeshCoreCompanionBackhaul : IDappsBackhaul
         if (AlreadyBroadcast(message.Id))
             return BackhaulSendResult.Ok();
 
+        // Adaptive congestion backoff (#157): don't pile onto a busy shared channel.
+        var occ = _monitor.OccupancyFraction(DateTime.UtcNow);
+        if (_opts.CongestionBackoffFraction > 0 && occ >= _congestionThreshold)
+            return BackhaulSendResult.Fail($"channel congested {occ:P0} (>= {_congestionThreshold:P0}); backing off");
+
         var stamped = message with { LinkSourceCallsign = localCallsign };
         var mode = _opts.Compress ? DappsCompression.Mode.ZstdDict : DappsCompression.Mode.None;
         var frames = _tx.ToFrames(stamped, mode);
@@ -67,18 +82,34 @@ public sealed class MeshCoreCompanionBackhaul : IDappsBackhaul
             if (!_budget.TryReserve(airMs, DateTime.UtcNow, out var reason))
                 return BackhaulSendResult.Fail(reason);
 
+            await ListenBeforeTalkAsync(ct);   // avoid colliding with an in-progress flood
+
             bool sent;
             try { sent = await _link.SendDataAsync(frames[i], ct); }
-            catch (Exception ex) { return BackhaulSendResult.Fail($"meshcore send failed: {ex.Message}"); }
-            if (!sent) return BackhaulSendResult.Fail($"meshcore link not ready ({_link.State})");
+            catch (Exception ex) { _budget.Refund(); return BackhaulSendResult.Fail($"meshcore send failed: {ex.Message}"); }
+            if (!sent) { _budget.Refund(); return BackhaulSendResult.Fail($"meshcore link not ready ({_link.State})"); }
 
             if (i < frames.Count - 1) { try { await Task.Delay(FramePace, ct); } catch { } }
         }
 
         MarkBroadcast(message.Id);
-        _log.LogInformation("MeshCore: broadcast {0} ({1} frame(s)) dst={2} from={3} duty={4:0.00}%",
-            message.Id, frames.Count, message.Destination, localCallsign, _budget.DutyPercent(DateTime.UtcNow));
+        _log.LogInformation("MeshCore: broadcast {0} ({1} frame(s)) dst={2} from={3} duty={4:0.00}% occ={5:0.0}%",
+            message.Id, frames.Count, message.Destination, localCallsign, _budget.DutyPercent(DateTime.UtcNow), occ * 100);
         return BackhaulSendResult.Ok();
+    }
+
+    /// <summary>Listen-before-talk: if a packet was overheard within the guard,
+    /// wait out the remainder plus a little jitter before transmitting.</summary>
+    private async Task ListenBeforeTalkAsync(CancellationToken ct)
+    {
+        if (_opts.LbtGuardMs <= 0) return;
+        var since = _monitor.SinceLastHeard(DateTime.UtcNow);
+        var guard = TimeSpan.FromMilliseconds(_opts.LbtGuardMs);
+        if (since < guard)
+        {
+            var wait = guard - since + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 150));
+            try { await Task.Delay(wait, ct); } catch { }
+        }
     }
 
     private bool AlreadyBroadcast(string id)

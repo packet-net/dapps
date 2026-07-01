@@ -36,6 +36,7 @@ public sealed class MeshCoreLink : IAsyncDisposable
     public int ResetCount { get; private set; }
     public SelfInfo? Self { get; private set; }
     public event Action? MessageWaiting;
+    public event Action<int, sbyte>? PacketHeard;
 
     public MeshCoreLink(MeshCoreBearerOptions opts, ILogger log)
     {
@@ -56,13 +57,26 @@ public sealed class MeshCoreLink : IAsyncDisposable
     {
         var client = new MeshCoreClient(_opts.SerialPort);
         client.MessageWaiting += () => MessageWaiting?.Invoke();
-        client.Open();
-        await client.AppStartAsync(_opts.AppName, ct);
-        await client.SetRadioParamsAsync(_region.FreqMhz, _region.BwKhz, _region.Sf, _region.Cr, ct);
-        await client.SetTxPowerAsync(Math.Min(_opts.TxPowerDbm, _region.MaxPowerDbm), ct);
-        await client.SetNameAsync(_opts.NodeName, ct);
-        await client.SetChannelAsync(_opts.ChannelIndex, _opts.ChannelName, _psk, ct);
-        var self = await client.AppStartAsync(_opts.AppName, ct);
+        client.PacketHeard += (len, snr) => PacketHeard?.Invoke(len, snr);
+
+        SelfInfo self;
+        try
+        {
+            client.Open();
+            await client.AppStartAsync(_opts.AppName, ct);
+            await client.SetRadioParamsAsync(_region.FreqMhz, _region.BwKhz, _region.Sf, _region.Cr, ct);
+            await client.SetTxPowerAsync(Math.Min(_opts.TxPowerDbm, _region.MaxPowerDbm), ct);
+            await client.SetNameAsync(_opts.NodeName, ct);
+            await client.SetChannelAsync(_opts.ChannelIndex, _opts.ChannelName, _psk, ct);
+            self = await client.AppStartAsync(_opts.AppName, ct);
+        }
+        catch
+        {
+            // Configuration failed after the port was opened / read loop started:
+            // dispose the local client so we don't leak the port + read-loop task.
+            try { await client.DisposeAsync(); } catch { }
+            throw;
+        }
 
         _client = client;
         Self = self;
@@ -150,8 +164,17 @@ public sealed class MeshCoreLink : IAsyncDisposable
     {
         var client = _client;
         if (client is null || State != LinkState.Healthy) return false;
-        await client.SendChannelDataAsync(_opts.ChannelIndex, payload, MeshCoreClient.DATA_TYPE_DEV, ct);
-        return true;
+        try
+        {
+            await client.SendChannelDataAsync(_opts.ChannelIndex, payload, MeshCoreClient.DATA_TYPE_DEV, ct);
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            // A concurrent recovery disposed the client between our State check and
+            // the write; treat as a soft failure so the caller retries.
+            return false;
+        }
     }
 
     /// <summary>Drain queued inbound messages, or null if the link is unavailable.</summary>

@@ -98,6 +98,8 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
         NodeName = s.MeshCoreNodeName,
         AirtimeBudgetSecPerHour = s.MeshCoreAirtimeBudgetSecondsPerHour,
         Compress = s.MeshCoreCompress,
+        CongestionBackoffFraction = s.MeshCoreCongestionBackoffFraction,
+        LbtGuardMs = s.MeshCoreLbtGuardMs,
         AppName = "dapps",
     };
 

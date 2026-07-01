@@ -12,7 +12,7 @@ public sealed class TxBudget
     public const double DefaultSecondsPerHour = 30;   // ≈0.83% duty
 
     private readonly double _budgetMs;
-    private readonly Queue<(DateTime when, double ms)> _window = new();
+    private readonly List<(DateTime when, double ms)> _window = new();
     private readonly object _lock = new();
     private double _sumMs;
 
@@ -42,18 +42,37 @@ public sealed class TxBudget
                 reason = $"airtime budget exceeded: used {_sumMs / 1000:0.0}s + {airtimeMs / 1000:0.00}s > {_budgetMs / 1000:0.0}s/hr";
                 return false;
             }
-            _window.Enqueue((now, airtimeMs));
+            _window.Add((now, airtimeMs));
             _sumMs += airtimeMs;
             reason = "";
             return true;
         }
     }
 
+    /// <summary>Return the most recent reservation to the budget — called when a
+    /// send that reserved airtime did not actually go on air (link not ready /
+    /// exception), so a failed attempt doesn't consume the duty budget.</summary>
+    public void Refund()
+    {
+        lock (_lock)
+        {
+            if (_window.Count > 0)
+            {
+                _sumMs -= _window[^1].ms;
+                _window.RemoveAt(_window.Count - 1);
+            }
+            if (_window.Count == 0 || _sumMs < 0) _sumMs = 0;
+        }
+    }
+
     private void Prune(DateTime now)
     {
         var cutoff = now.AddHours(-1);
-        while (_window.Count > 0 && _window.Peek().when < cutoff)
-            _sumMs -= _window.Dequeue().ms;
-        if (_sumMs < 0) _sumMs = 0;
+        // Entries are appended in time order, so the stale ones are a prefix.
+        var drop = 0;
+        while (drop < _window.Count && _window[drop].when < cutoff)
+            _sumMs -= _window[drop++].ms;
+        if (drop > 0) _window.RemoveRange(0, drop);
+        if (_window.Count == 0 || _sumMs < 0) _sumMs = 0;
     }
 }

@@ -18,5 +18,6 @@ public static class RouteBuilder
             Callsign: neighbour.Callsign,
             BearerPort: neighbour.BearerPort ?? defaultBearerPort,
             UdpEndpoint: neighbour.UdpEndpoint,
-            ConnectScript: ConnectScript.FromJson(neighbour.ConnectScriptJson));
+            ConnectScript: ConnectScript.FromJson(neighbour.ConnectScriptJson),
+            MeshCoreChannel: neighbour.MeshCoreChannel);
 }
