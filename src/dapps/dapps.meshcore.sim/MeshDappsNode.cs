@@ -21,6 +21,7 @@ public sealed class MeshDappsNode
     private readonly MeshCoreReliability? _reliability;
     private readonly RecordingInbox _inbox;
     private readonly string _channel;
+    private readonly TimeSpan _resendPoll;
     private readonly ConcurrentDictionary<string, int> _discovered = new(StringComparer.OrdinalIgnoreCase);
 
     public string Callsign { get; }
@@ -33,10 +34,17 @@ public sealed class MeshDappsNode
     /// <summary>Peers this node learned purely by hearing their traffic (passive discovery).</summary>
     public IReadOnlyCollection<string> DiscoveredPeers => _discovered.Keys.ToList();
 
-    public MeshDappsNode(MeshFabric fabric, string callsign, string channel = "dapps-sim", bool reliable = true, string scope = "")
+    /// <param name="reliabilityOptions">Override the ACK/resend timings. Null uses the
+    /// production defaults (20 s base backoff); an accelerated profile lets a loss-recovery
+    /// scenario run in CI-time instead of minutes.</param>
+    /// <param name="resendPoll">How often the resend loop checks for due retransmits.
+    /// Should be no slower than the backoff, or it becomes the bottleneck.</param>
+    public MeshDappsNode(MeshFabric fabric, string callsign, string channel = "dapps-sim", bool reliable = true, string scope = "",
+        MeshCoreReliability.Options? reliabilityOptions = null, TimeSpan? resendPoll = null)
     {
         Callsign = callsign;
         _channel = channel;
+        _resendPoll = resendPoll ?? TimeSpan.FromSeconds(2);
         _link = fabric.AddLeaf(callsign, scope);
         var opts = new MeshCoreBearerOptions
         {
@@ -44,8 +52,12 @@ public sealed class MeshDappsNode
             LocalCallsign = callsign, NodeName = callsign, ReliableDelivery = reliable,
             LbtGuardMs = 0,          // no radio timing to wait on in the sim
             AirtimeBudgetSecPerHour = 3600,   // don't let the governor gate the scenario
+            // Propagation is instantaneous here, so the occupancy estimate (from overheard
+            // packet airtime over wall-clock) is an artifact - disable congestion backoff
+            // so it can't confound reliability-recovery scenarios by refusing resends.
+            CongestionBackoffFraction = 0,
         };
-        _reliability = reliable ? new MeshCoreReliability() : null;
+        _reliability = reliable ? new MeshCoreReliability(reliabilityOptions) : null;
         _inbox = new RecordingInbox(callsign);
         _backhaul = new MeshCoreCompanionBackhaul(_link, opts, new TxBudget(opts.AirtimeBudgetSecPerHour),
             NullLogger.Instance, reliability: _reliability);
@@ -78,7 +90,7 @@ public sealed class MeshDappsNode
     {
         while (!ct.IsCancellationRequested)
         {
-            try { await Task.Delay(TimeSpan.FromSeconds(2), ct); } catch { break; }
+            try { await Task.Delay(_resendPoll, ct); } catch { break; }
             var now = DateTime.UtcNow;
             _reliability!.DropExpired(now);
             foreach (var (m, local) in _reliability.DueResends(now))

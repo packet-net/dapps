@@ -59,6 +59,9 @@ public sealed class MeshFabric
     /// new packet on), and total re-floods - coarse observability for scenarios.</summary>
     public long Deliveries { get; private set; }
     public long Refloods { get; private set; }
+    /// <summary>Transmissions dropped by per-edge loss - lets a test assert loss was
+    /// genuinely exercised (not a no-op) rather than rely on a probabilistic control.</summary>
+    public long Dropped { get; private set; }
 
     /// <param name="seed">Seed for the loss RNG so scenarios are reproducible.</param>
     /// <param name="snrQuarterDb">Reported SNR in quarter-dB (default 40 = 10 dB).</param>
@@ -141,7 +144,7 @@ public sealed class MeshFabric
     {
         foreach (var (toId, loss) in tx.Neighbours)
         {
-            if (loss > 0 && _rng.NextDouble() < loss) continue;   // lost on this edge
+            if (loss > 0 && _rng.NextDouble() < loss) { Dropped++; continue; }   // lost on this edge
             var nbr = _nodes[toId];
 
             // Overhearing is a PHY event: it happens whenever RF arrives, even for a

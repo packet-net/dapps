@@ -49,15 +49,23 @@ cts.Cancel();
 ```
 
 See `MeshFabricTests` (fast, deterministic flood/dedup/scope + transport-over-multi-hop)
-and `MeshFabricScenarioTests` (the full bearer stack over a relay backbone) in
-`dapps.core.tests`.
+and `MeshFabricScenarioTests` (the full bearer stack over a relay backbone, including a
+**lossy multi-hop reliability-recovery** case) in `dapps.core.tests`.
+
+### Loss + reliability
+
+Edges take a per-transmission drop probability, so a scenario can run at 30–40 %/hop
+over a multi-hop backbone and assert the reliability layer (ACK + resend) recovers **every**
+message while idempotent inbound still delivers each **exactly once** (a lost ACK makes the
+sender resend, so the receiver must dedup the duplicate). `MeshDappsNode` takes an
+accelerated `MeshCoreReliability.Options` so this runs in CI-time rather than on the 20 s
+production backoff, and it disables congestion-backoff (the occupancy estimate is an
+artifact under instant propagation — otherwise resend traffic would throttle itself).
 
 ## Scope / limits
 
 - Models the **channel**, not the serial link's liveness — the simulated link is always
   healthy (watchdog/recovery is out of scope).
-- No-loss runs are fully deterministic and fast; **loss-recovery** exercises reliability
-  resends on a multi-second cadence, so drive those from a longer harness run rather than
-  a CI unit test.
 - Propagation is instantaneous (no per-hop latency model yet) — correctness (delivery,
-  dedup, containment) is faithful; fine-grained timing/contention is not.
+  dedup, containment, loss-recovery) is faithful; fine-grained timing/contention is not,
+  which is also why occupancy-driven congestion backoff is disabled in the sim node.
