@@ -20,7 +20,7 @@ Terms used throughout this manual.
 
 **backhaul** - The bearer-side communication between two DAPPS nodes (as distinct from the app interface, which is local). AGW and RHPv2 today; MeshCore in flight.
 
-**bearer** - The underlying medium DAPPS hands off to: AGW (via BPQ or another AGW host), RHPv2 (via XRouter or another RHPv2 host), MeshCore Companion / KISS (planned), UDP datagram (test stand-in). The bearer-agnostic seam means apps and routing don't care which.
+**bearer** - The underlying medium DAPPS hands off to: AGW (via BPQ or another AGW host), RHPv2 (via XRouter or another RHPv2 host), MeshCore Companion (USB, shipped; KISS planned), UDP datagram (test stand-in). The bearer-agnostic seam means apps and routing don't care which.
 
 **beacon** - A small periodic transmission on a discovery channel advertising "I am here, I am callsign X, I'm reachable on this bearer at this cost." Stateless, no session.
 
@@ -62,7 +62,7 @@ Terms used throughout this manual.
 
 **MCP** - Model Context Protocol. The endpoint at `/mcp` exposes operator-facing tools to AI assistants.
 
-**MeshCore** - A modern small-mesh radio firmware (LoRa-shaped today). Planned DAPPS bearer; design supports it but no ship yet.
+**MeshCore** - A modern small-mesh radio firmware (LoRa-shaped today). Shipped DAPPS bearer via the Companion-over-USB path (binary channel-data, compression, good-citizen controls, reliability, discovery, deployment models A/B/C); off by default. The KISS-driven flavour is still planned.
 
 **MQTT** - A pub-sub messaging protocol; DAPPS embeds an MQTT broker for the local app interface.
 

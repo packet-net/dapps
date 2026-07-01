@@ -106,7 +106,7 @@ The session-protocol version is the suffix on the prompt - `DAPPSv1>` today; `DA
 - **Forward-compatible additions stay on the current version.** New optional `ihave` headers and new commands ride the existing prompt; receivers ignore unknown headers and respond `?` to unrecognised commands.
 - **Bump the prompt on any incompatible wire change.** A clean version cut beats sticking a patch on `v1` and hoping every implementation interprets it the same way.
 - **Newer implementations should speak older versions** for one-way compatibility.
-- **The UDP / future MeshCore datagram bearer codec versions independently** - different format, different schedule.
+- **The UDP / MeshCore datagram bearer codec versions independently** - different format, different schedule. (MeshCore also versions its shared compression dictionary on the wire, so a dictionary change can't silently corrupt a mixed-version fleet.)
 
 **Pre-shipping caveat**: while DAPPS has no non-author operators on the air, breaking changes to either format are still fair game without a version bump. The cost of compatibility tape that nobody benefits from is real. The policy fully kicks in when the first independent operator picks DAPPS up.
 

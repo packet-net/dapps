@@ -27,6 +27,6 @@ DAPPS does **not** require BPQ. The default setup guide is BPQ because that's wh
 
 - **Protocol**: DAPPSv1 specified end-to-end. App authors want [the protocol reference](app-developers/reference.md); second-source implementers want [Implement DAPPS](implement.md).
 - **Implementation**: in active development. The [versioning policy](configure.md#versioning) describes where breaking changes are still fair game versus where compatibility is preserved.
-- **Bearers**: AGW (BPQ today, any AGW host in principle) and RHPv2 (XRouter today; mainline BPQ when it ships RHPv2) are production-quality. [MeshCore](connect/meshcore.md) Companion + KISS are planned, not yet shipped.
+- **Bearers**: AGW (BPQ today, any AGW host in principle) and RHPv2 (XRouter today; mainline BPQ when it ships RHPv2) are production-quality. [MeshCore](connect/meshcore.md) Companion-over-USB has shipped (off by default; binary bearer with compression, good-citizen controls, reliability, discovery, and A/B/C deployment models); the MeshCore KISS flavour is still planned.
 
 If you've never heard of DAPPS before, [start here](getting-started.md).

@@ -30,12 +30,19 @@ evidence this is built on.
 - **Broadcast semantics** — a private channel is one shared medium, so a message is broadcast once
   and the addressee self-selects (the inbox `IsLocal` gate). Identical message ids offered for
   multiple neighbours are coalesced within a window so we don't re-broadcast.
+- **Passive discovery** (#27) — a node auto-records peers it hears over MeshCore as routable
+  `DbDiscoveredPeer`s (throttled, self-skipping), so outbound to them works with no manual neighbour.
 - **Watchdog + recovery** (`MeshCoreLink`, #160) — opens and configures the radio, then detects a
   hung/mute companion (idle liveness probe) and recovers it by hard-resetting the ESP32 over
-  CP2102 DTR/RTS, re-opening, and re-applying the radio/channel config. Bounded attempts + backoff;
-  link state surfaced (`Healthy`/`Resetting`/`Failed`).
-- **Device control** — region presets (`Regions`: `uk-narrow`, `uk-test`, `eu-legacy`), TX power
-  (region-capped), channel name + PSK, node name.
+  CP2102 DTR/RTS, re-opening, and re-applying the radio/channel config (including the flood-scope,
+  which is RAM-only). Bounded attempts + backoff; link state surfaced (`Healthy`/`Resetting`/`Failed`).
+- **Device control** — region presets (`Regions`: `uk-narrow`, `uk-test`, `eu-legacy`, or `custom`),
+  TX power (region-capped), channel name + PSK, node name.
+- **Deployment models A/B/C** (#24) — first-class preset + flood-scope config to trade off public-
+  repeater carriage vs containment vs physical isolation. See **Containment** below.
+
+For scale-testing this bearer over multi-hop topologies without radios, see the in-process mesh in
+[`../dapps.meshcore.sim`](../dapps.meshcore.sim/README.md).
 
 ## Enabling it in a dapps node
 
