@@ -1,60 +1,110 @@
 # Connect via MeshCore
 
-**Status: planned.** MeshCore as a backhaul bearer for DAPPS is on the roadmap but not yet implemented in shipping code. This page exists so you can see the shape of the integration and plan around it.
+**Status: shipped (Companion-over-USB).** MeshCore is a first-class DAPPS backhaul bearer:
+a node can carry `BackhaulMessage`s over a MeshCore radio's private channel alongside (or
+instead of) AGW/AX.25. It's **off by default** — set `MeshCoreEnabled=true` to turn it on.
+The KISS-driven flavour (below) is still future work.
 
 ## Why MeshCore
 
-MeshCore is a small, modern mesh radio firmware (LoRa-shaped today) with a built-in routing layer that's a much better fit for slow, lossy, mostly-unreliable RF than AX.25. As a bearer for DAPPS it gives:
+MeshCore is a small, modern mesh radio firmware (LoRa-shaped today) with a built-in routing
+layer that's a much better fit for slow, lossy, mostly-unreliable RF than AX.25. As a bearer
+for DAPPS it gives:
 
-- A datagram interface (no AX.25 connection setup, no T1/T2/T3 timer dance) - better for short, frequent messages.
-- A working hop-by-hop mesh underneath, so DAPPS doesn't have to solve "how do I reach a node three hops away" the way it does for the broadcast bearer of AX.25.
-- A real low-cost long-haul story for operators without HF - LoRa NVIS-style propagation is well-documented at this point.
+- A datagram interface (no AX.25 connection setup, no T1/T2/T3 timer dance) — better for
+  short, frequent messages.
+- A working hop-by-hop mesh underneath, so DAPPS doesn't have to solve "how do I reach a node
+  three hops away" itself.
+- A real low-cost long-haul story for operators without HF.
 
-The DAPPS architecture has already been refactored to support a non-stream bearer - the existing UDP-datagram backhaul (`UdpDatagramBackhaul`) is the test stand-in proving the bearer-agnostic layer works. MeshCore lands in the same shape: a small adapter that emits and ingests `BackhaulMessage` units over the radio.
+## What's implemented (H1 — Companion over USB)
 
-## What integration will look like
+DAPPS talks to a Heltec-class radio running MeshCore **Companion (USB)** firmware (tested on
+v1.16.0) over the serial Companion protocol, using the **binary channel-data** path. The bearer
+lives in `dapps.meshcore` and is wired in behind the standard bearer seam; see
+[`src/dapps/dapps.meshcore/README.md`](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.meshcore/README.md)
+for the deep detail. Feature set:
 
-Two flavours, expected as separate packages:
+- **Binary transport + heavy compression** — messages are encoded with the real DAPPS codec,
+  zstd-compressed against a **versioned shared dictionary** (~3× goodput, usually one LoRa
+  packet/message), fragmented to the ~165 B payload, and sent as channel-data floods.
+- **Good-citizen controls** — a hard trailing-hour **airtime governor** plus **adaptive**
+  listen-before-talk and congestion backoff (from overheard-packet occupancy), so DAPPS rides a
+  shared preset politely.
+- **End-to-end reliability** — the channel is a fire-and-forget flood, so DAPPS adds its own
+  datagram-style ACK + resend with **idempotent** (dedup-by-id) delivery. Not a session protocol.
+- **Passive discovery** — a node auto-learns peers it hears over MeshCore and routes to them with
+  no manual neighbour config.
+- **Watchdog + recovery** — detects a hung radio and hard-resets it over CP2102 DTR/RTS, then
+  re-applies config.
+- **Device control** — region presets, TX power (region-capped), channel name + PSK, node name,
+  all from the dashboard or config; live status + a Reset-radio button.
 
-### MeshCore Companion
+## Enabling it
 
-Talks to MeshCore via the **Companion API** - a USB / BLE / Wi-Fi link to a Companion-mode radio, where the radio handles the mesh and exposes a friendly API for an attached host. Best for operators who want a self-contained DAPPS-on-MeshCore stack without dealing with KISS at all.
-
-Configuration sketch (subject to change before release):
+Configure via the dashboard **Settings** page, the `systemoptions` table, or `DAPPS_MESH_CORE_*`
+environment variables (note the underscore in `MESH_CORE`). The essentials:
 
 ```
-DAPPS_MESHCORE_COMPANION_ENABLED=true
-DAPPS_MESHCORE_COMPANION_TRANSPORT=usb       # or ble, wifi
-DAPPS_MESHCORE_COMPANION_DEVICE=/dev/ttyUSB0  # for usb
+DAPPS_MESH_CORE_ENABLED=true
+DAPPS_MESH_CORE_PORT=/dev/ttyUSB0
+DAPPS_MESH_CORE_REGION=uk-test          # preset: uk-narrow | uk-test | eu-legacy | custom
+DAPPS_MESH_CORE_CHANNEL_NAME=dapps
+DAPPS_MESH_CORE_CHANNEL_PSK=<32-char hex, or a passphrase>
+DAPPS_MESH_CORE_TX_POWER_DBM=8          # capped by the region's regulatory max
 ```
 
-DAPPS would auto-register a MeshCore "address" on the radio for inbound dispatch (analogous to AGW's callsign registration today) and use the Companion API for both directions.
+Other options (all optional, sensible defaults): `NODE_NAME`, `CHANNEL_INDEX`,
+`AIRTIME_BUDGET_SECONDS_PER_HOUR`, `COMPRESS`, `CONGESTION_BACKOFF_FRACTION`, `LBT_GUARD_MS`,
+`RELIABLE_DELIVERY`, plus the deployment-model knobs below. The full table is in the
+[library README](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.meshcore/README.md).
+Runtime status/control: `GET /MeshCore/status`, `POST /MeshCore/reset`.
 
-### MeshCore KISS
+## Deployment models — privacy vs containment
 
-For operators who already have a radio in **KISS-TNC mode** and want DAPPS to drive it directly. This is the closer analogue of the BPQ AGW path - DAPPS opens a TCP/serial connection to the KISS endpoint and emits MeshCore frames itself, including doing its own retries.
+A MeshCore private channel gives **privacy** (PSK) but **not containment**: channel messages
+flood *unscoped* by default and any same-preset Repeater relays them network-wide *without the
+PSK*. Pick a model per node (details + firmware caveats in the library README's "Containment"):
 
-```
-DAPPS_MESHCORE_KISS_ENABLED=true
-DAPPS_MESHCORE_KISS_HOST=127.0.0.1
-DAPPS_MESHCORE_KISS_PORT=8001
-```
+| Model | Config | What you get |
+|---|---|---|
+| **A** unscoped public preset | `REGION=uk-narrow`, no scope | free public-repeater carriage everywhere — relies on the good-citizen controls; light traffic only |
+| **B** scoped public preset | `REGION=uk-narrow` + `FLOOD_SCOPE_KEY=<name>` | your floods are dropped by repeaters that don't share the scope; needs your own scoped repeaters to carry between DAPPS nodes |
+| **C** dedicated preset | `REGION=custom` + `CUSTOM_PRESET=freq=868.4;bw=62.5;sf=8;cr=8;pwr=14` | total physical isolation on your own frequency/SF — least config risk |
 
 ## What stays the same
 
-- The DAPPSv1 application layer is unchanged. An app subscribing to `dapps/in/<app>` doesn't know or care whether the underlying bearer is AGW, MeshCore Companion, or MeshCore KISS.
-- The neighbour table holds MeshCore peers alongside AGW peers - same row shape, just a different bearer hint.
-- The discovery / routing layer treats MeshCore links as another link-class with cost hints; the routing algorithm picks per destination.
-- The dashboard, REST, MQTT, MCP - unchanged.
+- The DAPPSv1 application layer is unchanged — an app doesn't know or care whether the bearer is
+  AGW, UDP, or MeshCore.
+- Discovered/neighbour peers hold MeshCore reachability alongside other bearers (a
+  `MeshCoreChannel` hint on the route); the routing resolver picks per destination by cost.
+- Dashboard, REST, MQTT, MCP — unchanged.
 
 ## Routing implications
 
-MeshCore doing its own mesh routing under DAPPS is interesting. It means DAPPS's hop-count model and MeshCore's hop-count model are stacked: a DAPPS message that's "one hop" from DAPPS's perspective might traverse three MeshCore hops underneath. DAPPS uses cost hints rather than raw hop counts, so this works out, but it's worth understanding when you're tuning a multi-bearer setup.
+MeshCore does its own mesh routing under DAPPS, so the two hop-count models stack: a message
+that's "one hop" to DAPPS may traverse several MeshCore hops underneath. DAPPS routes by **cost
+hints** rather than raw hop counts (MeshCore is a mid-cost RF class), so this works out; it's
+worth understanding when tuning a multi-bearer setup. Background:
+[docs/meshcore-backhaul-routing.md](https://github.com/packet-net/dapps/blob/master/docs/meshcore-backhaul-routing.md).
 
-A separate design note covering the MeshCore-as-a-bearer trade-offs is in [docs/meshcore-backhaul-routing.md in the repo](https://github.com/packet-net/dapps/blob/master/docs/meshcore-backhaul-routing.md). Most of it is still relevant; some of the concrete API sketches will be revised as the integration lands.
+## How it's been validated
 
-## When?
+- **On air**, two Heltec V3s: bidirectional exchange, watchdog reset+recovery, the airtime
+  governor and adaptive backoff, reliability recovering ~40 % induced loss with no duplicate
+  delivery, passive discovery, and both the custom preset and the flood-scope key being accepted
+  by real firmware.
+- **In simulation** (`dapps.meshcore.sim`), the real bearer runs over an in-process multi-hop mesh
+  the two bench radios can't reach: multi-hop flood + dedup-across-paths, flood-scope containment,
+  and reliability recovering every message over four hops at 30–40 % per-edge loss (delivered
+  exactly once).
+- **Not yet validated on hardware:** a repeater actually *dropping* an out-of-scope flood — that
+  needs a physical Repeater node + attenuators, which is the next hardware step.
 
-Currently blocked on hardware availability for testing - we want a real two-radio setup in the loop before declaring it shippable rather than relying on emulation.
+## Future
 
-If you've got a MeshCore radio and want to be a tester, [open an issue](https://github.com/packet-net/dapps/issues).
+- **MeshCore KISS (H2)** — for operators with a radio already in KISS-TNC mode, DAPPS driving
+  MeshCore frames itself. Planned, not yet implemented.
+- **Firmware flash from DAPPS** — managing/upgrading radio firmware from the node.
+
+If you've got a MeshCore radio and want to test, [open an issue](https://github.com/packet-net/dapps/issues).
