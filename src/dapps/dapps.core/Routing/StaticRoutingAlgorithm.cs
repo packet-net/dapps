@@ -64,7 +64,8 @@ public sealed class StaticRoutingAlgorithm(ILogger<StaticRoutingAlgorithm> logge
             return new RouteDecision.NextHop(new BackhaulRoute(
                 freshPeer.Callsign,
                 BearerPort: freshPeer.BearerPort ?? ctx.DefaultBearerPort,
-                UdpEndpoint: freshPeer.UdpEndpoint));
+                UdpEndpoint: freshPeer.UdpEndpoint,
+                MeshCoreChannel: freshPeer.MeshCoreChannel));
         }
 
         // 3. Hand-maintained route hint. The fallback for "I know peer

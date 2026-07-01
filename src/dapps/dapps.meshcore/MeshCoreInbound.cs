@@ -27,6 +27,10 @@ public sealed class MeshCoreInbound
     private readonly Func<BackhaulMessage, CancellationToken, Task<BackhaulSendResult>>? _sendAck;
     private readonly string _localCallsign;
     private readonly Func<BackhaulMessage, bool>? _dropForTest;
+    // Passive discovery (#27): fired with the source callsign of every data message
+    // we hear (addressed to us or not), so the host can record the peer as reachable
+    // over MeshCore without a manual neighbour. Null disables discovery.
+    private readonly Func<string, CancellationToken, Task>? _onPeerHeard;
     // Idempotency (#26): ids already delivered to the app, so a resend (after a lost
     // ACK) isn't delivered twice. Single-threaded (drained on one loop); window > the
     // reliability lifetime so we remember long enough to cover resends.
@@ -41,7 +45,8 @@ public sealed class MeshCoreInbound
         MeshCoreReliability? reliability = null,
         Func<BackhaulMessage, CancellationToken, Task<BackhaulSendResult>>? sendAck = null,
         string? localCallsign = null,
-        Func<BackhaulMessage, bool>? dropForTest = null)
+        Func<BackhaulMessage, bool>? dropForTest = null,
+        Func<string, CancellationToken, Task>? onPeerHeard = null)
     {
         _link = link;
         _inbox = inbox;
@@ -50,6 +55,7 @@ public sealed class MeshCoreInbound
         _sendAck = sendAck;
         _localCallsign = localCallsign ?? "";
         _dropForTest = dropForTest;
+        _onPeerHeard = onPeerHeard;
         _link.MessageWaiting += () => { try { _wake.Release(); } catch { } };
     }
 
@@ -101,6 +107,17 @@ public sealed class MeshCoreInbound
                     var source = !string.IsNullOrEmpty(msg.LinkSourceCallsign)
                         ? msg.LinkSourceCallsign!
                         : UnknownSourceCallsign;
+
+                    // Passive discovery (#27): we heard this peer one hop away over
+                    // MeshCore. Record it (throttled by the host) so outbound to it can
+                    // route without a manual neighbour. Anonymous senders (sentinel) and
+                    // recorder faults must not break the drain loop. Fires for duplicates
+                    // too, so a peer we keep hearing stays fresh.
+                    if (_onPeerHeard is not null && source != UnknownSourceCallsign)
+                    {
+                        try { await _onPeerHeard(source, ct); }
+                        catch (Exception ex) { _log.LogDebug("MeshCore: discovery record failed for {0}: {1}", source, ex.Message); }
+                    }
 
                     // Idempotency (#26): a resend after a lost ACK reassembles into the
                     // same id — deliver to the app only once, but still ACK every copy

@@ -45,10 +45,20 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
 
     /// <summary>
     /// AGW handles any route that does not specify a higher-priority
-    /// bearer like UDP. Effectively: this is the fallback bearer when
-    /// only callsign + bearer port are known.
+    /// bearer like UDP or MeshCore. Effectively: this is the fallback bearer
+    /// when only callsign + bearer port are known.
+    ///
+    /// The MeshCore exclusion matters for passive discovery (#27): a peer
+    /// heard only over MeshCore produces a route with a MeshCoreChannel and a
+    /// null UdpEndpoint. If the MeshCore bearer is currently down (disabled,
+    /// serial link failed, or not yet started), it declines the route - and
+    /// without this guard AGW would claim it and attempt a doomed connected-mode
+    /// session (or spurious RF on a gateway node) to a callsign only ever heard
+    /// over LoRa. Excluding MeshCore routes leaves it Unreachable so the message
+    /// waits for MeshCore to return rather than mis-routing over the wrong bearer.
     /// </summary>
-    public bool CanHandle(BackhaulRoute route) => route.UdpEndpoint is null;
+    public bool CanHandle(BackhaulRoute route) =>
+        route.UdpEndpoint is null && route.MeshCoreChannel is null;
 
     public async Task<BackhaulSendResult> SendAsync(
         BackhaulMessage message,
