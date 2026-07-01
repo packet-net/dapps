@@ -43,4 +43,12 @@ public class DbNeighbour
     /// direct connection (the usual case). See <see cref="dapps.client.ConnectScript"/>.
     /// </summary>
     public string? ConnectScriptJson { get; set; }
+
+    /// <summary>
+    /// Optional MeshCore channel name. When set, this neighbour is reachable over
+    /// the MeshCore bearer (#154): the backhaul broadcasts on the configured
+    /// private channel and this neighbour self-selects by destination callsign.
+    /// Null = not a MeshCore neighbour. (sqlite-net adds this column on upgrade.)
+    /// </summary>
+    public string? MeshCoreChannel { get; set; }
 }

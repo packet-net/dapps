@@ -1,3 +1,4 @@
+using System.Globalization;
 using dapps.client;
 using dapps.core.Models;
 using Microsoft.Extensions.Options;
@@ -105,6 +106,18 @@ public sealed class SystemOptionsStore : IOptionsMonitor<SystemOptions>
         await Upsert(connection, existing, nameof(options.TransmissionAuditRetentionDays), options.TransmissionAuditRetentionDays.ToString());
         await Upsert(connection, existing, nameof(options.TransmissionAuditMqttPublish), options.TransmissionAuditMqttPublish.ToString());
         await Upsert(connection, existing, nameof(options.TxEnabled), options.TxEnabled.ToString());
+        await Upsert(connection, existing, nameof(options.MeshCoreEnabled), options.MeshCoreEnabled.ToString());
+        await Upsert(connection, existing, nameof(options.MeshCorePort), options.MeshCorePort);
+        await Upsert(connection, existing, nameof(options.MeshCoreRegion), options.MeshCoreRegion);
+        await Upsert(connection, existing, nameof(options.MeshCoreTxPowerDbm), options.MeshCoreTxPowerDbm.ToString());
+        await Upsert(connection, existing, nameof(options.MeshCoreChannelIndex), options.MeshCoreChannelIndex.ToString());
+        await Upsert(connection, existing, nameof(options.MeshCoreChannelName), options.MeshCoreChannelName);
+        await Upsert(connection, existing, nameof(options.MeshCoreChannelPsk), options.MeshCoreChannelPsk);
+        await Upsert(connection, existing, nameof(options.MeshCoreNodeName), options.MeshCoreNodeName);
+        await Upsert(connection, existing, nameof(options.MeshCoreAirtimeBudgetSecondsPerHour), options.MeshCoreAirtimeBudgetSecondsPerHour.ToString(CultureInfo.InvariantCulture));
+        await Upsert(connection, existing, nameof(options.MeshCoreCompress), options.MeshCoreCompress.ToString());
+        await Upsert(connection, existing, nameof(options.MeshCoreCongestionBackoffFraction), options.MeshCoreCongestionBackoffFraction.ToString(CultureInfo.InvariantCulture));
+        await Upsert(connection, existing, nameof(options.MeshCoreLbtGuardMs), options.MeshCoreLbtGuardMs.ToString());
 
         Reload();
     }
@@ -173,6 +186,18 @@ public sealed class SystemOptionsStore : IOptionsMonitor<SystemOptions>
             TransmissionAuditRetentionDays = TryGetInt(r, nameof(SystemOptions.TransmissionAuditRetentionDays), 90, min: 0),
             TransmissionAuditMqttPublish = TryGetBool(r, nameof(SystemOptions.TransmissionAuditMqttPublish), false),
             TxEnabled = TryGetBool(r, nameof(SystemOptions.TxEnabled), true),
+            MeshCoreEnabled = TryGetBool(r, nameof(SystemOptions.MeshCoreEnabled), false),
+            MeshCorePort = TryGet(r, nameof(SystemOptions.MeshCorePort), "/dev/ttyUSB0"),
+            MeshCoreRegion = TryGet(r, nameof(SystemOptions.MeshCoreRegion), "uk-test"),
+            MeshCoreTxPowerDbm = TryGetInt(r, nameof(SystemOptions.MeshCoreTxPowerDbm), 8, min: 0, max: 30),
+            MeshCoreChannelIndex = TryGetInt(r, nameof(SystemOptions.MeshCoreChannelIndex), 1, min: 0, max: 255),
+            MeshCoreChannelName = TryGet(r, nameof(SystemOptions.MeshCoreChannelName), "dapps"),
+            MeshCoreChannelPsk = TryGet(r, nameof(SystemOptions.MeshCoreChannelPsk), "dapps-default-channel"),
+            MeshCoreNodeName = TryGet(r, nameof(SystemOptions.MeshCoreNodeName), "DAPPS"),
+            MeshCoreAirtimeBudgetSecondsPerHour = TryGetDouble(r, nameof(SystemOptions.MeshCoreAirtimeBudgetSecondsPerHour), 30, min: 0),
+            MeshCoreCompress = TryGetBool(r, nameof(SystemOptions.MeshCoreCompress), true),
+            MeshCoreCongestionBackoffFraction = TryGetDouble(r, nameof(SystemOptions.MeshCoreCongestionBackoffFraction), 0.5, min: 0, max: 1),
+            MeshCoreLbtGuardMs = TryGetInt(r, nameof(SystemOptions.MeshCoreLbtGuardMs), 400, min: 0),
         };
     }
 
@@ -192,6 +217,18 @@ public sealed class SystemOptionsStore : IOptionsMonitor<SystemOptions>
 
     private static bool TryGetBool(Dictionary<string, string> r, string key, bool fallback)
         => r.TryGetValue(key, out var s) && bool.TryParse(s, out var v) ? v : fallback;
+
+    private static double TryGetDouble(Dictionary<string, string> r, string key, double fallback, double? min = null, double? max = null)
+    {
+        if (r.TryGetValue(key, out var s)
+            && double.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out var v))
+        {
+            if (min is { } lo && v < lo) return fallback;
+            if (max is { } hi && v > hi) return fallback;
+            return v;
+        }
+        return fallback;
+    }
 
     private sealed class Subscription : IDisposable
     {

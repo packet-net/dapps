@@ -32,6 +32,8 @@ var opts = new MeshCoreBearerOptions
     NodeName = self,
     AirtimeBudgetSecPerHour = a.GetDouble("budget", 120),
     Compress = !a.Has("no-compress"),
+    CongestionBackoffFraction = a.GetDouble("congestion", 0.5),
+    LbtGuardMs = a.GetInt("lbt", 400),
     AppName = "dapps-soak",
 };
 
@@ -59,7 +61,7 @@ var route = new BackhaulRoute(peer, MeshCoreChannel: opts.ChannelName);
 
 var inboundTask = Task.Run(() => inbound.RunAsync(cts.Token));
 
-long sent = 0, accepted = 0, throttled = 0, failed = 0;
+long sent = 0, accepted = 0, throttled = 0, backedOff = 0, failed = 0;
 string[] samples =
 [
     "73 de " + self, "QSL 73 GL", "GM all, nice signal this morning, 599 here",
@@ -83,6 +85,7 @@ var senderTask = Task.Run(async () =>
             Interlocked.Increment(ref sent);
             if (r.Accepted) Interlocked.Increment(ref accepted);
             else if (r.Error?.Contains("budget") == true) { Interlocked.Increment(ref throttled); log.LogWarning("TX seq={0} throttled: {1}", seq, r.Error); }
+            else if (r.Error?.Contains("congested") == true) { Interlocked.Increment(ref backedOff); log.LogWarning("TX seq={0} backoff: {1}", seq, r.Error); }
             else { Interlocked.Increment(ref failed); log.LogWarning("TX seq={0} failed: {1}", seq, r.Error); }
         }
         catch (Exception ex) { Interlocked.Increment(ref failed); log.LogWarning("TX seq={0} exception: {1}", seq, ex.Message); }
@@ -110,8 +113,9 @@ try { await Task.WhenAll(senderTask, inboundTask); } catch { }
 var (recv, maxSeq, distinct) = inbox.Snapshot();
 double lossPct = maxSeq >= 0 ? 100.0 * (1.0 - (double)distinct / (maxSeq + 1)) : 0;
 log.LogInformation("================= SOAK SUMMARY ({0}) =================", self);
-log.LogInformation("TX: offered={0} accepted={1} throttled={2} failed={3}", sent, accepted, throttled, failed);
+log.LogInformation("TX: offered={0} accepted={1} throttled={2} backoff={3} failed={4}", sent, accepted, throttled, backedOff, failed);
 log.LogInformation("RX: delivered={0} distinctSeq={1} maxSeqFromPeer={2} loss={3:0.0}%", recv, distinct, maxSeq, lossPct);
+log.LogInformation("Channel occupancy (trailing 60s): {0:0.0}%", backhaul.Occupancy * 100);
 log.LogInformation("Airtime used (trailing hr): {0:0.0}s ({1:0.000}% duty); link resets={2}; link state={3}",
     budget.UsedSeconds(DateTime.UtcNow), budget.DutyPercent(DateTime.UtcNow), link.ResetCount, link.State);
 return 0;

@@ -41,7 +41,16 @@ public sealed class MeshCoreInbound
         while (!ct.IsCancellationRequested)
         {
             // Wake on the MSG_WAITING push, or poll every 800ms as a safety net.
-            await Task.WhenAny(_wake.WaitAsync(ct), Task.Delay(800, ct));
+            // Cancel the loser so we don't leak an orphaned semaphore waiter each
+            // iteration (which would also steal future MSG_WAITING releases).
+            using (var linked = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                var wake = _wake.WaitAsync(linked.Token);
+                var poll = Task.Delay(800, linked.Token);
+                await Task.WhenAny(wake, poll);
+                linked.Cancel();
+                try { await Task.WhenAll(wake, poll); } catch { /* loser cancelled */ }
+            }
             if (ct.IsCancellationRequested) break;
 
             var batch = await _link.DrainAsync(ct);

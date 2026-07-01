@@ -17,6 +17,10 @@ evidence this is built on.
 - **Airtime governor** (`TxBudget`) — a hard, self-enforced trailing-hour airtime budget (default
   30 s/hr ≈ 0.83 % duty). Sends over budget are refused (back-pressure), so DAPPS can't burst the
   shared channel. The good-citizen control for riding a shared preset.
+- **Adaptive airtime** (`ChannelMonitor`, #157) — estimates channel occupancy from the radio's
+  `LOG_RX_DATA` (0x88) overheard-packet events, then does listen-before-talk and refuses sends when
+  the channel is congested (a *dynamic* good-citizen control on top of the static budget). A per-node
+  threshold jitter keeps two contending nodes from backing off in lockstep.
 - **Broadcast semantics** — a private channel is one shared medium, so a message is broadcast once
   and the addressee self-selects (the inbox `IsLocal` gate). Identical message ids offered for
   multiple neighbours are coalesced within a window so we don't re-broadcast.
@@ -45,6 +49,8 @@ Configure via `DAPPS_MESHCORE_*` env vars (or the `systemoptions` table):
 | `DAPPS_MESHCORE_NODE_NAME` | `DAPPS` | radio advert name |
 | `DAPPS_MESHCORE_AIRTIME_BUDGET_SECONDS_PER_HOUR` | `30` | governor budget |
 | `DAPPS_MESHCORE_COMPRESS` | `true` | zstd-dict compression |
+| `DAPPS_MESHCORE_CONGESTION_BACKOFF_FRACTION` | `0.5` | adaptive: refuse sends when channel occupancy ≥ this (0 disables) |
+| `DAPPS_MESHCORE_LBT_GUARD_MS` | `400` | adaptive: listen-before-talk guard in ms (0 disables) |
 
 Inbound is fully wired: received messages are decoded and delivered to `IBackhaulInbox` (DB + MQTT),
 sender derived from the in-band `LinkSourceCallsign`. Outbound is selected for routes carrying a

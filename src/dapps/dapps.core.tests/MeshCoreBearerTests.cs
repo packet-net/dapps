@@ -2,6 +2,8 @@ using System.Buffers.Binary;
 using System.Text;
 using AwesomeAssertions;
 using dapps.client.Backhaul;
+using dapps.core.Models;
+using dapps.core.Routing;
 using dapps.meshcore;
 using Xunit;
 
@@ -127,6 +129,54 @@ public class MeshCoreBearerTests
         self.Cr.Should().Be(8);
         self.TxPower.Should().Be(8);
         self.Name.Should().Be("DAPPS-R1");
+    }
+
+    [Fact]
+    public void ChannelMonitor_OccupancyRisesWithTrafficThenPrunes()
+    {
+        var region = Regions.Find("uk-test")!;
+        var m = new ChannelMonitor(region, TimeSpan.FromSeconds(10));
+        var t0 = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+
+        m.OccupancyFraction(t0).Should().Be(0);
+        m.SinceLastHeard(t0).Should().Be(TimeSpan.MaxValue);
+
+        for (var i = 0; i < 5; i++) m.RecordHeard(150, t0.AddMilliseconds(i * 10));
+        m.HeardCount.Should().Be(5);
+        m.OccupancyFraction(t0.AddSeconds(1)).Should().BeGreaterThan(0);
+        m.SinceLastHeard(t0.AddSeconds(1)).Should().BeLessThan(TimeSpan.FromSeconds(2));
+
+        // Once the heard packets age past the window, occupancy returns to zero.
+        m.OccupancyFraction(t0.AddSeconds(30)).Should().Be(0);
+    }
+
+    [Fact]
+    public void TxBudget_Refund_ReturnsTheLastReservation()
+    {
+        var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var b = new TxBudget(secondsPerHour: 1.0); // 1000 ms/hr
+
+        b.TryReserve(700, now, out _).Should().BeTrue();
+        b.TryReserve(700, now, out _).Should().BeFalse("1400ms > 1000ms budget");
+        b.Refund();                                 // give the 700ms back
+        b.UsedSeconds(now).Should().BeApproximately(0, 0.001);
+        b.TryReserve(900, now, out _).Should().BeTrue("budget was refunded");
+    }
+
+    [Fact]
+    public void ChannelData_ParseRecv_ShortFrame_ThrowsInvalidData()
+    {
+        var act = () => ChannelData.ParseRecv([0x1B, 0, 0]);
+        act.Should().Throw<InvalidDataException>();
+    }
+
+    [Fact]
+    public void RouteBuilder_CopiesMeshCoreChannelHint()
+    {
+        var route = RouteBuilder.FromNeighbour(
+            new DbNeighbour { Callsign = "GB7XYZ-1", MeshCoreChannel = "dapps" }, defaultBearerPort: null);
+        route.Callsign.Should().Be("GB7XYZ-1");
+        route.MeshCoreChannel.Should().Be("dapps");
     }
 
     private static void AssertEqual(BackhaulMessage? got, BackhaulMessage original)

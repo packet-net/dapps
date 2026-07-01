@@ -180,7 +180,8 @@ public class OutboundMessageManager(
         {
             await ta.RecordAsync(
                 kind: "forward",
-                bearer: route.UdpEndpoint is not null ? "udp" : "agw",
+                bearer: route.MeshCoreChannel is not null ? "meshcore"
+                    : route.UdpEndpoint is not null ? "udp" : "agw",
                 channelKey: route.BearerPort?.ToString() ?? "",
                 targetCallsign: route.Callsign,
                 messageId: message.Id,
@@ -243,7 +244,8 @@ public class OutboundMessageManager(
             {
                 await ta.RecordAsync(
                     kind: "forward-flood",
-                    bearer: route.UdpEndpoint is not null ? "udp" : "agw",
+                    bearer: route.MeshCoreChannel is not null ? "meshcore"
+                    : route.UdpEndpoint is not null ? "udp" : "agw",
                     channelKey: route.BearerPort?.ToString() ?? "",
                     targetCallsign: route.Callsign,
                     messageId: message.Id,

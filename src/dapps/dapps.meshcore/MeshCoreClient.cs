@@ -44,6 +44,7 @@ public sealed class MeshCoreClient : IAsyncDisposable
     // push codes (device → host, async)
     public const byte PUSH_SEND_CONFIRMED = 0x82;
     public const byte PUSH_MSG_WAITING = 0x83;
+    public const byte PUSH_LOG_RX_DATA = 0x88;        // a packet was heard on the channel
 
     private const byte FrameToRadio = 0x3C;
     private const byte FrameFromRadio = 0x3E;
@@ -63,6 +64,11 @@ public sealed class MeshCoreClient : IAsyncDisposable
 
     /// <summary>Raised when the device signals queued inbound messages (0x83).</summary>
     public event Action? MessageWaiting;
+
+    /// <summary>Raised for every packet the radio overhears on the channel
+    /// (LOG_RX_DATA 0x88) — args are (logged length, snr*4). Feeds channel-
+    /// occupancy estimation (#157).</summary>
+    public event Action<int, sbyte>? PacketHeard;
 
     public MeshCoreClient(string portName, int baud = 115200)
     {
@@ -114,7 +120,18 @@ public sealed class MeshCoreClient : IAsyncDisposable
 
     private void HandlePush(byte code, byte[] payload)
     {
-        if (code == PUSH_MSG_WAITING) MessageWaiting?.Invoke();
+        switch (code)
+        {
+            case PUSH_MSG_WAITING:
+                MessageWaiting?.Invoke();
+                break;
+            case PUSH_LOG_RX_DATA:
+                // payload is the logged RX record; first byte after the opcode is
+                // SNR in the RX-frame family. Length is a proxy for on-air size.
+                var snr = payload.Length > 1 ? unchecked((sbyte)payload[1]) : (sbyte)0;
+                PacketHeard?.Invoke(payload.Length, snr);
+                break;
+        }
     }
 
     /// <summary>Send a command frame and await the next synchronous response whose
@@ -256,12 +273,20 @@ public sealed class MeshCoreClient : IAsyncDisposable
                     TimeSpan.FromMilliseconds(1500), ct);
             }
             catch (TimeoutException) { break; }
-            switch (resp[0])
+            if (resp[0] == RSP_NO_MORE_MESSAGES) return new InboundBatch(texts, data);
+            try
             {
-                case RSP_NO_MORE_MESSAGES: return new InboundBatch(texts, data);
-                case RSP_CHANNEL_MSG_RECV: texts.Add(ChannelMessage.ParseLegacy(resp)); break;
-                case RSP_CHANNEL_MSG_RECV_V3: texts.Add(ChannelMessage.ParseV3(resp)); break;
-                case RSP_CHANNEL_DATA_RECV: data.Add(ChannelData.ParseRecv(resp)); break;
+                switch (resp[0])
+                {
+                    case RSP_CHANNEL_MSG_RECV: texts.Add(ChannelMessage.ParseLegacy(resp)); break;
+                    case RSP_CHANNEL_MSG_RECV_V3: texts.Add(ChannelMessage.ParseV3(resp)); break;
+                    case RSP_CHANNEL_DATA_RECV: data.Add(ChannelData.ParseRecv(resp)); break;
+                }
+            }
+            catch (Exception ex) when (ex is InvalidDataException or IndexOutOfRangeException or ArgumentException)
+            {
+                // Skip one malformed inbound frame; keep draining the rest of the queue.
+                if (Trace) Console.Error.WriteLine($"drain: skipping malformed 0x{resp[0]:X2} frame: {ex.Message}");
             }
         }
         return new InboundBatch(texts, data);

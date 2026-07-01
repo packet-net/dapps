@@ -20,6 +20,15 @@ public sealed class MeshCoreBearerOptions
     public bool Compress { get; set; } = true;
     public string AppName { get; set; } = "dapps";
 
+    /// <summary>Adaptive congestion backoff (#157): refuse sends when the channel's
+    /// trailing-window occupancy is at or above this fraction (0..1). 0 disables.</summary>
+    public double CongestionBackoffFraction { get; set; } = 0.5;
+
+    /// <summary>Listen-before-talk guard (ms): if a packet was overheard more
+    /// recently than this, wait out the remainder (plus jitter) before transmitting,
+    /// to avoid colliding with an in-progress flood. 0 disables.</summary>
+    public int LbtGuardMs { get; set; } = 400;
+
     public RegionPreset ResolveRegion() =>
         Regions.Find(Region) ?? throw new ArgumentException($"unknown MeshCore region '{Region}'");
 

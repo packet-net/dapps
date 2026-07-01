@@ -122,6 +122,13 @@ public class SystemOptions
     /// <summary>Compress the backhaul payload (zstd + shared dictionary).</summary>
     public bool MeshCoreCompress { get; set; } = true;
 
+    /// <summary>Adaptive congestion backoff (#157): refuse sends when channel
+    /// occupancy is at/above this fraction (0..1). 0 disables.</summary>
+    public double MeshCoreCongestionBackoffFraction { get; set; } = 0.5;
+
+    /// <summary>Listen-before-talk guard in ms (#157). 0 disables.</summary>
+    public int MeshCoreLbtGuardMs { get; set; } = 400;
+
     /// <summary>
     /// When true, app-interface clients (MQTT and REST) must present a
     /// valid token; topic / endpoint scope is also enforced against the
