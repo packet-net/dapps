@@ -151,16 +151,28 @@ public class MeshCoreBearerTests
     }
 
     [Fact]
-    public void TxBudget_Refund_ReturnsTheLastReservation()
+    public void TxBudget_Refund_ReturnsTheReservation()
     {
         var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
         var b = new TxBudget(secondsPerHour: 1.0); // 1000 ms/hr
 
-        b.TryReserve(700, now, out _).Should().BeTrue();
-        b.TryReserve(700, now, out _).Should().BeFalse("1400ms > 1000ms budget");
-        b.Refund();                                 // give the 700ms back
+        b.TryReserve(700, now, out _, out var t1).Should().BeTrue();
+        b.TryReserve(700, now, out _, out _).Should().BeFalse("1400ms > 1000ms budget");
+        b.Refund(t1);
         b.UsedSeconds(now).Should().BeApproximately(0, 0.001);
-        b.TryReserve(900, now, out _).Should().BeTrue("budget was refunded");
+        b.TryReserve(900, now, out _, out _).Should().BeTrue("budget was refunded");
+    }
+
+    [Fact]
+    public void TxBudget_Refund_RemovesTheSpecificReservation_NotJustTheLast()
+    {
+        var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var b = new TxBudget(secondsPerHour: 1.0);
+
+        b.TryReserve(300, now, out _, out var a).Should().BeTrue();
+        b.TryReserve(300, now, out _, out _).Should().BeTrue();
+        b.Refund(a);   // refund the FIRST reservation, not the most recent
+        b.UsedSeconds(now).Should().BeApproximately(0.3, 0.001, "only the second 300ms reservation remains");
     }
 
     [Fact]
@@ -168,6 +180,54 @@ public class MeshCoreBearerTests
     {
         var act = () => ChannelData.ParseRecv([0x1B, 0, 0]);
         act.Should().Throw<InvalidDataException>();
+    }
+
+    [Fact]
+    public void Reliability_TrackThenAck_ConfirmsAndClears()
+    {
+        var r = new MeshCoreReliability();
+        var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var m = SampleMessage("hi") with { Id = "abc0001", Originator = "GB7A-1", Destination = "GB7B-1" };
+
+        r.Track(m, "GB7A-1", now);
+        r.PendingCount.Should().Be(1);
+        r.OnAck("abc0001").Should().BeTrue();
+        r.PendingCount.Should().Be(0);
+        r.Confirmed.Should().Be(1);
+        r.OnAck("missing").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Reliability_DueResends_RespectBackoffAndDeadline()
+    {
+        var r = new MeshCoreReliability(new MeshCoreReliability.Options(
+            BaseBackoff: TimeSpan.FromSeconds(20), Multiplier: 2.0,
+            MaxBackoff: TimeSpan.FromSeconds(120), MaxLifetime: TimeSpan.FromSeconds(60)));
+        var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var m = SampleMessage("hi") with { Id = "abc0002", Ttl = 60, Originator = "GB7A-1" };
+
+        r.Track(m, "GB7A-1", now);
+        r.DueResends(now).Should().BeEmpty("first backoff is 20s away");
+        r.DueResends(now.AddSeconds(21)).Should().ContainSingle();
+        r.DueResends(now.AddSeconds(21)).Should().ContainSingle("DueResends must not advance backoff on its own");
+        r.MarkResent("abc0002", now.AddSeconds(21));
+        r.DueResends(now.AddSeconds(22)).Should().BeEmpty("backoff advanced after MarkResent");
+        r.DueResends(now.AddSeconds(120)).Should().BeEmpty("past the lifetime deadline");
+        r.DropExpired(now.AddSeconds(120)).Should().ContainSingle();
+        r.Expired.Should().Be(1);
+    }
+
+    [Fact]
+    public void Reliability_BuildAck_IsAckAddressedToOriginator()
+    {
+        var m = SampleMessage("data") with { Id = "data001", Originator = "GB7A-1", Destination = "GB7B-1" };
+        var ack = MeshCoreReliability.BuildAck(m, localCallsign: "GB7B-1", ackId: "ack0001");
+
+        MeshCoreReliability.IsAck(ack).Should().BeTrue();
+        MeshCoreReliability.AckedId(ack).Should().Be("data001");
+        ack.Destination.Should().Be("GB7A-1");
+        ack.Originator.Should().Be("GB7B-1");
+        MeshCoreReliability.IsAck(m).Should().BeFalse();
     }
 
     [Fact]

@@ -129,6 +129,10 @@ public class SystemOptions
     /// <summary>Listen-before-talk guard in ms (#157). 0 disables.</summary>
     public int MeshCoreLbtGuardMs { get; set; } = 400;
 
+    /// <summary>End-to-end reliability (#26): ACK received messages + resend our own
+    /// unacked messages until acked or their lifetime expires.</summary>
+    public bool MeshCoreReliableDelivery { get; set; } = true;
+
     /// <summary>
     /// When true, app-interface clients (MQTT and REST) must present a
     /// valid token; topic / endpoint scope is also enforced against the

@@ -58,6 +58,7 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
 
         var opts = BuildOptions(s);
         var budget = new TxBudget(opts.AirtimeBudgetSecPerHour);
+        var reliability = opts.ReliableDelivery ? new MeshCoreReliability() : null;
         _link = new MeshCoreLink(opts, _loggerFactory.CreateLogger<MeshCoreLink>());
 
         try
@@ -70,12 +71,45 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
             return;
         }
 
-        _backhaul = new MeshCoreCompanionBackhaul(
-            _link, opts, budget, _loggerFactory.CreateLogger<MeshCoreCompanionBackhaul>(), _txGate);
-        _inbound = new MeshCoreInbound(_link, _inbox, _loggerFactory.CreateLogger<MeshCoreInbound>());
+        var backhaul = new MeshCoreCompanionBackhaul(
+            _link, opts, budget, _loggerFactory.CreateLogger<MeshCoreCompanionBackhaul>(), _txGate, reliability);
+        _backhaul = backhaul;
+        _inbound = new MeshCoreInbound(
+            _link, _inbox, _loggerFactory.CreateLogger<MeshCoreInbound>(),
+            reliability,
+            sendAck: (ack, c) => backhaul.ResendAsync(ack, opts.LocalCallsign, c),
+            localCallsign: opts.LocalCallsign);
         Enabled = true;
 
-        await _inbound.RunAsync(ct);
+        // Reliability resend loop runs alongside the inbound drain loop.
+        var resendTask = reliability is not null
+            ? Task.Run(() => ResendLoopAsync(reliability, backhaul, ct), ct)
+            : Task.CompletedTask;
+        try { await _inbound.RunAsync(ct); }
+        finally { try { await resendTask; } catch { /* shutdown */ } }
+    }
+
+    private async Task ResendLoopAsync(MeshCoreReliability reliability, MeshCoreCompanionBackhaul backhaul, CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try { await Task.Delay(TimeSpan.FromSeconds(5), ct); }
+            catch (OperationCanceledException) { break; }
+
+            var now = DateTime.UtcNow;
+            foreach (var m in reliability.DropExpired(now))
+                _log.LogWarning("MeshCore: reliable delivery gave up on {0} (unacked past lifetime)", m.Id);
+            foreach (var (msg, local) in reliability.DueResends(now))
+            {
+                try
+                {
+                    var res = await backhaul.ResendAsync(msg, local, ct);
+                    if (res.Accepted) reliability.MarkResent(msg.Id, DateTime.UtcNow);
+                    else _log.LogDebug("MeshCore: resend of {0} deferred: {1}", msg.Id, res.Error);
+                }
+                catch (Exception ex) { _log.LogDebug("MeshCore: resend of {0} failed: {1}", msg.Id, ex.Message); }
+            }
+        }
     }
 
     public bool CanHandle(BackhaulRoute route) =>
@@ -100,6 +134,8 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
         Compress = s.MeshCoreCompress,
         CongestionBackoffFraction = s.MeshCoreCongestionBackoffFraction,
         LbtGuardMs = s.MeshCoreLbtGuardMs,
+        ReliableDelivery = s.MeshCoreReliableDelivery,
+        LocalCallsign = s.Callsign,
         AppName = "dapps",
     };
 
