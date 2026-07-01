@@ -123,8 +123,34 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
         var resendTask = reliability is not null
             ? Task.Run(() => ResendLoopAsync(reliability, backhaul, ct), ct)
             : Task.CompletedTask;
+        // Age out stale discovered peers ourselves. On a MeshCore-only node there's no
+        // AGW/UDP discovery channel, so DiscoveryService (the usual sweeper) never runs
+        // its age-out; without this, passively-recorded rows would accumulate for the
+        // node's lifetime (#27 review). Bearer-agnostic and idempotent, so it's harmless
+        // to also run on a mixed node where DiscoveryService sweeps too.
+        var housekeepingTask = Task.Run(() => AgeOutLoopAsync(ct), ct);
         try { await _inbound.RunAsync(ct); }
-        finally { try { await resendTask; } catch { /* shutdown */ } }
+        finally
+        {
+            try { await resendTask; } catch { /* shutdown */ }
+            try { await housekeepingTask; } catch { /* shutdown */ }
+        }
+    }
+
+    private async Task AgeOutLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try { await Task.Delay(TimeSpan.FromMinutes(5), ct); }
+            catch (OperationCanceledException) { break; }
+            try
+            {
+                var aged = await _database.AgeOutDiscoveredPeers(DateTime.UtcNow);
+                if (aged.Count > 0)
+                    _log.LogInformation("MeshCore: aged out {0} stale discovered peer(s)", aged.Count);
+            }
+            catch (Exception ex) { _log.LogDebug("MeshCore: discovered-peer age-out failed: {0}", ex.Message); }
+        }
     }
 
     private async Task ResendLoopAsync(MeshCoreReliability reliability, MeshCoreCompanionBackhaul backhaul, CancellationToken ct)
@@ -158,7 +184,11 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
     {
         // A repeater re-broadcasting our own frame would otherwise teach us a route to
         // ourselves. Compare on the base callsign (SSID-insensitive), like the router.
-        if (string.Equals(source.Split('-')[0], opts.LocalCallsign.Split('-')[0], StringComparison.OrdinalIgnoreCase))
+        // Use the LIVE callsign, not the one captured at bearer start: outbound frames
+        // are stamped with the current callsign, so after a runtime rename an echo of
+        // our own frame must still be recognised as self.
+        var localCallsign = _sysOpts.CurrentValue.Callsign ?? "";
+        if (string.Equals(source.Split('-')[0], localCallsign.Split('-')[0], StringComparison.OrdinalIgnoreCase))
             return;
 
         var now = DateTime.UtcNow;
@@ -199,8 +229,10 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            // Roll back the throttle stamp so the next frame retries the upsert.
-            lock (_discoveryLock) { _lastDiscoveryUpsert.Remove(source); }
+            // Keep the throttle stamp: on a persistent DB fault, rolling it back would
+            // let every subsequent frame from this peer re-attempt (and re-fail) the
+            // upsert, defeating the 30s rate-limit exactly when the DB is unhealthy. A
+            // retry still happens on the next frame after the window, which is enough.
             _log.LogWarning("MeshCore: failed to record discovered peer {0}: {1}", source, ex.Message);
         }
     }

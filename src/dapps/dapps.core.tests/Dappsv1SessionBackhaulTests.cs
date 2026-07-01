@@ -36,6 +36,19 @@ public sealed class Dappsv1SessionBackhaulTests
     }
 
     [Fact]
+    public async Task CanHandle_MeshCoreChannelSet_False()
+    {
+        var sb = MakeBackhaul([]);
+        // AGW must NOT claim a route discovered only over MeshCore (#27). If the
+        // MeshCore bearer is down (disabled / link failed / not yet started) it
+        // declines the route; AGW claiming it would mis-route a LoRa-only peer over a
+        // connected-mode session (spurious RF on a gateway node). Leave it Unreachable.
+        sb.CanHandle(new BackhaulRoute("N0DEST", BearerPort: 0, MeshCoreChannel: "dapps"))
+            .Should().BeFalse();
+        await Task.CompletedTask;
+    }
+
+    [Fact]
     public async Task SendAsync_HappyPath_ReturnsOkAndWritesIhaveLine()
     {
         var transport = new FakeOutboundTransport(
