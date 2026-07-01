@@ -86,6 +86,39 @@
     </div>
 
     <div class="panel">
+        <h3>MeshCore bearer</h3>
+        <p class="panel-sub">LoRa radio bearer over a MeshCore private channel. Enable, port and region changes need a daemon restart; the rest hot-reload.</p>
+        <div class="field-grid">
+            <label class="field-checkbox" style="grid-column: 1 / -1;">
+                <input name="MeshCoreEnabled" type="checkbox" @(Model.Options.MeshCoreEnabled ? "checked" : "") />
+                <span>Enable the MeshCore bearer<br/><span class="hint">opens the serial radio and carries DAPPS traffic over a private channel</span></span>
+            </label>
+            <div class="field"><label>Serial port</label><input name="MeshCorePort" type="text" value="@Model.Options.MeshCorePort" /><span class="hint">e.g. /dev/ttyUSB0</span></div>
+            <div class="field"><label>Region preset</label>
+                <select name="MeshCoreRegion">
+                    <option value="uk-narrow" selected="@(Model.Options.MeshCoreRegion == "uk-narrow")">UK 868 narrow — 869.618 / SF8 / CR8</option>
+                    <option value="uk-test" selected="@(Model.Options.MeshCoreRegion == "uk-test")">UK test — 868.4 (isolated bench)</option>
+                    <option value="eu-legacy" selected="@(Model.Options.MeshCoreRegion == "eu-legacy")">EU legacy wide — 869.525 / SF11</option>
+                </select>
+            </div>
+            <div class="field"><label>TX power (dBm)</label><input name="MeshCoreTxPowerDbm" type="number" min="0" max="30" value="@Model.Options.MeshCoreTxPowerDbm" /><span class="hint">capped by the region's max</span></div>
+            <div class="field"><label>Node name</label><input name="MeshCoreNodeName" type="text" value="@Model.Options.MeshCoreNodeName" /></div>
+            <div class="field"><label>Channel slot</label><input name="MeshCoreChannelIndex" type="number" min="0" max="255" value="@Model.Options.MeshCoreChannelIndex" /><span class="hint">0 = public; 1+ = private</span></div>
+            <div class="field"><label>Channel name</label><input name="MeshCoreChannelName" type="text" value="@Model.Options.MeshCoreChannelName" /></div>
+            <div class="field"><label>Channel PSK</label><input name="MeshCoreChannelPsk" type="text" value="@Model.Options.MeshCoreChannelPsk" class="masked" /><span class="hint">32-char hex (16 bytes) or a passphrase</span></div>
+            <div class="field"><label>Airtime budget (s/h)</label><input name="MeshCoreAirtimeBudgetSecondsPerHour" type="number" min="0" max="3600" step="1" value="@Model.Options.MeshCoreAirtimeBudgetSecondsPerHour" /><span class="hint">good-citizen duty cap</span></div>
+            <div class="field"><label>Congestion backoff</label><input name="MeshCoreCongestionBackoffFraction" type="number" min="0" max="1" step="0.05" value="@Model.Options.MeshCoreCongestionBackoffFraction" /><span class="hint">back off at occupancy ≥ this (0 = off)</span></div>
+            <div class="field"><label>LBT guard (ms)</label><input name="MeshCoreLbtGuardMs" type="number" min="0" max="10000" value="@Model.Options.MeshCoreLbtGuardMs" /></div>
+            <label class="field-checkbox"><input name="MeshCoreCompress" type="checkbox" @(Model.Options.MeshCoreCompress ? "checked" : "") /><span>Compress payloads (zstd + dictionary)</span></label>
+            <label class="field-checkbox"><input name="MeshCoreReliableDelivery" type="checkbox" @(Model.Options.MeshCoreReliableDelivery ? "checked" : "") /><span>End-to-end reliability (ACK + resend)</span></label>
+        </div>
+        <div class="panel-sub" style="margin-top:.75rem; display:flex; align-items:center; gap:.5rem;">
+            <span>Status: <span id="mc-status">…</span></span>
+            <button type="button" id="mc-reset" class="btn-secondary" style="margin-left:auto;">Reset radio</button>
+        </div>
+    </div>
+
+    <div class="panel">
         <h3>Discovery &amp; airtime</h3>
         <p class="panel-sub">Total trailing-hour airtime cap shared by every discovery transmission (beacons, solicits, probes). Per-channel caps live in Topology.</p>
         <div class="field-grid">
@@ -218,6 +251,19 @@ async function dappsSaveConfig(ev) {
         HeartbeatIntervalSeconds: parseInt(f.HeartbeatIntervalSeconds.value, 10),
         AutoDiscoverViaNodeCall: f.AutoDiscoverViaNodeCall.checked,
         NodePromptApplicationCommand: f.NodePromptApplicationCommand.value,
+        MeshCoreEnabled: f.MeshCoreEnabled.checked,
+        MeshCorePort: f.MeshCorePort.value,
+        MeshCoreRegion: f.MeshCoreRegion.value,
+        MeshCoreTxPowerDbm: parseInt(f.MeshCoreTxPowerDbm.value, 10),
+        MeshCoreChannelIndex: parseInt(f.MeshCoreChannelIndex.value, 10),
+        MeshCoreChannelName: f.MeshCoreChannelName.value,
+        MeshCoreChannelPsk: f.MeshCoreChannelPsk.value,
+        MeshCoreNodeName: f.MeshCoreNodeName.value,
+        MeshCoreAirtimeBudgetSecondsPerHour: parseFloat(f.MeshCoreAirtimeBudgetSecondsPerHour.value),
+        MeshCoreCompress: f.MeshCoreCompress.checked,
+        MeshCoreCongestionBackoffFraction: parseFloat(f.MeshCoreCongestionBackoffFraction.value),
+        MeshCoreLbtGuardMs: parseInt(f.MeshCoreLbtGuardMs.value, 10),
+        MeshCoreReliableDelivery: f.MeshCoreReliableDelivery.checked,
     };
     if (await dappsPostJson('@Url.Content("~/Config")', body)) {
         const head = document.querySelector('.page-head');
@@ -325,5 +371,32 @@ async function dappsRotatePassword(ev) {
             btn.disabled = false;
         }
     });
+})();
+
+// MeshCore bearer status + device-control reset (#159).
+(function () {
+    const statusEl = document.getElementById('mc-status');
+    const resetBtn = document.getElementById('mc-reset');
+    if (!statusEl) return;
+    async function refresh() {
+        try {
+            const r = await fetch('@Url.Content("~/MeshCore/status")');
+            if (!r.ok) { statusEl.textContent = 'unavailable'; return; }
+            const s = await r.json();
+            if (!s.enabled) { statusEl.textContent = 'disabled'; if (resetBtn) resetBtn.disabled = true; return; }
+            if (resetBtn) resetBtn.disabled = false;
+            const f = s.freqMhz != null ? s.freqMhz.toFixed(3) + 'MHz' : '?';
+            const exp = s.reliableExpired ? ' / ' + s.reliableExpired + '✗' : '';
+            statusEl.textContent = `${s.linkState} · ${f} SF${s.sf ?? '?'} CR${s.cr ?? '?'} · occ ${(s.occupancy * 100).toFixed(0)}% · rx ${s.delivered} · reliable ${s.reliableConfirmed}✓/${s.reliablePending}⋯${exp} · resets ${s.resets}`;
+        } catch { statusEl.textContent = 'unavailable'; }
+    }
+    if (resetBtn) resetBtn.addEventListener('click', async () => {
+        resetBtn.disabled = true;
+        statusEl.textContent = 'resetting…';
+        try { await fetch('@Url.Content("~/MeshCore/reset")', { method: 'POST' }); } catch { }
+        setTimeout(refresh, 5000);
+    });
+    refresh();
+    setInterval(refresh, 5000);
 })();
 </script>

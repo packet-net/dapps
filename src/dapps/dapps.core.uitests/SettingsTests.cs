@@ -28,7 +28,7 @@ public sealed class SettingsTests(LoggedInWebAppFixture app, PlaywrightFixture p
             "the settings form is broken into Identity / App interface / Discovery / Probing / Polling / Heartbeat / Updates groups");
 
         // Spot-check key fields exist by name attribute.
-        foreach (var name in new[] { "Callsign", "NodeHost", "ProbeStrategy", "MqttPort", "HeartbeatEnabled" })
+        foreach (var name in new[] { "Callsign", "NodeHost", "ProbeStrategy", "MqttPort", "HeartbeatEnabled", "MeshCoreEnabled", "MeshCoreRegion" })
         {
             (await page.Locator($"[name='{name}']").CountAsync())
                 .Should().Be(1, $"Settings form should expose the {name} input");
