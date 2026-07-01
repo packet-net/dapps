@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\dapps.core\dapps.core.csproj" />
+    <ProjectReference Include="..\dapps.meshcore.sim\dapps.meshcore.sim.csproj" />
   </ItemGroup>
 
   <ItemGroup>

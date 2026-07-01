@@ -21,7 +21,7 @@ public sealed class MeshCoreCompanionBackhaul : IDappsBackhaul
     private static readonly TimeSpan CoalesceWindow = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan FramePace = TimeSpan.FromMilliseconds(1000);
 
-    private readonly MeshCoreLink _link;
+    private readonly IMeshCoreLink _link;
     private readonly MeshCoreBearerOptions _opts;
     private readonly TxBudget _budget;
     private readonly IDappsTxGate _txGate;
@@ -35,7 +35,7 @@ public sealed class MeshCoreCompanionBackhaul : IDappsBackhaul
     private readonly object _recentLock = new();
 
     public MeshCoreCompanionBackhaul(
-        MeshCoreLink link, MeshCoreBearerOptions opts, TxBudget budget, ILogger log,
+        IMeshCoreLink link, MeshCoreBearerOptions opts, TxBudget budget, ILogger log,
         IDappsTxGate? txGate = null, MeshCoreReliability? reliability = null)
     {
         _link = link;

@@ -18,7 +18,7 @@ public sealed class MeshCoreInbound
     private static readonly TimeSpan ReassemblyTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan SweepInterval = TimeSpan.FromMinutes(1);
 
-    private readonly MeshCoreLink _link;
+    private readonly IMeshCoreLink _link;
     private readonly IBackhaulInbox _inbox;
     private readonly ILogger _log;
     private readonly MeshCoreChannelTransport _rx = new();
@@ -41,7 +41,7 @@ public sealed class MeshCoreInbound
     public long Delivered { get; private set; }
 
     public MeshCoreInbound(
-        MeshCoreLink link, IBackhaulInbox inbox, ILogger log,
+        IMeshCoreLink link, IBackhaulInbox inbox, ILogger log,
         MeshCoreReliability? reliability = null,
         Func<BackhaulMessage, CancellationToken, Task<BackhaulSendResult>>? sendAck = null,
         string? localCallsign = null,
