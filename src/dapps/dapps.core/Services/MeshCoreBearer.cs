@@ -27,10 +27,35 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
     private MeshCoreLink? _link;
     private MeshCoreCompanionBackhaul? _backhaul;
     private MeshCoreInbound? _inbound;
+    private MeshCoreReliability? _reliability;
 
     public bool Enabled { get; private set; }
     public MeshCoreLink? Link => _link;
     public MeshCoreInbound? Inbound => _inbound;
+
+    /// <summary>A read-only snapshot of the bearer for the dashboard / API.</summary>
+    public MeshCoreStatus GetStatus()
+    {
+        var link = _link;
+        var self = link?.Self;
+        return new MeshCoreStatus(
+            Enabled: Enabled,
+            LinkState: link?.State.ToString() ?? "Down",
+            FreqMhz: self?.FreqMhz,
+            Sf: self?.Sf,
+            Cr: self?.Cr,
+            Resets: link?.ResetCount ?? 0,
+            Occupancy: _backhaul?.Occupancy ?? 0,
+            Delivered: _inbound?.Delivered ?? 0,
+            ReliablePending: _reliability?.PendingCount ?? 0,
+            ReliableConfirmed: _reliability?.Confirmed ?? 0,
+            ReliableExpired: _reliability?.Expired ?? 0);
+    }
+
+    /// <summary>Operator device-control: force the radio through a hard reset +
+    /// reconfigure. Returns false if the bearer isn't running.</summary>
+    public Task<bool> ResetRadioAsync(CancellationToken ct) =>
+        _link is { } link ? link.RecoverAsync(ct) : Task.FromResult(false);
 
     public MeshCoreBearer(
         IOptionsMonitor<SystemOptions> sysOpts,
@@ -59,6 +84,7 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
         var opts = BuildOptions(s);
         var budget = new TxBudget(opts.AirtimeBudgetSecPerHour);
         var reliability = opts.ReliableDelivery ? new MeshCoreReliability() : null;
+        _reliability = reliability;
         _link = new MeshCoreLink(opts, _loggerFactory.CreateLogger<MeshCoreLink>());
 
         try
@@ -144,3 +170,8 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
         if (_link is not null) await _link.DisposeAsync();
     }
 }
+
+/// <summary>Read-only MeshCore bearer status for the dashboard / API.</summary>
+public sealed record MeshCoreStatus(
+    bool Enabled, string LinkState, double? FreqMhz, byte? Sf, byte? Cr, int Resets,
+    double Occupancy, long Delivered, int ReliablePending, long ReliableConfirmed, long ReliableExpired);
