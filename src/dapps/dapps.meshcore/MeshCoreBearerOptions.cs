@@ -29,6 +29,14 @@ public sealed class MeshCoreBearerOptions
     /// to avoid colliding with an in-progress flood. 0 disables.</summary>
     public int LbtGuardMs { get; set; } = 400;
 
+    /// <summary>End-to-end reliability (#26): ACK received messages addressed to us
+    /// and resend our own unacked messages until acked or their lifetime expires.</summary>
+    public bool ReliableDelivery { get; set; } = true;
+
+    /// <summary>This node's DAPPS callsign — decides which received messages to ACK
+    /// (those addressed to us) and is the ACK originator.</summary>
+    public string LocalCallsign { get; set; } = "";
+
     public RegionPreset ResolveRegion() =>
         Regions.Find(Region) ?? throw new ArgumentException($"unknown MeshCore region '{Region}'");
 

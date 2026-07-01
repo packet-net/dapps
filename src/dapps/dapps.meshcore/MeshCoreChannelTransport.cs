@@ -22,7 +22,8 @@ public sealed class MeshCoreChannelTransport
     public const int Mtu = 160;
 
     private readonly Reassembler _reassembler = new();
-    private readonly Dictionary<string, bool> _compressed = new();
+    private readonly Dictionary<string, (bool comp, DateTime seen)> _compressed = new();
+    private readonly object _nonceLock = new();
     private byte _nonce;
 
     /// <summary>Encode a BackhaulMessage into one-or-more channel-data payloads.</summary>
@@ -35,8 +36,14 @@ public sealed class MeshCoreChannelTransport
         var frames = new List<byte[]>(fragments.Count);
         foreach (var f in fragments)
         {
-            byte hdr = (byte)((_nonce << 1) | (comp ? 1 : 0));
-            _nonce = (byte)((_nonce + 1) & 0x7F);
+            // ToFrames is now called concurrently (OMM send + reliability resend loop
+            // + inbound ACK emission), so the rolling nonce must be atomic.
+            byte hdr;
+            lock (_nonceLock)
+            {
+                hdr = (byte)((_nonce << 1) | (comp ? 1 : 0));
+                _nonce = (byte)((_nonce + 1) & 0x7F);
+            }
             var frame = new byte[1 + f.Length];
             frame[0] = hdr;
             f.CopyTo(frame, 1);
@@ -60,11 +67,11 @@ public sealed class MeshCoreChannelTransport
         try { header = Packetiser.ParseHeader(fragment); }
         catch (InvalidDataException) { return new Result(Kind.Bad, null, null); }
 
-        _compressed[header.Id] = comp;
+        _compressed[header.Id] = (comp, now);
         var assembled = _reassembler.Accept(fragment, now);
         if (assembled is null) return new Result(Kind.FragmentPartial, null, header);
 
-        var compressed = _compressed.TryGetValue(header.Id, out var c) && c;
+        var compressed = _compressed.TryGetValue(header.Id, out var c) && c.comp;
         _compressed.Remove(header.Id);
         try
         {
@@ -77,7 +84,12 @@ public sealed class MeshCoreChannelTransport
         }
     }
 
-    /// <summary>Drop reassembly state for messages whose first fragment is older
-    /// than <paramref name="cutoff"/>.</summary>
-    public int DropStale(DateTime cutoff) => _reassembler.DropOlderThan(cutoff);
+    /// <summary>Drop reassembly state (and the matching compressed-flag entries) for
+    /// messages whose first fragment is older than <paramref name="cutoff"/>.</summary>
+    public int DropStale(DateTime cutoff)
+    {
+        foreach (var k in _compressed.Where(kv => kv.Value.seen < cutoff).Select(kv => kv.Key).ToList())
+            _compressed.Remove(k);
+        return _reassembler.DropOlderThan(cutoff);
+    }
 }

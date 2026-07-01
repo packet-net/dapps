@@ -51,6 +51,7 @@ public sealed class MeshCoreConfigTests : IAsyncLifetime
         opts.MeshCoreCompress = false;
         opts.MeshCoreCongestionBackoffFraction = 0.25;
         opts.MeshCoreLbtGuardMs = 250;
+        opts.MeshCoreReliableDelivery = false;
 
         await store.SaveAsync(opts);
 
@@ -68,5 +69,6 @@ public sealed class MeshCoreConfigTests : IAsyncLifetime
         reloaded.MeshCoreCompress.Should().BeFalse();
         reloaded.MeshCoreCongestionBackoffFraction.Should().Be(0.25);
         reloaded.MeshCoreLbtGuardMs.Should().Be(250);
+        reloaded.MeshCoreReliableDelivery.Should().BeFalse();
     }
 }

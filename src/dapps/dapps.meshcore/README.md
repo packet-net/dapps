@@ -21,6 +21,12 @@ evidence this is built on.
   `LOG_RX_DATA` (0x88) overheard-packet events, then does listen-before-talk and refuses sends when
   the channel is congested (a *dynamic* good-citizen control on top of the static budget). A per-node
   threshold jitter keeps two contending nodes from backing off in lockstep.
+- **End-to-end reliability** (`MeshCoreReliability`, #26) — the channel is a fire-and-forget flood
+  with no link ACK, so DAPPS adds its own, **datagram-style, not session-based**: the receiver ACKs
+  any data message addressed to it (a tiny `mc-ack` control broadcast), the sender resends unacked
+  messages on exponential backoff until acked or their lifetime expires, and the receiver **dedups by
+  message id** so a resend after a lost ACK is delivered to the app only once (idempotent). Resends
+  and ACKs are ordinary channel traffic, subject to the governor + adaptive controls.
 - **Broadcast semantics** — a private channel is one shared medium, so a message is broadcast once
   and the addressee self-selects (the inbox `IsLocal` gate). Identical message ids offered for
   multiple neighbours are coalesced within a window so we don't re-broadcast.
@@ -51,6 +57,7 @@ Configure via `DAPPS_MESHCORE_*` env vars (or the `systemoptions` table):
 | `DAPPS_MESHCORE_COMPRESS` | `true` | zstd-dict compression |
 | `DAPPS_MESHCORE_CONGESTION_BACKOFF_FRACTION` | `0.5` | adaptive: refuse sends when channel occupancy ≥ this (0 disables) |
 | `DAPPS_MESHCORE_LBT_GUARD_MS` | `400` | adaptive: listen-before-talk guard in ms (0 disables) |
+| `DAPPS_MESHCORE_RELIABLE_DELIVERY` | `true` | end-to-end ACK + resend of unacked messages (#26) |
 
 Inbound is fully wired: received messages are decoded and delivered to `IBackhaulInbox` (DB + MQTT),
 sender derived from the in-band `LinkSourceCallsign`. Outbound is selected for routes carrying a

@@ -118,6 +118,7 @@ public sealed class SystemOptionsStore : IOptionsMonitor<SystemOptions>
         await Upsert(connection, existing, nameof(options.MeshCoreCompress), options.MeshCoreCompress.ToString());
         await Upsert(connection, existing, nameof(options.MeshCoreCongestionBackoffFraction), options.MeshCoreCongestionBackoffFraction.ToString(CultureInfo.InvariantCulture));
         await Upsert(connection, existing, nameof(options.MeshCoreLbtGuardMs), options.MeshCoreLbtGuardMs.ToString());
+        await Upsert(connection, existing, nameof(options.MeshCoreReliableDelivery), options.MeshCoreReliableDelivery.ToString());
 
         Reload();
     }
@@ -198,6 +199,7 @@ public sealed class SystemOptionsStore : IOptionsMonitor<SystemOptions>
             MeshCoreCompress = TryGetBool(r, nameof(SystemOptions.MeshCoreCompress), true),
             MeshCoreCongestionBackoffFraction = TryGetDouble(r, nameof(SystemOptions.MeshCoreCongestionBackoffFraction), 0.5, min: 0, max: 1),
             MeshCoreLbtGuardMs = TryGetInt(r, nameof(SystemOptions.MeshCoreLbtGuardMs), 400, min: 0),
+            MeshCoreReliableDelivery = TryGetBool(r, nameof(SystemOptions.MeshCoreReliableDelivery), true),
         };
     }
 

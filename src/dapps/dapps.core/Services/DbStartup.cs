@@ -103,6 +103,7 @@ public static class DbStartup
         ("MeshCoreCompress", "true"),
         ("MeshCoreCongestionBackoffFraction", "0.5"),
         ("MeshCoreLbtGuardMs", "400"),
+        ("MeshCoreReliableDelivery", "true"),
         ("AuthRequired", "false"),
         ("UpdateCheckEnabled", "true"),
         ("RoutingAlgorithm", "passive-flood"),

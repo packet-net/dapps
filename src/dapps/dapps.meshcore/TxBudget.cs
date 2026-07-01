@@ -12,9 +12,10 @@ public sealed class TxBudget
     public const double DefaultSecondsPerHour = 30;   // ≈0.83% duty
 
     private readonly double _budgetMs;
-    private readonly List<(DateTime when, double ms)> _window = new();
+    private readonly List<(long token, DateTime when, double ms)> _window = new();
     private readonly object _lock = new();
     private double _sumMs;
+    private long _nextToken;
 
     public TxBudget(double secondsPerHour) => _budgetMs = secondsPerHour * 1000.0;
 
@@ -30,9 +31,10 @@ public sealed class TxBudget
         lock (_lock) { Prune(now); return _sumMs / 36_000.0; }
     }
 
-    /// <summary>Reserve airtime for one transmission; returns false (changes
-    /// nothing) if it would exceed the trailing-hour budget.</summary>
-    public bool TryReserve(double airtimeMs, DateTime now, out string reason)
+    /// <summary>Reserve airtime for one transmission. Returns false (changing nothing)
+    /// if it would exceed the trailing-hour budget; otherwise <paramref name="token"/>
+    /// identifies the reservation for a later <see cref="Refund"/>.</summary>
+    public bool TryReserve(double airtimeMs, DateTime now, out string reason, out long token)
     {
         lock (_lock)
         {
@@ -40,26 +42,34 @@ public sealed class TxBudget
             if (_sumMs + airtimeMs > _budgetMs)
             {
                 reason = $"airtime budget exceeded: used {_sumMs / 1000:0.0}s + {airtimeMs / 1000:0.00}s > {_budgetMs / 1000:0.0}s/hr";
+                token = 0;
                 return false;
             }
-            _window.Add((now, airtimeMs));
+            token = ++_nextToken;
+            _window.Add((token, now, airtimeMs));
             _sumMs += airtimeMs;
             reason = "";
             return true;
         }
     }
 
-    /// <summary>Return the most recent reservation to the budget — called when a
-    /// send that reserved airtime did not actually go on air (link not ready /
-    /// exception), so a failed attempt doesn't consume the duty budget.</summary>
-    public void Refund()
+    /// <summary>Convenience overload for callers that never refund (e.g. tests).</summary>
+    public bool TryReserve(double airtimeMs, DateTime now, out string reason)
+        => TryReserve(airtimeMs, now, out reason, out _);
+
+    /// <summary>Return a specific reservation (by <paramref name="token"/>) — called
+    /// when a send that reserved airtime did not go on air. Concurrency-safe: removes
+    /// exactly that reservation, not merely the most recent (which, under concurrent
+    /// sends, could belong to a different in-flight send).</summary>
+    public void Refund(long token)
     {
         lock (_lock)
         {
-            if (_window.Count > 0)
+            var i = _window.FindIndex(e => e.token == token);
+            if (i >= 0)
             {
-                _sumMs -= _window[^1].ms;
-                _window.RemoveAt(_window.Count - 1);
+                _sumMs -= _window[i].ms;
+                _window.RemoveAt(i);
             }
             if (_window.Count == 0 || _sumMs < 0) _sumMs = 0;
         }

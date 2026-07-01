@@ -34,6 +34,8 @@ var opts = new MeshCoreBearerOptions
     Compress = !a.Has("no-compress"),
     CongestionBackoffFraction = a.GetDouble("congestion", 0.5),
     LbtGuardMs = a.GetInt("lbt", 400),
+    ReliableDelivery = !a.Has("no-reliable"),
+    LocalCallsign = self,
     AppName = "dapps-soak",
 };
 
@@ -55,11 +57,41 @@ log.LogInformation("SOAK start: self={0} peer={1} ch[{2}]='{3}' region={4} budge
 try { await link.StartAsync(cts.Token); }
 catch (Exception ex) { log.LogError(ex, "link failed to start"); return 2; }
 
-var backhaul = new MeshCoreCompanionBackhaul(link, opts, budget, lf.CreateLogger<MeshCoreCompanionBackhaul>());
-var inbound = new MeshCoreInbound(link, inbox, lf.CreateLogger<MeshCoreInbound>());
+var reliability = opts.ReliableDelivery ? new MeshCoreReliability() : null;
+var backhaul = new MeshCoreCompanionBackhaul(
+    link, opts, budget, lf.CreateLogger<MeshCoreCompanionBackhaul>(), reliability: reliability);
+
+// Optional induced loss to exercise reliability resends (soak only).
+double dropPct = a.GetDouble("drop-pct", 0);
+Func<BackhaulMessage, bool>? drop = dropPct > 0 ? (_ => Random.Shared.NextDouble() * 100 < dropPct) : null;
+
+var inbound = new MeshCoreInbound(
+    link, inbox, lf.CreateLogger<MeshCoreInbound>(),
+    reliability,
+    sendAck: (ack, c) => backhaul.ResendAsync(ack, self, c),
+    localCallsign: self,
+    dropForTest: drop);
 var route = new BackhaulRoute(peer, MeshCoreChannel: opts.ChannelName);
 
 var inboundTask = Task.Run(() => inbound.RunAsync(cts.Token));
+var resendTask = reliability is not null ? Task.Run(async () =>
+{
+    while (!cts.IsCancellationRequested)
+    {
+        try { await Task.Delay(TimeSpan.FromSeconds(5), cts.Token); } catch { break; }
+        var now = DateTime.UtcNow;
+        foreach (var m in reliability.DropExpired(now)) log.LogWarning("reliable delivery gave up on {0}", m.Id);
+        foreach (var (msg, local) in reliability.DueResends(now))
+        {
+            try
+            {
+                var res = await backhaul.ResendAsync(msg, local, cts.Token);
+                if (res.Accepted) reliability.MarkResent(msg.Id, DateTime.UtcNow);
+            }
+            catch { }
+        }
+    }
+}) : Task.CompletedTask;
 
 long sent = 0, accepted = 0, throttled = 0, backedOff = 0, failed = 0;
 string[] samples =
@@ -108,7 +140,7 @@ if (forceResetAt > 0)
 // Run for the duration, then stop.
 try { await Task.Delay(TimeSpan.FromSeconds(durationSec), cts.Token); } catch { }
 cts.Cancel();
-try { await Task.WhenAll(senderTask, inboundTask); } catch { }
+try { await Task.WhenAll(senderTask, inboundTask, resendTask); } catch { }
 
 var (recv, maxSeq, distinct) = inbox.Snapshot();
 double lossPct = maxSeq >= 0 ? 100.0 * (1.0 - (double)distinct / (maxSeq + 1)) : 0;
@@ -118,6 +150,9 @@ log.LogInformation("RX: delivered={0} distinctSeq={1} maxSeqFromPeer={2} loss={3
 log.LogInformation("Channel occupancy (trailing 60s): {0:0.0}%", backhaul.Occupancy * 100);
 log.LogInformation("Airtime used (trailing hr): {0:0.0}s ({1:0.000}% duty); link resets={2}; link state={3}",
     budget.UsedSeconds(DateTime.UtcNow), budget.DutyPercent(DateTime.UtcNow), link.ResetCount, link.State);
+if (reliability is not null)
+    log.LogInformation("Reliability: confirmed={0} expired={1} pending={2} (induced drop {3:0.#}%)",
+        reliability.Confirmed, reliability.Expired, reliability.PendingCount, dropPct);
 return 0;
 
 // ---------------- helpers ----------------
