@@ -140,6 +140,26 @@ public sealed class MeshFabricTests
     }
 
     [Theory]
+    [InlineData(64, 1)]    // 64 relays all forward (R64 receives path_len 63 < 64) -> B hears it
+    [InlineData(65, 0)]    // the 65th relay would receive path_len 64 -> dropped -> B unreachable
+    public void HopCap_DeliversAtExactly64Relays_DropsBeyond(int relayCount, int expected)
+    {
+        // The firmware cap is MAX_PATH_SIZE=64 forwarders (path_len < 64). Pin the exact
+        // boundary - this is the long-chain edge the fabric exists to exercise.
+        var f = new MeshFabric();
+        f.AddLeaf("A");
+        var chain = new List<string> { "A" };
+        for (var i = 1; i <= relayCount; i++) { f.AddRelay($"R{i}"); chain.Add($"R{i}"); }
+        f.AddLeaf("B");
+        chain.Add("B");
+        f.ConnectChain(chain);
+
+        f.Link("A").SendDataAsync("edge"u8.ToArray(), CancellationToken.None).GetAwaiter().GetResult();
+
+        Received(f.Link("B")).Should().Be(expected);
+    }
+
+    [Theory]
     [InlineData("73 de M0LTE")]                                                  // one fragment
     [InlineData("Hello from the DAPPS mailbox, a longer store-and-forward message over the mesh that fragments. 73 de M0LTE GB7ABC-1 599 599 599")]  // multi-fragment
     public void Transport_MultiHop_DecodesOnceAtDestination(string text)

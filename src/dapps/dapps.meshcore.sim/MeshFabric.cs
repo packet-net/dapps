@@ -117,21 +117,27 @@ public sealed class MeshFabric
             // that loops back is deduped.
             origin.Seen.Add(packetId);
 
-            // BFS over relays that re-flood. A node re-floods a given packet at most once.
-            var reflood = new Queue<(Node relay, int hop)>();
-            Transmit(origin, hop: 1, packetId, scope, payload, reflood);
+            // BFS over relays that re-flood. Track path_len exactly as the firmware does:
+            // the origin transmits with path_len=0 (it's not a forwarder); a relay that
+            // RECEIVED path_len P forwards iff P < HopCap (MAX_PATH_SIZE=64), appending
+            // itself so its transmission carries P+1. So relays R1..R64 forward and R65
+            // (which would receive path_len=64) is dropped. A relay re-floods a packet
+            // at most once (the dedup ring).
+            var reflood = new Queue<(Node relay, int receivedPathLen)>();
+            Transmit(origin, receiversPathLen: 0, packetId, scope, payload, reflood);
             while (reflood.Count > 0)
             {
-                var (relay, hop) = reflood.Dequeue();
-                if (hop >= HopCap) continue;
-                Transmit(relay, hop + 1, packetId, scope, payload, reflood);
+                var (relay, receivedPathLen) = reflood.Dequeue();
+                if (receivedPathLen >= HopCap) continue;   // path full - can't forward further
+                Transmit(relay, receiversPathLen: receivedPathLen + 1, packetId, scope, payload, reflood);
             }
         }
     }
 
     // One transmission from `tx`: every neighbour may hear it (subject to loss), dedups,
-    // delivers-if-a-leaf, and re-floods-if-an-in-scope-relay.
-    private void Transmit(Node tx, int hop, string packetId, string scope, byte[] payload, Queue<(Node, int)> reflood)
+    // delivers-if-a-leaf, and re-floods-if-an-in-scope-relay. `receiversPathLen` is the
+    // path_len value the neighbours receive (the count of forwarders before them).
+    private void Transmit(Node tx, int receiversPathLen, string packetId, string scope, byte[] payload, Queue<(Node, int)> reflood)
     {
         foreach (var (toId, loss) in tx.Neighbours)
         {
@@ -158,7 +164,7 @@ public sealed class MeshFabric
             if (nbr.Role == MeshRole.Relay && scopeCarried)
             {
                 Refloods++;
-                reflood.Enqueue((nbr, hop));
+                reflood.Enqueue((nbr, receiversPathLen));   // the path_len this relay received
             }
         }
     }
