@@ -1,4 +1,5 @@
 using AwesomeAssertions;
+using dapps.meshcore;
 using dapps.meshcore.sim;
 using Xunit;
 
@@ -55,6 +56,50 @@ public sealed class MeshFabricScenarioTests
         a.Delivered.Should().Be(N);
         c.DiscoveredPeers.Should().Contain("GB7A-1", "C learned A purely by hearing its traffic, multi-hop");
         a.DiscoveredPeers.Should().Contain("GB7C-1");
+    }
+
+    [Theory]
+    [InlineData(0.3)]
+    [InlineData(0.4)]
+    public async Task LossyMultiHop_ReliabilityRecoversEveryMessage_ExactlyOnce(double lossPerEdge)
+    {
+        // A - R1 - R2 - R3 - B over FOUR lossy hops. End-to-end reliability (ACK + resend)
+        // must recover every message despite heavy per-edge loss, and idempotent inbound
+        // must still deliver each exactly once - a lost ACK makes the sender resend, so B
+        // sees duplicates it must dedup. This is the whole reason the reliability layer
+        // exists, and multi-hop compounds the loss; the earlier tests ran at 0% loss.
+        var f = new MeshFabric(seed: 20260701);
+        f.AddRelay("R1"); f.AddRelay("R2"); f.AddRelay("R3");
+
+        // Accelerate the resend timings so this runs in CI-time rather than on the 20 s
+        // production backoff (WaitUntil returns as soon as everything arrives, so the
+        // common case finishes in a few seconds; the deadline is only a safety cap).
+        var fast = new MeshCoreReliability.Options(
+            BaseBackoff: TimeSpan.FromMilliseconds(120), Multiplier: 1.4,
+            MaxBackoff: TimeSpan.FromMilliseconds(600), MaxLifetime: TimeSpan.FromSeconds(60));
+        var poll = TimeSpan.FromMilliseconds(100);
+
+        var a = new MeshDappsNode(f, "GB7A-1", reliabilityOptions: fast, resendPoll: poll);
+        var b = new MeshDappsNode(f, "GB7B-1", reliabilityOptions: fast, resendPoll: poll);
+        f.Connect("GB7A-1", "R1", lossPerEdge);
+        f.Connect("R1", "R2", lossPerEdge);
+        f.Connect("R2", "R3", lossPerEdge);
+        f.Connect("R3", "GB7B-1", lossPerEdge);
+
+        using var cts = new CancellationTokenSource();
+        var loops = Task.WhenAll(a.RunAsync(cts.Token), b.RunAsync(cts.Token));
+
+        const int N = 5;
+        for (var i = 0; i < N; i++)
+            await a.SendAsync("GB7B-1", i, $"A->B #{i}", cts.Token);
+
+        await WaitUntil(() => b.DistinctSeqs == N, TimeSpan.FromSeconds(50));
+        cts.Cancel();
+        try { await loops; } catch { /* cancelled */ }
+
+        b.DistinctSeqs.Should().Be(N, "reliability resends recovered every message despite {0:P0} per-hop loss", lossPerEdge);
+        b.Delivered.Should().Be(N, "idempotent: each delivered exactly once despite resends after lost ACKs");
+        f.Dropped.Should().BeGreaterThan(0, "loss was genuinely exercised (not a no-op path)");
     }
 
     [Fact]
