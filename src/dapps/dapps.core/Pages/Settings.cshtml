@@ -99,8 +99,11 @@
                     <option value="uk-narrow" selected="@(Model.Options.MeshCoreRegion == "uk-narrow")">UK 868 narrow — 869.618 / SF8 / CR8</option>
                     <option value="uk-test" selected="@(Model.Options.MeshCoreRegion == "uk-test")">UK test — 868.4 (isolated bench)</option>
                     <option value="eu-legacy" selected="@(Model.Options.MeshCoreRegion == "eu-legacy")">EU legacy wide — 869.525 / SF11</option>
+                    <option value="custom" selected="@(Model.Options.MeshCoreRegion == "custom")">Custom — dedicated preset (model C)</option>
                 </select>
             </div>
+            <div class="field"><label>Custom preset</label><input name="MeshCoreCustomPreset" type="text" value="@Model.Options.MeshCoreCustomPreset" /><span class="hint">model C, when region = custom: freq=868.4;bw=62.5;sf=8;cr=8;pwr=14</span></div>
+            <div class="field"><label>Flood-scope key</label><input name="MeshCoreFloodScopeKey" type="text" value="@Model.Options.MeshCoreFloodScopeKey" class="masked" /><span class="hint">model B: blank = unscoped; set to contain floods to scoped nodes</span></div>
             <div class="field"><label>TX power (dBm)</label><input name="MeshCoreTxPowerDbm" type="number" min="0" max="30" value="@Model.Options.MeshCoreTxPowerDbm" /><span class="hint">capped by the region's max</span></div>
             <div class="field"><label>Node name</label><input name="MeshCoreNodeName" type="text" value="@Model.Options.MeshCoreNodeName" /></div>
             <div class="field"><label>Channel slot</label><input name="MeshCoreChannelIndex" type="number" min="0" max="255" value="@Model.Options.MeshCoreChannelIndex" /><span class="hint">0 = public; 1+ = private</span></div>
@@ -254,6 +257,8 @@ async function dappsSaveConfig(ev) {
         MeshCoreEnabled: f.MeshCoreEnabled.checked,
         MeshCorePort: f.MeshCorePort.value,
         MeshCoreRegion: f.MeshCoreRegion.value,
+        MeshCoreCustomPreset: f.MeshCoreCustomPreset.value,
+        MeshCoreFloodScopeKey: f.MeshCoreFloodScopeKey.value,
         MeshCoreTxPowerDbm: parseInt(f.MeshCoreTxPowerDbm.value, 10),
         MeshCoreChannelIndex: parseInt(f.MeshCoreChannelIndex.value, 10),
         MeshCoreChannelName: f.MeshCoreChannelName.value,

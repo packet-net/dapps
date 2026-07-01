@@ -24,4 +24,65 @@ public static class Regions
 
     public static RegionPreset? Find(string name) =>
         All.FirstOrDefault(r => r.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The region name that selects an operator-defined preset parsed from a
+    /// <see cref="ParseCustom"/> spec, rather than a baked entry in <see cref="All"/>.</summary>
+    public const string CustomName = "custom";
+
+    /// <summary>
+    /// Build a one-off preset for a dedicated DAPPS frequency/SF (deployment model C —
+    /// physical isolation on the operator's own radio settings). Spec is KV pairs
+    /// separated by ';' or ',', e.g. <c>freq=868.4;bw=62.5;sf=8;cr=8;pwr=14</c> where
+    /// freq is MHz, bw is kHz, and pwr is the max TX power in dBm the bearer will clamp
+    /// to. All five fields are required; ranges are validated so a fat-fingered value
+    /// can't push the radio somewhere illegal or nonsensical. Regulatory compliance for
+    /// a custom frequency/power is the operator's responsibility.
+    /// </summary>
+    public static RegionPreset ParseCustom(string spec)
+    {
+        var kv = ParseKv(spec);
+        double freq = ReqDouble(kv, "freq", 100.0, 2000.0);   // MHz, spans the LoRa ISM bands
+        double bw = ReqDouble(kv, "bw", 1.0, 1000.0);         // kHz
+        byte sf = (byte)ReqInt(kv, "sf", 5, 12);
+        byte cr = (byte)ReqInt(kv, "cr", 5, 8);               // 4/5..4/8
+        byte pwr = (byte)ReqInt(kv, "pwr", 1, 30);            // max dBm
+        return new RegionPreset(CustomName, freq, bw, sf, cr, pwr,
+            "Operator-defined dedicated DAPPS preset (deployment model C) - own frequency/SF for physical isolation.");
+    }
+
+    private static Dictionary<string, string> ParseKv(string spec)
+    {
+        if (string.IsNullOrWhiteSpace(spec))
+            throw new ArgumentException("custom MeshCore preset is empty; set a spec like 'freq=868.4;bw=62.5;sf=8;cr=8;pwr=14'");
+        var kv = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var part in spec.Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var eq = part.IndexOf('=');
+            if (eq <= 0) throw new ArgumentException($"malformed custom-preset field '{part}' (expected key=value)");
+            kv[part[..eq].Trim()] = part[(eq + 1)..].Trim();
+        }
+        return kv;
+    }
+
+    private static double ReqDouble(Dictionary<string, string> kv, string key, double min, double max)
+    {
+        if (!kv.TryGetValue(key, out var raw))
+            throw new ArgumentException($"custom preset missing required field '{key}'");
+        if (!double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v))
+            throw new ArgumentException($"custom preset field '{key}={raw}' is not a number");
+        if (v < min || v > max)
+            throw new ArgumentException($"custom preset field '{key}={raw}' out of range [{min}..{max}]");
+        return v;
+    }
+
+    private static int ReqInt(Dictionary<string, string> kv, string key, int min, int max)
+    {
+        if (!kv.TryGetValue(key, out var raw))
+            throw new ArgumentException($"custom preset missing required field '{key}'");
+        if (!int.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var v))
+            throw new ArgumentException($"custom preset field '{key}={raw}' is not an integer");
+        if (v < min || v > max)
+            throw new ArgumentException($"custom preset field '{key}={raw}' out of range [{min}..{max}]");
+        return v;
+    }
 }

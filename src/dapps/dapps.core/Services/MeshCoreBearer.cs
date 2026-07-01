@@ -96,15 +96,19 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
         var budget = new TxBudget(opts.AirtimeBudgetSecPerHour);
         var reliability = opts.ReliableDelivery ? new MeshCoreReliability() : null;
         _reliability = reliability;
-        _link = new MeshCoreLink(opts, _loggerFactory.CreateLogger<MeshCoreLink>());
 
         try
         {
+            // Construct inside the try: the ctor resolves the region preset, and a bad
+            // custom preset (model C) throws from ParseCustom - a config error must
+            // disable the bearer gracefully, not fault the hosted service and crash the
+            // daemon (BackgroundServiceExceptionBehavior.StopHost).
+            _link = new MeshCoreLink(opts, _loggerFactory.CreateLogger<MeshCoreLink>());
             await _link.StartAsync(ct);
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "MeshCore bearer failed to start on {0}", opts.SerialPort);
+            _log.LogError(ex, "MeshCore bearer failed to start (port={0}, region={1})", opts.SerialPort, opts.Region);
             return;
         }
 
@@ -250,6 +254,8 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
         Enabled = true,
         SerialPort = s.MeshCorePort,
         Region = s.MeshCoreRegion,
+        CustomPreset = s.MeshCoreCustomPreset,
+        FloodScopeKey = s.MeshCoreFloodScopeKey,
         TxPowerDbm = (byte)Math.Clamp(s.MeshCoreTxPowerDbm, 0, 30),
         ChannelIndex = (byte)Math.Clamp(s.MeshCoreChannelIndex, 0, 255),
         ChannelName = s.MeshCoreChannelName,

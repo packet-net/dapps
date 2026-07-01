@@ -109,6 +109,8 @@ public sealed class SystemOptionsStore : IOptionsMonitor<SystemOptions>
         await Upsert(connection, existing, nameof(options.MeshCoreEnabled), options.MeshCoreEnabled.ToString());
         await Upsert(connection, existing, nameof(options.MeshCorePort), options.MeshCorePort);
         await Upsert(connection, existing, nameof(options.MeshCoreRegion), options.MeshCoreRegion);
+        await Upsert(connection, existing, nameof(options.MeshCoreCustomPreset), options.MeshCoreCustomPreset);
+        await Upsert(connection, existing, nameof(options.MeshCoreFloodScopeKey), options.MeshCoreFloodScopeKey);
         await Upsert(connection, existing, nameof(options.MeshCoreTxPowerDbm), options.MeshCoreTxPowerDbm.ToString());
         await Upsert(connection, existing, nameof(options.MeshCoreChannelIndex), options.MeshCoreChannelIndex.ToString());
         await Upsert(connection, existing, nameof(options.MeshCoreChannelName), options.MeshCoreChannelName);
@@ -190,6 +192,8 @@ public sealed class SystemOptionsStore : IOptionsMonitor<SystemOptions>
             MeshCoreEnabled = TryGetBool(r, nameof(SystemOptions.MeshCoreEnabled), false),
             MeshCorePort = TryGet(r, nameof(SystemOptions.MeshCorePort), "/dev/ttyUSB0"),
             MeshCoreRegion = TryGet(r, nameof(SystemOptions.MeshCoreRegion), "uk-test"),
+            MeshCoreCustomPreset = TryGet(r, nameof(SystemOptions.MeshCoreCustomPreset), ""),
+            MeshCoreFloodScopeKey = TryGet(r, nameof(SystemOptions.MeshCoreFloodScopeKey), ""),
             MeshCoreTxPowerDbm = TryGetInt(r, nameof(SystemOptions.MeshCoreTxPowerDbm), 8, min: 0, max: 30),
             MeshCoreChannelIndex = TryGetInt(r, nameof(SystemOptions.MeshCoreChannelIndex), 1, min: 0, max: 255),
             MeshCoreChannelName = TryGet(r, nameof(SystemOptions.MeshCoreChannelName), "dapps"),
