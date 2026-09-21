@@ -206,9 +206,17 @@ jobs:
             exit 1
           }
           # Removal has to work too, and purge must not take the message database with it.
+          #
+          # `sudo test`, not `test`: the state directory is 0750 dapps:dapps
+          # (StateDirectoryMode in the unit), so the unprivileged runner user cannot
+          # traverse into it and a bare `test -e` reports the canary missing whether or not
+          # purge touched it - which is exactly how this assertion first "failed". After
+          # purge the dapps user is gone too, so the directory is owned by an orphaned uid
+          # and still unreadable. Read it as root or do not read it at all.
           sudo touch /var/lib/dapps/canary
           sudo apt-get purge -y dapps
-          test -e /var/lib/dapps/canary || {
+          sudo ls -la /var/lib/dapps/
+          sudo test -e /var/lib/dapps/canary || {
             echo "::error::apt purge destroyed /var/lib/dapps - that is the message store"
             exit 1
           }
