@@ -3,7 +3,9 @@
 The shortest path from "I've heard of DAPPS" to "my node is forwarding messages":
 
 ```bash
-curl -sSL https://packet-net.github.io/dapps/install.sh | sudo bash
+curl -fsSL https://packet-net.github.io/apt/pubkey.asc | sudo gpg --dearmor -o /usr/share/keyrings/packet-net.gpg
+echo "deb [signed-by=/usr/share/keyrings/packet-net.gpg] https://packet-net.github.io/apt ./" | sudo tee /etc/apt/sources.list.d/packet-net.list
+sudo apt update && sudo apt install dapps
 ```
 
 Then open `http://<your-host>:5000/` in a browser. The setup wizard asks for an admin password, then your callsign and which packet-node bearer to use - everything else is editable from the dashboard. No env vars, no config files to hand-edit.
@@ -34,17 +36,16 @@ DAPPS is pre-1.0. While it is, every running node checks a URL controlled by the
 
 ### 1. Install
 
-The one-liner above does this on Linux+systemd:
+The commands above add the [packet-net apt repository](https://github.com/packet-net/apt) - which carries the rest of the stack too, so you only add it once - and install the `dapps` package. That:
 
-- Detects your architecture (`x86_64` / `aarch64` / `armv7l`).
-- Downloads the matching binary from [the latest GitHub Release](https://github.com/packet-net/dapps/releases/latest) to `/opt/dapps/dapps`.
+- Installs the payload under `/usr/lib/dapps`, with `/usr/bin/dapps` pointing at it. `amd64`, `arm64` and `armhf` are all published, so it is the same commands on a Pi as on a server.
 - Creates a system user `dapps` and a state directory `/var/lib/dapps` (where the SQLite DB lives).
-- Drops two systemd units: `dapps.service` (the daemon) and `dapps-updater.service` + `.timer` (the supervised in-place updater that powers the dashboard's "Apply update" button).
-- Enables and starts both.
+- Drops `dapps.service`, enables it and starts it.
+- Seeds `/etc/dapps/dapps.env`, which you will probably never need to open.
 
-No env vars, no callsign yet, no bearer choice. Those all happen in step 2.
+No env vars, no callsign yet, no bearer choice. Those all happen in step 2. Updates are `apt upgrade` from here on.
 
-For Docker, Windows, or non-systemd Linux, see the [install pages](install/index.md).
+For non-Debian Linux, Docker, Windows, or macOS, see the [install pages](install/index.md) - there is a one-liner installer that drops the same binary straight from the GitHub Release.
 
 ### 2. Open the dashboard
 

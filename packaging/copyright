@@ -1,0 +1,41 @@
+dapps - Distributed Asynchronous Packet Pub-Sub
+https://github.com/packet-net/dapps
+
+Copyright © 2026 Tom Fanning M0LTE and Packet.NET contributors
+
+This package ships a self-contained build of the DAPPS daemon: the DAPPS code,
+its managed dependencies and the .NET runtime, installed under /usr/lib/dapps.
+
+LICENCE
+-------
+
+DAPPS is free software: you can redistribute it and/or modify it under the terms
+of the GNU Affero General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
+
+Debian's /usr/share/common-licenses carries GPL-3 but not AGPL-3, so the full
+text of the licence is reproduced at the end of this file rather than referenced.
+
+BUNDLED THIRD-PARTY COMPONENTS
+------------------------------
+
+The package bundles the .NET 8 runtime and base class libraries (Copyright ©
+.NET Foundation and Contributors, MIT licence), together with:
+
+  MQTTnet              - Copyright © The MQTTnet Team.  MIT licence.
+  sqlite-net-pcl       - Copyright © Krueger Systems, Inc.  MIT licence.
+  SQLitePCLRaw         - Copyright © Eric Sink.  Apache-2.0, together with the
+                         bundled SQLite library itself, which is public domain.
+  ModelContextProtocol - Copyright © Anthropic, PBC and contributors.  MIT.
+  RhpV2.Client         - Copyright © Packet.NET contributors.  MIT licence.
+  ZstdSharp.Port       - Copyright © Oleg Stepanischev.  MIT licence, a port of
+                         Zstandard (Copyright © Meta Platforms, BSD/GPLv2).
+  System.IO.Ports      - Copyright © .NET Foundation.  MIT licence.
+
+All are licence-compatible with AGPL-3.0-or-later.  Their individual licence
+texts are distributed with their respective upstream packages.

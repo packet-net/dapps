@@ -1,0 +1,59 @@
+[Unit]
+Description=DAPPS - Distributed Asynchronous Packet Pub-Sub
+Documentation=https://packet-net.github.io/dapps/
+After=network-online.target
+Wants=network-online.target
+# Ordering only, and only if a node is installed on this host: DAPPS retries its bearer
+# connection on its own, so it starts perfectly well before the node does - this just
+# makes the happy path quick. Deliberately NOT Wants=, because apt installs this package
+# on plenty of hosts where neither node exists and a Wants= on a missing unit is a
+# warning at every boot for no benefit.
+After=linbpq.service xrouter.service
+
+[Service]
+Type=simple
+User=dapps
+Group=dapps
+# systemd creates and chowns /var/lib/dapps for us, and keeps it across package upgrades
+# and removal. The daemon resolves its SQLite database cwd-relative, so the working
+# directory IS the state directory.
+StateDirectory=dapps
+StateDirectoryMode=0750
+WorkingDirectory=/var/lib/dapps
+# Leading "-": the file is seeded by postinst, not shipped by dpkg, so an operator is
+# free to delete it. Missing means "all defaults", not "fail to start".
+EnvironmentFile=-/etc/dapps/dapps.env
+ExecStart=/usr/bin/dapps
+Restart=on-failure
+RestartSec=5
+
+# Operationally-fatal config errors that won't fix themselves on restart. dapps exits 78
+# for these (e.g. the MQTT port is held by another process). The operator has to change a
+# setting before retrying; without this, dapps would crash-loop nine times before hitting
+# systemd's default StartLimitBurst back-off and bury the explanation under copies of
+# itself. Every other failure still restarts.
+RestartPreventExitStatus=78
+
+# To change the bind address or port, add a drop-in rather than editing this unit - a
+# package upgrade replaces the unit file, and drop-ins survive it:
+#   systemctl edit dapps
+#   [Service]
+#   Environment=ASPNETCORE_URLS=http://127.0.0.1:5000
+# /etc/dapps/dapps.env is the other supported place, and is not touched by upgrades.
+
+# Hardening - DAPPS needs its own binary, its database, and TCP. Nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

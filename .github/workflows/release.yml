@@ -1,0 +1,440 @@
+name: release
+
+# The release pipeline for a `v*` tag: test, build the self-contained binaries for every
+# platform in the matrix, build the .deb packages for amd64/arm64/armhf, attach the lot to
+# a GitHub Release, and tell packet-net/apt to reindex so `apt upgrade` has it within the
+# minute.
+#
+# WHY A TAG AND NOT A MASTER PUSH. This used to live in ci.yml: every push to master read
+# `<Version>` out of Directory.Build.props and released if no Release existed for it yet.
+# That made "merge the PR" and "ship to every node" the same action, which was survivable
+# while the only consumer was a GitHub Release someone chose to download. It stops being
+# survivable now that a release lands in an apt repo that nodes upgrade from: shipping has
+# to be a thing you do deliberately, separately from merging. So the tag is the trigger,
+# and master pushes only run ci.yml.
+#
+# Directory.Build.props is still the single source of truth for the number - the tag has to
+# match it, and the `version` job fails the release if it does not. Bump the props file in
+# the PR, merge, then tag:
+#
+#   git tag v0.35.0 && git push origin v0.35.0
+#
+# workflow_dispatch builds everything and leaves it as workflow artifacts without releasing
+# anything - a full dry run, including the .debs. Set `publish: true` to also cut the
+# Release and notify apt.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, without the leading v (e.g. 0.35.0)'
+        required: true
+      publish:
+        description: 'Also cut the GitHub Release and notify packet-net/apt'
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # the release job creates the GitHub Release
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      publish: ${{ steps.resolve.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve and check the version
+        id: resolve
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            version="${GITHUB_REF#refs/tags/v}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          version="${version#v}"
+          [ -n "$version" ] || { echo "::error::no version (tag v* or the version input is required)"; exit 1; }
+          # Debian is stricter than SemVer: a version must start with a digit.
+          case "$version" in
+            [0-9]*) ;;
+            *) echo "::error::version '$version' must start with a digit"; exit 1 ;;
+          esac
+
+          # Read the props file directly rather than via `dotnet msbuild -getProperty`.
+          # That is the supported way to read an MSBuild property, but it wants a restored
+          # project, and this job exists precisely so the version is known before anything
+          # is restored or built. <Version> in Directory.Build.props is one unambiguous
+          # line with no conditions on it.
+          props=src/dapps/Directory.Build.props
+          declared="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' "$props" | head -1)"
+          [ -n "$declared" ] || { echo "::error::could not read <Version> from $props"; exit 1; }
+
+          if [ "$declared" != "$version" ]; then
+            echo "::error::tag says $version but $props says $declared."
+            echo "::error::The number in the props file is what stamps the binary and what"
+            echo "::error::every node's update check compares against. Bump it in a PR,"
+            echo "::error::merge, and tag the merge commit."
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.publish }}" = "true" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "releasing $version (publish: $(if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.publish }}" = "true" ]; then echo yes; else echo 'no - dry run'; fi))"
+
+  # The release gate. Same suite and same retry rationale as ci.yml: a single known-flaky
+  # test must not be able to strand a tagged release, but three consecutive failures are a
+  # real regression and must block it.
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Pre-pull integration images
+        run: |
+          docker pull m0lte/linbpq:latest
+          docker pull ghcr.io/packethacking/xrouter:latest
+
+      - name: Restore
+        run: dotnet restore src/dapps/dapps.sln
+
+      - name: Build
+        run: dotnet build src/dapps/dapps.sln --no-restore --configuration Release
+
+      - name: Test
+        run: |
+          set -uo pipefail
+          proj=src/dapps/dapps.core.tests/dapps.core.tests.csproj
+          results=src/dapps/dapps.core.tests/bin/Release/net8.0/TestResults
+          attempts=3
+          for i in $(seq 1 "$attempts"); do
+            echo "::group::Test attempt $i/$attempts"
+            if dotnet test "$proj" --no-build --configuration Release -- --output detailed; then
+              echo "::endgroup::"
+              echo "Tests passed on attempt $i/$attempts."
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "::warning::Test attempt $i/$attempts failed - dumping per-test results (the failing test name lives here, not in stdout):"
+            find "$results" -name '*.log' -print -exec cat {} \; 2>/dev/null || true
+            [ "$i" -lt "$attempts" ] && { echo "Retrying after transient failure..."; sleep 5; }
+          done
+          echo "::error::Tests failed after $attempts attempts - refusing to release."
+          exit 1
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-results
+          path: src/dapps/dapps.core.tests/bin/Release/net8.0/TestResults/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # .NET 8 LTS targets an old glibc, so building on ubuntu-latest produces binaries that
+  # load on Raspberry Pi OS 11 (Bullseye) and newer without further plumbing.
+  build:
+    needs: [version, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            os: ubuntu-latest
+            ext: ''
+          - rid: linux-arm64
+            os: ubuntu-24.04-arm
+            ext: ''
+          - rid: linux-arm
+            os: ubuntu-latest      # cross-compiled from x64
+            ext: ''
+          - rid: win-x64
+            os: windows-latest
+            ext: '.exe'
+          - rid: osx-arm64
+            os: macos-latest
+            ext: ''
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish self-contained single file
+        # PublishSingleFile bundles managed assemblies; the extra
+        # IncludeNativeLibrariesForSelfExtract flag pulls native deps (e.g. SQLite's
+        # libe_sqlite3.so) into the same exe so the operator drops one file on a server.
+        # Trimming is left off: ASP.NET Core + DI + JSON have enough reflection that
+        # trimming tends to break startup in subtle ways. Binary size is ~100MB -
+        # acceptable cost for "no runtime install needed".
+        #
+        # IncludeAllContentForSelfExtract=true forces every bundled assembly (managed AND
+        # native) to be extracted to a per-run cache dir on startup, instead of the default
+        # in-memory bundle resolver. We hit a real reproducible bug on linux-arm where the
+        # in-memory resolver couldn't load System.Diagnostics.Process - the assembly bytes
+        # were in the bundle (verified via `strings`) but the runtime threw
+        # FileNotFoundException when JIT'ing code that referenced it. Forcing extraction
+        # puts every assembly on disk where the standard fs resolver finds it. (Those two
+        # properties live in dapps.core.csproj, conditioned on PublishSingleFile, so every
+        # publish path bakes them in; the .deb build takes the other branch and ships an
+        # ordinary tree - see packaging/build-deb.sh.)
+        shell: bash
+        run: |
+          dotnet publish src/dapps/dapps.core/dapps.core.csproj \
+            --configuration Release \
+            --runtime ${{ matrix.rid }} \
+            --self-contained true \
+            -p:Version=${{ needs.version.outputs.version }} \
+            -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:IncludeAllContentForSelfExtract=true \
+            -p:DebugType=embedded \
+            --output publish
+
+      - name: Stage release artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "publish/dapps.core${{ matrix.ext }}" "dist/dapps-${{ matrix.rid }}${{ matrix.ext }}"
+          test -s "dist/dapps-${{ matrix.rid }}${{ matrix.ext }}"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: dapps-${{ matrix.rid }}
+          path: dist/dapps-${{ matrix.rid }}${{ matrix.ext }}
+          if-no-files-found: error
+
+  # All three .debs come off one x64 runner: `dotnet publish -r` cross-compiles, and
+  # dpkg-deb only packs files. The arm64 runner in the build matrix above exists because
+  # nothing else was needed there, not because cross-publishing is a problem.
+  deb:
+    needs: [version, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Preflight
+        run: |
+          # dpkg-deb ships in the Essential `dpkg` package and readelf in binutils; both
+          # are on every GitHub-hosted ubuntu image. Fail here rather than ten minutes in.
+          command -v dpkg-deb >/dev/null || { echo "::error::dpkg-deb is missing"; exit 1; }
+          command -v readelf  >/dev/null || { echo "::error::readelf is missing (binutils)"; exit 1; }
+
+      - name: Build .deb packages
+        run: |
+          set -euo pipefail
+          # Pin the changelog date to the commit being built so a rebuild of a tag is
+          # byte-identical. %ct is always a Unix timestamp, unlike the event payload's
+          # pushed_at, which is an integer for push events and an ISO string elsewhere.
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          for arch in amd64 arm64 armhf; do
+            echo "::group::deb $arch"
+            packaging/build-deb.sh "${{ needs.version.outputs.version }}" "$arch" ./artifacts
+            echo "::endgroup::"
+          done
+
+      - name: Verify .deb contents
+        run: |
+          set -euo pipefail
+          for deb in ./artifacts/*.deb; do
+            echo "::group::$(basename "$deb")"
+            dpkg-deb --info "$deb"
+            # Capture the listing once and match it in memory. Piping dpkg-deb straight
+            # into `grep -q` makes grep close the pipe the moment it matches, and the
+            # SIGPIPE dpkg-deb takes for that becomes a pipeline failure under pipefail.
+            listing="$(dpkg-deb --contents "$deb")"
+            # A package that ships no unit file is not the package we meant to ship.
+            grep -q 'usr/lib/systemd/system/dapps\.service$' <<<"$listing"
+            grep -q 'usr/lib/dapps/dapps\.core$' <<<"$listing"
+            grep -q 'usr/bin/dapps ->' <<<"$listing"
+            # SQLite dies with "Unable to load shared library 'e_sqlite3'" without this.
+            # The single-file build swallows it into the bundle; this one must ship it as
+            # a file, and a publish that silently stopped emitting it would otherwise only
+            # surface at the first database write on an operator's node.
+            grep -q 'usr/lib/dapps/libe_sqlite3\.so$' <<<"$listing"
+            # The Razor views are compiled into this assembly, so a package without it
+            # serves nothing at all.
+            grep -q 'usr/lib/dapps/dapps\.core\.dll$' <<<"$listing"
+            # postinst seeds /etc/dapps/dapps.env from this path; if it moves, install breaks.
+            grep -q 'usr/share/dapps/dapps\.env\.example$' <<<"$listing"
+            # build-deb.sh reads the libc6 floor out of the published tree because .NET
+            # moves it per-RID without notice. An unversioned libc6 here means that came
+            # unstuck, and apt would install onto machines the loader cannot start it on.
+            dpkg-deb -f "$deb" Depends | grep -qE 'libc6 \(>= [0-9]+\.[0-9]+\)'
+            # ICU and OpenSSL are dlopen'd, so no amount of ELF reading finds them. Without
+            # ICU the runtime refuses to start at all, so assert they were declared.
+            dpkg-deb -f "$deb" Depends | grep -q 'libicu'
+            dpkg-deb -f "$deb" Depends | grep -q 'libssl'
+            echo "::endgroup::"
+          done
+
+      - name: Smoke-test the amd64 package
+        # The runner is amd64 Ubuntu with systemd, so the one package we can actually
+        # install is installable here - and that is worth far more than any amount of
+        # `dpkg-deb --contents`. This proves the published tree loads (ICU, OpenSSL, the
+        # symlinked apphost finding its dll), that the version stamp is right, and that
+        # the unit reaches active on a machine with no configuration at all.
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          version="${{ needs.version.outputs.version }}"
+          sudo apt-get update -qq
+          sudo apt-get install -y "./artifacts/dapps_${version}_amd64.deb"
+
+          reported="$(/usr/bin/dapps --version)"
+          echo "dapps --version: $reported"
+          grep -qF "$version" <<<"$reported" || {
+            echo "::error::the installed binary reports '$reported', not $version"
+            exit 1
+          }
+
+          systemctl is-enabled dapps.service
+          for i in $(seq 1 60); do
+            systemctl is-active --quiet dapps.service && break
+            sleep 1
+          done
+          systemctl is-active --quiet dapps.service || {
+            echo "::error::dapps.service did not reach active after a clean install"
+            systemctl status dapps.service --no-pager || true
+            journalctl -u dapps.service --no-pager -n 100 || true
+            exit 1
+          }
+          # The dashboard is the whole operator surface; a service that is "active" but
+          # never binds its listener is not a working package. Deliberately NOT `curl -f`:
+          # /Health answers 503 on a node with no callsign and no reachable packet node,
+          # which is exactly what a freshly installed one is. The body is the assertion -
+          # it carries the running version, so this proves the listener is up AND that the
+          # process behind it is the build we just packaged.
+          for i in $(seq 1 60); do
+            curl -sS -o /tmp/health.json http://127.0.0.1:5000/Health && break
+            sleep 1
+          done
+          cat /tmp/health.json || true; echo
+          grep -qF "$version" /tmp/health.json || {
+            echo "::error::no usable HTTP listener on :5000 after a clean install"
+            systemctl status dapps.service --no-pager || true
+            journalctl -u dapps.service --no-pager -n 100 || true
+            exit 1
+          }
+          echo "clean install boots and serves."
+          sudo apt-get purge -y dapps
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: dapps-debs
+          path: artifacts/*.deb
+          if-no-files-found: error
+
+  release:
+    needs: [version, test, build, deb]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Stamp manifest version
+        # pdn-app.yaml's `version:` field is informational (pdn shows it in its UI) and
+        # should track the release tag. Stamp it into the copy we attach so the asset
+        # always matches the release it ships with; the repo copy stays as-is.
+        run: |
+          sed -i 's/^version: .*/version: "${{ needs.version.outputs.version }}"/' pdn-app.yaml
+          grep '^version:' pdn-app.yaml
+          cp pdn-app.yaml dist/pdn-app.yaml
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          ls -l
+          sha256sum dapps-* *.deb pdn-app.yaml > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v6
+        # So a dry run (workflow_dispatch with publish unset) leaves the complete,
+        # checksummed release set behind to inspect, not just the per-job pieces.
+        with:
+          name: release-${{ needs.version.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        # Not a draft and not a prerelease, both load-bearing: packet-net/apt indexes
+        # `releases/latest`, which skips drafts and prereleases entirely.
+        if: needs.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG exists - replacing its assets"
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --target "${{ github.sha }}" \
+              --generate-notes \
+              dist/*
+          fi
+
+      - name: Tell the apt repo to rebuild
+        # Last, and only after the GitHub Release has succeeded: packet-net/apt indexes
+        # whatever is on releases/latest when it runs, so dispatching before the assets
+        # exist would just make it re-index the previous release.
+        #
+        # A HARD requirement, not fire-and-forget: if this repo cannot tell packet-net/apt
+        # about the release, the build fails rather than shipping quietly with apt left
+        # stale until its next scheduled rebuild. Same call packet-net/pdn-soundmodem
+        # makes; see packet-net/apt's README, "How it works".
+        if: needs.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.APT_DISPATCH_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::APT_DISPATCH_TOKEN is not visible to this repo - cannot notify"
+            echo "::error::packet-net/apt. Grant the org secret access to packet-net/dapps."
+            exit 1
+          fi
+          # gh api --input - with a JSON body, not -f client_payload[...]=...: gh's -f does
+          # not do curl-style bracket nesting, so the nested object has to arrive as JSON.
+          payload=$(printf '{"event_type":"release-published","client_payload":{"repo":"%s","tag":"%s"}}' \
+            "$GITHUB_REPOSITORY" "$TAG")
+          printf '%s' "$payload" | gh api -X POST repos/packet-net/apt/dispatches --input -
+          echo "packet-net/apt notified; apt should carry $TAG within a minute."

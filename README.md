@@ -11,6 +11,18 @@ A DAPPS node is a small daemon you run alongside your packet node (BPQ today; Me
 
 Bearer-agnostic by design: anything that exposes an AGW-compatible session bearer works the same way, and once RHPv2 lands in mainstream BPQ it'll plug in alongside.
 
+## Install
+
+On Debian, Ubuntu or Raspberry Pi OS, from the [packet-net apt repository](https://github.com/packet-net/apt):
+
+```bash
+curl -fsSL https://packet-net.github.io/apt/pubkey.asc | sudo gpg --dearmor -o /usr/share/keyrings/packet-net.gpg
+echo "deb [signed-by=/usr/share/keyrings/packet-net.gpg] https://packet-net.github.io/apt ./" | sudo tee /etc/apt/sources.list.d/packet-net.list
+sudo apt update && sudo apt install dapps
+```
+
+Then open `http://<host>:5000/` and the `/Setup` wizard takes it from there. `amd64`, `arm64` and `armhf` are published; for anything else - non-Debian Linux, Docker, Windows, macOS - see [Install](https://packet-net.github.io/dapps/install/).
+
 ## Documentation
 
 **The full operator and developer manual is at [https://packet-net.github.io/dapps/](https://packet-net.github.io/dapps/).**

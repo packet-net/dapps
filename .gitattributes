@@ -4,6 +4,14 @@
 * text=auto
 
 ###############################################################################
+# Shell scripts are LF in the working tree as well as in the repo. `text=auto`
+# above would hand a Windows checkout CRLF copies, and a CRLF script inside a
+# .deb's DEBIAN/ directory fails to configure on the target with a bare
+# "/bin/sh^M: bad interpreter".
+###############################################################################
+*.sh text eol=lf
+
+###############################################################################
 # Set default behavior for command prompt diff.
 #
 # This is need for earlier builds of msysgit that does not have it on by

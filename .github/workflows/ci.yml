@@ -1,18 +1,15 @@
 name: ci
 
-# One workflow that handles every commit:
+# Build and test, on every PR and every push to master. Nothing here publishes anything.
 #
-#   - PR / workflow_dispatch       → build + test only.
-#   - push to master, tests pass   → check whether a GitHub Release
-#                                    already exists for v$(Version).
-#                                    If not, build the release matrix
-#                                    and publish it.
+# Releasing is release.yml, triggered by a `v*` tag. The two are deliberately separate:
+# this workflow used to cut a GitHub Release whenever a master push carried a bumped
+# `<Version>`, which made "merge the PR" and "ship to every node" the same action. That
+# stopped being acceptable once releases feed packet-net/apt and nodes upgrade from it.
 #
-# Single source of truth for the version is `<Version>` in
-# `src/dapps/Directory.Build.props`. Bump it in the same PR as the
-# change you want released; merge → release. Don't bump it →
-# the merge lands as a normal commit, no release. Same version twice
-# → second push is a no-op (release-already-exists check).
+# To release: bump `<Version>` in src/dapps/Directory.Build.props in the PR, merge, then
+# tag the merge commit `v<that same version>` and push the tag. release.yml checks the two
+# agree and refuses the release if they do not.
 
 on:
   push:
@@ -26,15 +23,12 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write   # release job creates a Release on master pushes
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    outputs:
-      version: ${{ steps.version.outputs.value }}
-      should_release: ${{ steps.decide.outputs.should_release }}
     steps:
       - uses: actions/checkout@v6
 
@@ -61,24 +55,19 @@ jobs:
       - name: Test
         # Why a retry loop instead of a single `dotnet test`:
         #
-        # The test job is the release gate - `build`/`release` run only
-        # when this job's `should_release` output is `true`, and a failed
-        # step short-circuits the rest of the job, so a SINGLE flaky test
-        # silently strands a version-bumped release on the runway (the run
-        # goes red but no binary is ever published). The suite has a known
-        # intermittent failure (~1/683, a broker-port bind race - see
-        # issue #152) that must not be able to block a real release.
+        # The suite has a known intermittent failure (~1/683, a broker-port bind race -
+        # see issue #152). A single flake turning a PR red trains people to ignore red,
+        # and the same job gates release.yml, where a flake must not be able to strand a
+        # tagged release.
         #
-        # So: run the suite up to N times. A transient flake heals on a
-        # later attempt and the release proceeds; a genuine regression
-        # fails all N and correctly (and loudly) blocks it.
+        # So: run the suite up to N times. A transient flake heals on a later attempt; a
+        # genuine regression fails all N and correctly (and loudly) fails the build.
         #
-        # On every failed attempt we dump the per-test results log to the
-        # console. Under `dotnet test`, MTP writes the failing test NAME
-        # only to that log file (stdout carries just the summary count),
-        # so without this dump a flake is invisible without downloading
-        # the artifact. Printing it makes "which test flaked" greppable in
-        # the job log.
+        # On every failed attempt we dump the per-test results log to the console. Under
+        # `dotnet test`, MTP writes the failing test NAME only to that log file (stdout
+        # carries just the summary count), so without this dump a flake is invisible
+        # without downloading the artifact. Printing it makes "which test flaked"
+        # greppable in the job log.
         run: |
           set -uo pipefail
           proj=src/dapps/dapps.core.tests/dapps.core.tests.csproj
@@ -108,40 +97,12 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Read version
-        id: version
-        # `dotnet msbuild -getProperty:Version` is the official supported
-        # way to read an MSBuild property without parsing XML.
-        run: |
-          v=$(dotnet msbuild src/dapps/dapps.core/dapps.core.csproj -getProperty:Version -nologo)
-          echo "value=${v}" >> "$GITHUB_OUTPUT"
-          echo "version: ${v}"
-
-      - name: Decide release
-        id: decide
-        # Only on master pushes. PRs and workflow_dispatch never publish
-        # - they're just verifying the build/test path works.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tag="v${{ steps.version.outputs.value }}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "Release $tag already exists - skipping release."
-          else
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-            echo "Will publish $tag."
-          fi
-
   # UI tests live in dapps.core.uitests - they boot dapps.core as a
   # subprocess and drive Razor pages with headless Chromium via
   # Playwright. Separate job rather than rolled into `test` because:
   # (1) Chromium install + browser deps are a noticeable slowdown the
   # unit suite shouldn't pay; (2) UI tests run as their own subprocess
-  # so docker / port collisions are isolated; (3) keeping them
-  # non-blocking on the release decision means a flaky browser
-  # interaction can't strand a release on the runway.
+  # so docker / port collisions are isolated.
   ui-test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -187,32 +148,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # .NET 8 LTS targets glibc 2.23 - older than any modern distro - so
-  # building on ubuntu-latest produces binaries that load on Raspberry
-  # Pi OS 11 (Bullseye) and newer without further plumbing.
-  build:
-    needs: test
-    if: needs.test.outputs.should_release == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - rid: linux-x64
-            os: ubuntu-latest
-            ext: ''
-          - rid: linux-arm64
-            os: ubuntu-24.04-arm
-            ext: ''
-          - rid: linux-arm
-            os: ubuntu-latest      # cross-compiled from x64
-            ext: ''
-          - rid: win-x64
-            os: windows-latest
-            ext: '.exe'
-          - rid: osx-arm64
-            os: macos-latest
-            ext: ''
-    runs-on: ${{ matrix.os }}
+  # The .deb build is part of the release, but a packaging break that only shows up when
+  # someone tags is a release held hostage to a five-line shell bug. So build the amd64
+  # package here too and actually install it. One architecture and no release plumbing,
+  # so it finishes well inside the `test` job it runs beside and costs nothing on the
+  # critical path - and it catches the whole class, including the ones that only appear
+  # at dpkg-configure time.
+  deb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
 
@@ -221,86 +165,50 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      - name: Publish self-contained single file
-        # PublishSingleFile bundles managed assemblies; the extra
-        # IncludeNativeLibrariesForSelfExtract flag pulls native deps
-        # (e.g. SQLite's libe_sqlite3.so) into the same exe so the
-        # operator drops one file on a server. Trimming is left off:
-        # ASP.NET Core + DI + JSON have enough reflection that trimming
-        # tends to break startup in subtle ways. Binary size is ~100MB
-        # - acceptable cost for "no runtime install needed".
-        #
-        # IncludeAllContentForSelfExtract=true forces every bundled
-        # assembly (managed AND native) to be extracted to a per-run
-        # cache dir on startup, instead of the default in-memory bundle
-        # resolver. We hit a real reproducible bug on linux-arm where
-        # the in-memory resolver couldn't load System.Diagnostics.Process
-        # - the assembly bytes were in the bundle (verified via
-        # `strings`) but the runtime threw FileNotFoundException when
-        # JIT'ing code that referenced it. The behaviour was 100%
-        # reproducible across consecutive apply-update runs and not
-        # transient. Forcing extraction puts every assembly on disk
-        # where the standard fs resolver finds it; trades a tiny
-        # startup penalty (~few hundred MB to /tmp/.net/...) for a
-        # working binary on the only platform this matters for in
-        # practice. The other RIDs (linux-x64, linux-arm64, win-x64,
-        # osx-arm64) absorb this with no observed downside.
-        shell: bash
+      - name: Build the amd64 .deb
         run: |
-          dotnet publish src/dapps/dapps.core/dapps.core.csproj \
-            --configuration Release \
-            --runtime ${{ matrix.rid }} \
-            --self-contained true \
-            -p:PublishSingleFile=true \
-            -p:IncludeNativeLibrariesForSelfExtract=true \
-            -p:IncludeAllContentForSelfExtract=true \
-            -p:DebugType=embedded \
-            --output publish
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          version="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' src/dapps/Directory.Build.props | head -1)"
+          packaging/build-deb.sh "$version" amd64 ./artifacts
+          dpkg-deb --info ./artifacts/*.deb
+          dpkg-deb --contents ./artifacts/*.deb | sed -n '1,40p'
 
-      - name: Stage release artifact
-        shell: bash
+      - name: Install it and check it boots
+        # Same smoke test release.yml runs, minus the version assertion against a tag.
+        timeout-minutes: 5
         run: |
-          mkdir -p dist
-          cp "publish/dapps.core${{ matrix.ext }}" "dist/dapps-${{ matrix.rid }}${{ matrix.ext }}"
-          test -s "dist/dapps-${{ matrix.rid }}${{ matrix.ext }}"
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: dapps-${{ matrix.rid }}
-          path: dist/dapps-${{ matrix.rid }}${{ matrix.ext }}
-          if-no-files-found: error
-
-  release:
-    needs: [test, build]
-    if: needs.test.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/download-artifact@v7
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Stamp manifest version
-        # pdn-app.yaml's `version:` field is informational (pdn shows it
-        # in its UI) and should track the release tag. Stamp it into the
-        # copy we attach so the asset always matches the release it
-        # ships with; the repo copy stays as-is.
-        run: |
-          sed -i 's/^version: .*/version: "${{ needs.test.outputs.version }}"/' pdn-app.yaml
-          grep '^version:' pdn-app.yaml
-
-      - name: Create GitHub Release
-        # pdn-app.yaml rides along as a release asset so the pdn build
-        # can fetch manifest + binary from the same release.
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tag="v${{ needs.test.outputs.version }}"
-          gh release create "$tag" \
-            --title "$tag" \
-            --target "${{ github.sha }}" \
-            --generate-notes \
-            dist/* \
-            pdn-app.yaml
+          set -euo pipefail
+          version="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' src/dapps/Directory.Build.props | head -1)"
+          sudo apt-get update -qq
+          sudo apt-get install -y "./artifacts/dapps_${version}_amd64.deb"
+          /usr/bin/dapps --version
+          for i in $(seq 1 60); do
+            systemctl is-active --quiet dapps.service && break
+            sleep 1
+          done
+          systemctl is-active --quiet dapps.service || {
+            echo "::error::dapps.service did not reach active after a clean install"
+            systemctl status dapps.service --no-pager || true
+            journalctl -u dapps.service --no-pager -n 100 || true
+            exit 1
+          }
+          # /Health answers 503 until a callsign and a node exist, which a fresh install
+          # has neither of - so assert on the body, which carries the running version.
+          for i in $(seq 1 60); do
+            curl -sS -o /tmp/health.json http://127.0.0.1:5000/Health && break
+            sleep 1
+          done
+          cat /tmp/health.json || true; echo
+          grep -qF "$version" /tmp/health.json || {
+            echo "::error::no usable HTTP listener on :5000 after a clean install"
+            journalctl -u dapps.service --no-pager -n 100 || true
+            exit 1
+          }
+          # Removal has to work too, and purge must not take the message database with it.
+          sudo touch /var/lib/dapps/canary
+          sudo apt-get purge -y dapps
+          test -e /var/lib/dapps/canary || {
+            echo "::error::apt purge destroyed /var/lib/dapps - that is the message store"
+            exit 1
+          }

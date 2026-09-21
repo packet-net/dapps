@@ -2,21 +2,104 @@
 
 The recommended deployment.
 
-## One-liner install
+## apt (Debian, Ubuntu, Raspberry Pi OS)
+
+```bash
+curl -fsSL https://packet-net.github.io/apt/pubkey.asc | sudo gpg --dearmor -o /usr/share/keyrings/packet-net.gpg
+echo "deb [signed-by=/usr/share/keyrings/packet-net.gpg] https://packet-net.github.io/apt ./" | sudo tee /etc/apt/sources.list.d/packet-net.list
+sudo apt update
+sudo apt install dapps
+```
+
+`amd64`, `arm64` and `armhf` are all published, so this is the same two commands on a Pi as on a server. The repository is the [packet-net apt repo](https://github.com/packet-net/apt), signed with the key you just installed, and it carries the rest of the stack too (`pdn-soundmodem`, `packetnet`, `axcall`, the pdn-\* services) - you only add it once.
+
+Installing gives you:
+
+- The payload under `/usr/lib/dapps`, with `/usr/bin/dapps` a symlink into it.
+- A `dapps` system user, and `/var/lib/dapps` for the SQLite database (created by systemd, kept across upgrades **and across `apt purge`** - the message store is never something a package removal should take with it).
+- `dapps.service`, enabled and started.
+- `/etc/dapps/dapps.env`, seeded on first install and never touched again by an upgrade.
+
+Then open `http://<node>:5000/`. The first request lands on `/Setup` - a two-step wizard for the admin password and your callsign + bearer. See [Getting started](../getting-started.md) for the full walk-through.
+
+### Updating
+
+```bash
+sudo apt update && sudo apt upgrade
+```
+
+The package restarts the service for you. There is no `dapps-updater` unit in the apt install and the hourly update check is seeded off, because apt is the update path here - see [Update](../update.md).
+
+### Configuration
+
+Callsign, bearer, ports, forwarding, discovery and the rest live in the dashboard and are stored in the database. `/etc/dapps/dapps.env` is only for the things the dashboard cannot own - principally where the HTTP listener binds:
+
+```bash
+sudo nano /etc/dapps/dapps.env      # e.g. ASPNETCORE_URLS=http://127.0.0.1:5000
+sudo systemctl restart dapps
+```
+
+To change the unit itself, use a drop-in rather than editing `/usr/lib/systemd/system/dapps.service` - a package upgrade replaces that file, and drop-ins survive it:
+
+```bash
+sudo systemctl edit dapps
+```
+
+which opens `/etc/systemd/system/dapps.service.d/override.conf`. Add only what you want to change:
+
+```ini
+[Service]
+Environment=ASPNETCORE_URLS=http://127.0.0.1:5000
+```
+
+If you bind below port 1024 (e.g. the dashboard on `:80`), grant the binary the capability rather than running as root - and note this has to be applied to the real binary, not the symlink, and re-applied after each upgrade:
+
+```bash
+sudo setcap 'cap_net_bind_service=+ep' /usr/lib/dapps/dapps.core
+```
+
+### Migrating from an install.sh install
+
+`apt install dapps` on a host that was set up with the one-liner installer will warn you, and it is worth reading: the installer writes its unit to `/etc/systemd/system/dapps.service`, which **overrides** the package's unit, so systemd would quietly keep running the old binary out of `/opt/dapps` while apt believes it owns the service. To finish the move:
+
+```bash
+sudo systemctl disable --now dapps-updater.timer
+sudo rm -f /etc/systemd/system/dapps.service \
+           /etc/systemd/system/dapps-updater.service \
+           /etc/systemd/system/dapps-updater.timer
+sudo systemctl daemon-reload
+sudo systemctl restart dapps
+sudo rm -rf /opt/dapps
+```
+
+Your database in `/var/lib/dapps` is untouched and carries straight over, so the node keeps its callsign, peers and queued messages.
+
+### Uninstalling
+
+```bash
+sudo apt remove dapps      # stops and removes the service, keeps config and database
+sudo apt purge dapps       # also removes /etc/dapps and the dapps user
+```
+
+Neither touches `/var/lib/dapps`. Remove it by hand once you are sure you want the message store gone.
+
+## One-liner installer (non-Debian hosts)
+
+On a systemd Linux that is not Debian-family - or where you would rather not add a repository:
 
 ```bash
 curl -sSL https://packet-net.github.io/dapps/install.sh | sudo bash
 ```
 
-Detects your architecture (`x86_64` / `aarch64` / `armv7l`), downloads the matching binary from the [latest GitHub Release](https://github.com/packet-net/dapps/releases/latest), creates the `dapps` system user and `/var/lib/dapps` state directory, drops two systemd units (`dapps.service` and the privileged `dapps-updater.service` + `.timer`), and enables both. No env vars, no callsign yet - configuration happens in the dashboard once the daemon is up.
+Detects your architecture (`x86_64` / `aarch64` / `armv7l`), downloads the matching single-file binary from the [latest GitHub Release](https://github.com/packet-net/dapps/releases/latest) to `/opt/dapps/dapps`, creates the `dapps` system user and `/var/lib/dapps` state directory, drops `dapps.service` plus the privileged `dapps-updater.service` + `.timer`, and enables both. No env vars, no callsign yet - configuration happens in the dashboard once the daemon is up.
 
-When it's done it prints the URL to open in a browser. The first request lands on `/Setup` - a two-step wizard for the admin password and your callsign + bearer. See [Getting started](../getting-started.md) for the full walk-through.
+This path keeps the in-app update story: re-run the installer to upgrade in place, or use the dashboard's **Apply update** button, which goes through the supervised updater. See [Update](../update.md).
 
-Re-run the installer to upgrade the binary in place. (Operators with the dashboard up should usually use the in-app **Apply update** button instead, which goes through the supervised updater.)
+Use apt if you can. This exists so that "not Debian" does not mean "build it yourself", and it is the same binary either way.
 
 ## Manual install
 
-If you'd rather see what's happening, or if your distro has something unusual about its systemd setup, here's what the installer does step by step.
+If you would rather see what is happening, or your distro has something unusual about its systemd setup, here is what the one-liner does step by step.
 
 ### 1. Drop the binary
 
@@ -109,6 +192,8 @@ WantedBy=timers.target
 
 The timer fires the service every minute; the service does nothing if no marker file exists, so the steady state is a no-op heartbeat.
 
+Do **not** install these alongside the apt package. They swap a binary in `/opt/dapps` that an apt install does not use, and the unit in `/etc/systemd/system` silently wins over the packaged one.
+
 ### 4. Enable and start
 
 ```bash
@@ -130,23 +215,6 @@ sudo journalctl -u dapps.service -f
 
 The `/Health` and `/Operational` endpoints are intentionally not behind the cookie - they're designed to be scraped by watchdogs and your own monitoring. The MCP endpoint at `/mcp` is also open for the same reason.
 
-## Operator customisations
-
-If you tweak the unit file (e.g. binding the dashboard to localhost only, increasing log verbosity, adding env vars), use a **systemd drop-in** rather than editing the unit file in place - the dashboard's update flow won't overwrite drop-ins, but a future install recipe might overwrite the unit:
-
-```bash
-sudo systemctl edit dapps.service
-```
-
-That opens an editor on `/etc/systemd/system/dapps.service.d/override.conf`. Add only the bits you want to change:
-
-```ini
-[Service]
-Environment=ASPNETCORE_URLS=http://127.0.0.1:5000
-```
-
-`systemctl daemon-reload && systemctl restart dapps.service` to pick up changes.
-
 ## Logs
 
 DAPPS logs to stdout, which systemd captures into the journal:
@@ -166,7 +234,7 @@ The journal also captures the structured decision-events that the `/Operational`
 
 ## Backups
 
-The state worth backing up is `/var/lib/dapps/dapps.db` - the SQLite database. The binary is recoverable from GitHub Releases; everything else is derived from defaults. Stop DAPPS before copying for a consistent snapshot, or use SQLite's online backup API.
+The state worth backing up is `/var/lib/dapps/dapps.db` - the SQLite database. The binary is recoverable from apt or GitHub Releases; everything else is derived from defaults. Stop DAPPS before copying for a consistent snapshot, or use SQLite's online backup API.
 
 ```bash
 sudo systemctl stop dapps.service
@@ -174,7 +242,7 @@ sudo cp /var/lib/dapps/dapps.db /backup/dapps.db
 sudo systemctl start dapps.service
 ```
 
-## Uninstall
+## Uninstall (one-liner installs)
 
 ```bash
 sudo systemctl disable --now dapps.service dapps-updater.timer
@@ -183,3 +251,5 @@ sudo systemctl daemon-reload
 sudo rm -rf /opt/dapps /var/lib/dapps
 sudo userdel dapps
 ```
+
+For an apt install, see [Uninstalling](#uninstalling) above.

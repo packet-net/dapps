@@ -1,6 +1,20 @@
 # Update
 
-There are three update paths, all driven by the same underlying mechanism. Pick the one that matches how you operate.
+How a node updates depends on how it was installed.
+
+## apt installs
+
+```bash
+sudo apt update && sudo apt upgrade
+```
+
+That is the whole story. The package stops the old daemon, replaces the payload under `/usr/lib/dapps`, and restarts the service; `/etc/dapps/dapps.env` and the database in `/var/lib/dapps` are left alone.
+
+The `.deb` deliberately ships **no** `dapps-updater` unit and seeds `DAPPS_UPDATE_CHECK_ENABLED=false`. Two reasons. The self-updater swaps a binary at `/opt/dapps/dapps`, which an apt install does not have and dpkg would not expect to change under it; and a banner announcing a release that `apt upgrade` is already bringing is a nag with nothing behind it - the dashboard's **Apply update** button has no updater to trigger. If you would rather see new upstream releases appear on the dashboard anyway, set `DAPPS_UPDATE_CHECK_ENABLED=true` in `/etc/dapps/dapps.env` and restart; the update itself still arrives through apt.
+
+A release reaches the apt repository within about a minute of the tag: the release workflow tells [packet-net/apt](https://github.com/packet-net/apt) to reindex as its last step, and a nightly rebuild catches anything that dispatch missed.
+
+The rest of this page is the **one-liner installer's** update story - the supervised in-place updater. It does not apply to apt installs.
 
 ## The mechanism
 
@@ -88,7 +102,7 @@ To force an immediate re-poll without waiting an hour:
 
 ## Disabling the update check
 
-Set `DAPPS_UPDATE_CHECK_ENABLED=false` if your node has no internet access (or you really, really want to know about new versions some other way). The daemon will stop polling; the banner will go quiet. **Recommended only for offline deployments** - the cost is one HTTPS request per hour, the benefit is knowing about fixes.
+Set `DAPPS_UPDATE_CHECK_ENABLED=false` if your node has no internet access (or you really, really want to know about new versions some other way). The daemon will stop polling; the banner will go quiet. **Recommended only for offline deployments** - the cost is one HTTPS request per hour, the benefit is knowing about fixes. The apt package seeds it off for a different reason, covered at the top of this page.
 
 ## Dev builds
 
