@@ -6,21 +6,17 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Microsoft.Extensions / ASP.NET Core - pinned to .NET 8 LTS. .NET
-         10's Linux baseline is glibc 2.36 (Debian 12 / Bookworm), which
-         excludes Raspberry Pi OS 11 (Bullseye, glibc 2.31) deployments
-         still in the wild. .NET 8 LTS targets glibc 2.23 - broad Pi
-         compatibility, supported through Nov 2026. -->
-    <PackageVersion Include="Microsoft.Extensions.Logging" Version="8.0.1" />
-    <!-- Logging.Abstractions + System.IO.Pipelines tracked on the
-         .NET 10 cadence because the MCP SDK transitively requires
-         a 10.x version. Both packages target net8.0 explicitly so
-         they load cleanly on the LTS runtime - the version number
-         is just the release train, not the runtime baseline. -->
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.5" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="8.0.1" />
-
-    <PackageVersion Include="System.IO.Pipelines" Version="10.0.5" />
+    <!-- Microsoft.Extensions / ASP.NET Core - on the .NET 10 train, matching
+         the net10.0 TargetFramework. We sat on .NET 8 LTS until Sep 2026
+         to keep Raspberry Pi OS 11 (Bullseye, glibc 2.31) in scope; .NET
+         8 leaves support in Nov 2026 and .NET 10 is built against Debian
+         12 (Bookworm) glibc, which Bullseye cannot satisfy, so Bullseye
+         is now out of scope. The .deb derives its libc6 floor from the shipped
+         binaries, so apt refuses the install there rather than letting
+         it fail in the dynamic loader. -->
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.11" />
 
     <!-- Storage / messaging -->
     <PackageVersion Include="sqlite-net-pcl" Version="1.9.172" />
@@ -40,8 +36,8 @@
          lineage). API-compatible drop-in for FA. -->
     <PackageVersion Include="AwesomeAssertions" Version="9.4.0" />
     <!-- FakeTimeProvider for cadence-sensitive tests. The non-test
-         abstraction (System.TimeProvider) ships with .NET 8 itself. -->
-    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="8.10.0" />
+         abstraction (System.TimeProvider) ships with the runtime. -->
+    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.9.0" />
     <!-- Testcontainers.NET for the linbpq integration fixtures. Replaces
          the previous raw `docker run` shell-out (closes #5) - same image
          (m0lte/linbpq:latest), generous wait strategy on AGW port
@@ -56,14 +52,13 @@
 
     <!-- RHPv2 (Remote Host Protocol v2) client, used as DAPPS's bearer
          when the local packet node is XRouter. Multi-targets net8.0 +
-         net10.0; we pull the net8.0 build. -->
+         net10.0; we pull the net10.0 build. -->
     <PackageVersion Include="RhpV2.Client" Version="0.2.2" />
 
     <!-- MeshCore bearer (Phase H1, #154): serial link to a MeshCore
          Companion radio, plus zstd dictionary compression of the
-         backhaul payload. System.IO.Ports 8.0.0 keeps the net8 LTS /
-         broad-glibc baseline; ZstdSharp.Port is a pure-managed zstd. -->
-    <PackageVersion Include="System.IO.Ports" Version="8.0.0" />
+         backhaul payload. ZstdSharp.Port is a pure-managed zstd. -->
+    <PackageVersion Include="System.IO.Ports" Version="10.0.11" />
     <PackageVersion Include="ZstdSharp.Port" Version="0.8.8" />
 
     <!-- Playwright + WebApplicationFactory for the dapps.core.uitests

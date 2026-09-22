@@ -24,7 +24,7 @@ public sealed class PlaywrightFixture : IAsyncLifetime
         {
             throw new InvalidOperationException(
                 $"Playwright Chromium install failed (exit {installExitCode}). " +
-                "Run `pwsh src/dapps/dapps.core.uitests/bin/Debug/net8.0/playwright.ps1 install chromium` manually to diagnose.");
+                "Run `pwsh src/dapps/dapps.core.uitests/bin/Debug/net10.0/playwright.ps1 install chromium` manually to diagnose.");
         }
 
         Playwright = await Microsoft.Playwright.Playwright.CreateAsync();

@@ -8,7 +8,7 @@
 # Usage: scripts/dev-push-gb7rdg.sh
 #
 # Requires:
-#   - dotnet 8.0 SDK locally (any host arch - we cross-compile to ARM)
+#   - dotnet 10.0 SDK locally (any host arch - we cross-compile to ARM)
 #   - ssh + scp configured for tf@gb7rdg-node
 #   - sudo NOPASSWD on tf@gb7rdg-node for /opt/dapps/dapps and
 #     systemctl restart dapps.service (or be ready to type the password)

@@ -37,7 +37,7 @@
 #   scripts/sim-multihop.sh prove-fragmentation  # F2 multi-part acceptance
 #   scripts/sim-multihop.sh prove-solicit        # B6.2 on-demand solicit acceptance
 #
-# Requires: dotnet 8 SDK, curl, python3 (with stdlib sqlite3).
+# Requires: dotnet 10 SDK, curl, python3 (with stdlib sqlite3).
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"

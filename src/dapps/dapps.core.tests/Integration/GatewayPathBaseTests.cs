@@ -227,8 +227,8 @@ public sealed class GatewayPathBaseTests
                 env.Remove(key);
             }
 
-            // net8 binary on a possibly-newer host runtime; harmless
-            // where net8 is the latest installed.
+            // Lets the built binary run on a newer host runtime than it targets; harmless
+            // where the targeted runtime is the latest installed.
             env["DOTNET_ROLL_FORWARD"] = "LatestMajor";
             env["ASPNETCORE_URLS"] = "http://127.0.0.1:0";
             env["DAPPS_MQTT_PORT"] = PickEphemeralPort().ToString();
@@ -283,14 +283,14 @@ public sealed class GatewayPathBaseTests
         /// uitests' LocateDappsBinary.</summary>
         private static string LocateDappsDll()
         {
-            var here = AppContext.BaseDirectory; // …/dapps.core.tests/bin/<Cfg>/net8.0
+            var here = AppContext.BaseDirectory; // …/dapps.core.tests/bin/<Cfg>/net10.0
             var primaryCfg = new DirectoryInfo(here).Parent?.Name ?? "Debug";
             var fallbackCfg = primaryCfg == "Debug" ? "Release" : "Debug";
 
             foreach (var cfg in new[] { primaryCfg, fallbackCfg })
             {
                 var dll = Path.GetFullPath(Path.Combine(
-                    here, "..", "..", "..", "..", "dapps.core", "bin", cfg, "net8.0", "dapps.core.dll"));
+                    here, "..", "..", "..", "..", "dapps.core", "bin", cfg, "net10.0", "dapps.core.dll"));
                 if (File.Exists(dll)) return dll;
             }
 

@@ -35,7 +35,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 10.0.x
 
       - name: Pre-pull integration images
         # Integration tests spin up linbpq + xrouter containers.
@@ -71,7 +71,7 @@ jobs:
         run: |
           set -uo pipefail
           proj=src/dapps/dapps.core.tests/dapps.core.tests.csproj
-          results=src/dapps/dapps.core.tests/bin/Release/net8.0/TestResults
+          results=src/dapps/dapps.core.tests/bin/Release/net10.0/TestResults
           attempts=3
           for i in $(seq 1 "$attempts"); do
             echo "::group::Test attempt $i/$attempts"
@@ -93,7 +93,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: test-results
-          path: src/dapps/dapps.core.tests/bin/Release/net8.0/TestResults/
+          path: src/dapps/dapps.core.tests/bin/Release/net10.0/TestResults/
           if-no-files-found: ignore
           retention-days: 7
 
@@ -112,7 +112,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 10.0.x
 
       - name: Restore + build dapps.core.uitests
         run: |
@@ -123,7 +123,7 @@ jobs:
         # `--with-deps` apt-installs the libs Chromium needs (libnss3,
         # libxss1, etc.). Without this the browser launches but
         # immediately crashes on a missing-shared-library error.
-        run: pwsh src/dapps/dapps.core.uitests/bin/Release/net8.0/playwright.ps1 install --with-deps chromium
+        run: pwsh src/dapps/dapps.core.uitests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
 
       - name: Pre-build dapps.core
         # WebAppFixture launches the already-built dll if present.
@@ -163,7 +163,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 10.0.x
 
       - name: Build the amd64 .deb
         run: |

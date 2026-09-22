@@ -39,7 +39,7 @@
 #   scripts/sim-mixed-bearer.sh down       # tear everything down
 #   scripts/sim-mixed-bearer.sh send X Y   # X -> Y one-shot (X, Y in {A,B,C,D})
 #
-# Requires: dotnet 8 SDK, docker, curl, python3, host loopback
+# Requires: dotnet 10 SDK, docker, curl, python3, host loopback
 # available, ports 17001-17004, 28000-28013, 11001-11004, 11881-11884
 # free.
 

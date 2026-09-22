@@ -1,19 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
-    <!-- System.IO.Pipelines: shipped as the BCL surface for asynchronous
-         byte-pipe primitives. Implicitly in scope under the Web SDK
-         (used by dapps.core) but a class library has to reference it
-         explicitly. We use it for the multiplexed AGW session stream's
-         read side. -->
-    <PackageReference Include="System.IO.Pipelines" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,7 +17,7 @@
   <ItemGroup>
     <!-- RHPv2 (Remote Host Protocol v2) client, used as DAPPS's bearer
          when the local packet node is XRouter. Multi-targets net8.0 +
-         net10.0; this project pulls the net8.0 build. -->
+         net10.0; this project pulls the net10.0 build. -->
     <PackageReference Include="RhpV2.Client" />
   </ItemGroup>
 

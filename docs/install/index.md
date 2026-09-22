@@ -38,8 +38,8 @@ The right-hand column is the single-file binary attached to [every release](http
 
 ## Compatibility notes
 
-- **.NET 8 LTS** is the baseline runtime. Everything is self-contained - you do not need .NET installed.
-- **glibc 2.23 or newer** on Linux. Raspberry Pi OS Bullseye (glibc 2.31) and everything more recent works fine. We deliberately stayed on .NET 8 rather than 10 specifically to keep Pi OS Bullseye in scope. The `.deb` declares the floor it actually needs, derived from the shipped binaries at build time, so apt refuses an install that would not run rather than letting it fail in the dynamic loader.
+- **.NET 10** is the baseline runtime. Everything is self-contained - you do not need .NET installed.
+- **glibc 2.34 or newer** on Linux, which means Debian 12 (Bookworm), Raspberry Pi OS 12, Ubuntu 22.04 and anything newer. Raspberry Pi OS 11 (Bullseye, glibc 2.31) is no longer supported: we stayed on .NET 8 to keep it in scope for as long as that runtime was supported, and .NET 8 leaves support in November 2026. The last release that runs on Bullseye is 0.35.0. The `.deb` declares the floor it actually needs, derived from the shipped binaries at build time, so apt refuses an install that would not run rather than letting it fail in the dynamic loader.
 - **Windows**: any 64-bit Windows 10 / Server 2016 or newer.
 - **macOS**: Apple Silicon (M-series). Intel macs are not in the matrix; build from source if you need them.
 

@@ -6,7 +6,7 @@
        bench radios can't reach: multi-hop flood, dedup across paths, flood-scope
        containment, discovery convergence - without any RF. -->
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>

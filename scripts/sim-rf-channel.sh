@@ -94,7 +94,7 @@
 #
 #   SIM_SCENARIO=chain scripts/sim-rf-channel.sh up
 #
-# Requires: dotnet 8 SDK, docker, curl, python3, host loopback, the
+# Requires: dotnet 10 SDK, docker, curl, python3, host loopback, the
 # BPQ + XRouter + net-sim images, and free TCP ports in the ranges
 # the topology tables below select.
 

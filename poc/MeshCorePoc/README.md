@@ -1,7 +1,7 @@
 # DAPPS ⇄ MeshCore private-channel PoC
 
 Independent proof-of-concept for **issue #137 / Phase H1** (MeshCore Companion-over-USB
-as a DAPPS bearer). Standalone .NET 8 console app — **not** wired into DAPPS — that drives
+as a DAPPS bearer). Standalone .NET 10 console app — **not** wired into DAPPS — that drives
 two Heltec WiFi LoRa 32 V3 radios over the MeshCore **Companion** serial protocol and
 round-trips a real DAPPS `BackhaulMessage` over a **private (PSK) channel**.
 
@@ -43,7 +43,7 @@ reassemble → decode, with every field (`id`, `dest`, `originator`, `linkSource
 ```bash
 # build + self-test (no radio needed) — roll-forward if only a newer runtime is installed
 dotnet build -c Release
-DOTNET_ROLL_FORWARD=LatestMajor dotnet bin/Release/net8.0/meshcore-poc.dll selftest
+DOTNET_ROLL_FORWARD=LatestMajor dotnet bin/Release/net10.0/meshcore-poc.dll selftest
 
 # publish a self-contained arm64 single-file binary for the Pi
 dotnet publish -c Release -r linux-arm64 --self-contained true \

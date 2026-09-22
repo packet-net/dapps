@@ -110,7 +110,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 10.0.x
 
       - name: Pre-pull integration images
         run: |
@@ -127,7 +127,7 @@ jobs:
         run: |
           set -uo pipefail
           proj=src/dapps/dapps.core.tests/dapps.core.tests.csproj
-          results=src/dapps/dapps.core.tests/bin/Release/net8.0/TestResults
+          results=src/dapps/dapps.core.tests/bin/Release/net10.0/TestResults
           attempts=3
           for i in $(seq 1 "$attempts"); do
             echo "::group::Test attempt $i/$attempts"
@@ -149,12 +149,13 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: test-results
-          path: src/dapps/dapps.core.tests/bin/Release/net8.0/TestResults/
+          path: src/dapps/dapps.core.tests/bin/Release/net10.0/TestResults/
           if-no-files-found: ignore
           retention-days: 7
 
-  # .NET 8 LTS targets an old glibc, so building on ubuntu-latest produces binaries that
-  # load on Raspberry Pi OS 11 (Bullseye) and newer without further plumbing.
+  # Self-contained publish output is byte-identical regardless of build host, so ubuntu-latest
+  # is fine for every RID. The glibc floor comes from the runtime itself: .NET 10 is built
+  # against Debian 12 (Bookworm) glibc, so Raspberry Pi OS 11 (Bullseye) is out of scope.
   build:
     needs: [version, test]
     strategy:
@@ -183,7 +184,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 10.0.x
 
       - name: Publish self-contained single file
         # PublishSingleFile bundles managed assemblies; the extra
@@ -242,7 +243,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 10.0.x
 
       - name: Preflight
         run: |

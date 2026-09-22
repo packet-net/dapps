@@ -123,14 +123,14 @@ public sealed class WebAppFixture : IAsyncLifetime
     private static (string fileName, string arguments) LocateDappsBinary()
     {
         var here = AppContext.BaseDirectory;
-        // …/dapps.core.uitests/bin/<Cfg>/net8.0
+        // …/dapps.core.uitests/bin/<Cfg>/net10.0
         var primaryCfg = new DirectoryInfo(here).Parent?.Name ?? "Debug";
         var fallbackCfg = primaryCfg == "Debug" ? "Release" : "Debug";
 
         foreach (var cfg in new[] { primaryCfg, fallbackCfg })
         {
             var dll = Path.GetFullPath(Path.Combine(
-                here, "..", "..", "..", "..", "dapps.core", "bin", cfg, "net8.0", "dapps.core.dll"));
+                here, "..", "..", "..", "..", "dapps.core", "bin", cfg, "net10.0", "dapps.core.dll"));
             if (File.Exists(dll))
             {
                 return ("dotnet", $"\"{dll}\"");
