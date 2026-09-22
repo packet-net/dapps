@@ -279,13 +279,24 @@ public sealed class AgwInboundService(
                     new AgwFrame(port, 'd', 0, local, remote, []), c);
             });
 
-        if (!sessions.TryAdd(key, stream))
+        // A 'C' for a key we still have an entry for is *not* necessarily a
+        // real concurrent duplicate: BPQ itself refuses a genuine one at the
+        // L2 level ("... already connected on socket N", logged on BPQ's
+        // side, never reaching us as a 'C' at all). When we do see one, it
+        // means the previous session's 'd' just hasn't reached us yet - BPQ
+        // can flush the AGW frame for a brand-new connect ahead of the
+        // teardown notification for what it replaced. Retire the stale
+        // entry in place rather than rejecting the new, legitimate connect;
+        // marking it remote-closed keeps its own teardown from emitting a
+        // 'd' that could otherwise hit whatever reuses this key next.
+        sessions.AddOrUpdate(key, stream, (_, existing) =>
         {
-            logger.LogWarning("AGW inbound: duplicate connect for existing session {0}↔{1}; ignoring",
-                local, remote);
-            await stream.DisposeAsync();
-            return;
-        }
+            logger.LogWarning(
+                "AGW inbound: 'C' for {0}↔{1} while a session was still registered for that pair; " +
+                "retiring the stale entry (its 'd' probably hasn't reached us yet)", local, remote);
+            existing.SignalRemoteDisconnect();
+            return stream;
+        });
 
         var handler = new InboundConnectionHandler(
             stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics);
