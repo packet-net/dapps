@@ -105,4 +105,40 @@ public sealed class MessagesTests(LoggedInWebAppFixture app, PlaywrightFixture p
             "/Inbound is kept as a redirect so old bookmarks still resolve");
         page.Url.Should().Contain("tab=live");
     }
+
+    /// <summary>
+    /// Clicking a message id on the outbound tab should expand an
+    /// inline payload preview row showing that message's actual
+    /// content, mirroring the live tab's existing click-to-expand
+    /// behaviour. Sends a message via Compose (to a non-local
+    /// destination so it lands in the outbound queue) and asserts the
+    /// clicked row's payload preview contains that exact text.
+    /// </summary>
+    [Fact]
+    public async Task Messages_Outbound_Id_Click_Shows_Payload()
+    {
+        await using var ctx = await pw.Browser.NewLoggedInContextAsync(app);
+        var page = await ctx.NewPageAsync();
+        await page.GotoAsync($"{app.BaseUrl}/Compose");
+
+        var payloadText = $"clickable-id-test-{Guid.NewGuid():N}";
+        await page.FillAsync("input#App", "uitest");
+        await page.FillAsync("input#Destination", "TEST-1");
+        await page.FillAsync("input#Payload", payloadText);
+        await page.FillAsync("input#Ttl", "3600");
+        await page.ClickAsync("form.panel button[type='submit']");
+        await page.WaitForSelectorAsync(".ok-banner",
+            new PageWaitForSelectorOptions { Timeout = 5_000 });
+
+        var id = await page.Locator(".card:has(.label:has-text('Message id')) .value.mono code").InnerTextAsync();
+
+        await page.GotoAsync($"{app.BaseUrl}/Messages?tab=outbound");
+        var row = page.Locator($"tr[data-id='{id}']");
+        await row.WaitForAsync(new LocatorWaitForOptions { Timeout = 15_000 });
+        await row.Locator(".msg-id-link").ClickAsync();
+
+        var payloadPre = page.Locator($"tr.payload-row[data-id='{id}'] pre[data-mode='text']");
+        await payloadPre.WaitForAsync(new LocatorWaitForOptions { Timeout = 5_000 });
+        (await payloadPre.InnerTextAsync()).Should().Contain(payloadText);
+    }
 }

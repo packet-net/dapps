@@ -286,6 +286,13 @@ public class Database(
         return rows.ToList();
     }
 
+    /// <summary>Single dropped-message lookup by id. Returns null if the
+    /// row has aged out of the dropped-messages table or never existed.
+    /// Used by the dashboard's payload-preview endpoint so the "Dropped"
+    /// tab can show what a dropped message actually contained.</summary>
+    public async Task<DbDroppedMessage?> GetDroppedMessage(string id)
+        => await DbInfo.GetAsyncConnection().FindAsync<DbDroppedMessage>(id);
+
     /// <summary>
     /// Soft-delete every message whose TTL has elapsed. Hard-delete
     /// every offer whose TTL has elapsed (offers are protocol-level

@@ -118,24 +118,29 @@ else
             Showing the last <span id="inbound-count">0</span> event(s) since this tab opened.
         </p>
     </div>
-    <style>
-        tr.inbound-row { cursor: pointer; }
-        tr.inbound-row.selected td { background: var(--accent-soft); }
-        tr.payload-row td { background: var(--bg-2); }
-        tr.payload-row pre {
-            max-height: 24rem; overflow: auto; margin: 0; padding: 0.5rem;
-            font-size: 0.78rem; white-space: pre-wrap; word-break: break-all;
-            font-family: var(--font-mono);
-        }
-        .payload-meta { font-size: 0.78rem; color: var(--text-muted); margin-bottom: 0.4rem; }
-        .payload-tabs button {
-            font-size: 0.75rem; padding: 0.15rem 0.55rem; margin-right: 0.25rem;
-            border-radius: 4px; cursor: pointer;
-            background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
-        }
-        .payload-tabs button.active { background: var(--accent); color: white; border-color: var(--accent); }
-    </style>
 }
+<style>
+    tr.inbound-row { cursor: pointer; }
+    tr.selected td { background: var(--accent-soft); }
+    tr.payload-row td { background: var(--bg-2); }
+    tr.payload-row pre {
+        max-height: 24rem; overflow: auto; margin: 0; padding: 0.5rem;
+        font-size: 0.78rem; white-space: pre-wrap; word-break: break-all;
+        font-family: var(--font-mono);
+    }
+    .payload-meta { font-size: 0.78rem; color: var(--text-muted); margin-bottom: 0.4rem; }
+    .payload-tabs button {
+        font-size: 0.75rem; padding: 0.15rem 0.55rem; margin-right: 0.25rem;
+        border-radius: 4px; cursor: pointer;
+        background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+    }
+    .payload-tabs button.active { background: var(--accent); color: white; border-color: var(--accent); }
+    code.msg-id-link {
+        cursor: pointer; color: var(--accent); text-decoration: underline dotted;
+        text-underline-offset: 2px;
+    }
+    code.msg-id-link:hover { color: var(--accent-hover); text-decoration: underline; }
+</style>
 
 <script>
 (function () {
@@ -163,6 +168,97 @@ else
         return `${Math.floor(s / 86400)}d`;
     };
 
+    // Tracks which row (by message id) is currently expanded per tab, so
+    // an in-flight expansion survives the 5s snapshot poll re-rendering
+    // the table out from under it (see reopenExpanded below).
+    const expandedIds = { outbound: null, inbox: null, dropped: null };
+
+    // Fetches and renders (or collapses) the payload preview for `row`,
+    // inserting it as a sibling <tr> directly below. Shared by the live
+    // tab (whole row is the click target) and the outbound/inbox/dropped
+    // tabs (just the id cell is the click target). `key` is the
+    // expandedIds slot to track for tabs whose body gets replaced
+    // wholesale by applyTabSnap; pass null for the live tab, whose rows
+    // are appended in place and never bulk-replaced.
+    async function togglePayload(tbody, row, colspan, key) {
+        const id = row.dataset.id;
+        const next = row.nextElementSibling;
+        if (next && next.classList.contains('payload-row') && next.dataset.id === id) {
+            next.remove();
+            row.classList.remove('selected');
+            if (key) expandedIds[key] = null;
+            return;
+        }
+        tbody.querySelectorAll('tr.payload-row').forEach(r => r.remove());
+        tbody.querySelectorAll('tr.selected').forEach(r => r.classList.remove('selected'));
+        row.classList.add('selected');
+        if (key) expandedIds[key] = id;
+        const tr = document.createElement('tr');
+        tr.className = 'payload-row';
+        tr.dataset.id = id;
+        tr.innerHTML = `<td colspan="${colspan}"><div class="payload-meta">loading payload for <code>${escape(id)}</code>...</div></td>`;
+        row.parentNode.insertBefore(tr, row.nextSibling);
+        try {
+            const res = await fetch('@Url.Content("~/Events/payload/")' + encodeURIComponent(id), { credentials: 'same-origin' });
+            if (res.status === 404) { tr.innerHTML = `<td colspan="${colspan}"><div class="payload-meta">payload for <code>${escape(id)}</code> not found - row may have been swept</div></td>`; return; }
+            if (!res.ok) { tr.innerHTML = `<td colspan="${colspan}"><div class="payload-meta">payload fetch failed: HTTP ${res.status}</div></td>`; return; }
+            const p = await res.json();
+            const meta = `${p.byteLength} byte(s)` +
+                (p.truncated ? ' - preview truncated' : '') +
+                (p.textValid ? '' : ' - not valid UTF-8, showing hex') +
+                ` - src <code>${escape(p.sourceCallsign)}</code>` +
+                ` - dst <code>${escape(p.destination)}</code>`;
+            const showText = p.textValid;
+            tr.innerHTML = `<td colspan="${colspan}">
+                <div class="payload-meta">${meta}</div>
+                <div class="payload-tabs">
+                    <button type="button" data-mode="text" class="${showText ? 'active' : ''}" ${showText ? '' : 'disabled'}>text</button>
+                    <button type="button" data-mode="hex" class="${showText ? '' : 'active'}">hex</button>
+                </div>
+                <pre data-mode="text" style="${showText ? '' : 'display:none;'}">${escape(p.text || '')}</pre>
+                <pre data-mode="hex" style="${showText ? 'display:none;' : ''}">${escape(p.hex || '')}</pre>
+            </td>`;
+            tr.querySelectorAll('.payload-tabs button').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const mode = btn.dataset.mode;
+                    tr.querySelectorAll('.payload-tabs button').forEach(b => b.classList.toggle('active', b === btn));
+                    tr.querySelectorAll('pre').forEach(pre => pre.style.display = pre.dataset.mode === mode ? '' : 'none');
+                });
+            });
+        } catch (e) {
+            tr.innerHTML = `<td colspan="${colspan}"><div class="payload-meta">payload fetch failed: ${escape(e.message ?? e)}</div></td>`;
+        }
+    }
+
+    // Re-expands the row that was expanded before the last snapshot
+    // rebuilt `tbody`'s rows wholesale (outbound/inbox/dropped are
+    // redrawn from scratch on every 5s poll, which would otherwise
+    // silently collapse whatever the operator had open).
+    function reopenExpanded(tbody, colspan, key) {
+        const id = expandedIds[key];
+        if (!id) return;
+        const row = tbody.querySelector(`tr[data-id="${CSS.escape(id)}"]`);
+        if (row) togglePayload(tbody, row, colspan, key);
+        else expandedIds[key] = null;
+    }
+
+    // Delegated click handler so a single listener on the tbody keeps
+    // working across the wholesale innerHTML rebuilds done by
+    // applyTabSnap - no need to rewire per-row listeners each poll.
+    function wireIdClicks(tbody, colspan, key) {
+        if (!tbody) return;
+        tbody.addEventListener('click', (e) => {
+            const link = e.target.closest('.msg-id-link');
+            if (!link) return;
+            const row = link.closest('tr');
+            if (!row) return;
+            togglePayload(tbody, row, colspan, key);
+        });
+    }
+    wireIdClicks(document.getElementById('outbound-body'), 6, 'outbound');
+    wireIdClicks(document.getElementById('inbox-body'), 6, 'inbox');
+    wireIdClicks(document.getElementById('dropped-body'), 5, 'dropped');
+
     function applyTabSnap(s) {
         // Update tab counters from snapshot regardless of which tab is open
         const dropped = (s.tables?.dropped ?? []);
@@ -181,8 +277,8 @@ else
                 return;
             }
             body.innerHTML = out.map(m =>
-                '<tr>'
-                + `<td><code>${escape(m.id)}</code></td>`
+                `<tr data-id="${escape(m.id)}">`
+                + `<td><code class="msg-id-link" title="click to view payload">${escape(m.id)}</code></td>`
                 + `<td><code>${escape(m.destination)}</code></td>`
                 + `<td><code>${escape(m.sourceCallsign)}</code></td>`
                 + `<td class="numeric">${m.bytes ?? '-'}</td>`
@@ -190,6 +286,7 @@ else
                 + '<td><span class="pill">queued</span></td>'
                 + '</tr>'
             ).join('');
+            reopenExpanded(body, 6, 'outbound');
         }
         if (tab === 'inbox') {
             const body = document.getElementById('inbox-body');
@@ -199,8 +296,8 @@ else
                 return;
             }
             body.innerHTML = inb.map(m =>
-                '<tr>'
-                + `<td><code>${escape(m.id)}</code></td>`
+                `<tr data-id="${escape(m.id)}">`
+                + `<td><code class="msg-id-link" title="click to view payload">${escape(m.id)}</code></td>`
                 + `<td><code>${escape(m.destination)}</code></td>`
                 + `<td><code>${escape(m.sourceCallsign)}</code></td>`
                 + `<td class="numeric">${m.bytes ?? '-'}</td>`
@@ -208,6 +305,7 @@ else
                 + '<td><span class="pill warn">awaiting ack</span></td>'
                 + '</tr>'
             ).join('');
+            reopenExpanded(body, 6, 'inbox');
         }
         if (tab === 'dropped') {
             const body = document.getElementById('dropped-body');
@@ -217,14 +315,15 @@ else
                 return;
             }
             body.innerHTML = dropped.map(m =>
-                '<tr>'
-                + `<td><code>${escape(m.id)}</code></td>`
+                `<tr data-id="${escape(m.id)}">`
+                + `<td><code class="msg-id-link" title="click to view payload">${escape(m.id)}</code></td>`
                 + `<td><code>${escape(m.destination)}</code></td>`
                 + `<td><code>${escape(m.sourceCallsign)}</code></td>`
                 + `<td>${escape(m.reason ?? '-')}</td>`
                 + `<td>${fmtAt(m.droppedAt)}</td>`
                 + '</tr>'
             ).join('');
+            reopenExpanded(body, 5, 'dropped');
         }
     }
 
@@ -276,52 +375,6 @@ else
         fDest.addEventListener('input', applyFilters);
         fClear.addEventListener('click', () => { fApp.value = ''; fCall.value = ''; fDest.value = ''; applyFilters(); });
 
-        const togglePayload = async (row) => {
-            const id = row.dataset.id;
-            const next = row.nextElementSibling;
-            if (next && next.classList.contains('payload-row') && next.dataset.id === id) {
-                next.remove(); row.classList.remove('selected'); return;
-            }
-            tbody.querySelectorAll('tr.payload-row').forEach(r => r.remove());
-            tbody.querySelectorAll('tr.inbound-row.selected').forEach(r => r.classList.remove('selected'));
-            row.classList.add('selected');
-            const tr = document.createElement('tr');
-            tr.className = 'payload-row';
-            tr.dataset.id = id;
-            tr.innerHTML = `<td colspan="6"><div class="payload-meta">loading payload for <code>${escape(id)}</code>...</div></td>`;
-            row.parentNode.insertBefore(tr, row.nextSibling);
-            try {
-                const res = await fetch('@Url.Content("~/Events/payload/")' + encodeURIComponent(id), { credentials: 'same-origin' });
-                if (res.status === 404) { tr.innerHTML = `<td colspan="6"><div class="payload-meta">payload for <code>${escape(id)}</code> not found - row may have been swept</div></td>`; return; }
-                if (!res.ok) { tr.innerHTML = `<td colspan="6"><div class="payload-meta">payload fetch failed: HTTP ${res.status}</div></td>`; return; }
-                const p = await res.json();
-                const meta = `${p.byteLength} byte(s)` +
-                    (p.truncated ? ' - preview truncated' : '') +
-                    (p.textValid ? '' : ' - not valid UTF-8, showing hex') +
-                    ` - src <code>${escape(p.sourceCallsign)}</code>` +
-                    ` - dst <code>${escape(p.destination)}</code>`;
-                const showText = p.textValid;
-                tr.innerHTML = `<td colspan="6">
-                    <div class="payload-meta">${meta}</div>
-                    <div class="payload-tabs">
-                        <button type="button" data-mode="text" class="${showText ? 'active' : ''}" ${showText ? '' : 'disabled'}>text</button>
-                        <button type="button" data-mode="hex" class="${showText ? '' : 'active'}">hex</button>
-                    </div>
-                    <pre data-mode="text" style="${showText ? '' : 'display:none;'}">${escape(p.text || '')}</pre>
-                    <pre data-mode="hex" style="${showText ? 'display:none;' : ''}">${escape(p.hex || '')}</pre>
-                </td>`;
-                tr.querySelectorAll('.payload-tabs button').forEach(btn => {
-                    btn.addEventListener('click', () => {
-                        const mode = btn.dataset.mode;
-                        tr.querySelectorAll('.payload-tabs button').forEach(b => b.classList.toggle('active', b === btn));
-                        tr.querySelectorAll('pre').forEach(pre => pre.style.display = pre.dataset.mode === mode ? '' : 'none');
-                    });
-                });
-            } catch (e) {
-                tr.innerHTML = `<td colspan="6"><div class="payload-meta">payload fetch failed: ${escape(e.message ?? e)}</div></td>`;
-            }
-        };
-
         const es = new EventSource('@Url.Content("~/Events/inbound")');
         es.onopen = () => { status.textContent = 'live'; status.className = 'pill ok'; };
         es.onerror = () => { status.textContent = 'reconnecting'; status.className = 'pill warn'; };
@@ -341,7 +394,7 @@ else
                     '<td>' + escape(d.destination) + '</td>' +
                     '<td class="numeric">' + escape(d.payloadLength) + '</td>' +
                     '<td class="numeric">' + (d.ttl == null ? '-' : escape(d.ttl)) + '</td>';
-                row.addEventListener('click', () => togglePayload(row));
+                row.addEventListener('click', () => togglePayload(tbody, row, 6, null));
                 if (!matchesFilter(row)) row.style.display = 'none';
                 tbody.insertBefore(row, tbody.firstChild);
                 count += 1; counter.textContent = count;

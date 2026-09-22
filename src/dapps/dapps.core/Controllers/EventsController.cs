@@ -110,12 +110,16 @@ public sealed class EventsController(
     }
 
     /// <summary>
-    /// Payload preview for a single message id. The /Inbound page calls
-    /// this when the operator clicks a row to expand it: keeps the SSE
-    /// event itself small (no payload bytes flowing through every tab on
-    /// every delivery) and lets the preview pull from the messages table
-    /// even after the page has been open long enough to forget which
-    /// payload corresponded to which row.
+    /// Payload preview for a single message id. The dashboard's Messages
+    /// page calls this when the operator clicks a row's id to expand it:
+    /// keeps the SSE event itself small (no payload bytes flowing through
+    /// every tab on every delivery) and lets the preview pull from the
+    /// messages table even after the page has been open long enough to
+    /// forget which payload corresponded to which row.
+    ///
+    /// Checks the live <c>messages</c> table first, then falls back to
+    /// <c>dropped_messages</c> so the "Dropped" tab can show what a
+    /// dropped message actually contained.
     ///
     /// Returns up to <see cref="PayloadPreviewLimit"/> bytes; the rest is
     /// truncated and the row's <c>truncated</c> flag flips on. Body is
@@ -127,9 +131,23 @@ public sealed class EventsController(
     public async Task<ActionResult<PayloadPreview>> GetPayload(string id)
     {
         var msg = await database.GetMessage(id);
-        if (msg is null) return NotFound();
+        if (msg is not null)
+        {
+            return BuildPreview(msg.Id, msg.Destination, msg.SourceCallsign, msg.Payload);
+        }
 
-        var bytes = msg.Payload ?? Array.Empty<byte>();
+        var dropped = await database.GetDroppedMessage(id);
+        if (dropped is not null)
+        {
+            return BuildPreview(dropped.Id, dropped.Destination, dropped.SourceCallsign, dropped.Payload);
+        }
+
+        return NotFound();
+    }
+
+    private static PayloadPreview BuildPreview(string id, string destination, string sourceCallsign, byte[]? payload)
+    {
+        var bytes = payload ?? Array.Empty<byte>();
         var truncated = bytes.Length > PayloadPreviewLimit;
         var slice = truncated ? bytes.AsSpan(0, PayloadPreviewLimit).ToArray() : bytes;
 
@@ -150,9 +168,9 @@ public sealed class EventsController(
         }
 
         return new PayloadPreview(
-            Id: msg.Id,
-            Destination: msg.Destination,
-            SourceCallsign: msg.SourceCallsign,
+            Id: id,
+            Destination: destination,
+            SourceCallsign: sourceCallsign,
             ByteLength: bytes.Length,
             Truncated: truncated,
             TextValid: textValid,
