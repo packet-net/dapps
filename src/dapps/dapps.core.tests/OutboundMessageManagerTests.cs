@@ -186,6 +186,35 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         c.Find<DbMessage>("reject1")!.Forwarded.Should().BeFalse();
     }
 
+    /// <summary>
+    /// Regression test for a retry storm seen in the field: a destination
+    /// that accepts the AX.25 connect but rejects at the application
+    /// layer (e.g. BPQ's "No AGWPE Host Sessions available" instead of
+    /// the DAPPSv1&gt; prompt) was re-dialled on every single 5s forwarder
+    /// tick forever, since a failed send just leaves the message
+    /// pending. <see cref="OutboundDestinationBackoff"/> should put the
+    /// destination in cooldown after a failure so an immediate next tick
+    /// (well within the schedule's fastest 10s tier) skips it instead.
+    /// </summary>
+    [Fact]
+    public async Task DoRun_BackhaulRejection_SecondImmediateTick_SkipsRetryDuringCooldown()
+    {
+        InsertMessage(id: "reject2", ttl: null, createdAt: DateTime.UtcNow);
+        backhaul.NextResult = BackhaulSendResult.Fail("simulated bearer error");
+
+        await manager.DoRun(TestContext.Current.CancellationToken);
+        backhaul.Sent.Should().ContainSingle("the first attempt always goes out");
+
+        // Immediately tick again - real elapsed time here is milliseconds,
+        // nowhere near the schedule's fastest (10s) tier.
+        await manager.DoRun(TestContext.Current.CancellationToken);
+
+        backhaul.Sent.Should().ContainSingle(
+            "the destination is still in its post-failure cooldown, so this tick must not retry yet");
+        using var c = DbInfo.GetConnection();
+        c.Find<DbMessage>("reject2")!.Forwarded.Should().BeFalse();
+    }
+
     [Fact]
     public async Task DoRun_PassesNeighbourBearerPortToBackhaul()
     {

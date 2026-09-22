@@ -202,6 +202,11 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
         options.ExpireTimeSpan = TimeSpan.FromDays(90);
         options.SlidingExpiration = true;
     });
+// Per-destination sliding-scale backoff so a destination that connects
+// fine but rejects at the application layer (e.g. BPQ's "No AGWPE Host
+// Sessions available" instead of the DAPPSv1> prompt) doesn't get
+// re-dialled on every 5s forwarder tick forever.
+builder.Services.AddSingleton<OutboundDestinationBackoff>();
 builder.Services.AddSingleton<OutboundMessageManager>();
 // B5 routing seam - IRoutingAlgorithm is the strategy, IRoutingContext
 // is the slice of node state it reads. Two stacks shipped today;

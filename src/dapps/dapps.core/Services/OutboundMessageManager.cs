@@ -27,11 +27,13 @@ public class OutboundMessageManager(
     IRoutingContext routingContext,
     OperationalMetrics? metrics = null,
     OutboundActivityTracker? activityTracker = null,
-    TransmissionAuditService? transmissionAudit = null)
+    TransmissionAuditService? transmissionAudit = null,
+    OutboundDestinationBackoff? destinationBackoff = null)
 {
     private readonly ILogger logger = loggerFactory.CreateLogger<OutboundMessageManager>();
     private readonly IReadOnlyList<IDappsBackhaul> backhauls = backhauls.ToList();
     private readonly OperationalMetrics metrics = metrics ?? new OperationalMetrics();
+    private readonly OutboundDestinationBackoff destinationBackoff = destinationBackoff ?? new OutboundDestinationBackoff();
 
     /// <summary>
     /// Mutex on <see cref="DoRun"/> so concurrent triggers
@@ -101,6 +103,13 @@ public class OutboundMessageManager(
             switch (decision)
             {
                 case RouteDecision.NextHop nh:
+                    if (destinationBackoff.IsInCooldown(nh.Route.Callsign, out var nextRetryAtUtc))
+                    {
+                        logger.LogDebug(
+                            "Skipping {0}: {1} is in reconnect cooldown until {2:O}",
+                            message.Id, nh.Route.Callsign, nextRetryAtUtc);
+                        break;
+                    }
                     var bm = new BackhaulMessage(
                         Id: message.Id,
                         Destination: message.Destination,
@@ -169,11 +178,13 @@ public class OutboundMessageManager(
             metrics.RecordForwardSuccess(message.Id, route.Callsign, message.Payload.Length);
             activityTracker?.RecordTransmission();
             await database.MarkMessageAsForwarded(message.Id);
+            destinationBackoff.RecordSuccess(route.Callsign);
         }
         else
         {
-            logger.LogError("Failed to forward message {0} to {1} via {2}: {3}",
-                message.Id, route.Callsign, backhaul.GetType().Name, result.Error);
+            var nextRetryAtUtc = destinationBackoff.RecordFailure(route.Callsign);
+            logger.LogError("Failed to forward message {0} to {1} via {2}: {3} (retrying no earlier than {4:O})",
+                message.Id, route.Callsign, backhaul.GetType().Name, result.Error, nextRetryAtUtc);
             metrics.RecordForwardFailure(message.Id, route.Callsign, message.Payload.Length, result.Error);
         }
         if (transmissionAudit is { } ta)
@@ -235,9 +246,18 @@ public class OutboundMessageManager(
             {
                 metrics.RecordForwardSuccess(message.Id, route.Callsign, message.Payload.Length);
                 activityTracker?.RecordTransmission();
+                destinationBackoff.RecordSuccess(route.Callsign);
             }
             else
             {
+                // Floods are one-shot (no retry of this message), so we
+                // don't skip on cooldown here the way NextHop does - but
+                // still record the failure so a neighbour that's
+                // currently failing NextHop sends is also reflected in
+                // its streak, and so a burst of floods to the same
+                // failing neighbour doesn't reset a streak NextHop is
+                // tracking.
+                destinationBackoff.RecordFailure(route.Callsign);
                 metrics.RecordForwardFailure(message.Id, route.Callsign, message.Payload.Length, result.Error);
             }
             if (transmissionAudit is { } ta)

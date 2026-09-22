@@ -158,11 +158,16 @@ public sealed class AgwInboundService(
                 // missing config, or the cycle token's while-condition
                 // caught a cancellation before the next read threw. Either
                 // way it's not a failure: reset the backoff and reconnect
-                // promptly rather than escalating.
+                // promptly rather than escalating. Routed through
+                // reconnect.WaitAsync (rather than a bare Task.Delay) so
+                // a manual "retry now" or a further options change can
+                // still collapse this short wait too; WaitAsync swallows
+                // cancellation internally, so the outer while-condition
+                // (not an explicit return here) is what ends the loop on
+                // shutdown.
                 reconnect.RecordSuccess();
                 PublishBackoffState();
-                try { await Task.Delay(NonFailureRetryDelay, outerCt); }
-                catch (OperationCanceledException) { return; }
+                await reconnect.WaitAsync(NonFailureRetryDelay, outerCt);
             }
             catch (OperationCanceledException) when (outerCt.IsCancellationRequested)
             {
@@ -176,17 +181,23 @@ public sealed class AgwInboundService(
                 // reconnecting in a tight loop if options keep changing.
                 reconnect.RecordSuccess();
                 PublishBackoffState();
-                try { await Task.Delay(NonFailureRetryDelay, outerCt); }
-                catch (OperationCanceledException) { return; }
+                await reconnect.WaitAsync(NonFailureRetryDelay, outerCt);
             }
             catch (Exception ex)
             {
                 var delay = reconnect.RecordFailure();
+                // Start the wait (which assigns reconnect's internal
+                // cancellation source) before publishing/logging - the
+                // dashboard shows this failure, and its "Retry now"
+                // button becomes clickable, the moment PublishBackoffState
+                // runs, so TriggerRetry must already have something to
+                // cancel by then.
+                var waitTask = reconnect.WaitAsync(delay, outerCt);
                 PublishBackoffState();
                 logger.LogWarning(ex,
                     "AGW inbound loop ended; reconnecting in {0}s (attempt {1}, next at {2:O})",
                     delay.TotalSeconds, reconnect.FailureStreak, reconnect.NextRetryAtUtc);
-                await reconnect.WaitAsync(delay, outerCt);
+                await waitTask;
             }
         }
     }

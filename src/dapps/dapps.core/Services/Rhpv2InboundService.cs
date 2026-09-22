@@ -92,11 +92,16 @@ public sealed class Rhpv2InboundService(
                     // (a genuine bind/listen failure now throws - see
                     // BindListenerAsync). Not a hard failure: reset the
                     // backoff, but still pause briefly rather than
-                    // spinning.
+                    // spinning. Routed through reconnect.WaitAsync (rather
+                    // than a bare Task.Delay) so a manual "retry now" or a
+                    // further options change can still collapse this
+                    // short wait too; WaitAsync swallows cancellation
+                    // internally, so the outer while-condition (not an
+                    // explicit return here) is what ends the loop on
+                    // shutdown.
                     reconnect.RecordSuccess();
                     PublishBackoffState();
-                    try { await Task.Delay(NonFailureRetryDelay, stoppingToken); }
-                    catch (OperationCanceledException) { return; }
+                    await reconnect.WaitAsync(NonFailureRetryDelay, stoppingToken);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
@@ -108,17 +113,20 @@ public sealed class Rhpv2InboundService(
                     // but still pause briefly before reconnecting.
                     reconnect.RecordSuccess();
                     PublishBackoffState();
-                    try { await Task.Delay(NonFailureRetryDelay, stoppingToken); }
-                    catch (OperationCanceledException) { return; }
+                    await reconnect.WaitAsync(NonFailureRetryDelay, stoppingToken);
                 }
                 catch (Exception ex)
                 {
                     var delay = reconnect.RecordFailure();
+                    // Start the wait (which assigns reconnect's internal
+                    // cancellation source) before publishing/logging - see
+                    // the matching comment in AgwInboundService.RunLoop.
+                    var waitTask = reconnect.WaitAsync(delay, stoppingToken);
                     PublishBackoffState();
                     logger.LogWarning(ex,
                         "RHP inbound: connection lost; reconnecting in {0}s (attempt {1}, next at {2:O})",
                         delay.TotalSeconds, reconnect.FailureStreak, reconnect.NextRetryAtUtc);
-                    await reconnect.WaitAsync(delay, stoppingToken);
+                    await waitTask;
                 }
             }
         }
