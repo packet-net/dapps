@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Net.Sockets;
-using System.Text;
 using dapps.client.Backhaul;
 using dapps.client.Transport.Agw;
 using dapps.client.Tx;
@@ -27,11 +26,35 @@ namespace dapps.core.Services;
 /// callsign and the AGW <c>'X'</c> registration is silently inert
 /// (per linbpq apps-interface.md and AGWAPI.c:1427).
 ///
+/// Session identity. AGW frames carry no session id: a session is the
+/// (local, remote, port) triple, and BPQ reuses it the moment a peer
+/// redials. Everything below that touches the session table follows
+/// three rules that fall out of how BPQ's AGWAPI.c actually behaves:
+///   1. BPQ stamps its disconnect notification ('d') with the port of
+///      the last frame it *received from us* on the socket, not the
+///      session's port (SendDisMsgtoAppl copies sockptr-&gt;AGWRXHeader.Port).
+///      After a 'G' keepalive that is port 0 regardless of the session.
+///      So a 'd' (or 'D') that matches no session exactly is resolved
+///      by callsign pair alone, provided that pair identifies exactly
+///      one session.
+///   2. BPQ refuses a second inbound connect for a pair it still holds
+///      a session for (AGWConnected, "Callsign is already connected"),
+///      before any 'C' reaches us. So a 'C' for a key we still have an
+///      entry for means that entry is stale, never a live duplicate:
+///      retire it in place and accept the new session.
+///   3. A retired or remotely-closed session must never emit a 'd' of
+///      its own, because BPQ resolves an app-sent 'd' by callsign pair
+///      too and would tear down whatever newer session holds it.
+///      <see cref="MultiplexedAgwSessionStream"/> enforces that; the
+///      table only ever removes an entry by (key, stream) so a
+///      handler's teardown cannot evict its successor.
+///
 /// Reconnect policy: on any AGW socket error, sleep
 /// <see cref="ReconnectBackoff"/> and retry. In-flight inbound sessions
 /// are lost (their streams get EOF); the sender's bearer surfaces a
 /// timeout and retries on its next forwarder run - matches the
-/// existing at-least-once semantics.
+/// existing at-least-once semantics. All waits go through the injected
+/// <see cref="TimeProvider"/> so tests can drive them with a fake clock.
 /// </summary>
 public sealed class AgwInboundService(
     IOptionsMonitor<SystemOptions> options,
@@ -40,10 +63,11 @@ public sealed class AgwInboundService(
     ILoggerFactory loggerFactory,
     ILogger<AgwInboundService> logger,
     OperationalMetrics? metrics = null,
-    IDappsTxGate? txGate = null) : IHostedService
+    IDappsTxGate? txGate = null,
+    TimeProvider? timeProvider = null) : IHostedService
 {
-    private static readonly TimeSpan ReconnectBackoff = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan IdleBackoff = TimeSpan.FromSeconds(2);
+    internal static readonly TimeSpan ReconnectBackoff = TimeSpan.FromSeconds(5);
+    internal static readonly TimeSpan IdleBackoff = TimeSpan.FromSeconds(2);
     /// <summary>
     /// AGW keepalive period. BPQ closes idle AGW client connections
     /// after ~20s of no traffic; without a periodic frame from us,
@@ -54,11 +78,12 @@ public sealed class AgwInboundService(
     /// activity, BPQ's idle timer resets. 15s is comfortably under
     /// 20s with margin for jitter.
     /// </summary>
-    private static readonly TimeSpan KeepaliveInterval = TimeSpan.FromSeconds(15);
+    internal static readonly TimeSpan KeepaliveInterval = TimeSpan.FromSeconds(15);
 
     private readonly CancellationTokenSource stoppingTokenSource = new();
     private readonly OperationalMetrics metrics = metrics ?? new OperationalMetrics();
     private readonly IDappsTxGate txGate = txGate ?? AlwaysOpenTxGate.Instance;
+    private readonly TimeProvider timeProvider = timeProvider ?? TimeProvider.System;
     private Task? loopTask;
     private CancellationTokenSource? cycleTokenSource;
     private IDisposable? optionsChangeSubscription;
@@ -109,7 +134,7 @@ public sealed class AgwInboundService(
                 logger.LogWarning(ex, "AGW inbound loop ended; reconnecting in {0}s", ReconnectBackoff.TotalSeconds);
             }
 
-            try { await Task.Delay(ReconnectBackoff, outerCt); }
+            try { await Task.Delay(ReconnectBackoff, timeProvider, outerCt); }
             catch (OperationCanceledException) { return; }
         }
     }
@@ -124,7 +149,7 @@ public sealed class AgwInboundService(
         // cancels our cycle (or theirs) so the loop re-evaluates.
         if (!string.Equals(opts.NodeBearer, "agw", StringComparison.OrdinalIgnoreCase))
         {
-            await Task.Delay(IdleBackoff, ct);
+            await Task.Delay(IdleBackoff, timeProvider, ct);
             return;
         }
 
@@ -133,7 +158,7 @@ public sealed class AgwInboundService(
             || string.Equals(localCall, DbStartup.PlaceholderCallsign, StringComparison.OrdinalIgnoreCase))
         {
             logger.LogDebug("Callsign not configured; AGW inbound idle (waiting for /Setup or /Config)");
-            await Task.Delay(IdleBackoff, ct);
+            await Task.Delay(IdleBackoff, timeProvider, ct);
             return;
         }
 
@@ -141,6 +166,12 @@ public sealed class AgwInboundService(
         logger.LogInformation("AGW inbound: connecting {0}:{1}", opts.NodeHost, opts.AgwPort);
         await tcp.ConnectAsync(opts.NodeHost, opts.AgwPort, ct);
         var framing = new AgwFrameTransport(tcp.GetStream(), txGate);
+
+        // Keepalive cadence starts before the 'X' goes out so that, once
+        // BPQ (or a test double) has seen our registration, the timer is
+        // guaranteed to exist - a fake clock advanced past
+        // KeepaliveInterval then deterministically produces a 'G'.
+        using var keepalive = new PeriodicTimer(KeepaliveInterval, timeProvider);
 
         // 'X' register so BPQ knows where to dispatch inbound 'C' frames.
         // Note this is necessary but *not sufficient*: the operator must
@@ -158,20 +189,20 @@ public sealed class AgwInboundService(
         // so BPQ doesn't drop the idle socket. The reply lands in the
         // same Read loop below and is ignored as a default-case frame.
         // Run in a fire-and-forget task tied to the cycle's ct so it
-        // dies when the cycle does. SemaphoreSlim guards the shared
-        // write side - inbound frame handling can also write (e.g.
-        // 'D' acknowledgements via the multiplexed sessions), and
-        // AGW is a single-stream protocol so we serialise writes.
+        // dies when the cycle does. AgwFrameTransport serialises the
+        // shared write side - inbound frame handling can also write
+        // (session 'D' frames via the multiplexed streams), and AGW is
+        // a single-stream protocol.
         using var keepaliveCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var keepaliveTask = Task.Run(async () =>
         {
             try
             {
-                while (!keepaliveCts.Token.IsCancellationRequested)
+                while (await keepalive.WaitForNextTickAsync(keepaliveCts.Token))
                 {
-                    await Task.Delay(KeepaliveInterval, keepaliveCts.Token);
                     await framing.WriteFrameAsync(
                         new AgwFrame(0, 'G', 0, "", "", []), keepaliveCts.Token);
+                    logger.LogDebug("AGW inbound: keepalive 'G' sent");
                 }
             }
             catch (OperationCanceledException) { /* expected on cycle end */ }
@@ -219,26 +250,47 @@ public sealed class AgwInboundService(
                 break;
 
             case 'C':
-                await OnConnect(frame, framing, sessions, ct);
+                OnConnect(frame, framing, sessions, ct);
                 break;
 
             case 'D':
-                if (sessions.TryGetValue(KeyForData(frame), out var stream))
+                if (TryResolve(sessions, frame, out var data, out var dataPortMismatch))
                 {
-                    await stream.PushIncoming(frame.Payload, ct);
+                    if (dataPortMismatch)
+                    {
+                        logger.LogDebug("AGW inbound: 'D' on port {0} matched session {1}<->{2} on port {3} by callsign pair",
+                            frame.Port, data.Key.Local, data.Key.Remote, data.Key.Port);
+                    }
+                    await data.Value.PushIncoming(frame.Payload, ct);
                 }
                 else
                 {
-                    logger.LogDebug("AGW inbound: 'D' for unknown session {0}↔{1}",
-                        frame.CallFrom, frame.CallTo);
+                    logger.LogDebug("AGW inbound: 'D' for unknown session {0}<->{1} on port {2}; dropped",
+                        frame.CallFrom, frame.CallTo, frame.Port);
                 }
                 break;
 
             case 'd':
-                if (sessions.TryRemove(KeyForData(frame), out var dstream))
+                if (TryResolve(sessions, frame, out var closing, out var closePortMismatch))
                 {
-                    dstream.SignalRemoteDisconnect();
-                    logger.LogInformation("AGW inbound: session closed {0}↔{1}", frame.CallFrom, frame.CallTo);
+                    // Remove by (key, stream), never by key alone: the
+                    // handler's own teardown uses the same rule, and a
+                    // newer stream may already sit under this key.
+                    sessions.TryRemove(closing);
+                    closing.Value.SignalRemoteDisconnect();
+                    logger.LogInformation("AGW inbound: session closed {0}<->{1}", frame.CallFrom, frame.CallTo);
+                    if (closePortMismatch)
+                    {
+                        logger.LogDebug(
+                            "AGW inbound: that 'd' carried port {0} but the session was on port {1} - BPQ stamps " +
+                            "disconnect notifications with the port of the last frame it received from us",
+                            frame.Port, closing.Key.Port);
+                    }
+                }
+                else
+                {
+                    logger.LogDebug("AGW inbound: 'd' for unknown session {0}<->{1} on port {2}; ignored",
+                        frame.CallFrom, frame.CallTo, frame.Port);
                 }
                 break;
 
@@ -248,7 +300,7 @@ public sealed class AgwInboundService(
         }
     }
 
-    private async Task OnConnect(
+    private void OnConnect(
         AgwFrame frame,
         AgwFrameTransport framing,
         ConcurrentDictionary<SessionKey, MultiplexedAgwSessionStream> sessions,
@@ -266,7 +318,7 @@ public sealed class AgwInboundService(
         // the 'C' payload; that's noise from dapps's POV and we just
         // discard it.
 
-        var key = new SessionKey(local, remote, port);
+        var key = SessionKey.For(local, remote, port);
         var stream = new MultiplexedAgwSessionStream(
             writeOutgoing: async (data, c) =>
             {
@@ -279,24 +331,21 @@ public sealed class AgwInboundService(
                     new AgwFrame(port, 'd', 0, local, remote, []), c);
             });
 
-        // A 'C' for a key we still have an entry for is *not* necessarily a
-        // real concurrent duplicate: BPQ itself refuses a genuine one at the
-        // L2 level ("... already connected on socket N", logged on BPQ's
-        // side, never reaching us as a 'C' at all). When we do see one, it
-        // means the previous session's 'd' just hasn't reached us yet - BPQ
-        // can flush the AGW frame for a brand-new connect ahead of the
-        // teardown notification for what it replaced. Retire the stale
-        // entry in place rather than rejecting the new, legitimate connect;
-        // marking it remote-closed keeps its own teardown from emitting a
-        // 'd' that could otherwise hit whatever reuses this key next.
-        sessions.AddOrUpdate(key, stream, (_, existing) =>
+        // Rule 2 (class doc): BPQ never dispatches a live duplicate, so
+        // an entry still under this key is stale - its 'd' was lost, or
+        // arrived in a form we could not match. Retire it in place.
+        // Marking it remote-closed keeps its handler's teardown from
+        // emitting a 'd' that BPQ would apply to the session we are
+        // about to register.
+        if (sessions.TryRemove(key, out var stale))
         {
+            stale.SignalRemoteDisconnect();
             logger.LogWarning(
-                "AGW inbound: 'C' for {0}↔{1} while a session was still registered for that pair; " +
-                "retiring the stale entry (its 'd' probably hasn't reached us yet)", local, remote);
-            existing.SignalRemoteDisconnect();
-            return stream;
-        });
+                "AGW inbound: 'C' for {0}<->{1} on port {2} while a session was still registered for that pair; " +
+                "retiring the stale entry (its 'd' never reached us in a form we could match)",
+                local, remote, port);
+        }
+        sessions[key] = stream;
 
         var handler = new InboundConnectionHandler(
             stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics);
@@ -306,7 +355,7 @@ public sealed class AgwInboundService(
             try { await handler.Handle(stoppingTokenSource.Token); }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "AGW inbound: session handler {0}↔{1} failed", local, remote);
+                logger.LogWarning(ex, "AGW inbound: session handler {0}<->{1} failed", local, remote);
             }
             finally
             {
@@ -315,21 +364,71 @@ public sealed class AgwInboundService(
                 // callsign pair may since have registered a new stream
                 // under this key - removing by key alone would evict and
                 // dispose that one.
-                // (ICollection.Remove is the atomic key+value compare-remove
-                // on net8; ConcurrentDictionary.TryRemove(KeyValuePair) is net9+.)
-                ((ICollection<KeyValuePair<SessionKey, MultiplexedAgwSessionStream>>)sessions)
-                    .Remove(new KeyValuePair<SessionKey, MultiplexedAgwSessionStream>(key, stream));
+                sessions.TryRemove(new KeyValuePair<SessionKey, MultiplexedAgwSessionStream>(key, stream));
                 try { await stream.DisposeAsync(); } catch { /* best effort */ }
             }
         }, ct);
     }
 
-    /// <summary>For 'D' / 'd' frames the (local, remote, port) tuple is
-    /// flipped relative to the 'C' frame: BPQ uses CallFrom = peer,
-    /// CallTo = us on the inbound and CallFrom = us, CallTo = peer for
-    /// frames it forwards to us. Try both orientations.</summary>
-    private static SessionKey KeyForData(AgwFrame frame) =>
-        new(frame.CallTo, frame.CallFrom, frame.Port);
+    /// <summary>
+    /// Finds the session a 'D' / 'd' frame refers to. Exact
+    /// (local, remote, port) first; failing that, the callsign pair
+    /// alone when it identifies exactly one session (rule 1 in the
+    /// class doc). Two sessions for the same pair on different ports
+    /// make a port-less frame genuinely ambiguous, and we leave both
+    /// alone rather than guess.
+    /// </summary>
+    private static bool TryResolve(
+        ConcurrentDictionary<SessionKey, MultiplexedAgwSessionStream> sessions,
+        AgwFrame frame,
+        out KeyValuePair<SessionKey, MultiplexedAgwSessionStream> match,
+        out bool portMismatch)
+    {
+        portMismatch = false;
+        var exact = KeyForData(frame);
+        if (sessions.TryGetValue(exact, out var stream))
+        {
+            match = new(exact, stream);
+            return true;
+        }
 
-    private record struct SessionKey(string Local, string Remote, byte Port);
+        KeyValuePair<SessionKey, MultiplexedAgwSessionStream>? candidate = null;
+        foreach (var kv in sessions)
+        {
+            if (!kv.Key.SamePair(exact)) continue;
+            if (candidate is not null)
+            {
+                match = default;
+                return false;
+            }
+            candidate = kv;
+        }
+
+        if (candidate is null)
+        {
+            match = default;
+            return false;
+        }
+
+        match = candidate.Value;
+        portMismatch = true;
+        return true;
+    }
+
+    /// <summary>For 'D' / 'd' frames the callsign pair is flipped
+    /// relative to the 'C' frame: BPQ uses CallFrom = peer, CallTo = us
+    /// on the inbound connect and CallFrom = peer, CallTo = us on the
+    /// frames it forwards to us for that session.</summary>
+    private static SessionKey KeyForData(AgwFrame frame) =>
+        SessionKey.For(frame.CallTo, frame.CallFrom, frame.Port);
+
+    internal readonly record struct SessionKey(string Local, string Remote, byte Port)
+    {
+        public static SessionKey For(string local, string remote, byte port) =>
+            new(local.ToUpperInvariant(), remote.ToUpperInvariant(), port);
+
+        public bool SamePair(SessionKey other) =>
+            string.Equals(Local, other.Local, StringComparison.Ordinal)
+            && string.Equals(Remote, other.Remote, StringComparison.Ordinal);
+    }
 }

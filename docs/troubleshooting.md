@@ -59,6 +59,14 @@ A remote node can `c <your-callsign>` and lands at the BPQ node prompt, but not 
 - DAPPS is registering the right callsign. The startup log shows `AGW: registered <callsign> for inbound dispatch`. If the callsign there doesn't match what the remote is connecting to (and the APPLCALL), it won't route.
 - AGW exact-match is by call+SSID. `M0LTE-1` is different from `M0LTE-7`.
 
+### A peer connects, gets no `DAPPSv1>` prompt, and has to redial (BPQ AGW)
+
+Symptom on the calling side: the L2 connect is accepted, then silence until the caller times out and tries again. Your BPQ console may show `Rejected <caller> to <you> - callsign is already connected on socket N`. Your DAPPS log shows the inbound `'C'` followed by a warning ending `retiring the stale entry`.
+
+Both come from the same place. AGW frames carry no session id, so a session is only ever identified by (your callsign, their callsign, port). BPQ stamps its disconnect notification with the port of the last frame it received *from DAPPS*, which is usually the 15-second keepalive on port 0, rather than the port the session was on. DAPPS now matches such a notification by callsign pair, so the previous session closes properly and the redial is a clean new session. If the `retiring the stale entry` warning still appears, the previous session's disconnect notification never reached DAPPS at all; the warning is DAPPS recovering, and the new session is fully usable. If it recurs, an issue with the BPQ log alongside the DAPPS journal is the right next step.
+
+The BPQ-side `already connected` rejection means the caller redialled before your BPQ's AGW poll loop had processed the previous disconnect. A DAPPS caller waits two seconds between sessions to the same destination for exactly this reason.
+
 ### Inbound sessions never arrive (XRouter RHPv2)
 
 A remote node can `c <your-callsign>` and lands at the XRouter node prompt, but not at the `DAPPSv1>` prompt. Check:
