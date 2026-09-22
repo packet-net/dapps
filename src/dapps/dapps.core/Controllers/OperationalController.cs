@@ -1,5 +1,7 @@
+using dapps.core.Models;
 using dapps.core.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace dapps.core.Controllers;
 
@@ -17,13 +19,19 @@ namespace dapps.core.Controllers;
 /// <item><c>GET /Operational/recent</c> - the full last-100 ring as
 ///   JSON for ad-hoc scrapers / curl-grep workflows. Smaller body
 ///   than the full snapshot when you just want the event tail.</item>
+/// <item><c>POST /Operational/retry-now</c> - collapses the currently
+///   configured bearer's reconnect backoff wait so it retries
+///   immediately. Drives the dashboard's manual "Retry now" button.</item>
 /// </list>
 /// </summary>
 [ApiController]
 [Route("[controller]")]
 public sealed class OperationalController(
     OperationalMetrics metrics,
-    OperationalSnapshotBuilder snapshotBuilder) : ControllerBase
+    OperationalSnapshotBuilder snapshotBuilder,
+    IOptionsMonitor<SystemOptions> options,
+    AgwInboundService agwInbound,
+    Rhpv2InboundService rhpv2Inbound) : ControllerBase
 {
     /// <summary>
     /// <c>?full=true</c> includes the per-row tables the dashboard
@@ -39,4 +47,22 @@ public sealed class OperationalController(
     [HttpGet("recent")]
     public IReadOnlyList<OperationalMetrics.OperationalEvent> GetRecent()
         => metrics.Take().RecentEvents;
+
+    /// <summary>
+    /// Manual "retry now": whichever bearer is currently configured
+    /// (<see cref="SystemOptions.NodeBearer"/>) collapses its backoff
+    /// wait, if one is in flight, so the next connect attempt happens
+    /// immediately instead of at the scheduled time. Returns
+    /// <c>{ triggered: false }</c> rather than an error when there's
+    /// nothing to collapse (already connected, idle-gated on missing
+    /// config, or a connect attempt is already underway) - the operator
+    /// gets an immediate reconnect either way on the next snapshot poll.
+    /// </summary>
+    [HttpPost("retry-now")]
+    public IActionResult RetryNow()
+    {
+        var isRhpv2 = string.Equals(options.CurrentValue.NodeBearer, "rhpv2", StringComparison.OrdinalIgnoreCase);
+        var triggered = isRhpv2 ? rhpv2Inbound.TriggerManualRetry() : agwInbound.TriggerManualRetry();
+        return Ok(new { triggered });
+    }
 }

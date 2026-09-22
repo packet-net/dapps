@@ -169,8 +169,13 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<MqttBrokerService>
 // one idles. Switching bearers via /Config fires the OnChange handler
 // on each, which cancels the active connection cycle so the loop
 // re-evaluates with the new value (hot-reload, no restart).
-builder.Services.AddHostedService<AgwInboundService>();
-builder.Services.AddHostedService<Rhpv2InboundService>();
+// Registered as singletons (not just AddHostedService<T>) so
+// OperationalController can resolve the concrete instances directly -
+// each exposes a manual "retry now" trigger the dashboard surfaces.
+builder.Services.AddSingleton<AgwInboundService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AgwInboundService>());
+builder.Services.AddSingleton<Rhpv2InboundService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Rhpv2InboundService>());
 builder.Services.AddHostedService<TtlSweeperService>();
 builder.Services.AddHostedService<StreamGapSweeperService>();
 builder.Services.AddSingleton<Database>();

@@ -48,6 +48,10 @@
         <div class="sub" id="hero-node-sub">
             What DAPPS rides on. Probe answers means TCP connect succeeded.
         </div>
+        <div class="sub" id="hero-node-retry" style="display: none; flex-wrap: wrap; gap: 0.6rem; align-items: baseline;">
+            <span id="hero-node-retry-meta" class="muted"></span>
+            <a href="#" id="hero-node-retry-action" class="link-btn">Retry now</a>
+        </div>
     </div>
 
     <div class="tile" id="hero-mqtt">
@@ -323,6 +327,49 @@
             }).join('');
         }
 
+        // --- Node reconnect countdown ---
+        // The snapshot only arrives every 5s, but the countdown itself
+        // ticks every 1s so the operator sees it actually counting down
+        // rather than jumping in 5s steps.
+        let nodeReconnectNextAtMs = null; // epoch ms, or null when not waiting on a retry
+        let nodeReconnectAttempt = 0;
+        function renderNodeReconnect() {
+            const row = document.getElementById('hero-node-retry');
+            const meta = document.getElementById('hero-node-retry-meta');
+            if (!row || !meta) return;
+            if (!nodeReconnectNextAtMs) {
+                row.style.display = 'none';
+                return;
+            }
+            row.style.display = 'flex';
+            const remainingS = Math.max(0, Math.ceil((nodeReconnectNextAtMs - Date.now()) / 1000));
+            meta.textContent = remainingS > 0
+                ? `retrying in ${remainingS}s (attempt ${nodeReconnectAttempt})`
+                : `reconnecting... (attempt ${nodeReconnectAttempt})`;
+        }
+        setInterval(renderNodeReconnect, 1000);
+
+        const nodeRetryAction = document.getElementById('hero-node-retry-action');
+        if (nodeRetryAction) {
+            nodeRetryAction.addEventListener('click', async (ev) => {
+                ev.preventDefault();
+                nodeRetryAction.textContent = 'Retrying...';
+                try {
+                    const res = await fetch('@Url.Content("~/Operational/retry-now")', {
+                        method: 'POST', credentials: 'same-origin'
+                    });
+                    if (res.ok) {
+                        // Force a snap refresh so the countdown reflects
+                        // the new attempt immediately rather than waiting
+                        // up to 5s for the next poll.
+                        await window.dappsRefreshSnap?.();
+                    }
+                } finally {
+                    nodeRetryAction.textContent = 'Retry now';
+                }
+            });
+        }
+
         // --- Apply snapshot ---
         let lastSampleAt = 0;
         function apply(s) {
@@ -337,6 +384,9 @@
             set('hero-node-pill', s.nodeReachable ? 'reachable' : 'down');
             const pill = document.getElementById('hero-node-pill');
             if (pill) { pill.classList.remove('ok','err','warn'); pill.classList.add(s.nodeReachable ? 'ok' : 'err'); }
+            nodeReconnectAttempt = s.nodeReconnectAttempt || 0;
+            nodeReconnectNextAtMs = s.nodeReconnectAt ? new Date(s.nodeReconnectAt).getTime() : null;
+            renderNodeReconnect();
 
             // Hero - MQTT
             const mqttTile = document.getElementById('hero-mqtt');

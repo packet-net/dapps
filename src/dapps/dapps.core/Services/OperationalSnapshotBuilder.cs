@@ -64,6 +64,9 @@ public sealed class OperationalSnapshotBuilder(
         var mqttOk = await ProbeTcp("127.0.0.1", opts.MqttPort, TimeSpan.FromMilliseconds(250));
 
         var counters = metrics.Take();
+        var isRhpv2 = string.Equals(opts.NodeBearer, "rhpv2", StringComparison.OrdinalIgnoreCase);
+        var reconnectAttempt = isRhpv2 ? counters.Rhpv2ReconnectAttempt : counters.AgwReconnectAttempt;
+        var reconnectNextAtUtc = isRhpv2 ? counters.Rhpv2ReconnectNextAtUtc : counters.AgwReconnectNextAtUtc;
         var pendingOutbound = await database.CountPendingOutbound();
         var undeliveredLocal = await database.CountUndeliveredLocal();
         var totalMessages = await database.CountMessages();
@@ -149,6 +152,8 @@ public sealed class OperationalSnapshotBuilder(
             NodeReachable: nodeOk,
             MqttBrokerUp: mqttOk,
             LastForwardSuccessAt: counters.LastForwardSuccessAt,
+            NodeReconnectAttempt: reconnectAttempt,
+            NodeReconnectAt: reconnectNextAtUtc,
 
             ForwardAttempts: counters.ForwardAttempts,
             ForwardSuccess: counters.ForwardSuccess,
@@ -217,6 +222,15 @@ public sealed record OperationalSnapshot(
     bool NodeReachable,
     bool MqttBrokerUp,
     DateTime? LastForwardSuccessAt,
+
+    /// <summary>Consecutive connect failures for whichever bearer is
+    /// currently configured (<see cref="SystemOptions.NodeBearer"/>). 0
+    /// when connected, idle-gated, or never attempted.</summary>
+    int NodeReconnectAttempt,
+    /// <summary>When the next automatic reconnect attempt is due, or
+    /// null when not currently in a backoff wait. Drives the dashboard's
+    /// "retrying in Xs" countdown and gates the manual retry button.</summary>
+    DateTime? NodeReconnectAt,
 
     long ForwardAttempts,
     long ForwardSuccess,

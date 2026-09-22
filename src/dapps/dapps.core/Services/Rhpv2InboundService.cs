@@ -35,19 +35,49 @@ public sealed class Rhpv2InboundService(
     OperationalMetrics metrics,
     IDappsTxGate? txGate = null) : BackgroundService
 {
-    private static readonly TimeSpan ReconnectBackoff = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan IdleBackoff = TimeSpan.FromSeconds(2);
+    /// <summary>Delay between cycles that ended without a real failure
+    /// (idle-gated on missing config, or a cycle cancelled by a /Config
+    /// save) - deliberately short and flat; the sliding backoff (see
+    /// <see cref="reconnect"/>) only applies to actual connect/bind
+    /// failures.</summary>
+    private static readonly TimeSpan NonFailureRetryDelay = TimeSpan.FromSeconds(5);
 
     private readonly IDappsTxGate txGate = txGate ?? AlwaysOpenTxGate.Instance;
+    private readonly InboundReconnectController reconnect = new();
     private CancellationTokenSource? cycleTokenSource;
     private IDisposable? optionsChangeSubscription;
+
+    /// <summary>Operator-triggered "retry now" - see
+    /// <see cref="InboundReconnectController.TriggerRetry"/>. Publishes
+    /// the collapsed wait immediately so a snapshot fetched right after
+    /// the click doesn't show the stale pre-click countdown.</summary>
+    public bool TriggerManualRetry()
+    {
+        var triggered = reconnect.TriggerRetry();
+        if (triggered) PublishBackoffState();
+        return triggered;
+    }
+
+    /// <summary>Mirrors <see cref="reconnect"/>'s current state into
+    /// <see cref="OperationalMetrics"/> so <c>/Operational</c> can render
+    /// it without depending on this concrete service type.</summary>
+    private void PublishBackoffState() =>
+        metrics.RecordReconnectBackoff("rhpv2", reconnect.FailureStreak, reconnect.NextRetryAtUtc?.UtcDateTime);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Cancel the current connection-cycle on any SystemOptions change
         // so a /Config save (callsign, RHP host/port/auth, bearer flip)
-        // takes effect on the next iteration without a daemon restart.
-        optionsChangeSubscription = options.OnChange((_, _) => cycleTokenSource?.Cancel());
+        // takes effect on the next iteration without a daemon restart -
+        // including collapsing an in-flight backoff wait, so a fix to
+        // the RHP host/port/callsign reconnects immediately rather than
+        // sitting out the rest of a (possibly multi-minute) delay.
+        optionsChangeSubscription = options.OnChange((_, _) =>
+        {
+            cycleTokenSource?.Cancel();
+            reconnect.Interrupt();
+        });
         try
         {
             while (!stoppingToken.IsCancellationRequested)
@@ -57,6 +87,16 @@ public sealed class Rhpv2InboundService(
                 try
                 {
                     await RunOnce(cycleCt);
+
+                    // Clean return - idle-gated on missing config only
+                    // (a genuine bind/listen failure now throws - see
+                    // BindListenerAsync). Not a hard failure: reset the
+                    // backoff, but still pause briefly rather than
+                    // spinning.
+                    reconnect.RecordSuccess();
+                    PublishBackoffState();
+                    try { await Task.Delay(NonFailureRetryDelay, stoppingToken); }
+                    catch (OperationCanceledException) { return; }
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
@@ -64,15 +104,22 @@ public sealed class Rhpv2InboundService(
                 }
                 catch (OperationCanceledException)
                 {
-                    // Cycle cancelled by an options change; loop and reconnect.
+                    // Cycle cancelled by an options change; not a failure,
+                    // but still pause briefly before reconnecting.
+                    reconnect.RecordSuccess();
+                    PublishBackoffState();
+                    try { await Task.Delay(NonFailureRetryDelay, stoppingToken); }
+                    catch (OperationCanceledException) { return; }
                 }
                 catch (Exception ex)
                 {
-                    logger.LogWarning(ex, "RHP inbound: connection lost; reconnecting in {0}s", ReconnectBackoff.TotalSeconds);
+                    var delay = reconnect.RecordFailure();
+                    PublishBackoffState();
+                    logger.LogWarning(ex,
+                        "RHP inbound: connection lost; reconnecting in {0}s (attempt {1}, next at {2:O})",
+                        delay.TotalSeconds, reconnect.FailureStreak, reconnect.NextRetryAtUtc);
+                    await reconnect.WaitAsync(delay, stoppingToken);
                 }
-
-                try { await Task.Delay(ReconnectBackoff, stoppingToken); }
-                catch (OperationCanceledException) { return; }
             }
         }
         finally
@@ -110,6 +157,13 @@ public sealed class Rhpv2InboundService(
         await using var rhp = await RhpClient.ConnectAsync(host, port, stoppingToken);
         metrics.RecordAgwReconnect();  // re-using the AGW counter; same operator concept
 
+        // Note: the backoff isn't reset here on the raw TCP connect - a
+        // persistent bind/listen failure below (e.g. callsign already
+        // claimed) would otherwise see FailureStreak reset to 0 every
+        // cycle right before RecordFailure() puts it straight back to 1,
+        // permanently capping the delay at the ramp's fastest (10s) tier
+        // instead of escalating. RecordSuccess() only fires once the
+        // listener is actually bound, below.
         if (!string.IsNullOrEmpty(opts.RhpUser))
         {
             await rhp.AuthenticateAsync(opts.RhpUser, opts.RhpPass ?? "", stoppingToken);
@@ -122,10 +176,12 @@ public sealed class Rhpv2InboundService(
         var bound = await BindListenerAsync(rhp, opts, stoppingToken);
         if (bound is null)
         {
-            return; // logged inside; the ExecuteAsync loop retries after ReconnectBackoff
+            return; // logged inside; the ExecuteAsync loop retries after NonFailureRetryDelay
         }
         var (listenerHandle, boundCallsign) = bound.Value;
         logger.LogInformation("RHP inbound: listener bound to {call} on handle {h}", boundCallsign, listenerHandle);
+        reconnect.RecordSuccess();
+        PublishBackoffState();
 
         var sessions = new ConcurrentDictionary<int, MultiplexedAgwSessionStream>();
         var disconnect = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -256,9 +312,12 @@ public sealed class Rhpv2InboundService(
     /// derivation only ever runs under pdn supervision, because only a
     /// pdn host injects PDN_NODE_CALLSIGN.
     /// </summary>
-    /// <returns>The listener handle and the callsign it is bound to, or
-    /// null when no listener could be established (logged; the caller
-    /// returns into the reconnect loop).</returns>
+    /// <returns>The listener handle and the callsign it is bound to; or
+    /// null when a walk exhausts every candidate SSID (config problem,
+    /// logged and parked in setup-required mode - not escalated as a
+    /// failure). Throws <see cref="InvalidOperationException"/> when an
+    /// explicitly-configured callsign is already claimed on the node, so
+    /// the caller's sliding backoff escalates instead of retrying flat.</returns>
     private async Task<(int Handle, string Callsign)?> BindListenerAsync(
         RhpClient rhp, SystemOptions opts, CancellationToken ct)
     {
@@ -291,12 +350,19 @@ public sealed class Rhpv2InboundService(
 
                 if (!walkEligible)
                 {
-                    logger.LogWarning(
-                        "RHP inbound: callsign {call} is already claimed on the node (errCode 9 'Duplicate socket'). " +
-                        "It is explicitly configured, so not probing for a free SSID; retrying in {s}s. " +
-                        "Pick a different callsign via the dashboard or DAPPS_CALLSIGN if this persists.",
-                        candidate, ReconnectBackoff.TotalSeconds);
-                    return null;
+                    // A real, potentially-transient failure (the node may
+                    // free the callsign up later) - not config the loop
+                    // should idle-gate on. Throw so ExecuteAsync's
+                    // exception path escalates the sliding backoff
+                    // instead of treating this as a clean, non-failure
+                    // return and hammering the node every
+                    // NonFailureRetryDelay forever.
+                    var message =
+                        $"RHP inbound: callsign {candidate} is already claimed on the node (errCode 9 'Duplicate socket'). " +
+                        "It is explicitly configured, so not probing for a free SSID. " +
+                        "Pick a different callsign via the dashboard or DAPPS_CALLSIGN if this persists.";
+                    logger.LogWarning(message);
+                    throw new InvalidOperationException(message);
                 }
 
                 taken.Add(candidate);

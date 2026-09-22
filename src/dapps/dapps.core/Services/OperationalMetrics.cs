@@ -55,6 +55,10 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
 
     private DateTime? _agwLastReconnectAt;
     private DateTime? _lastForwardSuccessAt;
+    private int _agwReconnectAttempt;
+    private DateTime? _agwReconnectNextAtUtc;
+    private int _rhpv2ReconnectAttempt;
+    private DateTime? _rhpv2ReconnectNextAtUtc;
     private readonly ConcurrentDictionary<string, NeighbourMetrics> _neighbours = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<OperationalEvent> _events = new();
 
@@ -99,6 +103,29 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
         Interlocked.Increment(ref _agwReconnects);
         _agwLastReconnectAt = timeProvider.GetUtcNow().UtcDateTime;
         Push("agw.reconnect", "AGW socket connected + 'X' registered");
+    }
+
+    /// <summary>
+    /// Publishes the current sliding-scale reconnect state for one of the
+    /// inbound bearer services (see <see cref="ReconnectBackoffSchedule"/>),
+    /// so <c>/Operational</c> can show "retrying in Xs" for whichever
+    /// bearer is active without the snapshot builder needing to know
+    /// about <c>AgwInboundService</c> / <c>Rhpv2InboundService</c>
+    /// directly. Called on every backoff state change - failure,
+    /// success/reset, and (implicitly, via a zero streak) idle.
+    /// </summary>
+    public void RecordReconnectBackoff(string bearer, int failureStreak, DateTime? nextRetryAtUtc)
+    {
+        if (string.Equals(bearer, "rhpv2", StringComparison.OrdinalIgnoreCase))
+        {
+            _rhpv2ReconnectAttempt = failureStreak;
+            _rhpv2ReconnectNextAtUtc = nextRetryAtUtc;
+        }
+        else
+        {
+            _agwReconnectAttempt = failureStreak;
+            _agwReconnectNextAtUtc = nextRetryAtUtc;
+        }
     }
 
     public void RecordInboundConnect(string remote)
@@ -173,6 +200,10 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
             NoRouteSkips: Interlocked.Read(ref _noRoute),
             AgwReconnects: Interlocked.Read(ref _agwReconnects),
             AgwLastReconnectAt: _agwLastReconnectAt,
+            AgwReconnectAttempt: _agwReconnectAttempt,
+            AgwReconnectNextAtUtc: _agwReconnectNextAtUtc,
+            Rhpv2ReconnectAttempt: _rhpv2ReconnectAttempt,
+            Rhpv2ReconnectNextAtUtc: _rhpv2ReconnectNextAtUtc,
             InboundConnects: Interlocked.Read(ref _inboundConnects),
             HashMismatches: Interlocked.Read(ref _hashMismatches),
             ProbeAttempts: Interlocked.Read(ref _probeAttempts),
@@ -250,6 +281,10 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
         long NoRouteSkips,
         long AgwReconnects,
         DateTime? AgwLastReconnectAt,
+        int AgwReconnectAttempt,
+        DateTime? AgwReconnectNextAtUtc,
+        int Rhpv2ReconnectAttempt,
+        DateTime? Rhpv2ReconnectNextAtUtc,
         long InboundConnects,
         long HashMismatches,
         long ProbeAttempts,
