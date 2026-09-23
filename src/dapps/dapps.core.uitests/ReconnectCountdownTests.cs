@@ -37,14 +37,44 @@ public sealed class ReconnectCountdownTests(LoggedInWebAppFixture app, Playwrigh
     {
         await using var ctx = await pw.Browser.NewLoggedInContextAsync(app);
         var page = await ctx.NewPageAsync();
+        await StubConnectedAsync(page);
 
-        // The real snapshot: no bearer configured to fail against in
-        // this fixture, so no backoff is in flight and nodeReconnectAt
-        // is null.
         await page.GotoAsync(app.BaseUrl);
 
         await page.WaitForSelectorAsync("#hero-node-pill", new PageWaitForSelectorOptions { Timeout = 10_000 });
         await WaitRetryRowAsync(page, visible: false);
+    }
+
+    /// <summary>
+    /// The fixture points the daemon at localhost:8000 with nothing
+    /// listening, so the real, unpatched snapshot is the backoff
+    /// plumbing working end to end: the AGW inbound service is refused,
+    /// records the failure, and publishes the countdown.
+    /// </summary>
+    [Fact]
+    public async Task RealSnapshot_WithNoNodeListening_ReportsABackoffInFlight()
+    {
+        await using var ctx = await pw.Browser.NewLoggedInContextAsync(app);
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+        while (true)
+        {
+            var resp = await ctx.APIRequest.GetAsync($"{app.BaseUrl}/Operational");
+            resp.Status.Should().Be(200);
+            var snap = JsonNode.Parse(await resp.TextAsync())!.AsObject();
+            var attempt = snap["nodeReconnectAttempt"]?.GetValue<int>() ?? 0;
+            if (attempt >= 1)
+            {
+                snap["nodeReconnectAt"]?.GetValue<string>().Should().NotBeNullOrEmpty(
+                    "a failed connect always schedules the next attempt");
+                return;
+            }
+            if (DateTime.UtcNow > deadline)
+            {
+                throw new TimeoutException("the daemon never reported a reconnect attempt against the absent node");
+            }
+            await Task.Delay(250);
+        }
     }
 
     [Fact]
@@ -82,6 +112,23 @@ public sealed class ReconnectCountdownTests(LoggedInWebAppFixture app, Playwrigh
             snap["nodeReachable"] = false;
             snap["nodeReconnectAttempt"] = attempt;
             snap["nodeReconnectAt"] = DateTime.UtcNow.Add(retryIn).ToString("O");
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Response = real,
+                Body = snap.ToJsonString(),
+            });
+        });
+
+    /// <summary>Serves the daemon's own snapshot as if the node were up
+    /// and no backoff were in flight.</summary>
+    private static Task StubConnectedAsync(IPage page) =>
+        page.RouteAsync("**/Operational*", async route =>
+        {
+            var real = await route.FetchAsync();
+            var snap = JsonNode.Parse(await real.TextAsync())!.AsObject();
+            snap["nodeReachable"] = true;
+            snap["nodeReconnectAttempt"] = 0;
+            snap["nodeReconnectAt"] = null;
             await route.FulfillAsync(new RouteFulfillOptions
             {
                 Response = real,
