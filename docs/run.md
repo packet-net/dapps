@@ -36,9 +36,9 @@ Standard log levels apply (`info` by default). Most operational events are at `i
 
 The dashboard auto-refreshes the queue snapshot panels every 5 seconds without a full page reload.
 
-### `/Inbound` page
+### `/Messages` page
 
-A dedicated SSE-driven view of every message that arrives on this node. Filter by app, source callsign, or destination substring. Click any row to inline-expand a payload preview (text or hex; capped at 4 KiB).
+Tabs for the outbound queue, the local inbox, recently dropped messages, and live arrivals (`/Inbound` still redirects here). Live arrivals is an SSE-driven view of every message that arrives on this node, filterable by app, source callsign, or destination substring; click any row to inline-expand a payload preview. On the other three tabs, click a message id to do the same, including for dropped messages. Previews show text or hex, capped at 4 KiB, and stay open across the 5-second table refresh.
 
 Useful when you're debugging "is my message arriving?" - gives you live confirmation independent of any application.
 

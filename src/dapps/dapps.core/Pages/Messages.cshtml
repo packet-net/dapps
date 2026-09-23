@@ -169,8 +169,8 @@ else
     };
 
     // Tracks which row (by message id) is currently expanded per tab, so
-    // an in-flight expansion survives the 5s snapshot poll re-rendering
-    // the table out from under it (see reopenExpanded below).
+    // an expansion survives the 5s snapshot poll re-rendering the table
+    // out from under it (see detachExpanded/reattachExpanded below).
     const expandedIds = { outbound: null, inbox: null, dropped: null };
 
     // Fetches and renders (or collapses) the payload preview for `row`,
@@ -230,16 +230,24 @@ else
         }
     }
 
-    // Re-expands the row that was expanded before the last snapshot
-    // rebuilt `tbody`'s rows wholesale (outbound/inbox/dropped are
-    // redrawn from scratch on every 5s poll, which would otherwise
-    // silently collapse whatever the operator had open).
-    function reopenExpanded(tbody, colspan, key) {
+    // Outbound/inbox/dropped bodies are redrawn from scratch on every 5s
+    // snapshot poll, which would otherwise silently collapse whatever the
+    // operator had open. Lift the open preview row out before the redraw
+    // and put the same DOM node back after it, so there is no re-fetch,
+    // no "loading" flash, and the text/hex choice and scroll position
+    // survive. If the message has left the table, the preview goes too.
+    function detachExpanded(tbody) {
+        const pr = tbody.querySelector('tr.payload-row');
+        if (pr) pr.remove();
+        return pr;
+    }
+    function reattachExpanded(tbody, key, payloadRow) {
         const id = expandedIds[key];
-        if (!id) return;
+        if (!id || !payloadRow || payloadRow.dataset.id !== id) { expandedIds[key] = null; return; }
         const row = tbody.querySelector(`tr[data-id="${CSS.escape(id)}"]`);
-        if (row) togglePayload(tbody, row, colspan, key);
-        else expandedIds[key] = null;
+        if (!row) { expandedIds[key] = null; return; }
+        row.classList.add('selected');
+        row.parentNode.insertBefore(payloadRow, row.nextSibling);
     }
 
     // Delegated click handler so a single listener on the tbody keeps
@@ -276,6 +284,7 @@ else
                 body.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center;">queue is empty</td></tr>';
                 return;
             }
+            const openRow = detachExpanded(body);
             body.innerHTML = out.map(m =>
                 `<tr data-id="${escape(m.id)}">`
                 + `<td><code class="msg-id-link" title="click to view payload">${escape(m.id)}</code></td>`
@@ -286,7 +295,7 @@ else
                 + '<td><span class="pill">queued</span></td>'
                 + '</tr>'
             ).join('');
-            reopenExpanded(body, 6, 'outbound');
+            reattachExpanded(body, 'outbound', openRow);
         }
         if (tab === 'inbox') {
             const body = document.getElementById('inbox-body');
@@ -295,6 +304,7 @@ else
                 body.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center;">inbox is empty</td></tr>';
                 return;
             }
+            const openRow = detachExpanded(body);
             body.innerHTML = inb.map(m =>
                 `<tr data-id="${escape(m.id)}">`
                 + `<td><code class="msg-id-link" title="click to view payload">${escape(m.id)}</code></td>`
@@ -305,7 +315,7 @@ else
                 + '<td><span class="pill warn">awaiting ack</span></td>'
                 + '</tr>'
             ).join('');
-            reopenExpanded(body, 6, 'inbox');
+            reattachExpanded(body, 'inbox', openRow);
         }
         if (tab === 'dropped') {
             const body = document.getElementById('dropped-body');
@@ -314,6 +324,7 @@ else
                 body.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:center;">no recent drops</td></tr>';
                 return;
             }
+            const openRow = detachExpanded(body);
             body.innerHTML = dropped.map(m =>
                 `<tr data-id="${escape(m.id)}">`
                 + `<td><code class="msg-id-link" title="click to view payload">${escape(m.id)}</code></td>`
@@ -323,7 +334,7 @@ else
                 + `<td>${fmtAt(m.droppedAt)}</td>`
                 + '</tr>'
             ).join('');
-            reopenExpanded(body, 5, 'dropped');
+            reattachExpanded(body, 'dropped', openRow);
         }
     }
 

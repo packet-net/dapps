@@ -140,5 +140,14 @@ public sealed class MessagesTests(LoggedInWebAppFixture app, PlaywrightFixture p
         var payloadPre = page.Locator($"tr.payload-row[data-id='{id}'] pre[data-mode='text']");
         await payloadPre.WaitForAsync(new LocatorWaitForOptions { Timeout = 5_000 });
         (await payloadPre.InnerTextAsync()).Should().Contain(payloadText);
+
+        // The table is redrawn on every 5s snapshot poll. The open preview
+        // must survive that with the operator's text/hex choice intact.
+        var payloadRow = page.Locator($"tr.payload-row[data-id='{id}']");
+        await payloadRow.Locator(".payload-tabs button[data-mode='hex']").ClickAsync();
+        await page.WaitForTimeoutAsync(6_000);
+        (await payloadRow.CountAsync()).Should().Be(1, "the expanded preview should survive the snapshot redraw");
+        (await payloadRow.Locator("pre[data-mode='hex']").IsVisibleAsync()).Should().BeTrue(
+            "the hex view chosen before the redraw should still be showing");
     }
 }

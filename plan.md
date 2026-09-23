@@ -109,6 +109,8 @@ AGW session identity (follow-up to #171, #175, #176): reading linbpq's `AGWAPI.c
 
 Also in this release (0.36.0): #179's sliding-scale reconnect backoff for the AGW and RHPv2 inbound services (10 s x3, 30 s x3, 1 min x3, then 5 min; reset on a real connect, collapsed early by the dashboard's Retry now or a /Config save) and its per-destination outbound cooldown on the same ramp, rebased onto the TimeProvider-driven services so the ramp, retry-now and config-interrupt paths are exercised on a fake clock; `POST /Operational/retry-now` requires the admin cookie while reads under `/Operational` stay open. Package advisories cleared: sqlite-net-pcl 1.11 (SQLitePCLRaw 3.x with SQLite 3.53; the 2.1.x native lib carried GHSA-2m69-gcr7-jv3q with no fixed 2.1.x release) and Testcontainers 4.15 (SSH.NET 2026.0.0). The `/openapi/v1.json` document and `/scalar` explorer that A8 dropped are back, behind the admin login.
 
+In 0.37.0: #177 makes message ids clickable on the Messages page's outbound, inbox and dropped tabs, expanding the same inline payload preview the live tab already had. `GET /Events/payload/{id}` falls back to `dropped_messages` so dropped rows can show their content, and an open preview survives the 5 s snapshot redraw with its text/hex choice intact.
+
 ### A7. AGW for both directions *(done)*
 
 Replaces the BPQ Apps Interface (HOST/CMDPORT TCP-bridge) inbound path with AGW dispatch. dapps now uses one BPQ surface - AGW - for both inbound and outbound, multiplexed over a single TCP connection.
