@@ -20,14 +20,16 @@ namespace dapps.core.Services;
 /// Also the seam that paces successive connects to the same
 /// destination - see <see cref="LinkSettleGate"/>. Both bearers'
 /// outbound connects already go through here, so the gate sees every
-/// redial.
+/// redial - and, for the same reason, this is where every outbound
+/// link is registered with <see cref="PeerSessionRegistry"/> (#178).
 /// </summary>
 public sealed class BearerSwitchingOutboundTransport(
     IOptionsMonitor<SystemOptions> options,
     ILoggerFactory loggerFactory,
     IDappsTxGate txGate,
     TimeProvider timeProvider,
-    TimeSpan? linkSettleDelay = null) : IDappsOutboundTransport
+    TimeSpan? linkSettleDelay = null,
+    PeerSessionRegistry? peerSessions = null) : IDappsOutboundTransport
 {
     /// <summary>
     /// Minimum gap between releasing a link to a given (bearer, local,
@@ -67,6 +69,12 @@ public sealed class BearerSwitchingOutboundTransport(
         }
         await settle.WaitAsync(key, stoppingToken);
 
+        // #178: register the link so the forwarder leaves this peer
+        // alone until it is torn down (a scheduled poll or probe can be
+        // mid-session with the same callsign when the forwarder ticks).
+        // Released on dispose, or right away when the connect fails.
+        var lease = peerSessions?.Acquire(remoteCallsign, "outbound");
+
         IDappsConnection inner;
         try
         {
@@ -93,27 +101,33 @@ public sealed class BearerSwitchingOutboundTransport(
             // A connect that failed part-way (refused, timed out, socket
             // dropped) may still have left half-up link state at either
             // node; pace the retry the same way as a clean disconnect.
+            lease?.Dispose();
             settle.RecordRelease(key);
             throw;
         }
 
-        return new SettleTrackingConnection(inner, settle, key);
+        return new SettleTrackingConnection(inner, settle, key, lease);
     }
 
     /// <summary>
     /// Wraps the real connection purely to learn *when* it's actually
     /// disposed - the moment our own disconnect frame went out - so the
-    /// next connect to the same key knows how long it's been waiting.
+    /// next connect to the same key knows how long it's been waiting,
+    /// and so the peer's session lease is released at that same moment.
     /// </summary>
     private sealed class SettleTrackingConnection(
-        IDappsConnection inner, LinkSettleGate settle, string key) : IDappsConnection
+        IDappsConnection inner, LinkSettleGate settle, string key, IDisposable? lease) : IDappsConnection
     {
         public Stream Stream => inner.Stream;
 
         public async ValueTask DisposeAsync()
         {
             try { await inner.DisposeAsync(); }
-            finally { settle.RecordRelease(key); }
+            finally
+            {
+                settle.RecordRelease(key);
+                lease?.Dispose();
+            }
         }
     }
 }

@@ -14,7 +14,14 @@ namespace dapps.core.tests;
 /// (i.e. doesn't EOF) - exactly the shape of a TCP socket whose
 /// peer has gone silent. With the timeout dialed down the test
 /// completes in milliseconds.
+///
+/// That dialled-down budget is a process-wide static, so this class
+/// must not run alongside tests that genuinely wait on a protocol read
+/// (<see cref="CrossedConnectTests"/> waits out a silence longer than
+/// 100 ms on purpose). Sharing the SQLite collection is the simplest
+/// way to keep them apart; nothing here touches the database.
 /// </summary>
+[Collection(SqliteOverridePathCollection.Name)]
 public sealed class DappsProtocolClientTimeoutTests : IDisposable
 {
     private readonly TimeSpan _originalTimeout;

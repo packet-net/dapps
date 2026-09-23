@@ -25,6 +25,9 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
     private Database database = null!;
     private FakeBackhaul backhaul = null!;
     private OutboundMessageManager manager = null!;
+    private TestOptionsMonitor<SystemOptions> optionsMonitor = null!;
+    private DatabaseRoutingContext routingContext = null!;
+    private StaticRoutingAlgorithm routingAlgorithm = null!;
 
     public ValueTask InitializeAsync()
     {
@@ -44,15 +47,15 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
             c.Insert(new DbNeighbour { Callsign = "N0DEST", BearerPort = 0 });
         }
 
-        var optionsMonitor = new TestOptionsMonitor<SystemOptions>(new SystemOptions
+        optionsMonitor = new TestOptionsMonitor<SystemOptions>(new SystemOptions
         {
             Callsign = "N0CALL",
             DefaultBearerPort = 0,
         });
         database = new Database(NullLogger<Database>.Instance, optionsMonitor);
         backhaul = new FakeBackhaul();
-        var routingContext = new DatabaseRoutingContext(database, optionsMonitor);
-        var routingAlgorithm = new StaticRoutingAlgorithm(NullLogger<StaticRoutingAlgorithm>.Instance);
+        routingContext = new DatabaseRoutingContext(database, optionsMonitor);
+        routingAlgorithm = new StaticRoutingAlgorithm(NullLogger<StaticRoutingAlgorithm>.Instance);
         manager = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext);
 
         return ValueTask.CompletedTask;
@@ -378,7 +381,124 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
             "tied costs break on hop count - direct neighbour beats 3-hop relay");
     }
 
-    private static void InsertMessage(string id, int? ttl, DateTime createdAt)
+    // #178: the forwarder must not dial a peer that already has a session
+    // open with us. AX.25 has one link per callsign pair; the SABM would
+    // reset the live link at both ends and the caller would land on the
+    // node prompt instead of DAPPSv1>.
+
+    [Fact]
+    public async Task DoRun_PeerHasASessionOpen_LeavesTheMessageQueuedAndDoesNotDial()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        var guarded = MakeManager(peers);
+        InsertMessage(id: "busy001", ttl: null, createdAt: DateTime.UtcNow);
+
+        using (peers.Acquire("N0DEST", "inbound"))
+        {
+            await guarded.DoRun(ct);
+            backhaul.Sent.Should().BeEmpty("dialling into the open session would reset it");
+            (await database.GetPendingOutboundMessages()).Should().ContainSingle(m => m.Id == "busy001",
+                "a deferred message is still pending, not dropped or failed");
+        }
+
+        await guarded.DoRun(ct);
+        backhaul.Sent.Should().ContainSingle(s => s.Message.Id == "busy001",
+            "the first tick after the session ends dials as normal");
+    }
+
+    [Fact]
+    public async Task DoRun_ADeferralIsNotAFailure_SoNoCooldownStarts()
+    {
+        var peers = new PeerSessionRegistry();
+        var backoff = new OutboundDestinationBackoff();
+        var guarded = MakeManager(peers, backoff);
+        InsertMessage(id: "busy002", ttl: null, createdAt: DateTime.UtcNow);
+
+        using (peers.Acquire("N0DEST", "outbound"))
+        {
+            await guarded.DoRun(TestContext.Current.CancellationToken);
+        }
+
+        backoff.IsInCooldown("N0DEST", out _).Should().BeFalse(
+            "a busy peer is not a failing one; a failure here would also feed the route-invalidation counters");
+    }
+
+    [Fact]
+    public async Task DoRun_PeerHasASessionOpen_ADatagramRouteStillSends()
+    {
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0UDP", UdpEndpoint = "127.0.0.1:4000" });
+        }
+        var peers = new PeerSessionRegistry();
+        var guarded = MakeManager(peers);
+        InsertMessage(id: "udp0001", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0UDP");
+
+        using (peers.Acquire("N0UDP", "inbound"))
+        {
+            await guarded.DoRun(TestContext.Current.CancellationToken);
+        }
+
+        backhaul.Sent.Should().ContainSingle(s => s.Message.Id == "udp0001",
+            "UDP is a datagram bearer with no AX.25 link to collide on");
+    }
+
+    [Fact]
+    public async Task DoRun_FloodSkipsTheNeighbourWithASessionOpen_AndStillReachesTheOthers()
+    {
+        var peers = new PeerSessionRegistry();
+        var flooding = new FloodingAlgorithm(
+            new BackhaulRoute("N0BUSY", BearerPort: 0),
+            new BackhaulRoute("N0FREE", BearerPort: 0));
+        var guarded = new OutboundMessageManager(
+            database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], flooding, routingContext,
+            peerSessions: peers);
+        InsertMessage(id: "flood01", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR");
+
+        using (peers.Acquire("N0BUSY", "inbound"))
+        {
+            await guarded.DoRun(TestContext.Current.CancellationToken);
+        }
+
+        backhaul.Sent.Select(s => s.Route.Callsign).Should().Equal("N0FREE");
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty(
+            "a flood is one-shot: the skipped copy is not retried, the same as a failed one");
+    }
+
+    [Fact]
+    public async Task DoRun_BearerDeferredTheSend_MessageStaysQueued_AndNoCooldownStarts()
+    {
+        // #178 crossed connect: the bearer served the peer's session on
+        // the link instead of pushing. Not a success, not a failure.
+        var backoff = new OutboundDestinationBackoff();
+        var guarded = MakeManager(new PeerSessionRegistry(), backoff);
+        backhaul.NextResult = BackhaulSendResult.Defer("crossed connect with N0DEST: served its session instead");
+        InsertMessage(id: "defer01", ttl: null, createdAt: DateTime.UtcNow);
+
+        await guarded.DoRun(TestContext.Current.CancellationToken);
+
+        backhaul.Sent.Should().ContainSingle("the bearer was asked to send");
+        (await database.GetPendingOutboundMessages()).Should().ContainSingle(m => m.Id == "defer01");
+        backoff.IsInCooldown("N0DEST", out _).Should().BeFalse("a deferral is not a failure");
+    }
+
+    private OutboundMessageManager MakeManager(PeerSessionRegistry peers, OutboundDestinationBackoff? backoff = null) =>
+        new(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
+            destinationBackoff: backoff, peerSessions: peers);
+
+    /// <summary>Routes every message as a flood to a fixed set of neighbours.</summary>
+    private sealed class FloodingAlgorithm(params BackhaulRoute[] routes) : IRoutingAlgorithm
+    {
+        public Task<RouteDecision> ResolveAsync(DbMessage message, IRoutingContext ctx, CancellationToken ct) =>
+            Task.FromResult<RouteDecision>(new RouteDecision.FloodToNeighbours(routes, HopBudget: 3));
+        public Task ObserveInboundAsync(BackhaulMessage message, string linkSourceCallsign, IRoutingContext ctx, CancellationToken ct) => Task.CompletedTask;
+        public Task ObserveForwardOutcomeAsync(DbMessage message, BackhaulRoute attemptedRoute, BackhaulSendResult result, IRoutingContext ctx, CancellationToken ct) => Task.CompletedTask;
+        public Task ObserveProbeOutcomeAsync(string askedPeerCallsign, IReadOnlyList<dapps.client.DappsProtocolClient.DiscoveredPeerInfo> peers, IRoutingContext ctx, CancellationToken ct) => Task.CompletedTask;
+        public Task RunAsync(IRoutingContext ctx, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private static void InsertMessage(string id, int? ttl, DateTime createdAt, string destination = "app@N0DEST")
     {
         using var c = DbInfo.GetConnection();
         c.Insert(new DbMessage
@@ -386,7 +506,7 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
             Id = id,
             Payload = Encoding.UTF8.GetBytes("payload-" + id),
             Salt = 1L,
-            Destination = "app@N0DEST",
+            Destination = destination,
             SourceCallsign = "N0CALL",
             AdditionalProperties = "{}",
             Ttl = ttl,

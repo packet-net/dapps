@@ -34,7 +34,8 @@ public sealed class Rhpv2InboundService(
     IBackhaulInbox inbox,
     OperationalMetrics metrics,
     IDappsTxGate? txGate = null,
-    TimeProvider? timeProvider = null) : BackgroundService
+    TimeProvider? timeProvider = null,
+    PeerSessionRegistry? peerSessions = null) : BackgroundService
 {
     private static readonly TimeSpan IdleBackoff = TimeSpan.FromSeconds(2);
     /// <summary>Delay between cycles that ended without a real failure
@@ -231,6 +232,11 @@ public sealed class Rhpv2InboundService(
                 return;
             }
 
+            // #178: while this session is open the forwarder must not dial
+            // this peer (see PeerSessionRegistry). Released once the
+            // handler is done and the session is closed.
+            var lease = e.Message.Remote is { Length: > 0 } peer ? peerSessions?.Acquire(peer, "inbound") : null;
+
             var handler = new InboundConnectionHandler(
                 stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics);
 
@@ -245,6 +251,7 @@ public sealed class Rhpv2InboundService(
                         try { await s.DisposeAsync(); } catch { }
                     }
                     try { await rhp.CloseAsync(child, CancellationToken.None); } catch { }
+                    lease?.Dispose();
                 }
             }, stoppingToken);
         };

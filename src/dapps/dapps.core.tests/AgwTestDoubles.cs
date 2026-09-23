@@ -134,7 +134,8 @@ internal sealed class FakeAgwSocket : IDisposable
 /// </summary>
 internal sealed class AgwInboundServiceHarness : IAsyncDisposable
 {
-    public AgwInboundServiceHarness(string localCallsign, TimeProvider? clock = null, IBackhaulInbox? inbox = null)
+    public AgwInboundServiceHarness(
+        string localCallsign, TimeProvider? clock = null, IBackhaulInbox? inbox = null, PeerSessionRegistry? peerSessions = null)
     {
         Host = new FakeAgwHost();
         Options = new MutableOptionsMonitor<SystemOptions>(new SystemOptions
@@ -152,7 +153,8 @@ internal sealed class AgwInboundServiceHarness : IAsyncDisposable
             Logs,
             new Logger<AgwInboundService>(Logs),
             metrics: Metrics,
-            timeProvider: clock);
+            timeProvider: clock,
+            peerSessions: peerSessions);
     }
 
     public FakeAgwHost Host { get; }

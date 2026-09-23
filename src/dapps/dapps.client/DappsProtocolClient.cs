@@ -24,6 +24,37 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
     /// indefinitely. Plan A3.</summary>
     public static TimeSpan InactivityTimeout { get; set; } = TimeSpan.FromMinutes(3);
 
+    /// <summary>What <see cref="ReadInitialPromptAsync(CancellationToken, TimeSpan)"/> found.</summary>
+    public enum PromptOutcome
+    {
+        /// <summary>The prompt arrived; the session is ready for a command.</summary>
+        Seen,
+        /// <summary>Bytes arrived but no prompt among them (EOF, or the scan
+        /// cap): whatever answered is not a DAPPS session.</summary>
+        NotSeen,
+        /// <summary>Not a single byte arrived within the silence budget. On
+        /// a link that has just come up between two DAPPS neighbours this
+        /// is the crossed-connect signature (#178): both ends dialled, so
+        /// both are callers and neither sends the prompt.</summary>
+        Silent,
+    }
+
+    /// <summary>
+    /// <see cref="ReadInitialPromptAsync(CancellationToken, TimeSpan)"/>
+    /// with the ordinary per-read budget; total silence surfaces as the
+    /// same <see cref="TimeoutException"/> as any other stalled read.
+    /// </summary>
+    public async Task<bool> ReadInitialPromptAsync(CancellationToken ct)
+    {
+        var outcome = await ReadInitialPromptAsync(ct, InactivityTimeout);
+        if (outcome == PromptOutcome.Silent)
+        {
+            throw new TimeoutException(
+                $"DAPPS sender: no data from peer within {InactivityTimeout.TotalSeconds:F0}s");
+        }
+        return outcome == PromptOutcome.Seen;
+    }
+
     /// <summary>
     /// Reads from the stream until either the DAPPSv1 prompt is seen or we
     /// exceed PromptScanCapBytes (which is enough to absorb a typical noisy
@@ -35,8 +66,13 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
     /// in the app-to-user direction (apps-interface.md "App → user"
     /// section). Strict <c>\n</c>-only matching would hang every time
     /// dapps is reached over that bridge.
+    ///
+    /// <paramref name="silenceBudget"/> bounds the wait for the first byte
+    /// only; once the peer has said anything at all the ordinary
+    /// <see cref="InactivityTimeout"/> applies to each read, so a prompt
+    /// that started to arrive is never cut off part-way.
     /// </summary>
-    public async Task<bool> ReadInitialPromptAsync(CancellationToken ct)
+    public async Task<PromptOutcome> ReadInitialPromptAsync(CancellationToken ct, TimeSpan silenceBudget)
     {
         var promptBytes = Encoding.UTF8.GetBytes(PromptText);
         var seen = new List<byte>();
@@ -45,11 +81,28 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
 
         while (seen.Count < PromptScanCapBytes)
         {
-            var n = await ReadWithTimeoutAsync(oneByte, ct);
+            int n;
+            if (seen.Count == 0)
+            {
+                try
+                {
+                    n = await ReadWithTimeoutAsync(oneByte, ct, silenceBudget);
+                }
+                catch (TimeoutException)
+                {
+                    logger.LogInformation("Nothing at all from peer within {0:F0}s of connecting", silenceBudget.TotalSeconds);
+                    return PromptOutcome.Silent;
+                }
+            }
+            else
+            {
+                n = await ReadWithTimeoutAsync(oneByte, ct);
+            }
+
             if (n == 0)
             {
                 logger.LogWarning("EOF before DAPPSv1> prompt (got {0} bytes)", seen.Count);
-                return false;
+                return PromptOutcome.NotSeen;
             }
             seen.Add(oneByte[0]);
 
@@ -63,12 +116,12 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
 
             if (promptSeen && (oneByte[0] == (byte)'\n' || oneByte[0] == (byte)'\r'))
             {
-                return true;
+                return PromptOutcome.Seen;
             }
         }
 
         logger.LogWarning("DAPPSv1> prompt not seen in first {0} bytes", PromptScanCapBytes);
-        return false;
+        return PromptOutcome.NotSeen;
     }
 
     /// <summary>
@@ -552,11 +605,14 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
     /// <see cref="TimeoutException"/> when the peer goes silent -
     /// callers (e.g. <c>OutboundMessageManager</c>) catch and log,
     /// then move on to the next message rather than hanging the run.
+    /// <paramref name="budget"/> overrides <see cref="InactivityTimeout"/>
+    /// for this one read.
     /// </summary>
-    private async ValueTask<int> ReadWithTimeoutAsync(Memory<byte> buffer, CancellationToken outer)
+    private async ValueTask<int> ReadWithTimeoutAsync(Memory<byte> buffer, CancellationToken outer, TimeSpan? budget = null)
     {
+        var timeout = budget ?? InactivityTimeout;
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(outer);
-        cts.CancelAfter(InactivityTimeout);
+        cts.CancelAfter(timeout);
         try
         {
             return await stream.ReadAsync(buffer, cts.Token);
@@ -564,7 +620,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         catch (OperationCanceledException) when (!outer.IsCancellationRequested)
         {
             throw new TimeoutException(
-                $"DAPPS sender: no data from peer within {InactivityTimeout.TotalSeconds:F0}s");
+                $"DAPPS sender: no data from peer within {timeout.TotalSeconds:F0}s");
         }
     }
 }

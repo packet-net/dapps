@@ -13,6 +13,20 @@ namespace dapps.client.Backhaul;
 /// <see cref="DappsProtocolClient"/>; this class is the thin adapter
 /// that translates a single semantic <see cref="BackhaulMessage"/>
 /// into the multi-step session exchange.
+///
+/// Crossed connects (#178): when two neighbours dial each other within
+/// one round trip, both links come up and each node's BPQ attaches its
+/// link to its own outbound session. Neither side gets an inbound
+/// connect, so neither sends the prompt, and both callers would sit
+/// silent until the inactivity timeout, fail, and quite possibly
+/// collide again. The side with the lower callsign breaks the tie:
+/// after <see cref="GlareSilenceBudget"/> of nothing at all from the
+/// peer it sends the prompt itself and serves the peer's session on
+/// the link it already has (<c>serveOnGlare</c>, wired to the same
+/// handler the inbound bearers use). The higher side keeps waiting as
+/// it always did, sees that late prompt and carries on as the caller.
+/// Only one side ever switches, so this also works when the peer runs
+/// a version without it, provided the newer node is the lower callsign.
 /// </summary>
 public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
 {
@@ -22,24 +36,40 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     private readonly IBackhaulInbox? opportunisticInbox;
     private readonly Func<bool>? opportunisticEnabled;
     private readonly IRouteGossipPort? routeGossip;
+    private readonly Func<Stream, string, CancellationToken, Task>? serveOnGlare;
+
+    /// <summary>
+    /// How long a caller with the lower callsign waits for the first byte
+    /// from the peer before treating the silence as a crossed connect.
+    /// Long enough that a slow prompt (busy channel, loaded node) never
+    /// trips it; well inside the 3-minute budget the other side waits,
+    /// so the late prompt is still received there.
+    /// </summary>
+    public TimeSpan GlareSilenceBudget { get; init; } = TimeSpan.FromSeconds(60);
 
     public Dappsv1SessionBackhaul(IDappsOutboundTransport transport, ILoggerFactory loggerFactory)
         : this(transport, loggerFactory, opportunisticInbox: null, opportunisticEnabled: null, routeGossip: null)
     {
     }
 
+    /// <param name="serveOnGlare">Runs the receiver side of a session over
+    /// an already-connected stream to the named peer, prompt included:
+    /// what a crossed connect is resolved with. Null leaves the caller
+    /// waiting for the prompt as before.</param>
     public Dappsv1SessionBackhaul(
         IDappsOutboundTransport transport,
         ILoggerFactory loggerFactory,
         IBackhaulInbox? opportunisticInbox,
         Func<bool>? opportunisticEnabled,
-        IRouteGossipPort? routeGossip = null)
+        IRouteGossipPort? routeGossip = null,
+        Func<Stream, string, CancellationToken, Task>? serveOnGlare = null)
     {
         this.transport = transport;
         this.loggerFactory = loggerFactory;
         this.opportunisticInbox = opportunisticInbox;
         this.opportunisticEnabled = opportunisticEnabled;
         this.routeGossip = routeGossip;
+        this.serveOnGlare = serveOnGlare;
         logger = loggerFactory.CreateLogger<Dappsv1SessionBackhaul>();
     }
 
@@ -96,9 +126,30 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                     return BackhaulSendResult.Fail($"connect-script failed for {route.Callsign}: {ex.Message}");
                 }
             }
-            else if (!await protocol.ReadInitialPromptAsync(ct))
+            else
             {
-                return BackhaulSendResult.Fail($"no DAPPSv1> prompt from {route.Callsign}");
+                // #178 crossed connect: see the class doc. Only the lower
+                // callsign switches roles, and only on a direct link - a
+                // connect-script chain has intermediate nodes talking.
+                var weBreakTies = serveOnGlare is not null
+                    && StringComparer.OrdinalIgnoreCase.Compare(localCallsign, route.Callsign) < 0;
+                var outcome = await protocol.ReadInitialPromptAsync(
+                    ct, silenceBudget: weBreakTies ? GlareSilenceBudget : DappsProtocolClient.InactivityTimeout);
+                switch (outcome)
+                {
+                    case DappsProtocolClient.PromptOutcome.Silent when weBreakTies:
+                        logger.LogInformation(
+                            "Nothing from {0} for {1:F0}s after connecting: assuming a crossed connect, sending the prompt and serving its session instead",
+                            route.Callsign, GlareSilenceBudget.TotalSeconds);
+                        await serveOnGlare!(connection.Stream, route.Callsign, ct);
+                        return BackhaulSendResult.Defer(
+                            $"crossed connect with {route.Callsign}: served its session instead, {message.Id} stays queued");
+                    case DappsProtocolClient.PromptOutcome.Silent:
+                        return BackhaulSendResult.Fail(
+                            $"no data from {route.Callsign} within {DappsProtocolClient.InactivityTimeout.TotalSeconds:F0}s of connecting");
+                    case DappsProtocolClient.PromptOutcome.NotSeen:
+                        return BackhaulSendResult.Fail($"no DAPPSv1> prompt from {route.Callsign}");
+                }
             }
 
             if (!await protocol.OfferMessageAsync(

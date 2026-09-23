@@ -67,7 +67,8 @@ public sealed class AgwInboundService(
     ILogger<AgwInboundService> logger,
     OperationalMetrics? metrics = null,
     IDappsTxGate? txGate = null,
-    TimeProvider? timeProvider = null) : IHostedService
+    TimeProvider? timeProvider = null,
+    PeerSessionRegistry? peerSessions = null) : IHostedService
 {
     internal static readonly TimeSpan IdleBackoff = TimeSpan.FromSeconds(2);
     /// <summary>Delay between cycles that ended without a real failure
@@ -330,7 +331,7 @@ public sealed class AgwInboundService(
                 break;
 
             case 'C':
-                OnConnect(frame, framing, sessions, ct);
+                OnConnect(frame, framing, sessions);
                 break;
 
             case 'D':
@@ -383,8 +384,7 @@ public sealed class AgwInboundService(
     private void OnConnect(
         AgwFrame frame,
         AgwFrameTransport framing,
-        ConcurrentDictionary<SessionKey, MultiplexedAgwSessionStream> sessions,
-        CancellationToken ct)
+        ConcurrentDictionary<SessionKey, MultiplexedAgwSessionStream> sessions)
     {
         // BPQ delivers an inbound 'C' frame with CallFrom = the remote
         // station that connected to us, CallTo = our local APPL call.
@@ -427,9 +427,18 @@ public sealed class AgwInboundService(
         }
         sessions[key] = stream;
 
+        // #178: while this session is open the forwarder must not dial
+        // this peer (see PeerSessionRegistry). Released once the
+        // handler is done and our 'd', if any, has gone out.
+        var lease = peerSessions?.Acquire(remote, "inbound");
+
         var handler = new InboundConnectionHandler(
             stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics);
 
+        // Not tied to the cycle token: a cancellation landing in the gap
+        // after the 'C' was read would skip the handler, leaving the
+        // stream undisposed and the peer's lease held for good. The
+        // cycle's teardown ends this session through the table instead.
         _ = Task.Run(async () =>
         {
             try { await handler.Handle(stoppingTokenSource.Token); }
@@ -446,8 +455,9 @@ public sealed class AgwInboundService(
                 // dispose that one.
                 sessions.TryRemove(new KeyValuePair<SessionKey, MultiplexedAgwSessionStream>(key, stream));
                 try { await stream.DisposeAsync(); } catch { /* best effort */ }
+                lease?.Dispose();
             }
-        }, ct);
+        });
     }
 
     /// <summary>

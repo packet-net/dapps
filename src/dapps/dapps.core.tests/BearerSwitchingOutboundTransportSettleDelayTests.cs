@@ -127,7 +127,47 @@ public sealed class BearerSwitchingOutboundTransportSettleDelayTests
         await node2;
     }
 
-    private static BearerSwitchingOutboundTransport MakeTransport(FakeAgwHost host, TimeProvider clock, TimeSpan settleDelay)
+    // #178: every outbound link is registered with PeerSessionRegistry
+    // for as long as it is up, so a scheduled poll or probe can see that
+    // the forwarder is mid-session with a peer and the forwarder can see
+    // the reverse.
+
+    [Fact]
+    public async Task WhileAnOutboundLinkIsUp_ThePeerIsRegisteredAsBusy_UntilDispose()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        using var host = new FakeAgwHost();
+        var transport = MakeTransport(host, new ObservableTimeProvider(), TimeSpan.Zero, peers);
+
+        var node = PlayNodeForOneConnectAsync(host, ct);
+        var conn = await transport.ConnectAsync(Local, RemoteA, 0, ct);
+        peers.IsActive(RemoteA, out var direction).Should().BeTrue();
+        direction.Should().Be("outbound");
+
+        await conn.DisposeAsync();
+        await node;
+        peers.IsActive(RemoteA, out _).Should().BeFalse("our 'd' has gone out, so the peer is free to dial again");
+    }
+
+    [Fact]
+    public async Task AConnectThatFails_ReleasesThePeerAtOnce()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        using var host = new FakeAgwHost();
+        var transport = MakeTransport(host, new ObservableTimeProvider(), TimeSpan.Zero, peers);
+
+        var node = PlayNodeForOneConnectAsync(host, ct, refuse: true);
+        await transport.Invoking(t => t.ConnectAsync(Local, RemoteA, 0, ct))
+            .Should().ThrowAsync<IOException>();
+        await node;
+
+        peers.IsActive(RemoteA, out _).Should().BeFalse("no link came up, so there is nothing to protect");
+    }
+
+    private static BearerSwitchingOutboundTransport MakeTransport(
+        FakeAgwHost host, TimeProvider clock, TimeSpan settleDelay, PeerSessionRegistry? peers = null)
     {
         var options = new StaticOptionsMonitor<SystemOptions>(new SystemOptions
         {
@@ -136,7 +176,7 @@ public sealed class BearerSwitchingOutboundTransportSettleDelayTests
             AgwPort = host.Port,
         });
         return new BearerSwitchingOutboundTransport(
-            options, NullLoggerFactory.Instance, AlwaysOpenTxGate.Instance, clock, settleDelay);
+            options, NullLoggerFactory.Instance, AlwaysOpenTxGate.Instance, clock, settleDelay, peers);
     }
 
     /// <summary>Plays the local node for one outbound connect: ack the

@@ -28,7 +28,8 @@ public class OutboundMessageManager(
     OperationalMetrics? metrics = null,
     OutboundActivityTracker? activityTracker = null,
     TransmissionAuditService? transmissionAudit = null,
-    OutboundDestinationBackoff? destinationBackoff = null)
+    OutboundDestinationBackoff? destinationBackoff = null,
+    PeerSessionRegistry? peerSessions = null)
 {
     private readonly ILogger logger = loggerFactory.CreateLogger<OutboundMessageManager>();
     private readonly IReadOnlyList<IDappsBackhaul> backhauls = backhauls.ToList();
@@ -77,6 +78,9 @@ public class OutboundMessageManager(
 
         var optionsValue = options.CurrentValue;
         var messages = await database.GetPendingOutboundMessages();
+        // Peers we have already logged a #178 deferral for this run, so
+        // a queue of several messages for one busy peer costs one line.
+        var deferredPeers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var message in messages)
         {
@@ -108,6 +112,21 @@ public class OutboundMessageManager(
                         logger.LogDebug(
                             "Skipping {0}: {1} is in reconnect cooldown until {2:O}",
                             message.Id, nh.Route.Callsign, nextRetryAtUtc);
+                        break;
+                    }
+                    if (WouldDialIntoOpenSession(nh.Route, out var openDirection))
+                    {
+                        // #178: dialling now would send a SABM down the
+                        // live link and reset the session at both ends.
+                        // Leave the message queued: if the peer polls
+                        // (rev) on that session it drains it anyway, else
+                        // the next tick dials once the session has ended.
+                        if (deferredPeers.Add(nh.Route.Callsign))
+                        {
+                            logger.LogInformation(
+                                "Deferring {0}: an {1} session with {2} is already open, dialling now would reset it",
+                                message.Id, openDirection, nh.Route.Callsign);
+                        }
                         break;
                     }
                     var bm = new BackhaulMessage(
@@ -171,21 +190,33 @@ public class OutboundMessageManager(
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var result = await backhaul.SendAsync(bm, route, optionsValue.Callsign, stoppingToken);
         sw.Stop();
-        await routingAlgorithm.ObserveForwardOutcomeAsync(message, route, result, routingContext, stoppingToken);
-        if (result.Accepted)
+        if (result.Deferred)
         {
-            logger.LogInformation("Remote end accepted message {0} (via {1})", message.Id, backhaul.GetType().Name);
-            metrics.RecordForwardSuccess(message.Id, route.Callsign, message.Payload.Length);
-            activityTracker?.RecordTransmission();
-            await database.MarkMessageAsForwarded(message.Id);
-            destinationBackoff.RecordSuccess(route.Callsign);
+            // #178: the bearer resolved a crossed connect by serving the
+            // peer's session on the link instead of pushing. Nothing
+            // failed, so no cooldown and no outcome for the route to
+            // learn from; the message is still pending for the next
+            // tick, unless the peer's rev on that session drained it.
+            logger.LogInformation("Deferred {0}: {1}", message.Id, result.Error);
         }
         else
         {
-            var nextRetryAtUtc = destinationBackoff.RecordFailure(route.Callsign);
-            logger.LogError("Failed to forward message {0} to {1} via {2}: {3} (retrying no earlier than {4:O})",
-                message.Id, route.Callsign, backhaul.GetType().Name, result.Error, nextRetryAtUtc);
-            metrics.RecordForwardFailure(message.Id, route.Callsign, message.Payload.Length, result.Error);
+            await routingAlgorithm.ObserveForwardOutcomeAsync(message, route, result, routingContext, stoppingToken);
+            if (result.Accepted)
+            {
+                logger.LogInformation("Remote end accepted message {0} (via {1})", message.Id, backhaul.GetType().Name);
+                metrics.RecordForwardSuccess(message.Id, route.Callsign, message.Payload.Length);
+                activityTracker?.RecordTransmission();
+                await database.MarkMessageAsForwarded(message.Id);
+                destinationBackoff.RecordSuccess(route.Callsign);
+            }
+            else
+            {
+                var nextRetryAtUtc = destinationBackoff.RecordFailure(route.Callsign);
+                logger.LogError("Failed to forward message {0} to {1} via {2}: {3} (retrying no earlier than {4:O})",
+                    message.Id, route.Callsign, backhaul.GetType().Name, result.Error, nextRetryAtUtc);
+                metrics.RecordForwardFailure(message.Id, route.Callsign, message.Payload.Length, result.Error);
+            }
         }
         if (transmissionAudit is { } ta)
         {
@@ -200,7 +231,7 @@ public class OutboundMessageManager(
                 reason: $"forwarder tick: route via {route.Callsign}",
                 success: result.Accepted,
                 durationMs: (int)sw.ElapsedMilliseconds,
-                errorTag: result.Accepted ? "" : (result.Error ?? "unknown"));
+                errorTag: result.Accepted ? "" : result.Deferred ? "deferred" : (result.Error ?? "unknown"));
         }
     }
 
@@ -219,6 +250,18 @@ public class OutboundMessageManager(
 
         foreach (var route in flood.Routes)
         {
+            if (WouldDialIntoOpenSession(route, out var openDirection))
+            {
+                // #178: a flood copy is one-shot, so this one is skipped
+                // rather than deferred - the outcome a failed send to
+                // that neighbour already had, minus the collision on
+                // air and the failure on its streak.
+                logger.LogInformation(
+                    "Flood of {0}: skipping {1}, an {2} session with it is already open",
+                    message.Id, route.Callsign, openDirection);
+                continue;
+            }
+
             var bm = new BackhaulMessage(
                 Id: message.Id,
                 Destination: message.Destination,
@@ -241,24 +284,34 @@ public class OutboundMessageManager(
             var sw = System.Diagnostics.Stopwatch.StartNew();
             var result = await backhaul.SendAsync(bm, route, optionsValue.Callsign, stoppingToken);
             sw.Stop();
-            await routingAlgorithm.ObserveForwardOutcomeAsync(message, route, result, routingContext, stoppingToken);
-            if (result.Accepted)
+            if (result.Deferred)
             {
-                metrics.RecordForwardSuccess(message.Id, route.Callsign, message.Payload.Length);
-                activityTracker?.RecordTransmission();
-                destinationBackoff.RecordSuccess(route.Callsign);
+                // #178: crossed connect, served instead of pushed. This
+                // copy is lost like a failed one (floods are one-shot)
+                // but it is not a failure of the neighbour.
+                logger.LogInformation("Flood of {0}: deferred, {1}", message.Id, result.Error);
             }
             else
             {
-                // Floods are one-shot (no retry of this message), so we
-                // don't skip on cooldown here the way NextHop does - but
-                // still record the failure so a neighbour that's
-                // currently failing NextHop sends is also reflected in
-                // its streak, and so a burst of floods to the same
-                // failing neighbour doesn't reset a streak NextHop is
-                // tracking.
-                destinationBackoff.RecordFailure(route.Callsign);
-                metrics.RecordForwardFailure(message.Id, route.Callsign, message.Payload.Length, result.Error);
+                await routingAlgorithm.ObserveForwardOutcomeAsync(message, route, result, routingContext, stoppingToken);
+                if (result.Accepted)
+                {
+                    metrics.RecordForwardSuccess(message.Id, route.Callsign, message.Payload.Length);
+                    activityTracker?.RecordTransmission();
+                    destinationBackoff.RecordSuccess(route.Callsign);
+                }
+                else
+                {
+                    // Floods are one-shot (no retry of this message), so we
+                    // don't skip on cooldown here the way NextHop does - but
+                    // still record the failure so a neighbour that's
+                    // currently failing NextHop sends is also reflected in
+                    // its streak, and so a burst of floods to the same
+                    // failing neighbour doesn't reset a streak NextHop is
+                    // tracking.
+                    destinationBackoff.RecordFailure(route.Callsign);
+                    metrics.RecordForwardFailure(message.Id, route.Callsign, message.Payload.Length, result.Error);
+                }
             }
             if (transmissionAudit is { } ta)
             {
@@ -273,7 +326,7 @@ public class OutboundMessageManager(
                     reason: $"flood to neighbour (hop budget {flood.HopBudget})",
                     success: result.Accepted,
                     durationMs: (int)sw.ElapsedMilliseconds,
-                    errorTag: result.Accepted ? "" : (result.Error ?? "unknown"));
+                    errorTag: result.Accepted ? "" : result.Deferred ? "deferred" : (result.Error ?? "unknown"));
             }
         }
 
@@ -282,5 +335,19 @@ public class OutboundMessageManager(
         // effectively lost - that's correct semantics; floods are
         // best-effort.
         await database.MarkMessageAsForwarded(message.Id);
+    }
+
+    /// <summary>
+    /// #178: true when <paramref name="route"/> rides a connected-mode
+    /// session (AGW or RHP - the routes <see cref="Dappsv1SessionBackhaul"/>
+    /// claims) and a session with that peer is already open in either
+    /// direction. UDP and MeshCore are datagram bearers with no link to
+    /// collide on, so their routes are never deferred.
+    /// </summary>
+    private bool WouldDialIntoOpenSession(BackhaulRoute route, out string? openDirection)
+    {
+        openDirection = null;
+        if (peerSessions is null || route.UdpEndpoint is not null || route.MeshCoreChannel is not null) return false;
+        return peerSessions.IsActive(route.Callsign, out openDirection);
     }
 }

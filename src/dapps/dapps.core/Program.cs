@@ -208,6 +208,11 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
 // Sessions available" instead of the DAPPSv1> prompt) doesn't get
 // re-dialled on every 5s forwarder tick forever.
 builder.Services.AddSingleton<OutboundDestinationBackoff>();
+// #178: which peers have a DAPPS session open right now, in either
+// direction. The inbound bearers and the outbound transport write it;
+// the forwarder reads it so it never dials into a live link (which
+// resets the link at both ends and lands the caller on the node prompt).
+builder.Services.AddSingleton<PeerSessionRegistry>();
 builder.Services.AddSingleton<OutboundMessageManager>();
 // B5 routing seam - IRoutingAlgorithm is the strategy, IRoutingContext
 // is the slice of node state it reads. Two stacks shipped today;
@@ -290,7 +295,17 @@ builder.Services.AddSingleton<IDappsBackhaul>(sp => new Dappsv1SessionBackhaul(
     // Route gossip: piggyback `routes` pulls from neighbours when
     // the per-(local, remote) staleness gate allows. Bounded airtime,
     // no scheduled transmission.
-    routeGossip: sp.GetRequiredService<IRouteGossipPort>()));
+    routeGossip: sp.GetRequiredService<IRouteGossipPort>(),
+    // #178 crossed connects: both neighbours dialled at once, both
+    // links came up, neither side got a prompt. The lower callsign
+    // sends it and serves the peer's session on the link it has, with
+    // the same handler the inbound bearers use.
+    serveOnGlare: (stream, peer, ct) => new InboundConnectionHandler(
+        stream, sourceCallsign: peer,
+        sp.GetRequiredService<ILoggerFactory>(),
+        sp.GetRequiredService<Database>(),
+        sp.GetRequiredService<IBackhaulInbox>(),
+        sp.GetRequiredService<OperationalMetrics>()).Handle(ct)));
 builder.Services.AddSingleton<DatabaseAndMqttInbox>();
 builder.Services.AddSingleton<IBackhaulInbox>(sp => sp.GetRequiredService<DatabaseAndMqttInbox>());
 builder.Services.AddHostedService<UdpDatagramListener>();

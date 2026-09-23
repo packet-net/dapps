@@ -161,6 +161,49 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         bpq.Received.Count(f => f.Kind == 'd').Should().Be(1);
     }
 
+    // #178: the forwarder consults PeerSessionRegistry so it never dials
+    // a peer that is already connected to us, which would reset the link.
+    // These pin down what the inbound side puts into it, and when.
+
+    [Fact]
+    public async Task WhileAPeerHasASessionOpen_ItIsRegisteredAsBusy_UntilTheSessionEnds()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
+        var bpq = await h.StartAsync(ct);
+        peers.IsActive(Remote, out _).Should().BeFalse();
+
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        (await bpq.ReadTextAsync(ct)).Should().Be(Prompt);
+        peers.IsActive(Remote, out var direction).Should().BeTrue("the session is open from the moment BPQ hands it to us");
+        direction.Should().Be("inbound");
+
+        await bpq.WriteAsync(ct, FakeAgwSocket.Disconnect(Remote, Local, Port));
+        await peers.WaitUntilIdleAsync(Remote, ct).WaitAsync(FakeAgwHost.FrameTimeout, ct);
+    }
+
+    [Fact]
+    public async Task AfterAStaleEntryIsRetired_ThePeerIsStillBusyForTheLiveSession()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
+        var bpq = await h.StartAsync(ct);
+
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        (await bpq.ReadTextAsync(ct)).Should().Be(Prompt);
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        (await bpq.ReadTextAsync(ct)).Should().Be(Prompt);
+        await h.Logs.WaitForAsync("retiring the stale entry", ct);
+        peers.IsActive(Remote, out _).Should().BeTrue("the live replacement holds a lease of its own");
+
+        // dapps closes the live session itself; that releases the peer.
+        await bpq.WriteAsync(ct, FakeAgwSocket.Data(Remote, Local, Port, "quit\n"));
+        (await bpq.ReadTextAsync(ct)).Should().Be("bye\n");
+        await peers.WaitUntilIdleAsync(Remote, ct).WaitAsync(FakeAgwHost.FrameTimeout, ct);
+    }
+
     [Fact]
     public async Task DataStampedWithTheWrongPort_ReachesTheOnlySessionForThatPair()
     {

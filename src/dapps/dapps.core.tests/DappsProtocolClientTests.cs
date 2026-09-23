@@ -38,6 +38,58 @@ public class DappsProtocolClientTests
         (await client.ReadInitialPromptAsync(CancellationToken.None)).Should().BeFalse();
     }
 
+    // #178: a crossed connect looks like total silence after the link
+    // came up. The caller needs to tell that apart from a peer that said
+    // something other than the prompt (a node banner, say), which is a
+    // different problem with a different answer.
+
+    [Fact]
+    public async Task ReadInitialPromptAsync_NothingAtAllWithinTheSilenceBudget_IsSilent()
+    {
+        var client = new DappsProtocolClient(new NeverReadyStream(), NullLoggerFactory.Instance);
+        var outcome = await client.ReadInitialPromptAsync(TestContext.Current.CancellationToken, silenceBudget: TimeSpan.FromMilliseconds(100));
+        outcome.Should().Be(DappsProtocolClient.PromptOutcome.Silent);
+    }
+
+    [Fact]
+    public async Task ReadInitialPromptAsync_ANodeBannerInsteadOfThePrompt_IsNotSeen()
+    {
+        var stream = new FakeDuplexStream(Encoding.UTF8.GetBytes("Welcome to BPQ Node PEWSEY in IO91BH.\rType ? for help.\r"));
+        var client = new DappsProtocolClient(stream, NullLoggerFactory.Instance);
+        var outcome = await client.ReadInitialPromptAsync(TestContext.Current.CancellationToken, silenceBudget: TimeSpan.FromMilliseconds(100));
+        outcome.Should().Be(DappsProtocolClient.PromptOutcome.NotSeen);
+    }
+
+    [Fact]
+    public async Task ReadInitialPromptAsync_ThePrompt_IsSeen()
+    {
+        var stream = new FakeDuplexStream(Encoding.UTF8.GetBytes("DAPPSv1>\n"));
+        var client = new DappsProtocolClient(stream, NullLoggerFactory.Instance);
+        var outcome = await client.ReadInitialPromptAsync(TestContext.Current.CancellationToken, silenceBudget: TimeSpan.FromMilliseconds(100));
+        outcome.Should().Be(DappsProtocolClient.PromptOutcome.Seen);
+    }
+
+    /// <summary>A socket whose peer never sends anything: every read waits until cancelled.</summary>
+    private sealed class NeverReadyStream : Stream
+    {
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            return 0;
+        }
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) => ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) { }
+        public override void Flush() { }
+        public override bool CanRead => true;
+        public override bool CanWrite => true;
+        public override bool CanSeek => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+    }
+
     [Fact]
     public async Task OfferMessageAsync_WritesIhaveLineAndAcceptsSendReply()
     {

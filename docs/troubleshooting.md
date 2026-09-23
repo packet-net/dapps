@@ -67,6 +67,16 @@ Both come from the same place. AGW frames carry no session id, so a session is o
 
 The BPQ-side `already connected` rejection means the caller redialled before your BPQ's AGW poll loop had processed the previous disconnect. A DAPPS caller waits two seconds between sessions to the same destination for exactly this reason.
 
+### Two DAPPS nodes keep reconnecting to each other and land on the node prompt (BPQ AGW)
+
+Symptom on a monitor: a session between two DAPPS neighbours completes an `ihave` / `send` / `data` exchange, then one side sends a fresh connect request (`<C C P>`, a SABM) to the other with no disconnect in between, and what comes back is the BPQ node's welcome banner (`Welcome to BPQ Node ...`) instead of `DAPPSv1>`. From then on both nodes redial each other every few seconds. Both DAPPS logs show forwards failing with `no DAPPSv1> prompt`.
+
+This is two forwarders dialling each other at the same moment. AX.25 has one link per callsign pair per port, whichever end set it up. When both nodes have traffic queued for each other, each one's forwarder dials out on its own tick. BPQ doesn't refuse the outbound connect just because a link to that station is already up; it sends a SABM down the live link. The other node's BPQ treats a SABM on an established link as a link reset: it drops the DAPPS session attached to that link and re-attaches the link at the node's command level, hence the banner. Both sides then fail, requeue and redial in step.
+
+DAPPS keeps track of which peers it has a session open with, in either direction, and leaves outbound traffic for such a peer queued until that session ends. The log line is `Deferring <id>: an inbound session with <peer> is already open`. If the peer has opportunistic poll enabled, its `rev` on the existing session collects the queued traffic anyway; otherwise the first forwarder tick after the session closes dials as normal. The guard is one-sided (each node only stops itself dialling into a live session), so if you still see the pattern above, check that the *other* node is also on a DAPPS version that has it.
+
+There is a narrower variant the guard cannot see coming: both nodes dial within the same round trip, so neither has an inbound session yet when it decides to dial. Both links come up, but each BPQ attaches its link to its own outgoing session, so neither DAPPS is handed an inbound connect and neither sends `DAPPSv1>`. On a monitor this looks like a connect that succeeds and then goes quiet. DAPPS resolves this too: after 60 seconds of silence the node with the lower callsign sends the prompt itself and serves the session (log line `Nothing from <peer> for 60s after connecting: assuming a crossed connect`), and the other node, still waiting for its prompt, sees it and carries on as the caller. The lower node's own message stays queued for the next tick, unless the caller's `rev` collects it on that same session.
+
 ### Inbound sessions never arrive (XRouter RHPv2)
 
 A remote node can `c <your-callsign>` and lands at the XRouter node prompt, but not at the `DAPPSv1>` prompt. Check:
