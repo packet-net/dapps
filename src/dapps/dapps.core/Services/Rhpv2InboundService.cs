@@ -33,7 +33,8 @@ public sealed class Rhpv2InboundService(
     Database database,
     IBackhaulInbox inbox,
     OperationalMetrics metrics,
-    IDappsTxGate? txGate = null) : BackgroundService
+    IDappsTxGate? txGate = null,
+    TimeProvider? timeProvider = null) : BackgroundService
 {
     private static readonly TimeSpan IdleBackoff = TimeSpan.FromSeconds(2);
     /// <summary>Delay between cycles that ended without a real failure
@@ -44,7 +45,8 @@ public sealed class Rhpv2InboundService(
     private static readonly TimeSpan NonFailureRetryDelay = TimeSpan.FromSeconds(5);
 
     private readonly IDappsTxGate txGate = txGate ?? AlwaysOpenTxGate.Instance;
-    private readonly InboundReconnectController reconnect = new();
+    private readonly TimeProvider timeProvider = timeProvider ?? TimeProvider.System;
+    private readonly InboundReconnectController reconnect = new(timeProvider ?? TimeProvider.System);
     private CancellationTokenSource? cycleTokenSource;
     private IDisposable? optionsChangeSubscription;
 
@@ -146,7 +148,7 @@ public sealed class Rhpv2InboundService(
         // "agw"; OnChange fires when /Config flips the value.
         if (!string.Equals(opts.NodeBearer, "rhpv2", StringComparison.OrdinalIgnoreCase))
         {
-            await Task.Delay(IdleBackoff, stoppingToken);
+            await Task.Delay(IdleBackoff, timeProvider, stoppingToken);
             return;
         }
 
@@ -154,7 +156,7 @@ public sealed class Rhpv2InboundService(
             || string.Equals(opts.Callsign, DbStartup.PlaceholderCallsign, StringComparison.OrdinalIgnoreCase))
         {
             logger.LogDebug("Callsign not configured; RHP inbound idle (waiting for /Setup or /Config)");
-            await Task.Delay(IdleBackoff, stoppingToken);
+            await Task.Delay(IdleBackoff, timeProvider, stoppingToken);
             return;
         }
 

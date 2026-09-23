@@ -45,7 +45,7 @@ DAPPS can't reach the bearer port on `DAPPS_NODE_HOST` (`DAPPS_AGW_PORT` for AGW
 
 ### "Packet-node connection drops repeatedly"
 
-DAPPS reconnects automatically (with backoff). If it's flapping every few seconds:
+DAPPS reconnects automatically, backing off from 10 s to 30 s to 1 minute to every 5 minutes as failures pile up, and the dashboard's Packet node tile shows the countdown with a **Retry now** link (saving `/Config` also retries straight away). If it's flapping every few seconds:
 
 - Check the packet node's logs for whether it's actively closing the connection. Some BPQ misconfigurations cause AGW to disconnect clients on every L2 event.
 - Check for two DAPPS instances accidentally sharing a callsign - the second binding wins and the first one sees its inbound dispatch evaporate.

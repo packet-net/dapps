@@ -60,7 +60,10 @@ public sealed class ReconnectBackoffSchedule(TimeProvider? timeProvider = null)
     /// from before the click.</summary>
     public void ClearPendingWait() => NextRetryAtUtc = null;
 
-    private static TimeSpan DelayForAttempt(int attempt)
+    /// <summary>The delay the schedule prescribes after <paramref name="attempt"/>
+    /// consecutive failures (1-based). Public so tests can name a tier
+    /// without re-stating the ramp.</summary>
+    public static TimeSpan DelayForAttempt(int attempt)
     {
         var remaining = attempt;
         foreach (var (delay, count) in RampSteps)
@@ -84,9 +87,10 @@ public sealed class ReconnectBackoffSchedule(TimeProvider? timeProvider = null)
 /// itself, where it already has unambiguous access to its own
 /// constructor-injected <c>metrics</c> field.
 /// </summary>
-public sealed class InboundReconnectController
+public sealed class InboundReconnectController(TimeProvider? timeProvider = null)
 {
-    private readonly ReconnectBackoffSchedule backoff = new();
+    private readonly TimeProvider timeProvider = timeProvider ?? TimeProvider.System;
+    private readonly ReconnectBackoffSchedule backoff = new(timeProvider ?? TimeProvider.System);
 
     // volatile: written on the service's background reconnect-loop
     // thread (WaitAsync), read from unrelated threads - an HTTP request
@@ -111,7 +115,7 @@ public sealed class InboundReconnectController
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(outerCt);
         waitCts = cts;
-        try { await Task.Delay(delay, cts.Token); }
+        try { await Task.Delay(delay, timeProvider, cts.Token); }
         catch (OperationCanceledException) { /* manual retry, options change, or shutdown */ }
         finally { waitCts = null; }
     }

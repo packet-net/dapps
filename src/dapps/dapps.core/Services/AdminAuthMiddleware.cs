@@ -35,7 +35,9 @@ public sealed class AdminAuthMiddleware(RequestDelegate next)
         //                     external uptime monitors can't log in
         //   /Operational    - C3 metrics aggregate; same posture as
         //                     /Events/health which the dashboard JS
-        //                     polls without auth context anyway
+        //                     polls without auth context anyway.
+        //                     GET only: the retry-now action under the
+        //                     same prefix needs the admin cookie.
         //   /mcp            - Plan G MCP endpoint; clients (Claude,
         //                     Cursor) don't have admin cookies. An
         //                     MCP-specific token model can come later.
@@ -44,7 +46,7 @@ public sealed class AdminAuthMiddleware(RequestDelegate next)
         //                     auth surface here, same model as the
         //                     TCP broker on :MqttPort.
         //   static asset paths Razor's StaticFiles middleware serves
-        if (IsPassThrough(path))
+        if (IsPassThrough(path, ctx.Request.Method))
         {
             await next(ctx);
             return;
@@ -98,7 +100,7 @@ public sealed class AdminAuthMiddleware(RequestDelegate next)
         return accept.Contains("text/html", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsPassThrough(string path)
+    private static bool IsPassThrough(string path, string method)
     {
         if (string.IsNullOrEmpty(path)) return false;
         return path.StartsWith("/AppApi", StringComparison.OrdinalIgnoreCase)
@@ -106,7 +108,7 @@ public sealed class AdminAuthMiddleware(RequestDelegate next)
             || path.StartsWith("/Login", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("/Logout", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("/Health", StringComparison.OrdinalIgnoreCase)
-            || path.StartsWith("/Operational", StringComparison.OrdinalIgnoreCase)
+            || (path.StartsWith("/Operational", StringComparison.OrdinalIgnoreCase) && HttpMethods.IsGet(method))
             || path.StartsWith("/mcp", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("/mqtt", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("/lib/", StringComparison.OrdinalIgnoreCase)

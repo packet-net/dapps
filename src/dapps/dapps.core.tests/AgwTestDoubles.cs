@@ -137,25 +137,41 @@ internal sealed class AgwInboundServiceHarness : IAsyncDisposable
     public AgwInboundServiceHarness(string localCallsign, TimeProvider? clock = null, IBackhaulInbox? inbox = null)
     {
         Host = new FakeAgwHost();
-        var options = new StaticOptionsMonitor<SystemOptions>(new SystemOptions
+        Options = new MutableOptionsMonitor<SystemOptions>(new SystemOptions
         {
             Callsign = localCallsign,
             NodeHost = "127.0.0.1",
             AgwPort = Host.Port,
         });
         Logs = new CapturingLoggerFactory();
+        Metrics = new OperationalMetrics(clock ?? TimeProvider.System);
         Service = new AgwInboundService(
-            options,
-            new Database(NullLogger<Database>.Instance, options),
+            Options,
+            new Database(NullLogger<Database>.Instance, Options),
             inbox ?? new NullBackhaulInbox(),
             Logs,
             new Logger<AgwInboundService>(Logs),
+            metrics: Metrics,
             timeProvider: clock);
     }
 
     public FakeAgwHost Host { get; }
     public AgwInboundService Service { get; }
     public CapturingLoggerFactory Logs { get; }
+    public OperationalMetrics Metrics { get; }
+
+    /// <summary>The options the service watches; <see cref="MutableOptionsMonitor{T}.Set"/>
+    /// plays a /Config save.</summary>
+    public MutableOptionsMonitor<SystemOptions> Options { get; }
+
+    /// <summary>A fresh copy of the current options, the way a /Config save
+    /// that changed nothing relevant still republishes them.</summary>
+    public SystemOptions SameOptions() => new()
+    {
+        Callsign = Options.CurrentValue.Callsign,
+        NodeHost = Options.CurrentValue.NodeHost,
+        AgwPort = Options.CurrentValue.AgwPort,
+    };
 
     /// <summary>Starts the service, accepts its connection and consumes the 'X' registration.</summary>
     public async Task<FakeAgwSocket> StartAsync(CancellationToken ct)
@@ -292,6 +308,42 @@ internal sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T>
     public T CurrentValue { get; } = value;
     public T Get(string? name) => CurrentValue;
     public IDisposable? OnChange(Action<T, string?> listener) => null;
+}
+
+/// <summary>An options monitor whose value can be replaced, firing
+/// OnChange the way SystemOptionsStore does after a /Config save.</summary>
+internal sealed class MutableOptionsMonitor<T>(T initial) : IOptionsMonitor<T>
+{
+    private readonly Lock gate = new();
+    private readonly List<Action<T, string?>> listeners = [];
+
+    public T CurrentValue { get; private set; } = initial;
+    public T Get(string? name) => CurrentValue;
+
+    public IDisposable? OnChange(Action<T, string?> listener)
+    {
+        lock (gate) listeners.Add(listener);
+        return new Subscription(this, listener);
+    }
+
+    public void Set(T value)
+    {
+        Action<T, string?>[] snapshot;
+        lock (gate)
+        {
+            CurrentValue = value;
+            snapshot = listeners.ToArray();
+        }
+        foreach (var listener in snapshot) listener(value, null);
+    }
+
+    private sealed class Subscription(MutableOptionsMonitor<T> owner, Action<T, string?> listener) : IDisposable
+    {
+        public void Dispose()
+        {
+            lock (owner.gate) owner.listeners.Remove(listener);
+        }
+    }
 }
 
 internal sealed class NullBackhaulInbox : IBackhaulInbox

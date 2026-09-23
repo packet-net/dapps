@@ -52,6 +52,8 @@ A compose form for hand-crafting an outbound message - every operator-relevant f
 
 `/Operational` returns a much richer JSON document: process metrics (uptime, message counts, probe stats, AGW reconnect counts), the recent decision-events ring (with reasons), per-link state. This is what feeds the heartbeat too. Also open access.
 
+Two of its fields describe the packet-node connection's retry state: `nodeReconnectAttempt` (consecutive failed connects, 0 while connected) and `nodeReconnectAt` (when the next automatic attempt is due, null when not waiting). Reconnects back off along a sliding scale, 10 s for the first three failures, then 30 s, then 1 minute, then every 5 minutes, and reset on the next successful connect. The dashboard's Packet node tile shows the countdown and a **Retry now** link; that link posts to `POST /Operational/retry-now`, which collapses the wait and, unlike the reads under `/Operational`, requires the admin login. Saving `/Config` also cuts the wait short.
+
 ### MQTT heartbeat
 
 Subscribers to `dapps/metrics/heartbeat` get the same operational snapshot as `/Operational`, every 60 s. Retained - late subscribers see the most recent snapshot immediately.

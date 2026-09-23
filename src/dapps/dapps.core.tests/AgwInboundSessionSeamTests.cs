@@ -190,7 +190,8 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
             FakeAgwSocket.Connect(Remote, Local, port: 2));
         var first = await bpq.ReadUntilAsync('D', ct);
         var second = await bpq.ReadUntilAsync('D', ct);
-        new[] { first.Port, second.Port }.Should().BeEquivalentTo(new byte[] { 1, 2 });
+        // Both sessions are prompted; the two handlers race, so the order is not fixed.
+        new[] { first.Port, second.Port }.Order().Should().Equal(new byte[] { 1, 2 });
 
         // Which session does a port-0 'd' mean? Genuinely unknowable, so
         // neither is touched.
@@ -261,7 +262,65 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task WhenBpqDropsTheSocket_DappsRedialsAfterTheBackoff_OnTheClock()
+    public async Task WhenBpqDropsTheSocket_DappsRedialsAfterTheFirstBackoffTier_OnTheClock()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        var first = await h.StartAsync(ct);
+        h.Service.TriggerManualRetry().Should().BeFalse("nothing to collapse while connected");
+
+        first.Close();
+        await h.Logs.WaitForAsync("(attempt 1,", ct);
+        var firstTier = ReconnectBackoffSchedule.DelayForAttempt(1);
+        await clock.WaitForTimerAsync(firstTier, ct);
+        h.Host.Pending().Should().BeFalse("no redial before the backoff has elapsed");
+        var counters = h.Metrics.Take();
+        counters.AgwReconnectAttempt.Should().Be(1);
+        counters.AgwReconnectNextAtUtc.Should().Be((clock.GetUtcNow() + firstTier).UtcDateTime,
+            "the dashboard countdown is published from the same clock");
+
+        clock.Advance(firstTier);
+        using var second = await h.Host.AcceptAsync(ct);
+        (await second.ExpectRegisterAsync(ct)).CallFrom.Should().Be(Local, "the new connection re-registers our callsign");
+
+        // A frame from BPQ, not the bare TCP connect, is what counts as
+        // a successful reconnect and resets the ramp.
+        await second.WriteAsync(ct, new AgwFrame(0, 'X', 0, "", "", [1]));
+        await h.Logs.WaitForAsync("'X' ack", ct);
+        h.Metrics.Take().AgwReconnectAttempt.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RepeatedFailures_ClimbTheBackoffRamp()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        var socket = await h.StartAsync(ct);
+
+        // BPQ accepts the socket, sees our registration, and drops us
+        // without a word, four times running.
+        for (var attempt = 1; attempt <= 4; attempt++)
+        {
+            socket.Close();
+            await h.Logs.WaitForAsync($"(attempt {attempt},", ct);
+            var delay = ReconnectBackoffSchedule.DelayForAttempt(attempt);
+            await clock.WaitForTimerAsync(delay, ct);
+            h.Metrics.Take().AgwReconnectAttempt.Should().Be(attempt);
+
+            clock.Advance(delay);
+            socket = await h.Host.AcceptAsync(ct);
+            await socket.ExpectRegisterAsync(ct);
+        }
+
+        ReconnectBackoffSchedule.DelayForAttempt(4).Should().Be(TimeSpan.FromSeconds(30),
+            "the fourth consecutive failure moves to the second tier of the ramp");
+        socket.Dispose();
+    }
+
+    [Fact]
+    public async Task RetryNow_CollapsesTheBackoffWait_WithoutWaitingForTheClock()
     {
         var ct = TestContext.Current.CancellationToken;
         var clock = new ObservableTimeProvider();
@@ -269,12 +328,50 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var first = await h.StartAsync(ct);
 
         first.Close();
-        await h.Logs.WaitForAsync("reconnecting in", ct);
-        await clock.WaitForTimerAsync(AgwInboundService.ReconnectBackoff, ct);
-        h.Host.Pending().Should().BeFalse("no redial before the backoff has elapsed");
+        await h.Logs.WaitForAsync("(attempt 1,", ct);
+        await clock.WaitForTimerAsync(ReconnectBackoffSchedule.DelayForAttempt(1), ct);
 
-        clock.Advance(AgwInboundService.ReconnectBackoff);
+        h.Service.TriggerManualRetry().Should().BeTrue("a backoff wait was in flight to collapse");
+        h.Metrics.Take().AgwReconnectNextAtUtc.Should().BeNull("the countdown clears the moment the operator clicks");
+
         using var second = await h.Host.AcceptAsync(ct);
-        (await second.ExpectRegisterAsync(ct)).CallFrom.Should().Be(Local, "the new connection re-registers our callsign");
+        await second.ExpectRegisterAsync(ct);
+    }
+
+    [Fact]
+    public async Task AConfigSaveDuringTheBackoff_InterruptsTheWait()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        var first = await h.StartAsync(ct);
+
+        first.Close();
+        await h.Logs.WaitForAsync("(attempt 1,", ct);
+        await clock.WaitForTimerAsync(ReconnectBackoffSchedule.DelayForAttempt(1), ct);
+
+        h.Options.Set(h.SameOptions());
+
+        using var second = await h.Host.AcceptAsync(ct);
+        await second.ExpectRegisterAsync(ct);
+    }
+
+    [Fact]
+    public async Task AConfigSaveWhileConnected_ReconnectsAfterTheShortNonFailureDelay()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        using var first = await h.StartAsync(ct);
+
+        h.Options.Set(h.SameOptions());
+
+        await clock.WaitForTimerAsync(AgwInboundService.NonFailureRetryDelay, ct);
+        h.Host.Pending().Should().BeFalse("a cancelled cycle is not a failure, but it still pauses briefly");
+        h.Metrics.Take().AgwReconnectAttempt.Should().Be(0, "an options change never counts against the ramp");
+
+        clock.Advance(AgwInboundService.NonFailureRetryDelay);
+        using var second = await h.Host.AcceptAsync(ct);
+        await second.ExpectRegisterAsync(ct);
     }
 }

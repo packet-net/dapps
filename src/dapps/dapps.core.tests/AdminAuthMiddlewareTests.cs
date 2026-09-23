@@ -83,6 +83,20 @@ public sealed class AdminAuthMiddlewareTests : IAsyncLifetime
         nextCalled().Should().BeFalse();
     }
 
+    [Fact]
+    public async Task RetryNowAction_NoCookie_DoesNotReachNextDelegate()
+    {
+        // Reads under /Operational are open for scrapers and the
+        // dashboard poll; the retry-now action under the same prefix is
+        // not, so an unauthenticated POST must be challenged like any
+        // other gated path.
+        var (mw, ctx, nextCalled) = Build("/Operational/retry-now", "POST");
+
+        try { await mw.InvokeAsync(ctx, store, BuildOptionsStore()); } catch { /* expected */ }
+
+        nextCalled().Should().BeFalse();
+    }
+
     private SystemOptionsStore BuildOptionsStore()
     {
         // Pre-seed a real callsign so the middleware's "callsign is the
@@ -95,7 +109,7 @@ public sealed class AdminAuthMiddlewareTests : IAsyncLifetime
         return new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
     }
 
-    private static (AdminAuthMiddleware mw, DefaultHttpContext ctx, Func<bool> nextCalled) Build(string path)
+    private static (AdminAuthMiddleware mw, DefaultHttpContext ctx, Func<bool> nextCalled) Build(string path, string method = "GET")
     {
         var called = false;
         RequestDelegate next = _ =>
@@ -108,6 +122,7 @@ public sealed class AdminAuthMiddlewareTests : IAsyncLifetime
 
         var ctx = new DefaultHttpContext();
         ctx.Request.Path = path;
+        ctx.Request.Method = method;
 
         return (mw, ctx, () => called);
     }
