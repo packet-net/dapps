@@ -63,7 +63,7 @@ public sealed class XrouterIntegrationFixture : IAsyncLifetime
             // entrypoint's tail-LOG/*.TXT pattern means we get a
             // "started" line only when xrouter is fully up. Port-
             // available is the simpler ready signal.
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(InsideAgwPort))
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(InsideAgwPort))
             .Build();
 
         await _container.StartAsync();

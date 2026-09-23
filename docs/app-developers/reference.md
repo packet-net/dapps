@@ -6,6 +6,8 @@ If you're new, read [Concepts](concepts.md) first and walk through the [tutorial
 
 The on-air protocol DAPPS speaks **between nodes** is summarised in the section on [DAPPSv1 wire format](#dappsv1-wire-format-summary) at the bottom; most apps never need it.
 
+The daemon also serves a generated OpenAPI description of its REST surface at `/openapi/v1.json`, with an interactive explorer at `/scalar`. Both sit behind the admin login like the rest of the dashboard; the `/AppApi` endpoints they describe take the app token as documented below.
+
 ## MQTT
 
 Embedded broker, default port 1883 (TCP). Speak MQTT 5 - clean session is fine and recommended. The broker holds no persistent state; messages are durable in DAPPS's SQLite queue, the broker is just the real-time delivery channel.

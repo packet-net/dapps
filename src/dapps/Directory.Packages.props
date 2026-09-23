@@ -18,8 +18,12 @@
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.11" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.11" />
 
-    <!-- Storage / messaging -->
-    <PackageVersion Include="sqlite-net-pcl" Version="1.9.172" />
+    <!-- Storage / messaging. sqlite-net-pcl 1.11 moves to SQLitePCLRaw 3.x,
+         whose native library comes from SourceGear.sqlite3 (still named
+         libe_sqlite3.so, which packaging/build-deb.sh asserts on). The
+         2.1.x SQLitePCLRaw.lib.e_sqlite3 line carries GHSA-2m69-gcr7-jv3q
+         (SQLite < 3.50.2) with no fixed 2.1.x release. -->
+    <PackageVersion Include="sqlite-net-pcl" Version="1.11.285" />
     <PackageVersion Include="MQTTnet" Version="4.3.7.1207" />
     <!-- MQTTnet's ASP.NET Core integration. Hosts the same MQTT broker
          instance under Kestrel so a /mqtt WebSocket endpoint shares
@@ -42,7 +46,15 @@
          the previous raw `docker run` shell-out (closes #5) - same image
          (m0lte/linbpq:latest), generous wait strategy on AGW port
          readiness so BPQ's slow startup bind doesn't trip readiness. -->
-    <PackageVersion Include="Testcontainers" Version="4.1.0" />
+    <!-- 4.15 also lifts SSH.NET to 2026.0.0, past GHSA-mggc-4xg6-vcxf
+         and GHSA-q939-rpr3-3284. -->
+    <PackageVersion Include="Testcontainers" Version="4.15.0" />
+
+    <!-- API explorer: native OpenAPI document generation plus the Scalar
+         viewer at /scalar (Swagger UI never came back after the .NET 8
+         rollback dropped both; re-added with the move to .NET 10). -->
+    <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
+    <PackageVersion Include="Scalar.AspNetCore" Version="2.17.8" />
 
     <!-- Model Context Protocol C# SDK - exposes operator-facing
          tools to Claude / other MCP clients via /mcp on the dapps
@@ -67,7 +79,7 @@
          in-memory TestServer doesn't speak to a browser). Browser
          install happens once via Microsoft.Playwright.Program.Main,
          no out-of-band setup. -->
-    <PackageVersion Include="Microsoft.Playwright" Version="1.50.0" />
+    <PackageVersion Include="Microsoft.Playwright" Version="1.62.0" />
   </ItemGroup>
 
 </Project>

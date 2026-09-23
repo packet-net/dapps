@@ -10,12 +10,9 @@ using dapps.core.Services;
 using dapps.core.Updater;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.Extensions.Options;
+using Scalar.AspNetCore;
 using MQTTnet.AspNetCore;
 using System.Net.Sockets;
-// OpenAPI / Scalar dropped in the .NET 8 rollback - the native
-// OpenAPI generation (AddOpenApi / MapOpenApi) is a .NET 9+ API.
-// To revisit once we're back on a newer .NET runtime.
-
 // Plan C5.2 - CLI side-doors that don't boot the host.
 // Recognised: --version, --check-update, --apply-update, --rollback.
 // Returning before CreateBuilder runs means these work even when the
@@ -46,6 +43,10 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.AddControllers();
 builder.Services.AddRazorPages();
+// OpenAPI document for the REST surface, served at /openapi/v1.json, with
+// Scalar as the viewer at /scalar. Both sit behind AdminAuthMiddleware
+// like the rest of the dashboard.
+builder.Services.AddOpenApi();
 // SystemOptions: hot-reloadable IOptionsMonitor backed by the
 // systemoptions SQLite table. ConfigController.Post calls
 // store.SaveAsync(...) to persist + fire OnChange; bearer services
@@ -367,6 +368,11 @@ app.UseWebSockets();
 app.MapMqtt("/mqtt");
 app.MapControllers();
 app.MapRazorPages();
+app.MapOpenApi();
+app.MapScalarApiReference(options =>
+{
+    options.OpenApiRoutePattern = "/openapi/v1.json";
+});
 // Plan G - mount the MCP endpoint at /mcp. The MCP transport
 // negotiates streamable-HTTP / SSE itself; we just need the route
 // reachable. Allowlisted in AdminAuthMiddleware alongside /Health.

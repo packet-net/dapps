@@ -32,7 +32,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" />
+    <PackageReference Include="Scalar.AspNetCore" />
     <PackageReference Include="MQTTnet" />
     <PackageReference Include="MQTTnet.AspNetCore" />
     <PackageReference Include="sqlite-net-pcl" />

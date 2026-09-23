@@ -82,7 +82,7 @@ public sealed class TwoInstanceLinbpqFixture : IAsyncLifetime
             .WithResourceMapping(configA, "/data/bpq32.cfg")
             .WithPortBinding(InsideAgwPortA, assignRandomHostPort: true)
             .WithPortBinding(InsideAgwPortB, assignRandomHostPort: true)
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(InsideAgwPortA))
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(InsideAgwPortA))
             .Build();
 
         await _containerA.StartAsync();
@@ -101,7 +101,7 @@ public sealed class TwoInstanceLinbpqFixture : IAsyncLifetime
             .WithImage(Image)
             .WithResourceMapping(configB, "/data/bpq32.cfg")
             .WithCreateParameterModifier(p => p.HostConfig.NetworkMode = $"container:{aId}")
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(InsideAgwPortB))
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(InsideAgwPortB))
             .Build();
 
         await _containerB.StartAsync();

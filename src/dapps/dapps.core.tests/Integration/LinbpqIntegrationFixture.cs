@@ -53,7 +53,7 @@ public sealed class LinbpqIntegrationFixture : IAsyncLifetime
             // the Testcontainers default and is plenty here. Listening
             // on the AGW port is the right ready signal - once it's up,
             // tests can issue connects.
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(InsideAgwPort))
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(InsideAgwPort))
             .Build();
 
         await _container.StartAsync();
