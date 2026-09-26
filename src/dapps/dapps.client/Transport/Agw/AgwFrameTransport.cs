@@ -27,6 +27,33 @@ public sealed class AgwFrameTransport
         this.txGate = txGate ?? AlwaysOpenTxGate.Instance;
     }
 
+    /// <summary>
+    /// Most bytes one AGW 'D' frame may carry. BPQ hands a data frame to
+    /// its host API's <c>SendMsgEx</c>, which starts
+    /// <c>if (len &gt; 256) return 0; // IGNORE</c> (CommonCode.c): a larger
+    /// frame vanishes without a word, and the far end waits for a payload
+    /// that never comes. Over 400 bytes is worse: BPQ's AGW reader
+    /// (AGWAPI.c) calls the frame corrupt and drops the whole AGW
+    /// connection, and every session on it. Measured against linbpq:
+    /// 256 bytes arrive, 257 vanish. Still so in 6.0.25.40.
+    /// </summary>
+    public const int MaxDataFrameBytes = 256;
+
+    /// <summary>
+    /// Send <paramref name="data"/> on a connected session as as many 'D'
+    /// frames as it takes to keep each within <see cref="MaxDataFrameBytes"/>.
+    /// The node packetises them onto the link as usual, so splitting here
+    /// costs nothing on air.
+    /// </summary>
+    public async Task WriteDataAsync(byte port, string callFrom, string callTo, ReadOnlyMemory<byte> data, CancellationToken ct)
+    {
+        for (var offset = 0; offset < data.Length; offset += MaxDataFrameBytes)
+        {
+            var chunk = data.Slice(offset, Math.Min(MaxDataFrameBytes, data.Length - offset)).ToArray();
+            await WriteFrameAsync(new AgwFrame(port, 'D', 0xF0, callFrom, callTo, chunk), ct);
+        }
+    }
+
     public async Task WriteFrameAsync(AgwFrame frame, CancellationToken ct)
     {
         if (IsRfEmitting(frame.Kind) && !txGate.TxAllowed)
