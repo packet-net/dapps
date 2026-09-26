@@ -28,9 +28,11 @@ public class Database(
         var connection = DbInfo.GetAsyncConnection();
         // Outbound = destined for a remote node and not yet forwarded.
         // "Local" matches when the @-suffix of Destination matches our base callsign.
+        // Oldest first, so a batch for one neighbour goes out in the order
+        // its messages were queued.
         var local = options.CurrentValue.Callsign.Split('-')[0];
         var rows = await connection.QueryAsync<DbMessage>(
-            "select * from messages where forwarded=0 and not (destination like ?);",
+            "select * from messages where forwarded=0 and not (destination like ?) order by CreatedAt asc;",
             $"%@{local}%");
         return rows;
     }

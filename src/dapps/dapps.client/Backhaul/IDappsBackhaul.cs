@@ -37,4 +37,31 @@ public interface IDappsBackhaul
         BackhaulRoute route,
         string localCallsign,
         CancellationToken ct);
+
+    /// <summary>
+    /// Forward every message <paramref name="batch"/> hands out to
+    /// <paramref name="route"/>, reporting each outcome back to it.
+    /// Stops at the first message that isn't accepted; the rest stay
+    /// queued for the next run, as they would behind that failure's
+    /// cooldown anyway.
+    ///
+    /// This default sends each message on its own, which suits
+    /// datagram bearers where every send stands alone. A bearer with a
+    /// session to set up (<see cref="Dappsv1SessionBackhaul"/>)
+    /// overrides it to carry the whole batch on one session.
+    /// </summary>
+    async Task SendBatchAsync(
+        BackhaulRoute route,
+        string localCallsign,
+        IBackhaulBatch batch,
+        CancellationToken ct)
+    {
+        while (await batch.NextAsync(ct) is { } message)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var result = await SendAsync(message, route, localCallsign, ct);
+            await batch.CompleteAsync(message, result, sw.Elapsed, ct);
+            if (!result.Accepted) return;
+        }
+    }
 }

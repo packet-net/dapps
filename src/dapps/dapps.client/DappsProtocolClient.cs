@@ -209,6 +209,14 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         await stream.FlushAsync(ct);
 
         var line = await ReadLineAsync(ct);
+        if (line == PromptText)
+        {
+            // The spec lets a server re-emit the prompt after any
+            // command. Harmless here, but on a session carrying several
+            // messages it would otherwise be read as the reply to the
+            // next offer.
+            line = await ReadLineAsync(ct);
+        }
         if (line == $"send {id}")
         {
             return true;
@@ -222,11 +230,18 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
     /// Sends `data &lt;id&gt;` followed by the raw payload bytes, then waits
     /// for `ack &lt;id&gt;` (success) or `bad &lt;id&gt;` (corrupt - far
     /// end's hash didn't match).
+    ///
+    /// The line and the payload go out in one write, so on AX.25 they
+    /// travel in one I-frame (payload permitting) rather than two, with
+    /// the extra key-up and RR that a second frame costs.
     /// </summary>
     public async Task<bool> SendMessageAsync(string id, byte[] payload, CancellationToken ct)
     {
-        await stream.WriteAsync(Encoding.UTF8.GetBytes($"data {id}\n"), ct);
-        await stream.WriteAsync(payload, ct);
+        var header = Encoding.UTF8.GetBytes($"data {id}\n");
+        var frame = new byte[header.Length + payload.Length];
+        header.CopyTo(frame, 0);
+        payload.CopyTo(frame, header.Length);
+        await stream.WriteAsync(frame, ct);
         await stream.FlushAsync(ct);
 
         var line = await ReadLineAsync(ct);

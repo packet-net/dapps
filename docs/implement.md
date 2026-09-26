@@ -39,6 +39,8 @@ S: ack 7e1f3a2\n
 
 (Lines marked `S:` are server-to-client; `C:` is client-to-server. Newlines shown as `\n`; the payload after `data 7e1f3a2\n` is the raw 5 bytes `hello`, no terminator.)
 
+A session can carry several messages. The reference daemon sends everything it has queued for a neighbour in one session, one `ihave` exchange after another, so after an `ack` a receiver should go back to reading commands rather than hang up. The `data` line and its payload arrive in a single write, so read the payload straight after the line.
+
 Anatomy of the `ihave` line:
 
 | Field | Required | Meaning |
@@ -252,7 +254,7 @@ Selective form: `rev <id1> <id2> ...\n` drains only the listed ids. Bare `rev\n`
 
 The `DAPPSv1>\n` re-prompt is the "drained" marker - distinct from another `ihave` line because it has a `>` and no spaces. The connecting peer reads lines until it sees the prompt, then either issues another command or closes.
 
-Why `rev` exists: a node behind asymmetric connectivity (RF-only inbound, can't initiate sessions to the wider network) can call out, push its outbound, and pull its inbound on the same session. The reference daemon also runs `rev` opportunistically right after a successful push - the connection is open and the ack just landed; might as well drain.
+Why `rev` exists: a node behind asymmetric connectivity (RF-only inbound, can't initiate sessions to the wider network) can call out, push its outbound, and pull its inbound on the same session. The reference daemon also runs `rev` opportunistically once it has pushed what it had queued - the connection is open and the acks just landed; might as well drain. If more mail for that neighbour was queued meanwhile, it pushes that too and sends `rev` again before hanging up, so `rev` is always the last exchange of the session.
 
 A receiver that doesn't implement `rev` should respond `eh?\n` to the command. Senders should treat `eh?` as "this peer doesn't poll" and stop trying.
 

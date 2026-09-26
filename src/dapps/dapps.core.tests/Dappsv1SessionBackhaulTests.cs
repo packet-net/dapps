@@ -158,17 +158,96 @@ public sealed class Dappsv1SessionBackhaulTests
         result.Error.Should().Contain("N0DEST").And.Contain("inbound");
     }
 
+    [Fact]
+    public async Task SendBatchAsync_ThreeMessages_OneConnectionAndEachOneAcked()
+    {
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(
+            "DAPPSv1>\nsend msg0001\nack msg0001\nsend msg0002\nack msg0002\nsend msg0003\nack msg0003\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
+        var batch = new ListBatch(Msg("msg0001"), Msg("msg0002"), Msg("msg0003"));
+
+        await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, TestContext.Current.CancellationToken);
+
+        transport.Connects.Should().Be(1);
+        batch.Outcomes.Select(o => (o.Id, o.Result.Accepted)).Should().Equal(
+            ("msg0001", true), ("msg0002", true), ("msg0003", true));
+        var written = Encoding.UTF8.GetString(transport.WriteCapture);
+        written.Should().Contain("ihave msg0001").And.Contain("ihave msg0002").And.Contain("ihave msg0003");
+    }
+
+    [Fact]
+    public async Task SendBatchAsync_SecondOfferRefused_StopsThere_AndTheThirdIsNeverHandedOut()
+    {
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(
+            "DAPPSv1>\nsend msg0001\nack msg0001\nerror msg0002\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
+        var batch = new ListBatch(Msg("msg0001"), Msg("msg0002"), Msg("msg0003"));
+
+        await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, TestContext.Current.CancellationToken);
+
+        batch.Outcomes.Select(o => (o.Id, o.Result.Accepted)).Should().Equal(("msg0001", true), ("msg0002", false));
+        batch.Outcomes[1].Result.Error.Should().Contain("offer rejected");
+        batch.Remaining.Should().Be(1, "the message after a refusal stays queued, untouched");
+    }
+
+    [Fact]
+    public async Task SendBatchAsync_ConnectFails_TheFirstMessageCarriesTheFailure()
+    {
+        var sb = new Dappsv1SessionBackhaul(new ThrowingTransport(new InvalidOperationException("kaboom")), NullLoggerFactory.Instance);
+        var batch = new ListBatch(Msg("msg0001"), Msg("msg0002"));
+
+        await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, TestContext.Current.CancellationToken);
+
+        batch.Outcomes.Should().ContainSingle();
+        batch.Outcomes[0].Id.Should().Be("msg0001");
+        batch.Outcomes[0].Result.Error.Should().Be("kaboom");
+        batch.Remaining.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task SendBatchAsync_NothingQueued_DoesNotDial()
+    {
+        var transport = new FakeOutboundTransport([]);
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
+
+        await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", new ListBatch(), TestContext.Current.CancellationToken);
+
+        transport.Connects.Should().Be(0);
+    }
+
+    private static BackhaulMessage Msg(string id) => new(id, "app@N0DEST", Salt: 1L, Ttl: 60, Payload: "x"u8.ToArray());
+
+    /// <summary>A fixed list of messages, recording each outcome.</summary>
+    private sealed class ListBatch(params BackhaulMessage[] messages) : IBackhaulBatch
+    {
+        private readonly Queue<BackhaulMessage> queue = new(messages);
+
+        public List<(string Id, BackhaulSendResult Result)> Outcomes { get; } = [];
+        public int Remaining => queue.Count;
+
+        public ValueTask<BackhaulMessage?> NextAsync(CancellationToken ct) =>
+            ValueTask.FromResult(queue.TryDequeue(out var next) ? next : null);
+
+        public ValueTask CompleteAsync(BackhaulMessage message, BackhaulSendResult result, TimeSpan elapsed, CancellationToken ct)
+        {
+            Outcomes.Add((message.Id, result));
+            return ValueTask.CompletedTask;
+        }
+    }
+
     private static Dappsv1SessionBackhaul MakeBackhaul(byte[] cannedReceiverBytes)
         => new(new FakeOutboundTransport(cannedReceiverBytes), NullLoggerFactory.Instance);
 
     private sealed class FakeOutboundTransport(byte[] cannedReceiverBytes) : IDappsOutboundTransport
     {
         public byte[] WriteCapture => _stream?.WriteCapture.ToArray() ?? [];
+        public int Connects { get; private set; }
 
         private CapturingStream? _stream;
 
         public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken)
         {
+            Connects++;
             _stream = new CapturingStream(cannedReceiverBytes);
             return Task.FromResult<IDappsConnection>(new FakeConnection(_stream));
         }
