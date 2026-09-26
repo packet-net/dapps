@@ -65,7 +65,7 @@ Receiver replies are one of:
 | `error\n` or `error <id>\n` | "Reject the offer" | Malformed `ihave` (missing `len`/`dst`, a `fmt` you can't decode, broken `chk`, etc.) |
 | `bad <id>\n` | "Payload arrived but was no good" | Sent only after `data`: a compressed payload that doesn't decode to `len` bytes, or `SHA1(salt_le ++ payload)[:7] ≠ id` |
 | `ack <id>\n` | "Got it, hash matches" | After `data` succeeds |
-| `eh?\n` | "Unrecognised command" | Verb wasn't `ihave`/`data`/`peers`/`rev`/`quit`/`help` |
+| `eh?\n` | "Unrecognised command" | Verb wasn't `ihave`/`data`/`peers`/`rev`/`routes`/`tail`/`quit`/`help` |
 
 ### Accept a message
 
@@ -252,7 +252,7 @@ Reference: [InboundConnectionHandler.cs:229-260](https://github.com/packet-net/d
 
 ### `rev` reverse forwarding
 
-Polling. The connecting peer asks the server "got mail for me?"; the server pushes any queued messages whose final destination matches the caller's callsign, then re-emits the prompt to signal "drained".
+Polling. The connecting peer asks the server "got mail for me?"; the server pushes any queued messages whose final destination matches the caller's callsign, then re-emits the prompt to signal "drained". On a [held session](#held-sessions) it also pushes whatever it has queued to send via the caller.
 
 ```
 C: rev\n
@@ -308,6 +308,25 @@ The reference daemon's emitter filters: only routes whose failure counter is zer
 Implementations that don't care about route gossip should respond `eh?\n` to the command. Senders treat `eh?` as "this peer doesn't gossip" and stop trying.
 
 Reference: [InboundConnectionHandler.HandleRoutes](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/InboundConnectionHandler.cs), [DappsProtocolClient.RequestRoutesAsync](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs).
+
+### Held sessions (`tail`, `pending`) {#held-sessions}
+
+After a session has moved messages, the caller can ask to keep it open, so that the next message in either direction goes straight away instead of waiting for a new connection:
+
+```
+C: tail 120\n
+S: tail 120\n
+```
+
+The number is how long the link may sit quiet, in seconds. The server answers with what it will allow, the lower of that and its own setting for the caller, or `tail 0` for no. Once agreed:
+
+- The caller keeps the link up and sends new traffic on it as it's queued. It says `quit` when the link has been quiet for the agreed time.
+- The server waits at least that long, plus a margin, for the caller's next command, rather than its usual 3 minutes.
+- When the server has something for the caller, it writes `pending\n`, unprompted, while it's idle between commands. The caller answers with `rev` and the usual drain follows. What the server drains then includes traffic it's relaying through the caller, not only mail addressed to it.
+
+Because `pending` is unprompted, it can cross with a command from the caller and arrive where the caller expects a reply. A caller skips a `pending` line wherever it reads one, remembers it, and sends `rev` when it's next free.
+
+The reference daemon asks for a hold after every session that pushed something and ended cleanly. It holds for `DAPPS_SESSION_TAIL_SECONDS` (default 120, 0 = off, at most 600), which can be set per neighbour. An idle AX.25 link costs next to nothing on air, just the link-layer keepalive every few minutes.
 
 ### Quit / help
 

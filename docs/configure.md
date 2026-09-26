@@ -73,6 +73,7 @@ The admin password (for the dashboard cookie) is set on `/Setup` first-run flow,
 | Poll interval (hours)      | `DAPPS_POLL_INTERVAL_HOURS`      | `6`     | Sweep cadence when scheduled polling is on.                   |
 | Opportunistic poll enabled | `DAPPS_OPPORTUNISTIC_POLL_ENABLED` | `true`  | Drains a peer's queued mail at the end of every push session. |
 | Compression enabled        | `DAPPS_COMPRESSION_ENABLED`      | `true`  | Sends message payloads to neighbours zstd-compressed when that saves at least 32 bytes. Can be overridden per neighbour on the Topology page. |
+| Session tail (s)           | `DAPPS_SESSION_TAIL_SECONDS`     | `120`   | After a session that moved messages, keeps the link to that neighbour open until it has been idle this long, so follow-up messages go without a new connection. 0 = off; at most 600. Can be overridden per neighbour on the Topology page. |
 
 ### Multi-part messages
 

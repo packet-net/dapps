@@ -660,6 +660,34 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DoRun_AMessageHandedToAnOpenSessionTwice_IsSentOnce()
+    {
+        // A session held open sends in the background, so a second run
+        // can hand it the same queued message again before the first
+        // copy has gone. The claim at hand-out stops a second send.
+        var holding = new HoldingFakeBackhaul();
+        var m = MakeManager(holding);
+        InsertMessage(id: "once001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5));
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+        await m.DoRun(TestContext.Current.CancellationToken);
+        holding.Batches.Should().HaveCount(2, "both runs found the message still queued and handed it over");
+
+        var sent = new List<string>();
+        foreach (var batch in holding.Batches)
+        {
+            while (await batch.NextAsync(TestContext.Current.CancellationToken) is { } message)
+            {
+                sent.Add(message.Id);
+                await batch.CompleteAsync(message, BackhaulSendResult.Ok(), TimeSpan.Zero, TestContext.Current.CancellationToken);
+            }
+        }
+
+        sent.Should().Equal("once001");
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task DoRun_ADatagramBearer_StillSendsMessageByMessage()
     {
         // FakeBackhaul doesn't override SendBatchAsync, so it gets the
@@ -714,6 +742,21 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         public T CurrentValue { get; } = value;
         public T Get(string? name) => CurrentValue;
         public IDisposable? OnChange(Action<T, string?> listener) => null;
+    }
+
+    /// <summary>A bearer with a session held open: every batch is
+    /// handed to it and kept, to be worked through by the test.</summary>
+    private sealed class HoldingFakeBackhaul : IDappsBackhaul
+    {
+        public List<IBackhaulBatch> Batches { get; } = [];
+        public bool CanHandle(BackhaulRoute route) => true;
+        public bool TryHandToOpenSession(BackhaulRoute route, IBackhaulBatch batch)
+        {
+            Batches.Add(batch);
+            return true;
+        }
+        public Task<BackhaulSendResult> SendAsync(BackhaulMessage message, BackhaulRoute route, string localCallsign, CancellationToken ct) =>
+            throw new InvalidOperationException("everything goes to the held session");
     }
 
     /// <summary>

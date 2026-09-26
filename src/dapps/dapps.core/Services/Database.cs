@@ -39,6 +39,18 @@ public class Database(
     }
 
     /// <summary>
+    /// True while the message is still in the queue waiting to be sent:
+    /// not yet forwarded, dropped or expired. Checked just before a
+    /// message goes out, since a session running alongside may have sent
+    /// it since the queue was read.
+    /// </summary>
+    internal async Task<bool> IsStillQueued(string id)
+    {
+        var row = await DbInfo.GetAsyncConnection().FindAsync<DbMessage>(id);
+        return row is { Forwarded: false };
+    }
+
+    /// <summary>
     /// <see cref="GetPendingOutboundMessages"/>, limited to messages queued
     /// at or after <paramref name="since"/>: what a forwarder run looks
     /// for when it checks the queue again part way through, without
@@ -506,7 +518,7 @@ public class Database(
     /// exists for the same callsign. Idempotent: callers can re-POST
     /// the same neighbour without checking for prior existence.
     /// </summary>
-    internal async Task UpsertNeighbour(string callsign, int? bearerPort, string? udpEndpoint = null, string? connectScriptJson = null, bool? compressionEnabled = null)
+    internal async Task UpsertNeighbour(string callsign, int? bearerPort, string? udpEndpoint = null, string? connectScriptJson = null, bool? compressionEnabled = null, int? sessionTailSeconds = null)
     {
         var connection = DbInfo.GetAsyncConnection();
         var existing = await connection.FindWithQueryAsync<DbNeighbour>(
@@ -520,6 +532,7 @@ public class Database(
                 UdpEndpoint = udpEndpoint,
                 ConnectScriptJson = connectScriptJson,
                 CompressionEnabled = compressionEnabled,
+                SessionTailSeconds = sessionTailSeconds,
             });
         }
         else
@@ -528,6 +541,7 @@ public class Database(
             existing.UdpEndpoint = udpEndpoint;
             existing.ConnectScriptJson = connectScriptJson;
             existing.CompressionEnabled = compressionEnabled;
+            existing.SessionTailSeconds = sessionTailSeconds;
             await connection.UpdateAsync(existing);
         }
     }

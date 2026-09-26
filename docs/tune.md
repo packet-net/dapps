@@ -50,6 +50,7 @@ For most setups, leave `passive-flood` on. Switch to `meshcore` if you have a re
 Two poll knobs, both off by default:
 
 - **Opportunistic poll** (`DAPPS_OPPORTUNISTIC_POLL_ENABLED`, default **true**) - at the end of every push session to a peer, request anything they hold for us. Free, since the session is already open. The recommended setting; only turn off if you have a peer that genuinely shouldn't be polled.
+- **Link hold** (`DAPPS_SESSION_TAIL_SECONDS`, default **120**) - after a session that moved messages, keep the link to that neighbour open until it has been quiet this long, so a follow-up in either direction goes at once instead of after a new connect. Worth raising on a quiet point-to-point link where messages come in conversations; lower it, or set 0 for that neighbour on the Topology page, where a node is short of circuits or drops idle ones sooner. Needs opportunistic poll on.
 - **Scheduled poll** (`DAPPS_SCHEDULED_POLL_ENABLED`, default **false**) - periodically open a session to every known forward target, just to ask. Use this on bearers where peers can't push to you reliably (asymmetric link, peer behind NAT, peer that doesn't know our bearer hint).
 
 If both are on, opportunistic covers the common case and scheduled fills in the gap for peers we never push to.

@@ -87,6 +87,19 @@ public sealed class NeighbourCrudTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task UpsertNeighbour_SessionTailSeconds_RoundTripsNullZeroAndValue()
+    {
+        await database.UpsertNeighbour("N0BBB-9", bearerPort: 1);
+        (await database.GetNeighbours()).Single().SessionTailSeconds.Should().BeNull();
+
+        await database.UpsertNeighbour("N0BBB-9", bearerPort: 1, sessionTailSeconds: 0);
+        (await database.GetNeighbours()).Single().SessionTailSeconds.Should().Be(0);
+
+        await database.UpsertNeighbour("N0BBB-9", bearerPort: 1, sessionTailSeconds: 300);
+        (await database.GetNeighbours()).Single().SessionTailSeconds.Should().Be(300);
+    }
+
+    [Fact]
     public async Task RemoveNeighbour_Existing_ReturnsTrueAndDeletes()
     {
         await database.UpsertNeighbour("N0BBB-9", bearerPort: 1);

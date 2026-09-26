@@ -116,6 +116,7 @@ public static class DbStartup
         ("RouteGossipStalenessHours", "6"),
         ("OpportunisticPollEnabled", "true"),
         ("CompressionEnabled", "true"),
+        ("SessionTailSeconds", "120"),
         ("ScheduledPollEnabled", "false"),
         ("PollIntervalHours", "6"),
         ("DiscoveryAirtimeBudgetSecondsPerHour", "0"),

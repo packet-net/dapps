@@ -69,7 +69,9 @@ public sealed class AgwInboundService(
     IDappsTxGate? txGate = null,
     TimeProvider? timeProvider = null,
     PeerSessionRegistry? peerSessions = null,
-    CompressionPolicy? compression = null) : IHostedService
+    CompressionPolicy? compression = null,
+    InboundSessionDirectory? inboundSessions = null,
+    SessionTailPolicy? tailPolicy = null) : IHostedService
 {
     internal static readonly TimeSpan IdleBackoff = TimeSpan.FromSeconds(2);
     /// <summary>Delay between cycles that ended without a real failure
@@ -435,7 +437,9 @@ public sealed class AgwInboundService(
 
         var handler = new InboundConnectionHandler(
             stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics,
-            compressTo: compression is null ? null : compression.ShouldCompressToAsync);
+            compressTo: compression is null ? null : compression.ShouldCompressToAsync,
+            directory: inboundSessions,
+            tailFor: tailPolicy is null ? null : tailPolicy.TailSecondsForAsync);
 
         // Not tied to the cycle token: a cancellation landing in the gap
         // after the 'C' was read would skip the handler, leaving the

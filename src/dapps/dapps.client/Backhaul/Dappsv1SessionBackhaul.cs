@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Threading.Channels;
 using dapps.client.Transport;
 using Microsoft.Extensions.Logging;
 
@@ -39,6 +41,14 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     private readonly IRouteGossipPort? routeGossip;
     private readonly Func<Stream, string, CancellationToken, Task>? serveOnGlare;
     private readonly Func<string, CancellationToken, Task<bool>>? compressTo;
+    private readonly Func<string, CancellationToken, Task<int>>? tailFor;
+
+    /// <summary>Sessions kept open after their traffic, by peer callsign.</summary>
+    private readonly ConcurrentDictionary<string, HeldSession> held = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Clock for how long a held session has been idle.
+    /// Replaceable in tests.</summary>
+    public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 
     /// <summary>
     /// How long a caller with the lower callsign waits for the first byte
@@ -61,6 +71,10 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     /// <param name="compressTo">Whether payloads to the named peer may be
     /// sent compressed (the operator's setting for that neighbour). Asked
     /// once per session. Null sends everything plain.</param>
+    /// <param name="tailFor">How many seconds of quiet to keep a session
+    /// with the named peer open for after its traffic (the operator's
+    /// setting for that neighbour); 0 hangs up straight away. Null never
+    /// holds a session.</param>
     public Dappsv1SessionBackhaul(
         IDappsOutboundTransport transport,
         ILoggerFactory loggerFactory,
@@ -68,7 +82,8 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         Func<bool>? opportunisticEnabled,
         IRouteGossipPort? routeGossip = null,
         Func<Stream, string, CancellationToken, Task>? serveOnGlare = null,
-        Func<string, CancellationToken, Task<bool>>? compressTo = null)
+        Func<string, CancellationToken, Task<bool>>? compressTo = null,
+        Func<string, CancellationToken, Task<int>>? tailFor = null)
     {
         this.transport = transport;
         this.loggerFactory = loggerFactory;
@@ -77,6 +92,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         this.routeGossip = routeGossip;
         this.serveOnGlare = serveOnGlare;
         this.compressTo = compressTo;
+        this.tailFor = tailFor;
         logger = loggerFactory.CreateLogger<Dappsv1SessionBackhaul>();
     }
 
@@ -139,20 +155,74 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         IDappsConnection? connection = null;
+        PumpedReadStream? stream = null;
         try
         {
-            (connection, var protocol, var failure) = await OpenAsync(first, route, localCallsign, ct);
+            (connection, stream, var protocol, var failure) = await OpenAsync(first, route, localCallsign, ct);
             if (protocol is null)
             {
                 await batch.CompleteAsync(first, failure!, sw.Elapsed, ct);
                 return;
             }
             var compress = await ShouldCompressAsync(route, ct);
-            await RunSessionAsync(protocol, first, route, compress, batch, sw, ct);
+            if (await RunSessionAsync(protocol, first, route, compress, batch, sw, ct)
+                && await TryHoldAsync(route, connection!, stream!, protocol, compress, ct))
+            {
+                // The held session owns the link now.
+                connection = null;
+                stream = null;
+            }
         }
         finally
         {
             if (connection is not null) await connection.DisposeAsync();
+            stream?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// A held session to the route's peer takes the batch, if there is
+    /// one on the same bearer port.
+    /// </summary>
+    public bool TryHandToOpenSession(BackhaulRoute route, IBackhaulBatch batch) =>
+        held.TryGetValue(route.Callsign, out var session)
+        && session.Route.BearerPort == route.BearerPort
+        && session.TryTake(batch);
+
+    /// <summary>Peers this bearer is holding a session open to.</summary>
+    public IReadOnlyCollection<string> HeldPeers => [.. held.Keys];
+
+    /// <summary>
+    /// After a session that moved traffic and ended cleanly, ask the peer
+    /// to keep it open (<c>tail</c>) and, if it agrees, hand the link to
+    /// a <see cref="HeldSession"/> running in the background. The
+    /// forwarder gives new work for this peer to that session instead of
+    /// dialling, and the peer says <c>pending</c> when it has mail for us.
+    /// </summary>
+    private async Task<bool> TryHoldAsync(
+        BackhaulRoute route, IDappsConnection connection, PumpedReadStream stream, DappsProtocolClient protocol,
+        bool compress, CancellationToken ct)
+    {
+        // Mail the peer has for us arrives by rev, so a session we can't
+        // poll on isn't worth holding.
+        if (tailFor is null || opportunisticInbox is null || !(opportunisticEnabled?.Invoke() ?? false)) return false;
+        try
+        {
+            var wanted = await tailFor(route.Callsign, ct);
+            if (wanted <= 0) return false;
+            var agreed = await protocol.RequestTailAsync(wanted, ct);
+            if (agreed is not > 0) return false;
+
+            var session = new HeldSession(this, route, connection, stream, protocol, compress, TimeSpan.FromSeconds(agreed.Value));
+            if (!held.TryAdd(route.Callsign, session)) return false;
+            logger.LogInformation("Holding the link to {0} open until it has been quiet for {1}s", route.Callsign, agreed);
+            _ = session.RunAsync(ct);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Couldn't agree a hold with {0}; hanging up", route.Callsign);
+            return false;
         }
     }
 
@@ -163,13 +233,14 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     /// connection comes back either way once it exists, for the caller
     /// to dispose.
     /// </summary>
-    private async Task<(IDappsConnection? Connection, DappsProtocolClient? Protocol, BackhaulSendResult? Failure)> OpenAsync(
+    private async Task<(IDappsConnection? Connection, PumpedReadStream? Stream, DappsProtocolClient? Protocol, BackhaulSendResult? Failure)> OpenAsync(
         BackhaulMessage first,
         BackhaulRoute route,
         string localCallsign,
         CancellationToken ct)
     {
         IDappsConnection? connection = null;
+        PumpedReadStream? stream = null;
         try
         {
             connection = await transport.ConnectAsync(
@@ -178,7 +249,10 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                 bearerPort: route.BearerPort ?? 0,
                 stoppingToken: ct);
 
-            var protocol = new DappsProtocolClient(connection.Stream, loggerFactory);
+            // Everything reads through the pump, so that a held session
+            // can later wait on the link without a read in progress.
+            stream = new PumpedReadStream(connection.Stream);
+            var protocol = new DappsProtocolClient(stream, loggerFactory);
 
             // Connect-script: when the route carries one, the script
             // drives a chain of node-to-node connects through
@@ -191,13 +265,13 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             {
                 try
                 {
-                    await ConnectScriptRunner.RunAsync(connection.Stream, script, logger, ct);
+                    await ConnectScriptRunner.RunAsync(stream, script, logger, ct);
                 }
                 catch (Exception ex) when (ex is ConnectScriptException or EndOfStreamException)
                 {
-                    return (connection, null, BackhaulSendResult.Fail($"connect-script failed for {route.Callsign}: {ex.Message}"));
+                    return (connection, stream, null, BackhaulSendResult.Fail($"connect-script failed for {route.Callsign}: {ex.Message}"));
                 }
-                return (connection, protocol, null);
+                return (connection, stream, protocol, null);
             }
 
             // #178 crossed connect: see the class doc. Only the lower
@@ -213,16 +287,16 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                     logger.LogInformation(
                         "Nothing from {0} for {1:F0}s after connecting: assuming a crossed connect, sending the prompt and serving its session instead",
                         route.Callsign, GlareSilenceBudget.TotalSeconds);
-                    await serveOnGlare!(connection.Stream, route.Callsign, ct);
-                    return (connection, null, BackhaulSendResult.Defer(
+                    await serveOnGlare!(stream, route.Callsign, ct);
+                    return (connection, stream, null, BackhaulSendResult.Defer(
                         $"crossed connect with {route.Callsign}: served its session instead, {first.Id} stays queued"));
                 case DappsProtocolClient.PromptOutcome.Silent:
-                    return (connection, null, BackhaulSendResult.Fail(
+                    return (connection, stream, null, BackhaulSendResult.Fail(
                         $"no data from {route.Callsign} within {DappsProtocolClient.InactivityTimeout.TotalSeconds:F0}s of connecting"));
                 case DappsProtocolClient.PromptOutcome.NotSeen:
-                    return (connection, null, BackhaulSendResult.Fail($"no DAPPSv1> prompt from {route.Callsign}"));
+                    return (connection, stream, null, BackhaulSendResult.Fail($"no DAPPSv1> prompt from {route.Callsign}"));
             }
-            return (connection, protocol, null);
+            return (connection, stream, protocol, null);
         }
         catch (PeerSessionBusyException ex)
         {
@@ -235,13 +309,13 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             logger.LogInformation(
                 "Deferring {0}: {1} already has an {2} session open, dialling now would reset it",
                 first.Id, ex.PeerCallsign, ex.OpenDirection);
-            return (connection, null, BackhaulSendResult.Defer(
+            return (connection, stream, null, BackhaulSendResult.Defer(
                 $"{ex.PeerCallsign} already has an {ex.OpenDirection} session open"));
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Backhaul send failed for {0} to {1}", first.Id, route.Callsign);
-            return (connection, null, BackhaulSendResult.Fail(ex.Message));
+            return (connection, stream, null, BackhaulSendResult.Fail(ex.Message));
         }
     }
 
@@ -259,7 +333,9 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         }
     }
 
-    private async Task RunSessionAsync(
+    /// <returns>True when the session ended cleanly after moving traffic,
+    /// so it is fit to hold open.</returns>
+    private async Task<bool> RunSessionAsync(
         DappsProtocolClient protocol,
         BackhaulMessage first,
         BackhaulRoute route,
@@ -285,7 +361,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                 if (!result.Accepted)
                 {
                     LogSessionEnd(route, pushed, stoppedEarly: true);
-                    return;
+                    return false;
                 }
                 pushed++;
             }
@@ -298,14 +374,21 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
 
             // Only a drain that ended cleanly leaves the session fit to
             // carry more.
-            if (!await PollAsync(protocol, route, ct)) break;
+            if (!await PollAsync(protocol, route, ct))
+            {
+                LogSessionEnd(route, pushed, stoppedEarly: false);
+                return false;
+            }
 
             // Queued for this peer while we were draining: send it now,
             // then rev again, rather than hang up and dial straight back.
             next = await batch.NextAsync(ct);
-            if (next is null) break;
+            if (next is null)
+            {
+                LogSessionEnd(route, pushed, stoppedEarly: false);
+                return true;
+            }
         }
-        LogSessionEnd(route, pushed, stoppedEarly: false);
     }
 
     private void LogSessionEnd(BackhaulRoute route, int pushed, bool stoppedEarly)
@@ -424,6 +507,127 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         {
             logger.LogWarning(ex, "Opportunistic poll of {0} failed (push already succeeded)", route.Callsign);
             return false;
+        }
+    }
+
+    /// <summary>
+    /// A session kept open after its traffic (#187 proposal 9). It waits
+    /// for whichever comes first: work the forwarder hands it, a
+    /// <c>pending</c> from the peer, or the end of the agreed quiet
+    /// period, when it says <c>quit</c> and hangs up. Anything that goes
+    /// wrong just ends it. Nothing is lost that way: a message only
+    /// leaves the queue once the peer has acked it, and work handed over
+    /// but not sent is still queued for the forwarder's next run, which
+    /// the link closing triggers.
+    /// </summary>
+    private sealed class HeldSession(
+        Dappsv1SessionBackhaul owner,
+        BackhaulRoute route,
+        IDappsConnection connection,
+        PumpedReadStream stream,
+        DappsProtocolClient protocol,
+        bool compress,
+        TimeSpan quiet)
+    {
+        private readonly Channel<IBackhaulBatch> work = Channel.CreateUnbounded<IBackhaulBatch>();
+
+        public BackhaulRoute Route => route;
+
+        /// <summary>False once the session is ending.</summary>
+        public bool TryTake(IBackhaulBatch batch) => work.Writer.TryWrite(batch);
+
+        public async Task RunAsync(CancellationToken ct)
+        {
+            var quietTooLong = false;
+            try
+            {
+                var quietSince = owner.TimeProvider.GetUtcNow();
+                while (!ct.IsCancellationRequested)
+                {
+                    if (protocol.PeerHasPending)
+                    {
+                        // It said so in the middle of something else.
+                        if (!await owner.PollAsync(protocol, route, ct)) return;
+                        quietSince = owner.TimeProvider.GetUtcNow();
+                        continue;
+                    }
+
+                    var left = quiet - (owner.TimeProvider.GetUtcNow() - quietSince);
+                    if (left <= TimeSpan.Zero)
+                    {
+                        quietTooLong = true;
+                        return;
+                    }
+
+                    Task<bool> peerSpoke;
+                    using (var waiting = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                    {
+                        var newWork = work.Reader.WaitToReadAsync(waiting.Token).AsTask();
+                        peerSpoke = stream.WaitForDataAsync(waiting.Token).AsTask();
+                        var timeUp = Task.Delay(left, owner.TimeProvider, waiting.Token);
+                        await Task.WhenAny(newWork, peerSpoke, timeUp);
+                        await waiting.CancelAsync();
+                    }
+
+                    if (work.Reader.TryRead(out var batch))
+                    {
+                        if (!await PushAsync(batch, ct)) return;
+                    }
+                    else if (peerSpoke.IsCompletedSuccessfully)
+                    {
+                        // Data, or the link ending (false).
+                        if (!peerSpoke.Result) return;
+                        if (!await protocol.ReadPendingNoticeAsync(ct)) return;
+                        if (!await owner.PollAsync(protocol, route, ct)) return;
+                    }
+                    else
+                    {
+                        continue;   // time's up: the next pass hangs up
+                    }
+                    quietSince = owner.TimeProvider.GetUtcNow();
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Shutting down.
+            }
+            catch (Exception ex)
+            {
+                owner.logger.LogWarning(ex, "Held link to {0} failed", route.Callsign);
+            }
+            finally
+            {
+                work.Writer.TryComplete();
+                owner.held.TryRemove(new KeyValuePair<string, HeldSession>(route.Callsign, this));
+                if (quietTooLong)
+                {
+                    try
+                    {
+                        using var bye = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                        await protocol.QuitAsync(bye.Token);
+                    }
+                    catch (Exception)
+                    {
+                        // Hanging up anyway.
+                    }
+                }
+                owner.logger.LogInformation(
+                    "Closing the held link to {0}{1}", route.Callsign, quietTooLong ? $" after {quiet.TotalSeconds:F0}s of quiet" : "");
+                try { await connection.DisposeAsync(); } catch (Exception) { /* already gone */ }
+                stream.Dispose();
+            }
+        }
+
+        private async Task<bool> PushAsync(IBackhaulBatch batch, CancellationToken ct)
+        {
+            while (await batch.NextAsync(ct) is { } message)
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var result = await owner.PushAsync(protocol, message, route, compress, laterOnSession: true, ct);
+                await batch.CompleteAsync(message, result, sw.Elapsed, ct);
+                if (!result.Accepted) return false;
+            }
+            return true;
         }
     }
 

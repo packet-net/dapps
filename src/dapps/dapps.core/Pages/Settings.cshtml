@@ -162,6 +162,7 @@
                 <span>Drain peers' mail at the end of every push session (F3a)</span></label>
             <label class="field-checkbox"><input name="CompressionEnabled" type="checkbox" @(Model.Options.CompressionEnabled ? "checked" : "") />
                 <span>Compress payloads to neighbours when it saves bytes</span></label>
+            <div class="field"><label>Keep links open after traffic (seconds, 0 = off)</label><input name="SessionTailSeconds" type="number" min="0" max="600" value="@Model.Options.SessionTailSeconds" required /></div>
             <label class="field-checkbox"><input name="ScheduledPollEnabled" type="checkbox" @(Model.Options.ScheduledPollEnabled ? "checked" : "") />
                 <span>Schedule periodic mail polls (F3b)</span></label>
             <div class="field"><label>Poll interval (hours)</label><input name="PollIntervalHours" type="number" min="1" max="168" value="@Model.Options.PollIntervalHours" required /></div>
@@ -250,6 +251,7 @@ async function dappsSaveConfig(ev) {
         ProbeQuietWindowSeconds: parseInt(f.ProbeQuietWindowSeconds.value, 10),
         OpportunisticPollEnabled: f.OpportunisticPollEnabled.checked,
         CompressionEnabled: f.CompressionEnabled.checked,
+        SessionTailSeconds: parseInt(f.SessionTailSeconds.value, 10),
         ScheduledPollEnabled: f.ScheduledPollEnabled.checked,
         PollIntervalHours: parseInt(f.PollIntervalHours.value, 10),
         DiscoveryAirtimeBudgetSecondsPerHour: parseInt(f.DiscoveryAirtimeBudgetSecondsPerHour.value, 10),

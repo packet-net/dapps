@@ -243,6 +243,19 @@ public class SystemOptions
     public bool CompressionEnabled { get; set; } = true;
 
     /// <summary>
+    /// After a DAPPSv1 session with a neighbour that moved messages,
+    /// keep the AX.25 link open until it has been idle this many
+    /// seconds, so follow-up messages in either direction go straight
+    /// away without a new connection. 0 turns the tail off. Capped at
+    /// 600 (10 minutes), because many nodes drop an idle circuit after
+    /// that. The per-neighbour override
+    /// <see cref="dapps.core.Models.DbNeighbour.SessionTailSeconds"/>
+    /// wins when set (null there defers to this system-wide setting).
+    /// Default 120.
+    /// </summary>
+    public int SessionTailSeconds { get; set; } = 120;
+
+    /// <summary>
     /// Plan F3b - scheduled poll. When true, the
     /// <c>PollSchedulerService</c> walks every AGW-reachable manual
     /// neighbour on a slow cadence and drains queued mail via

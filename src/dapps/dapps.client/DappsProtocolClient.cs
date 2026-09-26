@@ -151,6 +151,65 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
     /// </summary>
     public bool LastPollDrained { get; private set; }
 
+    /// <summary>
+    /// Set when the peer has sent <c>pending</c>: it has mail for us and
+    /// is waiting for a <c>rev</c>. A peer holding a session open sends
+    /// it unprompted when it's idle, so it can turn up in place of any
+    /// reply; the reads here skip it and record it. The caller clears it
+    /// when it acts on it.
+    /// </summary>
+    public bool PeerHasPending { get; set; }
+
+    /// <summary>
+    /// Ask the peer to hold this session open until it has been idle for
+    /// <paramref name="seconds"/>. Returns the hold it agreed to, which
+    /// may be shorter, or 0 if it won't hold; null if the reply made no
+    /// sense.
+    /// </summary>
+    public async Task<int?> RequestTailAsync(int seconds, CancellationToken ct)
+    {
+        await stream.WriteAsync(Encoding.UTF8.GetBytes($"tail {seconds}\n"), ct);
+        await stream.FlushAsync(ct);
+        var reply = await ReadReplyAsync(ct);
+        var parts = reply.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 2 && parts[0] == "tail"
+            && int.TryParse(parts[1], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var agreed))
+        {
+            return agreed;
+        }
+        logger.LogWarning("Expected 'tail <seconds>', got '{0}'", reply);
+        return null;
+    }
+
+    /// <summary>
+    /// Read what an idle peer has just sent on a held session. True for
+    /// <c>pending</c>; false when the link ended or the peer said
+    /// something a held session doesn't expect, either of which ends it.
+    /// </summary>
+    public async Task<bool> ReadPendingNoticeAsync(CancellationToken ct)
+    {
+        var line = await ReadLineAsync(ct);
+        if (line == "pending") return true;
+        if (line.Length > 0) logger.LogWarning("Held session: expected 'pending', got '{0}'", line);
+        return false;
+    }
+
+    /// <summary>
+    /// Tell the peer we're done with the session, and wait for its
+    /// <c>bye</c> (or the link closing), so the <c>quit</c> is known to
+    /// have gone before the caller hangs up.
+    /// </summary>
+    public async Task QuitAsync(CancellationToken ct)
+    {
+        await stream.WriteAsync("quit\n"u8.ToArray(), ct);
+        await stream.FlushAsync(ct);
+        while (true)
+        {
+            var line = await ReadLineAsync(ct);
+            if (line.Length == 0 || line == "bye") return;
+        }
+    }
+
     /// <summary>Set once the peer has refused a compressed payload on
     /// this session, so the rest of the session goes plain rather than
     /// paying for the same refusal on every message.</summary>
@@ -331,7 +390,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         await stream.WriteAsync(Encoding.UTF8.GetBytes(sb.ToString()), ct);
         await stream.FlushAsync(ct);
 
-        var line = await ReadLineAsync(ct);
+        var line = await ReadReplyAsync(ct);
         return line;
     }
 
@@ -353,7 +412,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         await stream.WriteAsync(frame, ct);
         await stream.FlushAsync(ct);
 
-        var line = await ReadLineAsync(ct);
+        var line = await ReadReplyAsync(ct);
         if (line == $"ack {id}")
         {
             return true;
@@ -383,7 +442,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         var results = new List<DiscoveredPeerInfo>();
         while (true)
         {
-            var line = await ReadLineAsync(ct);
+            var line = await ReadReplyAsync(ct);
             if (line.Length == 0)
             {
                 logger.LogWarning("EOF reading peers response after {0} record(s)", results.Count);
@@ -457,7 +516,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         var results = new List<GossipedRoute>();
         while (true)
         {
-            var line = await ReadLineAsync(ct);
+            var line = await ReadReplyAsync(ct);
             if (line.Length == 0)
             {
                 logger.LogWarning("EOF reading routes response after {0} record(s)", results.Count);
@@ -526,6 +585,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
         LastPollDrained = false;
+        PeerHasPending = false;   // this rev collects whatever it was about
         var cmd = (requestedIds is { Count: > 0 })
             ? "rev " + string.Join(' ', requestedIds) + "\n"
             : "rev\n";
@@ -534,7 +594,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
 
         while (true)
         {
-            var line = await ReadLineAsync(ct);
+            var line = await ReadReplyAsync(ct);
             if (line.Length == 0)
             {
                 // EOF mid-poll; treat as drained. Anything we already
@@ -584,7 +644,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
             await stream.FlushAsync(ct);
 
             // Server responds with `data <id>\n` followed by raw bytes.
-            var dataHeader = await ReadLineAsync(ct);
+            var dataHeader = await ReadReplyAsync(ct);
             if (dataHeader != $"data {parsed.Id}")
             {
                 logger.LogWarning("rev poll: expected 'data {0}', got '{1}' - bailing", parsed.Id, dataHeader);
@@ -722,6 +782,21 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         string? Originator, string? MasterId, int? FragmentIndex, int? FragmentTotal,
         string? StreamId, uint? StreamSeq, uint? StreamGapTimeoutSeconds,
         string Format, int? CompressedLength);
+
+    /// <summary>
+    /// <see cref="ReadLineAsync"/> for a reply to one of our commands:
+    /// skips any <c>pending</c> notices, recording them in
+    /// <see cref="PeerHasPending"/>.
+    /// </summary>
+    private async Task<string> ReadReplyAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            var line = await ReadLineAsync(ct);
+            if (line != "pending") return line;
+            PeerHasPending = true;
+        }
+    }
 
     /// <summary>
     /// Reads a line terminated by <c>\n</c>, <c>\r</c>, or <c>\r\n</c>.

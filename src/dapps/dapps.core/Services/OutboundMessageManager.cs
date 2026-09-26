@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using dapps.client.Backhaul;
 using dapps.core.Models;
 using dapps.core.Routing;
@@ -30,7 +31,8 @@ public class OutboundMessageManager(
     OutboundActivityTracker? activityTracker = null,
     TransmissionAuditService? transmissionAudit = null,
     OutboundDestinationBackoff? destinationBackoff = null,
-    PeerSessionRegistry? peerSessions = null)
+    PeerSessionRegistry? peerSessions = null,
+    InboundSessionDirectory? inboundSessions = null)
 {
     private readonly ILogger logger = loggerFactory.CreateLogger<OutboundMessageManager>();
     private readonly IReadOnlyList<IDappsBackhaul> backhauls = backhauls.ToList();
@@ -46,6 +48,19 @@ public class OutboundMessageManager(
     /// picked up on the next tick anyway.
     /// </summary>
     private readonly SemaphoreSlim runLock = new(1, 1);
+
+    /// <summary>
+    /// Messages handed to a bearer and not yet completed. A session held
+    /// open to a neighbour (#187 proposal 9) sends in the background while
+    /// later runs go on, so a message is claimed when it goes out and
+    /// released when its outcome is recorded: it can never be sent twice
+    /// at once.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, byte> inFlight = new(StringComparer.Ordinal);
+
+    /// <summary>Outcomes arrive from background sessions as well as from
+    /// the run itself; routing and metrics see them one at a time.</summary>
+    private readonly SemaphoreSlim outcomeGate = new(1, 1);
 
     /// <summary>
     /// Internal counter incremented at the start of each *actually
@@ -94,6 +109,9 @@ public class OutboundMessageManager(
 
         foreach (var message in messages)
         {
+            // Already going out on a session.
+            if (inFlight.ContainsKey(message.Id)) continue;
+
             var residualTtl = TtlMath.Residual(message.Ttl, message.CreatedAt, DateTime.UtcNow);
             if (residualTtl is <= 0)
             {
@@ -182,19 +200,6 @@ public class OutboundMessageManager(
                 batch.Count, route.Callsign, nextRetryAtUtc);
             return;
         }
-        if (WouldDialIntoOpenSession(route, out var openDirection))
-        {
-            // #178: dialling now would send a SABM down the live link
-            // and reset the session at both ends. Leave the messages
-            // queued: if the peer polls (rev) on that session it drains
-            // them anyway, else the next tick dials once the session
-            // has ended.
-            logger.LogInformation(
-                "Deferring {0} message(s) for {1}: an {2} session with it is already open, dialling now would reset it",
-                batch.Count, route.Callsign, openDirection);
-            return;
-        }
-
         var backhaul = backhauls.FirstOrDefault(b => b.CanHandle(route));
         if (backhaul is null)
         {
@@ -203,8 +208,45 @@ public class OutboundMessageManager(
                 route.Callsign, route.BearerPort, route.UdpEndpoint, batch.Count);
             return;
         }
-
         batch.BackhaulName = backhaul.GetType().Name;
+
+        // A link we're holding open to this neighbour takes the batch at
+        // once, in the background.
+        batch.Detached = true;
+        if (backhaul.TryHandToOpenSession(route, batch))
+        {
+            logger.LogInformation("Handed {0} message(s) for {1} to the link we're holding open", batch.Count, route.Callsign);
+            return;
+        }
+        batch.Detached = false;
+
+        if (WouldDialIntoOpenSession(route, out var openDirection))
+        {
+            // The neighbour has a session open with us: give the batch to
+            // it. It tells the neighbour (`pending`), and the neighbour
+            // collects it with `rev`.
+            if (openDirection == "inbound" && inboundSessions is not null)
+            {
+                batch.Detached = true;
+                if (inboundSessions.TryHand(route.Callsign, batch))
+                {
+                    logger.LogInformation(
+                        "Handed {0} message(s) for {1} to the session it has open with us; it collects them with rev",
+                        batch.Count, route.Callsign);
+                    return;
+                }
+                batch.Detached = false;
+            }
+
+            // #178: dialling now would send a SABM down the live link
+            // and reset the session at both ends. Leave the messages
+            // queued: the forwarder runs again when that session ends.
+            logger.LogInformation(
+                "Deferring {0} message(s) for {1}: an {2} session with it is already open, dialling now would reset it",
+                batch.Count, route.Callsign, openDirection);
+            return;
+        }
+
         await backhaul.SendBatchAsync(route, optionsValue.Callsign, batch, stoppingToken);
     }
 
@@ -242,10 +284,27 @@ public class OutboundMessageManager(
     // parameters these wrap.
     private Task<ICollection<DbMessage>> PendingOutboundQueuedSinceAsync(DateTime since) =>
         database.GetPendingOutboundMessagesQueuedSince(since);
+    private Task<bool> IsStillQueuedAsync(string id) => database.IsStillQueued(id);
     private Task<RouteDecision> ResolveAsync(DbMessage message, CancellationToken ct) =>
         routingAlgorithm.ResolveAsync(message, routingContext, ct);
 
     private async Task RecordForwardOutcomeAsync(
+        DbMessage message, BackhaulRoute route, string backhaulName, BackhaulSendResult result,
+        TimeSpan elapsed, CancellationToken stoppingToken)
+    {
+        await outcomeGate.WaitAsync(stoppingToken);
+        try
+        {
+            await RecordForwardOutcomeCoreAsync(message, route, backhaulName, result, elapsed, stoppingToken);
+        }
+        finally
+        {
+            outcomeGate.Release();
+            inFlight.TryRemove(message.Id, out _);
+        }
+    }
+
+    private async Task RecordForwardOutcomeCoreAsync(
         DbMessage message, BackhaulRoute route, string backhaulName, BackhaulSendResult result,
         TimeSpan elapsed, CancellationToken stoppingToken)
     {
@@ -320,19 +379,35 @@ public class OutboundMessageManager(
 
         public string BackhaulName { get; set; } = "";
 
+        /// <summary>
+        /// Handed to a session that sends in the background, while this
+        /// and later runs go on. It then only sends what it was given:
+        /// looking at the queue again would race the run that made it.
+        /// </summary>
+        public bool Detached { get; set; }
+
         public void Add(DbMessage row, IReadOnlyList<string>? sourceRoute) => queued.Enqueue((row, sourceRoute));
 
         public async ValueTask<BackhaulMessage?> NextAsync(CancellationToken ct)
         {
             while (true)
             {
-                if (queued.Count == 0) await PickUpNewlyQueuedAsync(ct);
+                if (queued.Count == 0 && !Detached) await PickUpNewlyQueuedAsync(ct);
                 if (!queued.TryDequeue(out var next)) return null;
 
                 var residualTtl = TtlMath.Residual(next.Row.Ttl, next.Row.CreatedAt, DateTime.UtcNow);
                 if (residualTtl is <= 0)
                 {
                     owner.logger.LogInformation("Not sending {0}: its ttl ran out while it waited its turn", next.Row.Id);
+                    continue;
+                }
+
+                // Claim it, and make sure a session running alongside
+                // hasn't sent it since the queue was read.
+                if (!owner.inFlight.TryAdd(next.Row.Id, 0)) continue;
+                if (!await owner.IsStillQueuedAsync(next.Row.Id))
+                {
+                    owner.inFlight.TryRemove(next.Row.Id, out _);
                     continue;
                 }
                 handedOut[next.Row.Id] = next.Row;
@@ -350,7 +425,7 @@ public class OutboundMessageManager(
             {
                 // Once looked at, a message is the next run's to handle
                 // if it isn't ours: no second look this run.
-                if (!seen.Add(row.Id)) continue;
+                if (!seen.Add(row.Id) || owner.inFlight.ContainsKey(row.Id)) continue;
 
                 // Expired: the next run drops it with the usual log line.
                 var residualTtl = TtlMath.Residual(row.Ttl, row.CreatedAt, DateTime.UtcNow);

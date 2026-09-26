@@ -60,4 +60,14 @@ public class DbNeighbour
     /// is off. (sqlite-net adds this column on upgrade.)
     /// </summary>
     public bool? CompressionEnabled { get; set; }
+
+    /// <summary>
+    /// Per-neighbour override for <see cref="dapps.core.Models.SystemOptions.SessionTailSeconds"/>.
+    /// Null = defer to the system-wide setting. 0 = never hold the link
+    /// open to this neighbour after a session, even if the system
+    /// setting is nonzero. Otherwise the number of idle seconds to hold
+    /// the link for. Clamped 0-600. (sqlite-net adds this column on
+    /// upgrade.)
+    /// </summary>
+    public int? SessionTailSeconds { get; set; }
 }
