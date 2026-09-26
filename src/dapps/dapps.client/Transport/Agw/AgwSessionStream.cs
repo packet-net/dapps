@@ -62,10 +62,7 @@ internal sealed class AgwSessionStream(
         if (disconnected) throw new IOException("AGW session disconnected");
         if (buffer.IsEmpty) return;
 
-        var payload = buffer.ToArray();
-        await framing.WriteFrameAsync(
-            new AgwFrame(port, 'D', 0xF0, callfrom, callto, payload),
-            ct);
+        await framing.WriteDataAsync(port, callfrom, callto, buffer, ct);
     }
 
     public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct)
