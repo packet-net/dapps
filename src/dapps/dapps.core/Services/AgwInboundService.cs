@@ -405,8 +405,7 @@ public sealed class AgwInboundService(
         var stream = new MultiplexedAgwSessionStream(
             writeOutgoing: async (data, c) =>
             {
-                await framing.WriteFrameAsync(
-                    new AgwFrame(port, 'D', 0xF0, local, remote, data), c);
+                await framing.WriteDataAsync(port, local, remote, data, c);
             },
             sendRemoteDisconnect: async c =>
             {
