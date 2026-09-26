@@ -8,8 +8,9 @@ namespace dapps.core.Services;
 /// <summary>
 /// Pulls pending outbound messages from the queue, computes residual
 /// TTL, asks the configured <see cref="IRoutingAlgorithm"/> for a
-/// route, and hands each message to a matching <see cref="IDappsBackhaul"/>
-/// for delivery. Owns queue / dispatch concerns; routing strategy
+/// route, and hands the messages to a matching <see cref="IDappsBackhaul"/>
+/// for delivery, batched per next hop so a session-based bearer carries
+/// everything queued for one neighbour on one connection. Owns queue / dispatch concerns; routing strategy
 /// itself lives behind <see cref="IRoutingAlgorithm"/> (B5 seam) so
 /// algorithms (static, passive-learning, AODV-flood, NET-ROM-style,
 /// MeshCore-style, …) can be swapped without touching this code.
@@ -77,10 +78,19 @@ public class OutboundMessageManager(
         logger.LogInformation("Starting a run");
 
         var optionsValue = options.CurrentValue;
+        var runStartedAt = DateTime.UtcNow;
         var messages = await database.GetPendingOutboundMessages();
-        // Peers we have already logged a #178 deferral for this run, so
-        // a queue of several messages for one busy peer costs one line.
-        var deferredPeers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Every message this run has looked at. A batch that goes back
+        // to the queue for more only picks up messages queued since.
+        var seen = new HashSet<string>(messages.Select(m => m.Id));
+
+        // Messages for the same next hop go out together on one session
+        // rather than one session each. The work runs in queue order: a
+        // batch where its first message sits in the queue, a flood where
+        // its message does.
+        var batches = new Dictionary<BackhaulRoute, NextHopBatch>(SameLinkComparer.Instance);
+        var work = new List<object>();
 
         foreach (var message in messages)
         {
@@ -97,63 +107,20 @@ public class OutboundMessageManager(
 
             var decision = await routingAlgorithm.ResolveAsync(message, routingContext, stoppingToken);
 
-            // F1: preserve the originating callsign verbatim across re-forwards.
-            // Empty means we don't know - outbound omits src= rather than lying
-            // (e.g. claiming the link source is the originator).
-            var originator = string.IsNullOrEmpty(message.OriginatorCallsign)
-                ? null
-                : message.OriginatorCallsign;
-
             switch (decision)
             {
                 case RouteDecision.NextHop nh:
-                    if (destinationBackoff.IsInCooldown(nh.Route.Callsign, out var nextRetryAtUtc))
+                    if (!batches.TryGetValue(nh.Route, out var batch))
                     {
-                        logger.LogDebug(
-                            "Skipping {0}: {1} is in reconnect cooldown until {2:O}",
-                            message.Id, nh.Route.Callsign, nextRetryAtUtc);
-                        break;
+                        batch = new NextHopBatch(this, nh.Route, runStartedAt, seen);
+                        batches.Add(nh.Route, batch);
+                        work.Add(batch);
                     }
-                    if (WouldDialIntoOpenSession(nh.Route, out var openDirection))
-                    {
-                        // #178: dialling now would send a SABM down the
-                        // live link and reset the session at both ends.
-                        // Leave the message queued: if the peer polls
-                        // (rev) on that session it drains it anyway, else
-                        // the next tick dials once the session has ended.
-                        if (deferredPeers.Add(nh.Route.Callsign))
-                        {
-                            logger.LogInformation(
-                                "Deferring {0}: an {1} session with {2} is already open, dialling now would reset it",
-                                message.Id, openDirection, nh.Route.Callsign);
-                        }
-                        break;
-                    }
-                    var bm = new BackhaulMessage(
-                        Id: message.Id,
-                        Destination: message.Destination,
-                        Salt: message.Salt,
-                        Ttl: residualTtl,
-                        Payload: message.Payload,
-                        Originator: originator,
-                        SourceRoute: nh.SourceRoute,
-                        // F2 multi-part: forwarder re-emits mid= + frag=N/M
-                        // verbatim so the message stays groupable across hops.
-                        MasterId: message.MasterId,
-                        FragmentIndex: message.FragmentIndex,
-                        FragmentTotal: message.FragmentTotal,
-                        // Opt-in ordering: stream trio is end-to-end at the
-                        // originator's intent; intermediate hops re-emit
-                        // verbatim so the destination sees the originator's
-                        // gap-timeout policy regardless of forwarding path.
-                        StreamId: message.StreamId,
-                        StreamSeq: message.StreamSeq,
-                        StreamGapTimeoutSeconds: message.StreamGapTimeoutSeconds);
-                    await ForwardAndObserveAsync(message, nh.Route, bm, optionsValue, stoppingToken);
+                    batch.Add(message, nh.SourceRoute);
                     break;
 
                 case RouteDecision.FloodToNeighbours flood:
-                    await FloodAndMarkAsync(message, flood, residualTtl, originator, optionsValue, stoppingToken);
+                    work.Add(new PendingFlood(message, flood));
                     break;
 
                 case RouteDecision.Unreachable:
@@ -172,24 +139,116 @@ public class OutboundMessageManager(
                     break;
             }
         }
+
+        foreach (var item in work)
+        {
+            switch (item)
+            {
+                case NextHopBatch batch:
+                    await SendBatchAsync(batch, optionsValue, stoppingToken);
+                    break;
+                case PendingFlood flood:
+                    // Residual TTL as of now, after the work ahead of it.
+                    var residualTtl = TtlMath.Residual(flood.Message.Ttl, flood.Message.CreatedAt, DateTime.UtcNow);
+                    if (residualTtl is <= 0)
+                    {
+                        logger.LogInformation("Not flooding {0}: its ttl ran out while it waited its turn", flood.Message.Id);
+                        break;
+                    }
+                    await FloodAndMarkAsync(flood.Message, flood.Decision, residualTtl,
+                        OriginatorOf(flood.Message), optionsValue, stoppingToken);
+                    break;
+            }
+        }
     }
 
-    private async Task ForwardAndObserveAsync(
-        DbMessage message, BackhaulRoute route, BackhaulMessage bm,
-        SystemOptions optionsValue, CancellationToken stoppingToken)
+    /// <summary>
+    /// How many messages queued after a run started one batch will pick
+    /// up on top of what it started with. The forwarder serves one
+    /// neighbour at a time, so without a limit a neighbour with a steady
+    /// stream of traffic could keep the others waiting indefinitely.
+    /// </summary>
+    internal const int MaxPickedUpPerBatch = 20;
+
+    private sealed record PendingFlood(DbMessage Message, RouteDecision.FloodToNeighbours Decision);
+
+    private async Task SendBatchAsync(NextHopBatch batch, SystemOptions optionsValue, CancellationToken stoppingToken)
     {
+        var route = batch.Route;
+        if (destinationBackoff.IsInCooldown(route.Callsign, out var nextRetryAtUtc))
+        {
+            logger.LogDebug(
+                "Skipping {0} message(s) for {1}: in reconnect cooldown until {2:O}",
+                batch.Count, route.Callsign, nextRetryAtUtc);
+            return;
+        }
+        if (WouldDialIntoOpenSession(route, out var openDirection))
+        {
+            // #178: dialling now would send a SABM down the live link
+            // and reset the session at both ends. Leave the messages
+            // queued: if the peer polls (rev) on that session it drains
+            // them anyway, else the next tick dials once the session
+            // has ended.
+            logger.LogInformation(
+                "Deferring {0} message(s) for {1}: an {2} session with it is already open, dialling now would reset it",
+                batch.Count, route.Callsign, openDirection);
+            return;
+        }
+
         var backhaul = backhauls.FirstOrDefault(b => b.CanHandle(route));
         if (backhaul is null)
         {
             logger.LogError(
-                "No backhaul accepts route to {0} (BearerPort={1}, UdpEndpoint={2}). Skipping {3}.",
-                route.Callsign, route.BearerPort, route.UdpEndpoint, message.Id);
+                "No backhaul accepts route to {0} (BearerPort={1}, UdpEndpoint={2}). Skipping {3} message(s).",
+                route.Callsign, route.BearerPort, route.UdpEndpoint, batch.Count);
             return;
         }
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var result = await backhaul.SendAsync(bm, route, optionsValue.Callsign, stoppingToken);
-        sw.Stop();
+        batch.BackhaulName = backhaul.GetType().Name;
+        await backhaul.SendBatchAsync(route, optionsValue.Callsign, batch, stoppingToken);
+    }
+
+    private BackhaulMessage ToBackhaulMessage(DbMessage message, int? residualTtl, IReadOnlyList<string>? sourceRoute) =>
+        new(
+            Id: message.Id,
+            Destination: message.Destination,
+            Salt: message.Salt,
+            Ttl: residualTtl,
+            Payload: message.Payload,
+            Originator: OriginatorOf(message),
+            SourceRoute: sourceRoute,
+            // F2 multi-part: forwarder re-emits mid= + frag=N/M
+            // verbatim so the message stays groupable across hops.
+            MasterId: message.MasterId,
+            FragmentIndex: message.FragmentIndex,
+            FragmentTotal: message.FragmentTotal,
+            // Opt-in ordering: stream trio is end-to-end at the
+            // originator's intent; intermediate hops re-emit
+            // verbatim so the destination sees the originator's
+            // gap-timeout policy regardless of forwarding path.
+            StreamId: message.StreamId,
+            StreamSeq: message.StreamSeq,
+            StreamGapTimeoutSeconds: message.StreamGapTimeoutSeconds);
+
+    /// <summary>
+    /// F1: preserve the originating callsign verbatim across re-forwards.
+    /// Null means we don't know - outbound omits src= rather than lying
+    /// (e.g. claiming the link source is the originator).
+    /// </summary>
+    private static string? OriginatorOf(DbMessage message) =>
+        string.IsNullOrEmpty(message.OriginatorCallsign) ? null : message.OriginatorCallsign;
+
+    // For NextHopBatch: a nested class can't see the primary-constructor
+    // parameters these wrap.
+    private Task<ICollection<DbMessage>> PendingOutboundQueuedSinceAsync(DateTime since) =>
+        database.GetPendingOutboundMessagesQueuedSince(since);
+    private Task<RouteDecision> ResolveAsync(DbMessage message, CancellationToken ct) =>
+        routingAlgorithm.ResolveAsync(message, routingContext, ct);
+
+    private async Task RecordForwardOutcomeAsync(
+        DbMessage message, BackhaulRoute route, string backhaulName, BackhaulSendResult result,
+        TimeSpan elapsed, CancellationToken stoppingToken)
+    {
         if (result.Deferred)
         {
             // #178: the bearer resolved a crossed connect by serving the
@@ -204,7 +263,7 @@ public class OutboundMessageManager(
             await routingAlgorithm.ObserveForwardOutcomeAsync(message, route, result, routingContext, stoppingToken);
             if (result.Accepted)
             {
-                logger.LogInformation("Remote end accepted message {0} (via {1})", message.Id, backhaul.GetType().Name);
+                logger.LogInformation("Remote end accepted message {0} (via {1})", message.Id, backhaulName);
                 metrics.RecordForwardSuccess(message.Id, route.Callsign, message.Payload.Length);
                 activityTracker?.RecordTransmission();
                 await database.MarkMessageAsForwarded(message.Id);
@@ -214,7 +273,7 @@ public class OutboundMessageManager(
             {
                 var nextRetryAtUtc = destinationBackoff.RecordFailure(route.Callsign);
                 logger.LogError("Failed to forward message {0} to {1} via {2}: {3} (retrying no earlier than {4:O})",
-                    message.Id, route.Callsign, backhaul.GetType().Name, result.Error, nextRetryAtUtc);
+                    message.Id, route.Callsign, backhaulName, result.Error, nextRetryAtUtc);
                 metrics.RecordForwardFailure(message.Id, route.Callsign, message.Payload.Length, result.Error);
             }
         }
@@ -230,9 +289,106 @@ public class OutboundMessageManager(
                 bytes: message.Payload.Length,
                 reason: $"forwarder tick: route via {route.Callsign}",
                 success: result.Accepted,
-                durationMs: (int)sw.ElapsedMilliseconds,
+                durationMs: (int)elapsed.TotalMilliseconds,
                 errorTag: result.Accepted ? "" : result.Deferred ? "deferred" : (result.Error ?? "unknown"));
         }
+    }
+
+    /// <summary>
+    /// The messages one run has for one next hop, handed to the backhaul
+    /// as an <see cref="IBackhaulBatch"/>. Starts with what the queue
+    /// held when the run began; once those are out it looks at the queue
+    /// again and adds anything since queued for the same next hop (up to
+    /// <see cref="MaxPickedUpPerBatch"/>), so traffic that arrives while
+    /// the session is open goes on it instead of waiting for a new one.
+    ///
+    /// A message's residual TTL is worked out when it is handed out, not
+    /// when the run began, so time spent on the messages ahead of it
+    /// counts. One that expired while it waited isn't sent; the next run
+    /// drops it.
+    /// </summary>
+    private sealed class NextHopBatch(OutboundMessageManager owner, BackhaulRoute route, DateTime runStartedAt, HashSet<string> seen) : IBackhaulBatch
+    {
+        private readonly Queue<(DbMessage Row, IReadOnlyList<string>? SourceRoute)> queued = new();
+        private readonly Dictionary<string, DbMessage> handedOut = new();
+        private int pickedUp;
+
+        public BackhaulRoute Route => route;
+
+        /// <summary>Messages not yet handed to the backhaul.</summary>
+        public int Count => queued.Count;
+
+        public string BackhaulName { get; set; } = "";
+
+        public void Add(DbMessage row, IReadOnlyList<string>? sourceRoute) => queued.Enqueue((row, sourceRoute));
+
+        public async ValueTask<BackhaulMessage?> NextAsync(CancellationToken ct)
+        {
+            while (true)
+            {
+                if (queued.Count == 0) await PickUpNewlyQueuedAsync(ct);
+                if (!queued.TryDequeue(out var next)) return null;
+
+                var residualTtl = TtlMath.Residual(next.Row.Ttl, next.Row.CreatedAt, DateTime.UtcNow);
+                if (residualTtl is <= 0)
+                {
+                    owner.logger.LogInformation("Not sending {0}: its ttl ran out while it waited its turn", next.Row.Id);
+                    continue;
+                }
+                handedOut[next.Row.Id] = next.Row;
+                return owner.ToBackhaulMessage(next.Row, residualTtl, next.SourceRoute);
+            }
+        }
+
+        public async ValueTask CompleteAsync(BackhaulMessage message, BackhaulSendResult result, TimeSpan elapsed, CancellationToken ct) =>
+            await owner.RecordForwardOutcomeAsync(handedOut[message.Id], route, BackhaulName, result, elapsed, ct);
+
+        private async Task PickUpNewlyQueuedAsync(CancellationToken ct)
+        {
+            if (pickedUp >= MaxPickedUpPerBatch) return;
+            foreach (var row in await owner.PendingOutboundQueuedSinceAsync(runStartedAt))
+            {
+                // Once looked at, a message is the next run's to handle
+                // if it isn't ours: no second look this run.
+                if (!seen.Add(row.Id)) continue;
+
+                // Expired: the next run drops it with the usual log line.
+                var residualTtl = TtlMath.Residual(row.Ttl, row.CreatedAt, DateTime.UtcNow);
+                if (residualTtl is <= 0) continue;
+
+                var decision = await owner.ResolveAsync(row, ct);
+                if (decision is not RouteDecision.NextHop nh || !SameLinkComparer.Instance.Equals(nh.Route, route)) continue;
+
+                owner.logger.LogInformation("Picked up {0} for {1}, queued while its session was open", row.Id, route.Callsign);
+                queued.Enqueue((row, nh.SourceRoute));
+                if (++pickedUp >= MaxPickedUpPerBatch) return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Two routes that reach the neighbour the same way, so their
+    /// messages can share a session. <see cref="BackhaulRoute"/>'s own
+    /// equality would compare a connect script's step list by reference.
+    /// </summary>
+    private sealed class SameLinkComparer : IEqualityComparer<BackhaulRoute>
+    {
+        public static readonly SameLinkComparer Instance = new();
+
+        public bool Equals(BackhaulRoute? x, BackhaulRoute? y)
+        {
+            if (ReferenceEquals(x, y)) return true;
+            if (x is null || y is null) return false;
+            return string.Equals(x.Callsign, y.Callsign, StringComparison.OrdinalIgnoreCase)
+                && x.BearerPort == y.BearerPort
+                && x.UdpEndpoint == y.UdpEndpoint
+                && x.MeshCoreChannel == y.MeshCoreChannel
+                && (x.ConnectScript?.Steps ?? []).SequenceEqual(y.ConnectScript?.Steps ?? []);
+        }
+
+        public int GetHashCode(BackhaulRoute route) => HashCode.Combine(
+            StringComparer.OrdinalIgnoreCase.GetHashCode(route.Callsign),
+            route.BearerPort, route.UdpEndpoint, route.MeshCoreChannel);
     }
 
     private async Task FloodAndMarkAsync(

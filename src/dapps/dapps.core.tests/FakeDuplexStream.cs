@@ -12,6 +12,10 @@ internal sealed class FakeDuplexStream(byte[] preloadedReadable) : Stream
 
     public MemoryStream WriteCapture { get; } = new();
 
+    /// <summary>Each write call's bytes, separately: what a bearer
+    /// that frames per write (AGW) would turn into one frame each.</summary>
+    public List<byte[]> Writes { get; } = [];
+
     public override int Read(byte[] buffer, int offset, int count)
         => readBuffer.Read(buffer, offset, count);
 
@@ -22,13 +26,22 @@ internal sealed class FakeDuplexStream(byte[] preloadedReadable) : Stream
         => readBuffer.ReadAsync(buffer, ct);
 
     public override void Write(byte[] buffer, int offset, int count)
-        => WriteCapture.Write(buffer, offset, count);
+    {
+        Writes.Add(buffer[offset..(offset + count)]);
+        WriteCapture.Write(buffer, offset, count);
+    }
 
     public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct)
-        => WriteCapture.WriteAsync(buffer, offset, count, ct);
+    {
+        Writes.Add(buffer[offset..(offset + count)]);
+        return WriteCapture.WriteAsync(buffer, offset, count, ct);
+    }
 
     public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
-        => WriteCapture.WriteAsync(buffer, ct);
+    {
+        Writes.Add(buffer.ToArray());
+        return WriteCapture.WriteAsync(buffer, ct);
+    }
 
     public override void Flush() => WriteCapture.Flush();
     public override Task FlushAsync(CancellationToken ct) => WriteCapture.FlushAsync(ct);

@@ -28,10 +28,28 @@ public class Database(
         var connection = DbInfo.GetAsyncConnection();
         // Outbound = destined for a remote node and not yet forwarded.
         // "Local" matches when the @-suffix of Destination matches our base callsign.
+        // Oldest first, so a batch for one neighbour goes out in the order
+        // its messages were queued.
         var local = options.CurrentValue.Callsign.Split('-')[0];
         var rows = await connection.QueryAsync<DbMessage>(
-            "select * from messages where forwarded=0 and not (destination like ?);",
+            "select * from messages where forwarded=0 and not (destination like ?) order by CreatedAt asc;",
             $"%@{local}%");
+        return rows;
+    }
+
+    /// <summary>
+    /// <see cref="GetPendingOutboundMessages"/>, limited to messages queued
+    /// at or after <paramref name="since"/>: what a forwarder run looks
+    /// for when it checks the queue again part way through, without
+    /// re-reading the whole backlog each time.
+    /// </summary>
+    public async Task<ICollection<DbMessage>> GetPendingOutboundMessagesQueuedSince(DateTime since)
+    {
+        var connection = DbInfo.GetAsyncConnection();
+        var local = options.CurrentValue.Callsign.Split('-')[0];
+        var rows = await connection.QueryAsync<DbMessage>(
+            "select * from messages where forwarded=0 and CreatedAt >= ? and not (destination like ?) order by CreatedAt asc;",
+            since, $"%@{local}%");
         return rows;
     }
 

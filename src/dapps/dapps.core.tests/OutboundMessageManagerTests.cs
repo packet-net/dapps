@@ -483,8 +483,203 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         backoff.IsInCooldown("N0DEST", out _).Should().BeFalse("a deferral is not a failure");
     }
 
+    // Batching: everything queued for one next hop goes out on one
+    // session, not one session per message.
+
+    [Fact]
+    public async Task DoRun_SeveralMessagesForOneNeighbour_GoOutAsOneBatchInQueueOrder()
+    {
+        var batching = new BatchingFakeBackhaul();
+        var m = MakeManager(batching);
+        var t0 = DateTime.UtcNow.AddSeconds(-10);
+        InsertMessage(id: "third01", ttl: null, createdAt: t0.AddSeconds(2));
+        InsertMessage(id: "first01", ttl: null, createdAt: t0);
+        InsertMessage(id: "secnd01", ttl: null, createdAt: t0.AddSeconds(1));
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        batching.Batches.Should().ContainSingle();
+        batching.Batches.Single().Route.Callsign.Should().Be("N0DEST");
+        batching.Batches.Single().Ids.Should().Equal("first01", "secnd01", "third01");
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task DoRun_MessagesForTwoNeighbours_GetOneBatchEach()
+    {
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0TWO", BearerPort = 0 });
+        }
+        var batching = new BatchingFakeBackhaul();
+        var m = MakeManager(batching);
+        var t0 = DateTime.UtcNow.AddSeconds(-10);
+        InsertMessage(id: "dest001", ttl: null, createdAt: t0);
+        InsertMessage(id: "two0001", ttl: null, createdAt: t0.AddSeconds(1), destination: "app@N0TWO");
+        InsertMessage(id: "dest002", ttl: null, createdAt: t0.AddSeconds(2));
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        batching.Batches.Select(b => (b.Route.Callsign, string.Join(",", b.Ids))).Should().Equal(
+            ("N0DEST", "dest001,dest002"),
+            ("N0TWO", "two0001"));
+    }
+
+    [Fact]
+    public async Task DoRun_AMessageFailsPartWay_TheOnesBeforeStayForwardedAndTheRestStayQueued()
+    {
+        var backoff = new OutboundDestinationBackoff();
+        var batching = new BatchingFakeBackhaul
+        {
+            ResultFor = msg => msg.Id == "fail002" ? BackhaulSendResult.Fail("link dropped") : BackhaulSendResult.Ok(),
+        };
+        var m = MakeManager(batching, backoff: backoff);
+        var t0 = DateTime.UtcNow.AddSeconds(-10);
+        InsertMessage(id: "okay001", ttl: null, createdAt: t0);
+        InsertMessage(id: "fail002", ttl: null, createdAt: t0.AddSeconds(1));
+        InsertMessage(id: "wait003", ttl: null, createdAt: t0.AddSeconds(2));
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        batching.Batches.Single().Ids.Should().Equal(new[] { "okay001", "fail002" },
+            "the batch stops at the failure; the third message is never handed out");
+        (await database.GetPendingOutboundMessages()).Select(p => p.Id).Should().BeEquivalentTo("fail002", "wait003");
+        backoff.IsInCooldown("N0DEST", out _).Should().BeTrue("a failure mid-batch is still a failure of the route");
+    }
+
+    [Fact]
+    public async Task DoRun_MessageQueuedWhileTheBatchIsGoingOut_GoesOnTheSameBatch()
+    {
+        var batching = new BatchingFakeBackhaul();
+        batching.OnSent = msg =>
+        {
+            if (msg.Id == "early01") InsertMessage(id: "late001", ttl: null, createdAt: DateTime.UtcNow);
+        };
+        var m = MakeManager(batching);
+        InsertMessage(id: "early01", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5));
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        batching.Batches.Should().ContainSingle("a message queued mid-session must not cost a second session");
+        batching.Batches.Single().Ids.Should().Equal("early01", "late001");
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task DoRun_MessageQueuedMidBatchForAnotherNeighbour_WaitsForTheNextRun()
+    {
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0TWO", BearerPort = 0 });
+        }
+        var batching = new BatchingFakeBackhaul();
+        batching.OnSent = msg =>
+        {
+            if (msg.Id == "dest001") InsertMessage(id: "two0001", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0TWO");
+        };
+        var m = MakeManager(batching);
+        InsertMessage(id: "dest001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5));
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        batching.Batches.Should().ContainSingle();
+        batching.Batches.Single().Ids.Should().Equal("dest001");
+        (await database.GetPendingOutboundMessages()).Should().ContainSingle(p => p.Id == "two0001");
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+        batching.Batches.Last().Route.Callsign.Should().Be("N0TWO");
+        batching.Batches.Last().Ids.Should().Equal("two0001");
+    }
+
+    [Fact]
+    public async Task DoRun_ASteadyStreamOfNewMessages_StopsBeingPickedUpAtTheLimit()
+    {
+        // One neighbour with traffic arriving as fast as it goes out must
+        // not hold the forwarder (and every other neighbour) forever.
+        var batching = new BatchingFakeBackhaul();
+        var n = 0;
+        batching.OnSent = _ => InsertMessage(id: $"strm{++n:D3}", ttl: null, createdAt: DateTime.UtcNow);
+        var m = MakeManager(batching);
+        InsertMessage(id: "start01", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5));
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        batching.Batches.Should().ContainSingle();
+        batching.Batches.Single().Ids.Should().HaveCount(1 + OutboundMessageManager.MaxPickedUpPerBatch);
+    }
+
+    [Fact]
+    public async Task DoRun_TtlIsWorkedOutWhenAMessageIsHandedOut_NotWhenTheRunStarted()
+    {
+        // The second message's ttl runs out while the first is being
+        // sent. It must not go out with the ttl it had at the start.
+        var batching = new BatchingFakeBackhaul { OnSent = _ => Thread.Sleep(1200) };
+        var m = MakeManager(batching);
+        InsertMessage(id: "slow001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5));
+        InsertMessage(id: "tight01", ttl: 2, createdAt: DateTime.UtcNow.AddMilliseconds(-500));
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        batching.Batches.Single().Ids.Should().Equal("slow001");
+        (await database.GetPendingOutboundMessages()).Should().ContainSingle(p => p.Id == "tight01",
+            "an expired message isn't sent; the next run drops it");
+    }
+
+    [Fact]
+    public async Task DoRun_NeighbourInCooldown_SkipsItsWholeBatch()
+    {
+        var backoff = new OutboundDestinationBackoff();
+        backoff.RecordFailure("N0DEST");
+        var batching = new BatchingFakeBackhaul();
+        var m = MakeManager(batching, backoff: backoff);
+        InsertMessage(id: "cool001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5));
+        InsertMessage(id: "cool002", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-4));
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        batching.Batches.Should().BeEmpty();
+        (await database.GetPendingOutboundMessages()).Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task DoRun_NeighbourHasASessionOpen_DefersItsWholeBatch()
+    {
+        var peers = new PeerSessionRegistry();
+        var batching = new BatchingFakeBackhaul();
+        var m = MakeManager(batching, peers: peers);
+        InsertMessage(id: "busy101", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5));
+        InsertMessage(id: "busy102", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-4));
+
+        using (peers.Acquire("N0DEST", "inbound"))
+        {
+            await m.DoRun(TestContext.Current.CancellationToken);
+        }
+
+        batching.Batches.Should().BeEmpty();
+        (await database.GetPendingOutboundMessages()).Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task DoRun_ADatagramBearer_StillSendsMessageByMessage()
+    {
+        // FakeBackhaul doesn't override SendBatchAsync, so it gets the
+        // interface's default: one SendAsync per message, same batch.
+        var t0 = DateTime.UtcNow.AddSeconds(-10);
+        InsertMessage(id: "dgram01", ttl: null, createdAt: t0);
+        InsertMessage(id: "dgram02", ttl: null, createdAt: t0.AddSeconds(1));
+
+        await manager.DoRun(TestContext.Current.CancellationToken);
+
+        backhaul.Sent.Select(s => s.Message.Id).Should().Equal("dgram01", "dgram02");
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
     private OutboundMessageManager MakeManager(PeerSessionRegistry peers, OutboundDestinationBackoff? backoff = null) =>
         new(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
+            destinationBackoff: backoff, peerSessions: peers);
+
+    private OutboundMessageManager MakeManager(IDappsBackhaul bearer, OutboundDestinationBackoff? backoff = null, PeerSessionRegistry? peers = null) =>
+        new(database, NullLoggerFactory.Instance, optionsMonitor, [bearer], routingAlgorithm, routingContext,
             destinationBackoff: backoff, peerSessions: peers);
 
     /// <summary>Routes every message as a flood to a fixed set of neighbours.</summary>
@@ -519,6 +714,39 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         public T CurrentValue { get; } = value;
         public T Get(string? name) => CurrentValue;
         public IDisposable? OnChange(Action<T, string?> listener) => null;
+    }
+
+    /// <summary>
+    /// A session bearer stand-in: overrides <see cref="IDappsBackhaul.SendBatchAsync"/>
+    /// and records which messages each batch carried, in order.
+    /// <see cref="OnSent"/> runs after each send, before its outcome is
+    /// reported, which is where a test queues "late" traffic.
+    /// </summary>
+    private sealed class BatchingFakeBackhaul : IDappsBackhaul
+    {
+        public List<(BackhaulRoute Route, List<string> Ids)> Batches { get; } = [];
+        public Func<BackhaulMessage, BackhaulSendResult> ResultFor { get; init; } = _ => BackhaulSendResult.Ok();
+        public Action<BackhaulMessage>? OnSent { get; set; }
+
+        public bool CanHandle(BackhaulRoute route) => true;
+
+        public Task<BackhaulSendResult> SendAsync(
+            BackhaulMessage message, BackhaulRoute route, string localCallsign, CancellationToken ct) =>
+            throw new InvalidOperationException("the forwarder should hand this bearer batches");
+
+        public async Task SendBatchAsync(BackhaulRoute route, string localCallsign, IBackhaulBatch batch, CancellationToken ct)
+        {
+            var ids = new List<string>();
+            Batches.Add((route, ids));
+            while (await batch.NextAsync(ct) is { } message)
+            {
+                ids.Add(message.Id);
+                var result = ResultFor(message);
+                OnSent?.Invoke(message);
+                await batch.CompleteAsync(message, result, TimeSpan.Zero, ct);
+                if (!result.Accepted) return;
+            }
+        }
     }
 
     /// <summary>

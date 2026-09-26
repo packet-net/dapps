@@ -9,6 +9,20 @@ namespace dapps.core.tests;
 public class DappsProtocolClientTests
 {
     [Fact]
+    public async Task SendMessageAsync_WritesTheDataLineAndPayloadInOneWrite()
+    {
+        // One write is one AGW data frame, so the line and a small
+        // payload travel in one I-frame instead of two.
+        var stream = new FakeDuplexStream(Encoding.UTF8.GetBytes("ack abc1234\n"));
+        var client = new DappsProtocolClient(stream, NullLoggerFactory.Instance);
+
+        (await client.SendMessageAsync("abc1234", "hello"u8.ToArray(), TestContext.Current.CancellationToken)).Should().BeTrue();
+
+        stream.Writes.Should().ContainSingle();
+        Encoding.UTF8.GetString(stream.Writes.Single()).Should().Be("data abc1234\nhello");
+    }
+
+    [Fact]
     public async Task ReadInitialPromptAsync_ReturnsTrueWhenPromptArrives()
     {
         var canned = Encoding.UTF8.GetBytes("DAPPSv1>\n");
