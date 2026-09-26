@@ -8,7 +8,7 @@ A running DAPPS node has several independent loops, each with a clear job:
 
 | Loop                       | Cadence                                                | Job                                                                                                         |
 |----------------------------|--------------------------------------------------------|-------------------------------------------------------------------------------------------------------------|
-| **Outbound forwarder**     | Every 5 s (after a 3 s startup grace)                  | Walk the messages table for anything that needs forwarding to a neighbour. Open a session, ship it, mark forwarded. |
+| **Outbound forwarder**     | When a message is queued or a neighbour's session ends, else every 30 s (after a 3 s startup grace) | Walk the messages table for anything that needs forwarding to a neighbour. Open a session, ship it, mark forwarded. |
 | **TTL sweeper**            | Every 60 s                                             | Soft-delete messages and offers whose TTL has elapsed. Drop reasons recorded for the dashboard's "Recently dropped" panel. |
 | **AGW inbound dispatcher** | Continuous (one TCP connection)                        | Listen on the AGW socket for inbound sessions matching our registered callsign. Hand each one to the DAPPS protocol parser. |
 | **Probe scheduler**        | Every probe interval (24 h default), gated by strategy | Walk the probed-nodes table; for each row not opted out, open a connected-mode probe session. Records success/failure. Off by default. |

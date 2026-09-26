@@ -10,7 +10,8 @@ namespace dapps.core.Services;
 public class Database(
     ILogger<Database> logger,
     IOptionsMonitor<SystemOptions> options,
-    TimeProvider? timeProviderOpt = null)
+    TimeProvider? timeProviderOpt = null,
+    ForwarderWakeup? forwarderWakeup = null)
 {
     // Default to the system clock when DI / tests don't supply one.
     // Lets the existing test-fixture call sites
@@ -206,6 +207,11 @@ public class Database(
             StreamGapTimeoutSeconds = streamGapTimeoutSeconds,
             PendingInOrder = pendingInOrder,
         });
+
+        // Queued: the forwarder can send it now rather than on its next
+        // fallback check. Every save, not just outbound ones: a message
+        // arriving can also teach a route to something already queued.
+        forwarderWakeup?.Wake();
     }
 
     internal async Task SaveOffer(IHaveOffer offer)

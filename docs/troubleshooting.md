@@ -133,7 +133,7 @@ Check, in order:
 
 Look at the dashboard:
 
-- Outbound queue panel: is the message there? If yes, it's queued but the forwarder hasn't shipped it yet (next tick is at most 5 s). If no, the submit didn't actually write to the messages table - check the response body, it'll have an error.
+- Outbound queue panel: is the message there? If yes, it's queued but the forwarder hasn't shipped it yet. It normally goes within a second; if it sits there, the neighbour is probably in reconnect cooldown or has a session open with us (see the journal). If no, the submit didn't actually write to the messages table - check the response body, it'll have an error.
 - Recently dropped panel: did it get dropped? If yes, reason will be there (usually TTL too short, or no route to destination).
 - Per-link state panel: is the link to the destination's first-hop neighbour actually working?
 

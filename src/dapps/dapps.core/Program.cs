@@ -179,6 +179,9 @@ builder.Services.AddSingleton<Rhpv2InboundService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Rhpv2InboundService>());
 builder.Services.AddHostedService<TtlSweeperService>();
 builder.Services.AddHostedService<StreamGapSweeperService>();
+// Poked when a message is queued or a neighbour's session ends, so the
+// forwarder sends straight away instead of on a timer.
+builder.Services.AddSingleton<ForwarderWakeup>();
 builder.Services.AddSingleton<Database>();
 builder.Services.AddSingleton<AppTokenStore>();
 builder.Services.AddSingleton<AdminPasswordStore>();

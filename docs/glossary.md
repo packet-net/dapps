@@ -46,7 +46,7 @@ Terms used throughout this manual.
 
 **fragment** - A piece of a multi-part message. Payloads larger than the fragment threshold are split into N fragments at submit, each forwarded / acked independently and reassembled at the destination. Each carries its master ID, fragment index, and fragment total.
 
-**forwarder** - The background loop that walks the messages table and dispatches outbound forwards over the bearer. Ticks every 5 s.
+**forwarder** - The background loop that walks the messages table and dispatches outbound forwards over the bearer. Runs as soon as a message is queued or a neighbour's session ends, and every 30 s as a fallback.
 
 **heartbeat** - Periodic operational snapshot published to MQTT topic `dapps/metrics/heartbeat`. Same content as `/Operational`.
 

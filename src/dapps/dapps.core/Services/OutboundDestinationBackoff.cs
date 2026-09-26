@@ -68,6 +68,24 @@ public sealed class OutboundDestinationBackoff(TimeProvider? timeProvider = null
         }
     }
 
+    /// <summary>
+    /// When the next destination comes out of cooldown, or null if none
+    /// is waiting. The forwarder wakes then instead of polling.
+    /// </summary>
+    public DateTimeOffset? EarliestRetry()
+    {
+        var now = timeProvider.GetUtcNow();
+        DateTimeOffset? earliest = null;
+        foreach (var schedule in schedules.Values)
+        {
+            if (schedule.NextRetryAtUtc is { } at && at > now && (earliest is null || at < earliest))
+            {
+                earliest = at;
+            }
+        }
+        return earliest;
+    }
+
     /// <summary>Record a failed forward and return when this destination
     /// is next eligible for a retry - read back from the schedule rather
     /// than computed independently by the caller, so a logged timestamp
