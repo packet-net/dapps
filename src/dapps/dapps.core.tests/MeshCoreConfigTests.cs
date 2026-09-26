@@ -75,4 +75,18 @@ public sealed class MeshCoreConfigTests : IAsyncLifetime
         reloaded.MeshCoreLbtGuardMs.Should().Be(250);
         reloaded.MeshCoreReliableDelivery.Should().BeFalse();
     }
+
+    [Fact]
+    public async Task CompressionEnabled_DefaultsTrueAndRoundTripsFalse()
+    {
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        store.CurrentValue.CompressionEnabled.Should().BeTrue();
+
+        var opts = store.CurrentValue;
+        opts.CompressionEnabled = false;
+        await store.SaveAsync(opts);
+
+        var reloaded = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance).CurrentValue;
+        reloaded.CompressionEnabled.Should().BeFalse();
+    }
 }

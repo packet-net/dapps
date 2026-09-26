@@ -283,6 +283,7 @@ builder.Services.AddSingleton<IRouteGossipPort, RouteGossipPort>();
 builder.Services.AddSingleton<MeshCoreBearer>();
 builder.Services.AddSingleton<IDappsBackhaul>(sp => sp.GetRequiredService<MeshCoreBearer>());
 builder.Services.AddHostedService<MeshCoreBearerService>();
+builder.Services.AddSingleton<CompressionPolicy>();
 builder.Services.AddSingleton<IDappsBackhaul>(sp => new Dappsv1SessionBackhaul(
     sp.GetRequiredService<IDappsOutboundTransport>(),
     sp.GetRequiredService<ILoggerFactory>(),
@@ -305,7 +306,10 @@ builder.Services.AddSingleton<IDappsBackhaul>(sp => new Dappsv1SessionBackhaul(
         sp.GetRequiredService<ILoggerFactory>(),
         sp.GetRequiredService<Database>(),
         sp.GetRequiredService<IBackhaulInbox>(),
-        sp.GetRequiredService<OperationalMetrics>()).Handle(ct)));
+        sp.GetRequiredService<OperationalMetrics>(),
+        sp.GetRequiredService<CompressionPolicy>().ShouldCompressToAsync).Handle(ct),
+    // Payload compression, per the operator's setting for each neighbour.
+    compressTo: sp.GetRequiredService<CompressionPolicy>().ShouldCompressToAsync));
 builder.Services.AddSingleton<DatabaseAndMqttInbox>();
 builder.Services.AddSingleton<IBackhaulInbox>(sp => sp.GetRequiredService<DatabaseAndMqttInbox>());
 builder.Services.AddHostedService<UdpDatagramListener>();

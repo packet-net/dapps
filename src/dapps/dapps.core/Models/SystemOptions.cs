@@ -231,6 +231,18 @@ public class SystemOptions
     public bool OpportunisticPollEnabled { get; set; } = true;
 
     /// <summary>
+    /// Compress message payloads on DAPPSv1 sessions (AGW/RHP
+    /// neighbours) when it saves bytes (see
+    /// <see cref="dapps.client.Compression.PayloadCompression"/>).
+    /// This is a sender-side setting - incoming compressed messages
+    /// are always accepted regardless of this flag. The per-neighbour
+    /// override <see cref="dapps.core.Models.DbNeighbour.CompressionEnabled"/>
+    /// wins when set (null there defers to this system-wide setting).
+    /// Default true.
+    /// </summary>
+    public bool CompressionEnabled { get; set; } = true;
+
+    /// <summary>
     /// Plan F3b - scheduled poll. When true, the
     /// <c>PollSchedulerService</c> walks every AGW-reachable manual
     /// neighbour on a slow cadence and drains queued mail via

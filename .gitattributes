@@ -69,3 +69,9 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+###############################################################################
+# Compression dictionaries are byte-exact: every node must hold the same bytes
+# for a version, so no line-ending conversion on any checkout.
+###############################################################################
+*.dict binary

@@ -1,0 +1,30 @@
+73 de M0LTE
+GM all, good signals into Reading this morning. 73
+Thanks for the QSO, see you on the net tonight. 73 de G4ABC
+Anyone around for a sked on 2m at 1900 local? Please reply to this message.
+QSL, received ok. Will reply later. Best regards
+Hi, this is a test message sent over DAPPS. Please acknowledge when you get it. Thanks
+Subject: Weekly packet net reminder
+The weekly packet net is on Wednesday at 20:00 local time on the usual frequency. All welcome, check in via the node.
+Node status: GB7RDG, GB7BPQ and MB7NPW are all up. Please report any outages to the sysop.
+Weather report: wind SW 15 mph gusting 30, temperature 12C, pressure 1013 hPa and falling, rain later.
+{"t":21.4,"h":62,"p":1013}
+{"temp":18.2,"hum":71,"press":1009.8,"batt":3.92,"rssi":-97,"snr":6.5}
+{"lat":51.4545,"lon":-0.9781,"alt":45,"spd":0,"hdg":270,"ts":1790410259}
+{"op":"ack","origin":"DPSTST","seq":48,"by":"M0AHN-3"}
+{"op":"digest","origin":"MB7NPW","latest_seq":538}
+{"op":"sync.request","origin":"MB7NPW","from_seq":530,"to_seq":538,"requested_by":"DPSTST"}
+{"op":"seq_at.request","origin":"G5ALF-3","requested_by":"M0AHN-3","ts":1790410259000}
+{"op":"seq_at.response","origin":"G5ALF-3","seq":21,"requested_by":"M0AHN-3"}
+{"v":1,"origin":"DPSTST","seq":47,"epoch":1,"ts":1790410259080,"op":"post.insert","key":{"cid":1,"ts":1790410258990},"data":{"t":"cp","cid":1,"fc":"G5ALF","ts":1790410258990,"p":"Morning all, anyone on today?","dts":1790410259080}}
+{"v":1,"origin":"MB7NPW","seq":61,"epoch":1,"ts":1790410263194,"op":"post.insert","key":{"cid":1,"ts":1790410263117},"data":{"t":"cp","cid":1,"fc":"M0AHN","ts":1790410263117,"p":"Yes, just testing the new node","dts":1790410263194}}
+{"a":"user.update","o":"G5ALF-3","s":23,"e":1,"ts":1790410260346,"v":1,"key":{"callsign":"G5ALF"},"data":{"name":"Alf","name_last_updated":1790410260346,"callsign":"G5ALF"}}
+{"v":1,"o":"G5ALF-3","s":24,"e":1,"ts":1790410260,"a":"msg.insert","data":{"t":"m","_id":"1790410260703-G5ALF","fc":"G5ALF","tc":"M0AHN","m":"Are you on the node tonight?","ms":1,"ts":1790410260,"lts":1790410260}}
+{"v":1,"o":"MB7NPW","s":62,"e":1,"ts":1790410264,"a":"msg.edit","key":{"_id":"1790410260703-G5ALF"},"data":{"edts":1790410264,"m":"Are you on the node tonight? About 8pm"}}
+{"v":1,"o":"DPSTST","s":50,"e":1,"ts":1790410260763,"a":"p.em","key":{"cid":1,"ts":1790410260703},"data":{"e":1,"ets":1790410260763}}
+{"v":1,"o":"MB7NPW","s":64,"e":1,"ts":1790410264690,"a":"p.ed","key":{"cid":4,"ts":1790410264633},"data":{"edts":1790410264690,"p":"corrected text"}}
+{"v":1,"a":"batch","o":"MB7NPW","e":1,"events":[{"v":1,"o":"MB7NPW","s":65,"e":1,"ts":1790410265110,"a":"p.i","data":{"t":"cp","cid":2,"fc":"M0AHN","ts":1790410265042,"p":"Thanks, all received here","rts":1790410263117,"rfc":"G5ALF","dts":1790410265110}}],"acks":{"DPSTST":50}}
+{"a":"digest","o":"DPSTST","latest_seq":50}
+{"a":"ack","o":"MB7NPW","s":64,"by":"G5ALF-3"}
+{"v":1,"o":"DPSTST","s":48,"e":1,"ts":1790410259630,"a":"p.i","data":{"t":"cp","cid":1,"fc":"G5ALF","ts":1790410259554,"p":"Good to hear you, signals are fine here","dts":1790410259630},"acks":{"MB7NPW":61}}
+{"v":1,"o":"MB7NPW","s":63,"e":1,"ts":1790410263992,"a":"p.i","data":{"t":"cp","cid":1,"fc":"M0AHN","ts":1790410263931,"p":"3","dts":1790410263992}}

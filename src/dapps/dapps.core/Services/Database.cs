@@ -216,31 +216,34 @@ public class Database(
         if (existing != null)
         {
             logger.LogWarning("We already have metadata for offer {0}, overwriting", offer.Id);
-            await connection.DeleteAsync<DbOffer>(offer.Id);
         }
 
-        await connection.InsertAsync(new DbOffer
-        {
-            Id = offer.Id,
-            Length = offer.Length,
-            Format = offer.Format,
-            Salt = offer.Salt,
-            CompressedLength = offer.CompressedLength,
-            Destination = offer.Destination,
-            OriginatorCallsign = offer.Originator ?? "",
-            AdditionalProperties = JsonSerializer.Serialize(offer.AdditionalHeaders),
-            Ttl = offer.Ttl,
-            CreatedAt = timeProvider.GetUtcNow().UtcDateTime,
-            MasterId = offer.MasterId,
-            FragmentIndex = offer.Fragment?.Index,
-            FragmentTotal = offer.Fragment?.Total,
-            StreamId = offer.StreamId,
-            StreamSeq = offer.StreamSeq,
-            StreamGapTimeoutSeconds = offer.StreamGapTimeoutSeconds,
-        });
+        // One statement, so a second session offering the same id at the
+        // same moment can't land between a delete and an insert.
+        await connection.InsertOrReplaceAsync(ToDbOffer(offer, timeProvider.GetUtcNow().UtcDateTime));
 
         logger.LogInformation("Saved metadata for offer {0}", offer.Id);
     }
+
+    internal static DbOffer ToDbOffer(IHaveOffer offer, DateTime createdAt) => new()
+    {
+        Id = offer.Id,
+        Length = offer.Length,
+        Format = offer.Format,
+        Salt = offer.Salt,
+        CompressedLength = offer.CompressedLength,
+        Destination = offer.Destination,
+        OriginatorCallsign = offer.Originator ?? "",
+        AdditionalProperties = JsonSerializer.Serialize(offer.AdditionalHeaders),
+        Ttl = offer.Ttl,
+        CreatedAt = createdAt,
+        MasterId = offer.MasterId,
+        FragmentIndex = offer.Fragment?.Index,
+        FragmentTotal = offer.Fragment?.Total,
+        StreamId = offer.StreamId,
+        StreamSeq = offer.StreamSeq,
+        StreamGapTimeoutSeconds = offer.StreamGapTimeoutSeconds,
+    };
 
     internal async Task<DbRouteHint?> GetRouteHint(string destination)
     {
@@ -497,7 +500,7 @@ public class Database(
     /// exists for the same callsign. Idempotent: callers can re-POST
     /// the same neighbour without checking for prior existence.
     /// </summary>
-    internal async Task UpsertNeighbour(string callsign, int? bearerPort, string? udpEndpoint = null, string? connectScriptJson = null)
+    internal async Task UpsertNeighbour(string callsign, int? bearerPort, string? udpEndpoint = null, string? connectScriptJson = null, bool? compressionEnabled = null)
     {
         var connection = DbInfo.GetAsyncConnection();
         var existing = await connection.FindWithQueryAsync<DbNeighbour>(
@@ -510,6 +513,7 @@ public class Database(
                 BearerPort = bearerPort,
                 UdpEndpoint = udpEndpoint,
                 ConnectScriptJson = connectScriptJson,
+                CompressionEnabled = compressionEnabled,
             });
         }
         else
@@ -517,6 +521,7 @@ public class Database(
             existing.BearerPort = bearerPort;
             existing.UdpEndpoint = udpEndpoint;
             existing.ConnectScriptJson = connectScriptJson;
+            existing.CompressionEnabled = compressionEnabled;
             await connection.UpdateAsync(existing);
         }
     }

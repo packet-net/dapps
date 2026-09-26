@@ -8,6 +8,15 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <!-- zstd with a shared dictionary for DAPPSv1 session payloads
+         (fmt=zN, see Compression/PayloadCompression.cs). -->
+    <PackageReference Include="ZstdSharp.Port" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Byte-exact: every node must hold identical bytes for a version.
+         .gitattributes marks *.dict binary so no checkout rewrites them. -->
+    <EmbeddedResource Include="Compression\*.dict" LogicalName="dapps.client.Compression.%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

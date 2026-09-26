@@ -74,6 +74,19 @@ public sealed class NeighbourCrudTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task UpsertNeighbour_CompressionEnabled_RoundTripsNullFalseTrue()
+    {
+        await database.UpsertNeighbour("N0BBB-9", bearerPort: 1);
+        (await database.GetNeighbours()).Single().CompressionEnabled.Should().BeNull();
+
+        await database.UpsertNeighbour("N0BBB-9", bearerPort: 1, compressionEnabled: false);
+        (await database.GetNeighbours()).Single().CompressionEnabled.Should().BeFalse();
+
+        await database.UpsertNeighbour("N0BBB-9", bearerPort: 1, compressionEnabled: true);
+        (await database.GetNeighbours()).Single().CompressionEnabled.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task RemoveNeighbour_Existing_ReturnsTrueAndDeletes()
     {
         await database.UpsertNeighbour("N0BBB-9", bearerPort: 1);

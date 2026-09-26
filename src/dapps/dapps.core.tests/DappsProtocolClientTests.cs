@@ -23,6 +23,47 @@ public class DappsProtocolClientTests
     }
 
     [Fact]
+    public async Task PollAsync_AFormatItCantRead_IsDeclined_AndThePlainRetryIsTaken()
+    {
+        var payload = "hello"u8.ToArray();
+        var id = DappsMessage.ComputeHash(payload, 1L)[..7];
+        var stream = new FakeDuplexStream([
+            .. Encoding.UTF8.GetBytes($"ihave {id} len=5 fmt=z9 clen=3 dst=app@N0CALL s=1\n"),
+            .. Encoding.UTF8.GetBytes($"ihave {id} len=5 fmt=p dst=app@N0CALL s=1\n"),
+            .. Encoding.UTF8.GetBytes($"data {id}\n"), .. payload,
+            .. Encoding.UTF8.GetBytes("DAPPSv1>\n"),
+        ]);
+        var client = new DappsProtocolClient(stream, NullLoggerFactory.Instance);
+
+        var polled = new List<DappsProtocolClient.PolledMessage>();
+        await foreach (var m in client.PollAsync(null, TestContext.Current.CancellationToken)) polled.Add(m);
+
+        polled.Should().ContainSingle().Which.Payload.Should().Equal(payload);
+        Encoding.UTF8.GetString(stream.WriteCapture.ToArray()).Should().Be($"rev\nno {id}\nsend {id}\nack {id}\n");
+    }
+
+    [Fact]
+    public async Task PollAsync_ACompressedPayload_IsDecodedBeforeTheHashCheck()
+    {
+        var payload = Encoding.UTF8.GetBytes(
+            """{"v":1,"o":"MB7NPW","s":66,"e":1,"ts":1790410266123,"a":"p.i","data":{"t":"cp","cid":1,"fc":"M0AHN","ts":1790410266050,"p":"Evening all, is anyone on the WPS channel tonight?","dts":1790410266123}}""");
+        var id = DappsMessage.ComputeHash(payload, 1L)[..7];
+        var wire = dapps.client.Compression.PayloadCompression.TryCompress(payload)!.Value;
+        var stream = new FakeDuplexStream([
+            .. Encoding.UTF8.GetBytes($"ihave {id} len={payload.Length} fmt={wire.Format} clen={wire.Bytes.Length} dst=app@N0CALL s=1\n"),
+            .. Encoding.UTF8.GetBytes($"data {id}\n"), .. wire.Bytes,
+            .. Encoding.UTF8.GetBytes("DAPPSv1>\n"),
+        ]);
+        var client = new DappsProtocolClient(stream, NullLoggerFactory.Instance);
+
+        var polled = new List<DappsProtocolClient.PolledMessage>();
+        await foreach (var m in client.PollAsync(null, TestContext.Current.CancellationToken)) polled.Add(m);
+
+        polled.Should().ContainSingle().Which.Payload.Should().Equal(payload);
+        Encoding.UTF8.GetString(stream.WriteCapture.ToArray()).Should().EndWith($"ack {id}\n");
+    }
+
+    [Fact]
     public async Task ReadInitialPromptAsync_ReturnsTrueWhenPromptArrives()
     {
         var canned = Encoding.UTF8.GetBytes("DAPPSv1>\n");
