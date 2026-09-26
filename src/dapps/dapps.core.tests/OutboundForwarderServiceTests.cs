@@ -151,6 +151,65 @@ public sealed class OutboundForwarderServiceTests : IAsyncLifetime
     /// for an explicit release before completing. Lets concurrent-
     /// DoRun tests synchronise on the lock-held state without timing
     /// guesses.</summary>
+    [Fact]
+    public async Task SavingAMessage_WakesTheForwarder_WithoutWaitingForTheFallback()
+    {
+        var wakeup = new ForwarderWakeup();
+        var options = new TestOptionsMonitor<SystemOptions>(new SystemOptions { Callsign = "G0TEST-1" });
+        var wakingDatabase = new Database(NullLogger<Database>.Instance, options, forwarderWakeup: wakeup);
+        var sp = new ServiceCollection().AddSingleton(outbound).AddSingleton(wakeup).BuildServiceProvider();
+        var service = new OutboundForwarderService(sp, TimeProvider.System, NullLogger<OutboundForwarderService>.Instance)
+        {
+            TickInterval = TimeSpan.FromHours(1),
+            StartupDelay = TimeSpan.Zero,
+            WakeSettle = TimeSpan.FromMilliseconds(10),
+        };
+        using var cts = new CancellationTokenSource();
+        await service.StartAsync(cts.Token);
+        await WaitForAsync(() => outbound.RunCount >= 1);
+
+        await wakingDatabase.SaveMessage("wake001", "x"u8.ToArray(), salt: 1L,
+            destination: "chat@G0DEST-1", sourceCallsign: "G0TEST-1", additionalProperties: "{}", ttl: 600);
+
+        await WaitForAsync(() => outbound.RunCount >= 2);
+        await service.StopAsync(cts.Token);
+        outbound.RunCount.Should().BeGreaterThanOrEqualTo(2, "the save woke the forwarder; the hour-long fallback never came round");
+    }
+
+    [Fact]
+    public async Task ADestinationComingOutOfCooldown_WakesTheForwarder()
+    {
+        var time = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(DateTimeOffset.UtcNow);
+        var backoff = new OutboundDestinationBackoff(time);
+        backoff.RecordFailure("G0DEST-1");   // first failure: 10 s cooldown
+        var sp = new ServiceCollection().AddSingleton(outbound).AddSingleton(new ForwarderWakeup()).AddSingleton(backoff)
+            .BuildServiceProvider();
+        var service = new OutboundForwarderService(sp, time, NullLogger<OutboundForwarderService>.Instance)
+        {
+            TickInterval = TimeSpan.FromHours(1),
+            StartupDelay = TimeSpan.Zero,
+        };
+        using var cts = new CancellationTokenSource();
+        await service.StartAsync(cts.Token);
+        await WaitForAsync(() => outbound.RunCount >= 1);
+        await Task.Delay(100, TestContext.Current.CancellationToken);   // let the loop reach its wait
+
+        time.Advance(TimeSpan.FromSeconds(10));
+
+        await WaitForAsync(() => outbound.RunCount >= 2);
+        await service.StopAsync(cts.Token);
+        outbound.RunCount.Should().BeGreaterThanOrEqualTo(2, "the retry is due at 10 s, not at the hour-long fallback");
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!condition() && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+        }
+    }
+
     private sealed class SlowBackhaul : IDappsBackhaul
     {
         public int SendCount;

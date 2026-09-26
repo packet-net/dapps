@@ -38,7 +38,7 @@ namespace dapps.core.Services;
 /// the node's own link timeout ends it, whichever comes first; the
 /// cost is latency on the next dial to that peer, not lost traffic.
 /// </summary>
-public sealed class PeerSessionRegistry
+public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null)
 {
     private readonly Lock gate = new();
     private readonly Dictionary<string, List<Lease>> open = new(StringComparer.OrdinalIgnoreCase);
@@ -137,7 +137,13 @@ public sealed class PeerSessionRegistry
         lock (gate)
         {
             if (!open.TryGetValue(lease.Peer, out var leases) || !leases.Remove(lease)) return;
-            if (leases.Count == 0) open.Remove(lease.Peer);
+            if (leases.Count == 0)
+            {
+                open.Remove(lease.Peer);
+                // The forwarder held back anything for this peer while the
+                // session was open; it can go now.
+                forwarderWakeup?.Wake();
+            }
             Signal();
         }
     }
