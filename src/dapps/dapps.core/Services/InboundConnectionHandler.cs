@@ -36,6 +36,14 @@ public class InboundConnectionHandler(
     // underlying link layer would on its own.
     private static readonly TimeSpan InactivityTimeout = TimeSpan.FromMinutes(3);
 
+    /// <summary>
+    /// The offers this session accepted, by id. The database copy is
+    /// keyed by id alone, and two neighbours can offer the same message
+    /// at once with different encodings (one compressed, one plain), so
+    /// a session reads its payload by the offer it accepted itself.
+    /// </summary>
+    private readonly Dictionary<string, IHaveOffer> sessionOffers = new(StringComparer.Ordinal);
+
     public async Task Handle(CancellationToken stoppingToken)
     {
         try
@@ -458,12 +466,19 @@ public class InboundConnectionHandler(
         logger.LogInformation("Accepting message {0} (len={1}, fmt={2}, dst={3})", offer.Id, offer.Length, offer.Format, offer.Destination);
 
         await stream.WriteAsync(Encoding.UTF8.GetBytes($"send {offer.Id}\n"));
+        sessionOffers[offer.Id] = offer;
         await database.SaveOffer(offer);
     }
 
     private async Task HandleData(Stream stream, string id, CancellationToken stoppingToken)
     {
-        var offer = await database.LoadOfferMetadata(id);
+        // The offer this session accepted. The stored copy is keyed by id
+        // alone, so another session offering the same message (perhaps
+        // encoded differently) can replace it under us: it's only the
+        // fallback.
+        var offer = sessionOffers.TryGetValue(id, out var own)
+            ? Database.ToDbOffer(own, DateTime.UtcNow)
+            : await database.LoadOfferMetadata(id);
 
         byte[] buffer;
         if (offer.Format is "p" or "")
@@ -560,6 +575,7 @@ public class InboundConnectionHandler(
                 StreamGapTimeoutSeconds: offer.StreamGapTimeoutSeconds);
 
             await inbox.DeliverAsync(backhaulMessage, sourceCallsign, stoppingToken);
+            sessionOffers.Remove(id);
             await database.DeleteOffer(id);
             await stream.WriteAsync(Encoding.UTF8.GetBytes("ack " + id + "\n"));
         }

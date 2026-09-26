@@ -310,6 +310,41 @@ public sealed class Dappsv1SessionBackhaulTests
         written.Should().EndWith(Encoding.UTF8.GetString(payload), "what went after the refusal is the readable payload");
     }
 
+    [Fact]
+    public async Task APeerThatCantDecodeTheCompressedPayload_GetsItPlainOnTheSameSession()
+    {
+        // e.g. a hop on a connect-script path that mangles binary bytes.
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(
+            "DAPPSv1>\nsend wps0001\nbad wps0001\nsend wps0001\nack wps0001\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, null, null,
+            compressTo: (_, _) => Task.FromResult(true));
+
+        var result = await sb.SendAsync(WpsMsg("wps0001"), new BackhaulRoute("N0DEST"), "N0SRC", TestContext.Current.CancellationToken);
+
+        result.Accepted.Should().BeTrue();
+        var written = Encoding.Latin1.GetString(transport.WriteCapture);
+        written.IndexOf(" fmt=z1 ", StringComparison.Ordinal).Should().BeLessThan(written.IndexOf(" fmt=p ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task OnceThePeerRefusesCompression_TheRestOfTheSessionGoesPlain()
+    {
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(
+            "DAPPSv1>\nerror wps0001\nsend wps0001\nack wps0001\nsend wps0002\nack wps0002\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, null, null,
+            compressTo: (_, _) => Task.FromResult(true));
+        var batch = new ListBatch(WpsMsg("wps0001"), WpsMsg("wps0002"));
+
+        await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, TestContext.Current.CancellationToken);
+
+        batch.Outcomes.Should().AllSatisfy(o => o.Result.Accepted.Should().BeTrue());
+        System.Text.RegularExpressions.Regex.Count(Encoding.Latin1.GetString(transport.WriteCapture), " fmt=z1 ")
+            .Should().Be(1, "the second message doesn't pay for the same refusal again");
+    }
+
+    private static BackhaulMessage WpsMsg(string id) => new(id, "app@N0DEST", Salt: 1L, Ttl: 60, Payload: Encoding.UTF8.GetBytes(
+        """{"v":1,"o":"MB7NPW","s":66,"e":1,"ts":1790410266123,"a":"p.i","data":{"t":"cp","cid":1,"fc":"M0AHN","ts":1790410266050,"p":"Evening all, is anyone on the WPS channel tonight?","dts":1790410266123}}"""));
+
     private static BackhaulMessage Msg(string id) => new(id, "app@N0DEST", Salt: 1L, Ttl: 60, Payload: "x"u8.ToArray());
 
     /// <summary>A fixed list of messages, recording each outcome.

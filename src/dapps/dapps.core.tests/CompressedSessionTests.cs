@@ -104,6 +104,117 @@ public sealed class CompressedSessionTests : IAsyncLifetime
         transport.Received.Should().Contain(" fmt=z1 clen=");
     }
 
+    [Fact]
+    public async Task TheReceiver_RefusesADictionaryItDoesntHold_AndABadPayload_ThenTakesEachPlain()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var inbox = new RecordingInbox();
+        var (ours, theirs) = await LoopbackPairAsync(ct);
+        _ = Task.Run(() => new InboundConnectionHandler(theirs, Them, NullLoggerFactory.Instance, database, inbox).Handle(ct), ct);
+        var peer = new LinePeer(ours);
+        (await peer.ReadLineAsync(ct)).Should().Be("DAPPSv1>");
+
+        var first = Encoding.UTF8.GetBytes(WpsPost);
+        var firstId = dapps.client.DappsMessage.ComputeHash(first, 1L)[..7];
+        await peer.WriteLineAsync($"ihave {firstId} len={first.Length} fmt=z9 clen=10 s=1 dst=app@{Us}", ct);
+        (await peer.ReadLineAsync(ct)).Should().Be($"error {firstId}", "this build doesn't hold dictionary 9");
+        await PushPlainAsync(peer, firstId, first, ct);
+
+        var second = Encoding.UTF8.GetBytes(WpsPost.Replace("tonight", "this evening"));
+        var secondId = dapps.client.DappsMessage.ComputeHash(second, 2L)[..7];
+        await peer.WriteLineAsync($"ihave {secondId} len={second.Length} fmt=z1 clen=12 s=2 dst=app@{Us}", ct);
+        (await peer.ReadLineAsync(ct)).Should().Be($"send {secondId}");
+        await peer.WriteAsync([.. Encoding.UTF8.GetBytes($"data {secondId}\n"), .. "not zstd at"u8.ToArray(), (byte)'!'], ct);
+        (await peer.ReadLineAsync(ct)).Should().Be($"bad {secondId}");
+        await PushPlainAsync(peer, secondId, second, ct, salt: 2);
+
+        inbox.Texts.Should().Equal(WpsPost, WpsPost.Replace("tonight", "this evening"));
+    }
+
+    [Fact]
+    public async Task TwoSessionsOfferingTheSameMessage_EachReadsItsOwnEncoding()
+    {
+        // The stored offer is keyed by id alone. One neighbour offers it
+        // plain, the other compressed, and the plain one's payload
+        // arrives last: it must be read as plain, not with the other
+        // session's clen.
+        var ct = TestContext.Current.CancellationToken;
+        var inbox = new RecordingInbox();
+        var payload = Encoding.UTF8.GetBytes(WpsPost);
+        var id = dapps.client.DappsMessage.ComputeHash(payload, 1L)[..7];
+        var wire = dapps.client.Compression.PayloadCompression.TryCompress(payload)!.Value;
+
+        var (oursA, theirsA) = await LoopbackPairAsync(ct);
+        var (oursB, theirsB) = await LoopbackPairAsync(ct);
+        _ = Task.Run(() => new InboundConnectionHandler(theirsA, "N0AAA", NullLoggerFactory.Instance, database, inbox).Handle(ct), ct);
+        _ = Task.Run(() => new InboundConnectionHandler(theirsB, "N0BBB", NullLoggerFactory.Instance, database, inbox).Handle(ct), ct);
+        var a = new LinePeer(oursA);
+        var b = new LinePeer(oursB);
+        (await a.ReadLineAsync(ct)).Should().Be("DAPPSv1>");
+        (await b.ReadLineAsync(ct)).Should().Be("DAPPSv1>");
+
+        await a.WriteLineAsync($"ihave {id} len={payload.Length} fmt=p s=1 dst=app@{Us}", ct);
+        (await a.ReadLineAsync(ct)).Should().Be($"send {id}");
+        await b.WriteLineAsync($"ihave {id} len={payload.Length} fmt={wire.Format} clen={wire.Bytes.Length} s=1 dst=app@{Us}", ct);
+        (await b.ReadLineAsync(ct)).Should().Be($"send {id}");
+
+        await a.WriteAsync([.. Encoding.UTF8.GetBytes($"data {id}\n"), .. payload], ct);
+        (await a.ReadLineAsync(ct)).Should().Be($"ack {id}");
+    }
+
+    private static async Task PushPlainAsync(LinePeer peer, string id, byte[] payload, CancellationToken ct, long salt = 1)
+    {
+        await peer.WriteLineAsync($"ihave {id} len={payload.Length} fmt=p s={salt} dst=app@{Us}", ct);
+        (await peer.ReadLineAsync(ct)).Should().Be($"send {id}");
+        await peer.WriteAsync([.. Encoding.UTF8.GetBytes($"data {id}\n"), .. payload], ct);
+        (await peer.ReadLineAsync(ct)).Should().Be($"ack {id}");
+    }
+
+    private static async Task<(Stream Ours, Stream Theirs)> LoopbackPairAsync(CancellationToken ct)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var client = new TcpClient();
+            var connecting = client.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, ct);
+            var server = await listener.AcceptTcpClientAsync(ct);
+            await connecting;
+            return (client.GetStream(), server.GetStream());
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    /// <summary>The far end of a link, driven line by line.</summary>
+    private sealed class LinePeer(Stream stream)
+    {
+        public Task WriteLineAsync(string line, CancellationToken ct) => WriteAsync(Encoding.UTF8.GetBytes(line + "\n"), ct);
+
+        public async Task WriteAsync(byte[] bytes, CancellationToken ct)
+        {
+            await stream.WriteAsync(bytes, ct);
+            await stream.FlushAsync(ct);
+        }
+
+        public async Task<string> ReadLineAsync(CancellationToken ct)
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(Patience);
+            var line = new List<byte>();
+            var one = new byte[1];
+            while (true)
+            {
+                var n = await stream.ReadAsync(one, cts.Token);
+                if (n == 0) throw new EndOfStreamException("the handler closed the link");
+                if (one[0] == (byte)'\n') return Encoding.UTF8.GetString(line.ToArray());
+                line.Add(one[0]);
+            }
+        }
+    }
+
     private OutboundMessageManager MakeForwarder(IDappsOutboundTransport transport, bool compress, IBackhaulInbox? ourInbox)
     {
         var backhaul = new Dappsv1SessionBackhaul(

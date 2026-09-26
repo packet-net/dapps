@@ -16,18 +16,38 @@ public sealed class PayloadCompressionTests
         """{"v":1,"o":"MB7NPW","s":66,"e":1,"ts":1790410266123,"a":"p.i","data":{"t":"cp","cid":1,"fc":"M0AHN","ts":1790410266050,"p":"Evening all, is anyone on the WPS channel tonight?","dts":1790410266123}}""";
     private const string WpsAck = """{"op":"ack","origin":"DPSTST","seq":48,"by":"M0AHN-3"}""";
 
+    /// <summary>SHA-256 of every dictionary version that has shipped.</summary>
+    private static readonly Dictionary<int, string> ShippedDictionaries = new()
+    {
+        [1] = "ee78c7f5ee12e76445c523a0c692ae6ec4e93741a221895c66b861653c6cf8d6",
+    };
+
     /// <summary>
     /// A shipped dictionary must never change: peers and queued offers
-    /// refer to it by version. If this fails, don't update the hash -
-    /// put the new bytes in a new version.
+    /// refer to it by version. If a hash here fails, don't update it -
+    /// put the new bytes in a new version. A new version needs its hash
+    /// added here before this passes.
     /// </summary>
     [Fact]
-    public void DictionaryV1_IsExactlyTheShippedBytes()
+    public void EveryDictionaryVersion_IsPinned_AndUnchanged()
     {
-        var bytes = PayloadCompression.DictionaryBytes(1);
-        bytes.Should().NotBeNull();
-        Convert.ToHexStringLower(SHA256.HashData(bytes!)).Should().Be(
-            "ee78c7f5ee12e76445c523a0c692ae6ec4e93741a221895c66b861653c6cf8d6");
+        PayloadCompression.Versions.Should().BeEquivalentTo(ShippedDictionaries.Keys);
+        foreach (var version in PayloadCompression.Versions)
+        {
+            Convert.ToHexStringLower(SHA256.HashData(PayloadCompression.DictionaryBytes(version)!))
+                .Should().Be(ShippedDictionaries[version], $"dictionary v{version} has shipped and must not change");
+        }
+        PayloadCompression.Versions.Should().Contain(PayloadCompression.CurrentDictionaryVersion);
+    }
+
+    [Theory]
+    [InlineData("z1", -1)]
+    [InlineData("d", -1)]
+    [InlineData("d", int.MaxValue)]
+    public void AnOutOfRangeLen_IsRejectedNotAllocated(string format, int length)
+    {
+        var act = () => PayloadCompression.Decode(format, [1, 2, 3], length);
+        act.Should().Throw<InvalidDataException>();
     }
 
     [Theory]

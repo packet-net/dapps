@@ -63,7 +63,7 @@ Receiver replies are one of:
 |---|---|---|
 | `send <id>\n` | "Yes, send the payload" | Successful parse + accept |
 | `error\n` or `error <id>\n` | "Reject the offer" | Malformed `ihave` (missing `len`/`dst`, a `fmt` you can't decode, broken `chk`, etc.) |
-| `bad <id>\n` | "Payload arrived but the hash didn't match" | Sent only after `data`, when `SHA1(salt_le ++ payload)[:7] ≠ id` |
+| `bad <id>\n` | "Payload arrived but was no good" | Sent only after `data`: a compressed payload that doesn't decode to `len` bytes, or `SHA1(salt_le ++ payload)[:7] ≠ id` |
 | `ack <id>\n` | "Got it, hash matches" | After `data` succeeds |
 | `eh?\n` | "Unrecognised command" | Verb wasn't `ihave`/`data`/`peers`/`rev`/`quit`/`help` |
 
@@ -188,13 +188,13 @@ C: data 3f9a0c1\n<67 bytes of zstd>
 S: ack 3f9a0c1\n
 ```
 
-`len=` stays the original length and the id is still the hash of the original payload, so compression never changes a message's identity.
+`len=` stays the original length and the id is still the hash of the original payload, so compression never changes a message's identity. The payload is one zstd frame that records its decompressed size (zstd does this by default when it compresses a buffer in one go); receivers refuse to decode past `len=`.
 
 The dictionary is a fixed file shipped with DAPPS ([payload-v1.dict](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/Compression/payload-v1.dict)), loaded as a zstd raw-content dictionary. It holds typical traffic (WPS replication JSON, chat, telemetry), which is what lets a 200-byte WPS post shrink to about a third of its size, where zstd alone barely manages a quarter off.
 
 The reference daemon compresses only when that saves at least 32 bytes, counting the `clen=` field, so short messages stay readable on a monitor. It's on by default; `DAPPS_COMPRESSION_ENABLED` and a per-neighbour setting turn it off. Receivers always accept it.
 
-New dictionaries get new versions (`z2` and so on), and a shipped version never changes. A receiver that doesn't hold the version it's offered replies `error <id>` (or `no <id>` during a `rev` drain), and the sender offers the same message again with `fmt=p` on the same session.
+New dictionaries get new versions (`z2` and so on), and a shipped version never changes. A receiver that doesn't hold the version it's offered replies `error <id>` (or `no <id>` during a `rev` drain), and the sender offers the same message again with `fmt=p` on the same session. The same happens after a `bad` for a compressed payload, which usually means something on the path isn't passing binary data through. Either way the rest of that session goes plain.
 
 ### TTL (`ttl=`)
 

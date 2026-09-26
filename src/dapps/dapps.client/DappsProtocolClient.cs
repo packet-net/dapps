@@ -151,18 +151,25 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
     /// </summary>
     public bool LastPollDrained { get; private set; }
 
+    /// <summary>Set once the peer has refused a compressed payload on
+    /// this session, so the rest of the session goes plain rather than
+    /// paying for the same refusal on every message.</summary>
+    private bool peerRefusedCompression;
+
     /// <summary>
     /// The whole push exchange for one message: offer it, send the
     /// payload, read the ack. With <paramref name="compress"/>, the
     /// payload goes as zstd with the shared dictionary when that saves
     /// enough to be worth it (<see cref="PayloadCompression.TryCompress"/>).
-    /// A peer that refuses the compressed offer, one that doesn't hold
-    /// this dictionary version yet, is offered the same message plain
-    /// straight away on the same session.
+    /// If the peer refuses the compressed offer (it doesn't hold this
+    /// dictionary version yet) or can't decode what arrived (a hop on
+    /// the path that isn't byte-transparent), the same message is
+    /// offered plain straight away on the same session, and the rest
+    /// of the session goes plain.
     /// </summary>
     public async Task<PushOutcome> PushAsync(Backhaul.BackhaulMessage message, bool compress, CancellationToken ct)
     {
-        var compressed = compress ? PayloadCompression.TryCompress(message.Payload) : null;
+        var compressed = compress && !peerRefusedCompression ? PayloadCompression.TryCompress(message.Payload) : null;
         if (compressed is { } wire)
         {
             var reply = await OfferCoreAsync(message, wire.Format, wire.Bytes.Length, ct);
@@ -170,10 +177,19 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
             {
                 logger.LogInformation("Sending {0} as fmt={1}: {2} bytes compressed to {3}",
                     message.Id, wire.Format, message.Payload.Length, wire.Bytes.Length);
-                return await SendPayloadAsync(message.Id, wire.Bytes, ct);
+                var sent = await SendPayloadAsync(message.Id, wire.Bytes, ct);
+                if (sent != PushOutcome.PayloadRefused) return sent;
+                logger.LogWarning(
+                    "Peer couldn't decode {0} as fmt={1}; sending it plain. If this keeps happening, something on the path "
+                    + "isn't passing binary data through, and compression should be turned off for this neighbour.",
+                    message.Id, wire.Format);
             }
-            if (lastReplyWasEof) return PushOutcome.PeerClosed;
-            logger.LogInformation("Peer answered '{0}' to {1} as fmt={2}; offering it plain", reply, message.Id, wire.Format);
+            else
+            {
+                if (lastReplyWasEof) return PushOutcome.PeerClosed;
+                logger.LogInformation("Peer answered '{0}' to {1} as fmt={2}; offering it plain", reply, message.Id, wire.Format);
+            }
+            peerRefusedCompression = true;
         }
 
         var plainReply = await OfferCoreAsync(message, "p", compressedLength: null, ct);
@@ -674,7 +690,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
             var value = kv[(eq + 1)..];
             switch (key)
             {
-                case "len": if (int.TryParse(value, out var l)) len = l; break;
+                case "len": if (int.TryParse(value, out var l) && l >= 0) len = l; break;
                 case "fmt": format = value; break;
                 case "clen": if (int.TryParse(value, out var cl) && cl >= 0) clen = cl; break;
                 case "dst": destination = value; break;

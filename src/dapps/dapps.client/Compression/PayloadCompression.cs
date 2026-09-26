@@ -89,6 +89,11 @@ public static class PayloadCompression
     /// </summary>
     public static byte[] Decode(string format, byte[] wire, int length)
     {
+        if (length < 0 || length >= Array.MaxLength)
+        {
+            throw new InvalidDataException($"len={length} is out of range");
+        }
+
         byte[] decoded;
         if (format == "p")
         {
@@ -122,6 +127,10 @@ public static class PayloadCompression
         }
         return decoded;
     }
+
+    /// <summary>Every dictionary version this build holds, for the test
+    /// that pins them.</summary>
+    internal static IReadOnlyCollection<int> Versions => (IReadOnlyCollection<int>)Dictionaries.Keys;
 
     /// <summary>The bytes of dictionary <paramref name="version"/>, for
     /// the test that pins them. Null when this build doesn't hold it.</summary>
