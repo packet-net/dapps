@@ -36,6 +36,10 @@ public sealed class PersistentSessionTests : IAsyncLifetime
     private readonly RecordingInbox farInbox = new();
     private readonly InboundSessionDirectory farDirectory = new();
     private readonly PeerSessionRegistry farRegistry = new();
+    private readonly PeerSessionRegistry ourRegistry = new();
+
+    /// <summary>Stops the held sessions and far-end handlers each test leaves running.</summary>
+    private readonly CancellationTokenSource testLifetime = new();
 
     public ValueTask InitializeAsync()
     {
@@ -61,6 +65,7 @@ public sealed class PersistentSessionTests : IAsyncLifetime
 
     public ValueTask DisposeAsync()
     {
+        testLifetime.Cancel();
         DbInfo.OverridePath = null;
         try { File.Delete(dbPath); } catch { /* ignore */ }
         return ValueTask.CompletedTask;
@@ -69,7 +74,7 @@ public sealed class PersistentSessionTests : IAsyncLifetime
     [Fact]
     public async Task AfterItsTraffic_TheLinkStaysOpen_AndTheNextMessageGoesOnIt()
     {
-        var ct = TestContext.Current.CancellationToken;
+        var ct = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken, testLifetime.Token).Token;
         var (backhaul, transport, forwarder) = MakeOurEnd(ourTail: 60, farTail: 60);
 
         Queue("first", $"app@{Them}");
@@ -88,7 +93,7 @@ public sealed class PersistentSessionTests : IAsyncLifetime
     [Fact]
     public async Task MailTheFarEndHasForUs_ComesOverTheHeldLink_WithoutItDialling()
     {
-        var ct = TestContext.Current.CancellationToken;
+        var ct = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken, testLifetime.Token).Token;
         var (backhaul, transport, forwarder) = MakeOurEnd(ourTail: 60, farTail: 60);
         Queue("hello", $"app@{Them}");
         await forwarder.DoRun(ct).WaitAsync(Patience, ct);
@@ -109,7 +114,7 @@ public sealed class PersistentSessionTests : IAsyncLifetime
     [Fact]
     public async Task AQuietLink_IsClosedWhenTheAgreedHoldRunsOut()
     {
-        var ct = TestContext.Current.CancellationToken;
+        var ct = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken, testLifetime.Token).Token;
         var (backhaul, transport, forwarder) = MakeOurEnd(ourTail: 1, farTail: 60);
         Queue("only", $"app@{Them}");
         await forwarder.DoRun(ct).WaitAsync(Patience, ct);
@@ -124,7 +129,7 @@ public sealed class PersistentSessionTests : IAsyncLifetime
     [Fact]
     public async Task TheFarEndCanDeclineToHold()
     {
-        var ct = TestContext.Current.CancellationToken;
+        var ct = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken, testLifetime.Token).Token;
         var (backhaul, transport, forwarder) = MakeOurEnd(ourTail: 60, farTail: 0);
         Queue("only", $"app@{Them}");
 
@@ -139,7 +144,7 @@ public sealed class PersistentSessionTests : IAsyncLifetime
     [Fact]
     public async Task WithoutAHoldSetting_TheSessionEndsAsItAlwaysDid()
     {
-        var ct = TestContext.Current.CancellationToken;
+        var ct = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken, testLifetime.Token).Token;
         var (backhaul, transport, forwarder) = MakeOurEnd(ourTail: 0, farTail: 60);
         Queue("only", $"app@{Them}");
 
@@ -160,7 +165,8 @@ public sealed class PersistentSessionTests : IAsyncLifetime
         var forwarder = new OutboundMessageManager(
             ourDatabase, NullLoggerFactory.Instance, ourOptions, [backhaul],
             new StaticRoutingAlgorithm(NullLogger<StaticRoutingAlgorithm>.Instance),
-            new DatabaseRoutingContext(ourDatabase, ourOptions));
+            new DatabaseRoutingContext(ourDatabase, ourOptions),
+            peerSessions: ourRegistry);
         return (backhaul, transport, forwarder);
     }
 
@@ -242,7 +248,10 @@ public sealed class PersistentSessionTests : IAsyncLifetime
                         finally { Interlocked.Decrement(ref farSessionsOpen); }
                     }
                 }, stoppingToken);
-                return new Connection(client);
+                // Our end's lease on the link, as the real transport takes
+                // one: the held link keeps it, so the forwarder must hand
+                // work to the link rather than wait for it to go.
+                return new Connection(client, test.ourRegistry.Acquire(remoteCallsign, "outbound"));
             }
             finally
             {
@@ -250,12 +259,13 @@ public sealed class PersistentSessionTests : IAsyncLifetime
             }
         }
 
-        private sealed class Connection(TcpClient client) : IDappsConnection
+        private sealed class Connection(TcpClient client, IDisposable lease) : IDappsConnection
         {
             public Stream Stream => client.GetStream();
             public ValueTask DisposeAsync()
             {
                 client.Dispose();
+                lease.Dispose();
                 return ValueTask.CompletedTask;
             }
         }

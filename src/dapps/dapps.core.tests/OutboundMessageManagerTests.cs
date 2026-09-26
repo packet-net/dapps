@@ -688,6 +688,44 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DoRun_AHandedMessageThatDidntGo_IsHandedOutAgainNextRun()
+    {
+        // Whatever becomes of a handed-out message, its claim ends with
+        // its outcome, or it could never be sent again.
+        var holding = new HoldingFakeBackhaul();
+        var m = MakeManager(holding);
+        InsertMessage(id: "again01", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5));
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+        var first = holding.Batches.Single();
+        var message = await first.NextAsync(TestContext.Current.CancellationToken);
+        await first.CompleteAsync(message!, BackhaulSendResult.Defer("the session ended"), TimeSpan.Zero, TestContext.Current.CancellationToken);
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+        (await holding.Batches[1].NextAsync(TestContext.Current.CancellationToken))!.Id.Should().Be("again01");
+    }
+
+    [Fact]
+    public async Task DoRun_AFloodToANeighbourWeHoldALinkTo_GoesOnThatLink()
+    {
+        // With links held open for minutes, skipping a busy neighbour
+        // would lose most floods.
+        var holding = new HoldingFakeBackhaul();
+        var flooding = new FloodingAlgorithm(new BackhaulRoute("N0HELD", BearerPort: 0));
+        var m = new OutboundMessageManager(
+            database, NullLoggerFactory.Instance, optionsMonitor, [holding], flooding, routingContext);
+        InsertMessage(id: "flood02", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR");
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        var copy = await holding.Batches.Single().NextAsync(TestContext.Current.CancellationToken);
+        copy!.Id.Should().Be("flood02");
+        copy.FloodHopsRemaining.Should().Be(3);
+        await holding.Batches.Single().CompleteAsync(copy, BackhaulSendResult.Ok(), TimeSpan.Zero, TestContext.Current.CancellationToken);
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty("a flood is marked forwarded once its copies are away");
+    }
+
+    [Fact]
     public async Task DoRun_ADatagramBearer_StillSendsMessageByMessage()
     {
         // FakeBackhaul doesn't override SendBatchAsync, so it gets the

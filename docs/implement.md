@@ -321,7 +321,7 @@ S: tail 120\n
 The number is how long the link may sit quiet, in seconds. The server answers with what it will allow, the lower of that and its own setting for the caller, or `tail 0` for no. Once agreed:
 
 - The caller keeps the link up and sends new traffic on it as it's queued. It says `quit` when the link has been quiet for the agreed time.
-- The server waits at least that long, plus a margin, for the caller's next command, rather than its usual 3 minutes.
+- The server waits for the caller's next command for the agreed time plus a margin (30 s in the reference daemon), or its usual 3 minutes if that's longer.
 - When the server has something for the caller, it writes `pending\n`, unprompted, while it's idle between commands. The caller answers with `rev` and the usual drain follows. What the server drains then includes traffic it's relaying through the caller, not only mail addressed to it.
 
 Because `pending` is unprompted, it can cross with a command from the caller and arrive where the caller expects a reply. A caller skips a `pending` line wherever it reads one, remembers it, and sends `rev` when it's next free.

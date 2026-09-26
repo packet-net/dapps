@@ -316,7 +316,9 @@ builder.Services.AddSingleton<IDappsBackhaul>(sp => new Dappsv1SessionBackhaul(
         sp.GetRequiredService<OperationalMetrics>(),
         sp.GetRequiredService<CompressionPolicy>().ShouldCompressToAsync,
         sp.GetRequiredService<InboundSessionDirectory>(),
-        sp.GetRequiredService<SessionTailPolicy>().TailSecondsForAsync).Handle(ct),
+        // No hold: this session runs inside the forwarder's run, and
+        // holding it would stall every other neighbour for the hold.
+        tailFor: null).Handle(ct),
     // Payload compression, per the operator's setting for each neighbour.
     compressTo: sp.GetRequiredService<CompressionPolicy>().ShouldCompressToAsync,
     // Hold sessions open after their traffic, per the operator's

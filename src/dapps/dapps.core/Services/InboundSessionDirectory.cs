@@ -10,11 +10,16 @@ namespace dapps.core.Services;
 /// a session open we can't dial it (#178), so without this our mail for
 /// it would wait until it hung up.
 /// </summary>
-public sealed class InboundSessionDirectory
+public sealed class InboundSessionDirectory(ForwarderWakeup? forwarderWakeup = null)
 {
     private readonly ConcurrentDictionary<string, InboundConnectionHandler> sessions = new(StringComparer.OrdinalIgnoreCase);
 
-    internal void Register(string peer, InboundConnectionHandler handler) => sessions[peer] = handler;
+    internal void Register(string peer, InboundConnectionHandler handler)
+    {
+        sessions[peer] = handler;
+        // Anything held back for this peer can go to its session now.
+        forwarderWakeup?.Wake();
+    }
 
     internal void Unregister(string peer, InboundConnectionHandler handler) =>
         sessions.TryRemove(new KeyValuePair<string, InboundConnectionHandler>(peer, handler));

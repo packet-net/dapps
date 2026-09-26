@@ -51,6 +51,14 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 
     /// <summary>
+    /// Longest a held session stays up, however busy. A link in steady
+    /// use would otherwise never close, so it would never pull fresh
+    /// routes or pick up a changed setting, and probes and polls couldn't
+    /// get through to that neighbour. The next message dials afresh.
+    /// </summary>
+    public TimeSpan MaxHold { get; init; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
     /// How long a caller with the lower callsign waits for the first byte
     /// from the peer before treating the silence as a crossed connect.
     /// Long enough that a slow prompt (busy channel, loaded node) never
@@ -539,11 +547,19 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         public async Task RunAsync(CancellationToken ct)
         {
             var quietTooLong = false;
+            var heldTooLong = false;
             try
             {
-                var quietSince = owner.TimeProvider.GetUtcNow();
+                var heldSince = owner.TimeProvider.GetUtcNow();
+                var quietSince = heldSince;
                 while (!ct.IsCancellationRequested)
                 {
+                    if (owner.TimeProvider.GetUtcNow() - heldSince >= owner.MaxHold)
+                    {
+                        heldTooLong = true;
+                        return;
+                    }
+
                     if (protocol.PeerHasPending)
                     {
                         // It said so in the middle of something else.
@@ -573,6 +589,10 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                     {
                         if (!await PushAsync(batch, ct)) return;
                     }
+                    else if (peerSpoke.IsFaulted)
+                    {
+                        return;     // the link failed under us
+                    }
                     else if (peerSpoke.IsCompletedSuccessfully)
                     {
                         // Data, or the link ending (false).
@@ -599,7 +619,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             {
                 work.Writer.TryComplete();
                 owner.held.TryRemove(new KeyValuePair<string, HeldSession>(route.Callsign, this));
-                if (quietTooLong)
+                if (quietTooLong || heldTooLong)
                 {
                     try
                     {
@@ -612,7 +632,9 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                     }
                 }
                 owner.logger.LogInformation(
-                    "Closing the held link to {0}{1}", route.Callsign, quietTooLong ? $" after {quiet.TotalSeconds:F0}s of quiet" : "");
+                    "Closing the held link to {0}{1}", route.Callsign,
+                    quietTooLong ? $" after {quiet.TotalSeconds:F0}s of quiet"
+                    : heldTooLong ? $" after {owner.MaxHold.TotalMinutes:F0} minutes; the next message dials afresh" : "");
                 try { await connection.DisposeAsync(); } catch (Exception) { /* already gone */ }
                 stream.Dispose();
             }

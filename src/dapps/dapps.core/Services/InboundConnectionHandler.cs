@@ -483,20 +483,30 @@ public class InboundConnectionHandler(
         var protocol = new DappsProtocolClient(stream, loggerFactory);
         var compress = await ShouldCompressToCallerAsync(ct);
         var drained = 0;
-
-        // This rev collects whatever the caller was told about.
-        await stateGate.WaitAsync(ct);
-        pendingWanted = false;
-        pendingSent = false;
-        stateGate.Release();
+        var handedSent = 0;
 
         // First what the forwarder handed this session for the caller,
         // which can include traffic the caller relays onwards, not only
-        // its own mail. A plain `rev`: a selective one names its ids.
-        if (requestedIds.Count == 0 && !await DrainHandedAsync(protocol, compress, () => drained++, ct))
+        // its own mail. A plain `rev` only: a selective one names its ids.
+        if (requestedIds.Count == 0)
         {
-            logger.LogInformation("rev drain to {0}: it hung up part way", sourceCallsign);
-            return;
+            // This rev collects whatever the caller was told about.
+            await stateGate.WaitAsync(ct);
+            pendingWanted = false;
+            pendingSent = false;
+            stateGate.Release();
+
+            if (!await DrainHandedAsync(protocol, compress, () => handedSent++, ct))
+            {
+                logger.LogInformation("rev drain to {0}: it hung up part way", sourceCallsign);
+                return;
+            }
+
+            // Handed over while the drain ran and sent by it: nothing
+            // left to tell the caller about.
+            await stateGate.WaitAsync(ct);
+            if (handed.IsEmpty) pendingWanted = false;
+            stateGate.Release();
         }
 
         // Read after that drain, which may have sent some of these.
@@ -554,8 +564,8 @@ public class InboundConnectionHandler(
         }
 
         logger.LogInformation(
-            "rev drain to {0}: {1}/{2} messages sent (selective={3})",
-            sourceCallsign, drained, queue.Count, requestedIds.Count > 0);
+            "rev drain to {0}: {1}/{2} of its queued messages sent, plus {3} handed over (selective={4})",
+            sourceCallsign, drained, queue.Count, handedSent, requestedIds.Count > 0);
 
         // Done draining. Re-emit DAPPSv1> so the caller's poll loop
         // sees a clean "ready for next command" signal that's distinct
@@ -604,9 +614,13 @@ public class InboundConnectionHandler(
                         _ => BackhaulSendResult.Fail($"payload rejected for {message.Id}"),
                     };
                 }
-                catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+                catch (Exception ex)
                 {
-                    result = BackhaulSendResult.Defer($"{sourceCallsign}'s link went; {message.Id} stays queued");
+                    // Whatever went wrong (the link, a timeout, shutdown),
+                    // the message must still be completed, or it would stay
+                    // claimed and never be sent.
+                    logger.LogWarning(ex, "rev drain to {0}: sending {1} failed", sourceCallsign, message.Id);
+                    result = BackhaulSendResult.Defer($"sending to {sourceCallsign} failed; {message.Id} stays queued");
                 }
                 await batch.CompleteAsync(message, result, sw.Elapsed, ct);
                 if (result.Accepted)

@@ -292,14 +292,22 @@ public class OutboundMessageManager(
         DbMessage message, BackhaulRoute route, string backhaulName, BackhaulSendResult result,
         TimeSpan elapsed, CancellationToken stoppingToken)
     {
-        await outcomeGate.WaitAsync(stoppingToken);
         try
         {
-            await RecordForwardOutcomeCoreAsync(message, route, backhaulName, result, elapsed, stoppingToken);
+            await outcomeGate.WaitAsync(stoppingToken);
+            try
+            {
+                await RecordForwardOutcomeCoreAsync(message, route, backhaulName, result, elapsed, stoppingToken);
+            }
+            finally
+            {
+                outcomeGate.Release();
+            }
         }
         finally
         {
-            outcomeGate.Release();
+            // Released whatever happened recording it, or a failure here
+            // would leave the message unsendable until a restart.
             inFlight.TryRemove(message.Id, out _);
         }
     }
@@ -405,7 +413,17 @@ public class OutboundMessageManager(
                 // Claim it, and make sure a session running alongside
                 // hasn't sent it since the queue was read.
                 if (!owner.inFlight.TryAdd(next.Row.Id, 0)) continue;
-                if (!await owner.IsStillQueuedAsync(next.Row.Id))
+                bool stillQueued;
+                try
+                {
+                    stillQueued = await owner.IsStillQueuedAsync(next.Row.Id);
+                }
+                catch
+                {
+                    owner.inFlight.TryRemove(next.Row.Id, out _);
+                    throw;
+                }
+                if (!stillQueued)
                 {
                     owner.inFlight.TryRemove(next.Row.Id, out _);
                     continue;
@@ -481,18 +499,6 @@ public class OutboundMessageManager(
 
         foreach (var route in flood.Routes)
         {
-            if (WouldDialIntoOpenSession(route, out var openDirection))
-            {
-                // #178: a flood copy is one-shot, so this one is skipped
-                // rather than deferred - the outcome a failed send to
-                // that neighbour already had, minus the collision on
-                // air and the failure on its streak.
-                logger.LogInformation(
-                    "Flood of {0}: skipping {1}, an {2} session with it is already open",
-                    message.Id, route.Callsign, openDirection);
-                continue;
-            }
-
             var bm = new BackhaulMessage(
                 Id: message.Id,
                 Destination: message.Destination,
@@ -512,9 +518,52 @@ public class OutboundMessageManager(
             var backhaul = backhauls.FirstOrDefault(b => b.CanHandle(route));
             if (backhaul is null) continue;
 
+            // A link we're holding open to the neighbour, or one it has
+            // open with us, takes the copy: with sessions held for minutes
+            // at a time, skipping them would lose most floods.
+            var copy = new FloodCopyBatch(this, message, route, bm, flood.HopBudget);
+            if (backhaul.TryHandToOpenSession(route, copy))
+            {
+                logger.LogInformation("Flood of {0}: handed to the link we're holding open to {1}", message.Id, route.Callsign);
+                continue;
+            }
+            if (WouldDialIntoOpenSession(route, out var openDirection))
+            {
+                if (openDirection == "inbound" && inboundSessions is not null && inboundSessions.TryHand(route.Callsign, copy))
+                {
+                    logger.LogInformation("Flood of {0}: handed to the session {1} has open with us", message.Id, route.Callsign);
+                    continue;
+                }
+
+                // #178: a flood copy is one-shot, so this one is skipped
+                // rather than deferred - the outcome a failed send to
+                // that neighbour already had, minus the collision on
+                // air and the failure on its streak.
+                logger.LogInformation(
+                    "Flood of {0}: skipping {1}, an {2} session with it is already open",
+                    message.Id, route.Callsign, openDirection);
+                continue;
+            }
+
             var sw = System.Diagnostics.Stopwatch.StartNew();
             var result = await backhaul.SendAsync(bm, route, optionsValue.Callsign, stoppingToken);
-            sw.Stop();
+            await RecordFloodOutcomeAsync(message, route, flood.HopBudget, result, sw.Elapsed, stoppingToken);
+        }
+
+        // Mark the message forwarded so it doesn't keep flooding on
+        // every tick. If the destination was unreachable the flood is
+        // effectively lost - that's correct semantics; floods are
+        // best-effort.
+        await database.MarkMessageAsForwarded(message.Id);
+    }
+
+    private async Task RecordFloodOutcomeAsync(
+        DbMessage message, BackhaulRoute route, byte hopBudget, BackhaulSendResult result,
+        TimeSpan elapsed, CancellationToken stoppingToken)
+    {
+        await outcomeGate.WaitAsync(stoppingToken);
+        try
+        {
             if (result.Deferred)
             {
                 // #178: crossed connect, served instead of pushed. This
@@ -554,18 +603,38 @@ public class OutboundMessageManager(
                     targetCallsign: route.Callsign,
                     messageId: message.Id,
                     bytes: message.Payload.Length,
-                    reason: $"flood to neighbour (hop budget {flood.HopBudget})",
+                    reason: $"flood to neighbour (hop budget {hopBudget})",
                     success: result.Accepted,
-                    durationMs: (int)sw.ElapsedMilliseconds,
+                    durationMs: (int)elapsed.TotalMilliseconds,
                     errorTag: result.Accepted ? "" : result.Deferred ? "deferred" : (result.Error ?? "unknown"));
             }
         }
+        finally
+        {
+            outcomeGate.Release();
+        }
+    }
 
-        // Mark the message forwarded so it doesn't keep flooding on
-        // every tick. If the destination was unreachable the flood is
-        // effectively lost - that's correct semantics; floods are
-        // best-effort.
-        await database.MarkMessageAsForwarded(message.Id);
+    /// <summary>
+    /// One flood copy for a neighbour, handed to a session already open
+    /// with it. The message itself is marked forwarded once every copy
+    /// has gone or been handed over, as with any flood; this only carries
+    /// the copy and reports how it went.
+    /// </summary>
+    private sealed class FloodCopyBatch(
+        OutboundMessageManager owner, DbMessage row, BackhaulRoute route, BackhaulMessage copy, byte hopBudget) : IBackhaulBatch
+    {
+        private bool handedOut;
+
+        public ValueTask<BackhaulMessage?> NextAsync(CancellationToken ct)
+        {
+            if (handedOut) return ValueTask.FromResult<BackhaulMessage?>(null);
+            handedOut = true;
+            return ValueTask.FromResult<BackhaulMessage?>(copy);
+        }
+
+        public async ValueTask CompleteAsync(BackhaulMessage message, BackhaulSendResult result, TimeSpan elapsed, CancellationToken ct) =>
+            await owner.RecordFloodOutcomeAsync(row, route, hopBudget, result, elapsed, ct);
     }
 
     /// <summary>

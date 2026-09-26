@@ -39,6 +39,17 @@ public interface IDappsBackhaul
         CancellationToken ct);
 
     /// <summary>
+    /// Give <paramref name="batch"/> to a session this bearer already has
+    /// open to the route's peer, for it to send there without a new
+    /// connection. Returns false when there is no such session, and the
+    /// caller dials or waits as usual. When true, the batch is sent in
+    /// the background and its outcomes arrive through
+    /// <see cref="IBackhaulBatch.CompleteAsync"/> later. Only bearers
+    /// that hold sessions open between batches override this.
+    /// </summary>
+    bool TryHandToOpenSession(BackhaulRoute route, IBackhaulBatch batch) => false;
+
+    /// <summary>
     /// Forward every message <paramref name="batch"/> hands out to
     /// <paramref name="route"/>, reporting each outcome back to it.
     /// Stops at the first message that isn't accepted; the rest stay
@@ -50,17 +61,6 @@ public interface IDappsBackhaul
     /// session to set up (<see cref="Dappsv1SessionBackhaul"/>)
     /// overrides it to carry the whole batch on one session.
     /// </summary>
-    /// <summary>
-    /// Give <paramref name="batch"/> to a session this bearer already has
-    /// open to the route's peer, for it to send there without a new
-    /// connection. Returns false when there is no such session, and the
-    /// caller dials or waits as usual. When true, the batch is sent in
-    /// the background and its outcomes arrive through
-    /// <see cref="IBackhaulBatch.CompleteAsync"/> later. Only bearers
-    /// that hold sessions open between batches override this.
-    /// </summary>
-    bool TryHandToOpenSession(BackhaulRoute route, IBackhaulBatch batch) => false;
-
     async Task SendBatchAsync(
         BackhaulRoute route,
         string localCallsign,
