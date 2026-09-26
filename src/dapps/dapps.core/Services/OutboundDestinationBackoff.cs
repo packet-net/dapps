@@ -68,10 +68,6 @@ public sealed class OutboundDestinationBackoff(TimeProvider? timeProvider = null
         }
     }
 
-    /// <summary>Record a failed forward and return when this destination
-    /// is next eligible for a retry - read back from the schedule rather
-    /// than computed independently by the caller, so a logged timestamp
-    /// can't disagree with the actual cooldown expiry.</summary>
     /// <summary>
     /// When the next destination comes out of cooldown, or null if none
     /// is waiting. The forwarder wakes then instead of polling.
@@ -90,6 +86,10 @@ public sealed class OutboundDestinationBackoff(TimeProvider? timeProvider = null
         return earliest;
     }
 
+    /// <summary>Record a failed forward and return when this destination
+    /// is next eligible for a retry - read back from the schedule rather
+    /// than computed independently by the caller, so a logged timestamp
+    /// can't disagree with the actual cooldown expiry.</summary>
     public DateTimeOffset RecordFailure(string destination)
     {
         var schedule = schedules.GetOrAdd(destination, _ => new ReconnectBackoffSchedule(timeProvider));

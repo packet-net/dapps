@@ -147,10 +147,6 @@ public sealed class OutboundForwarderServiceTests : IAsyncLifetime
             "the hosted service must invoke DoRun on its tick - that's its only job");
     }
 
-    /// <summary>Backhaul that signals when each Send begins and waits
-    /// for an explicit release before completing. Lets concurrent-
-    /// DoRun tests synchronise on the lock-held state without timing
-    /// guesses.</summary>
     [Fact]
     public async Task SavingAMessage_WakesTheForwarder_WithoutWaitingForTheFallback()
     {
@@ -192,9 +188,15 @@ public sealed class OutboundForwarderServiceTests : IAsyncLifetime
         using var cts = new CancellationTokenSource();
         await service.StartAsync(cts.Token);
         await WaitForAsync(() => outbound.RunCount >= 1);
-        await Task.Delay(100, TestContext.Current.CancellationToken);   // let the loop reach its wait
 
-        time.Advance(TimeSpan.FromSeconds(10));
+        // Step the clock a second at a time, so it doesn't matter exactly
+        // when the loop worked out its wait: the retry falls due inside a
+        // step it's waiting on.
+        for (var step = 0; step < 12 && outbound.RunCount < 2; step++)
+        {
+            time.Advance(TimeSpan.FromSeconds(1));
+            await Task.Delay(50, TestContext.Current.CancellationToken);
+        }
 
         await WaitForAsync(() => outbound.RunCount >= 2);
         await service.StopAsync(cts.Token);
@@ -210,6 +212,10 @@ public sealed class OutboundForwarderServiceTests : IAsyncLifetime
         }
     }
 
+    /// <summary>Backhaul that signals when each Send begins and waits
+    /// for an explicit release before completing. Lets concurrent-
+    /// DoRun tests synchronise on the lock-held state without timing
+    /// guesses.</summary>
     private sealed class SlowBackhaul : IDappsBackhaul
     {
         public int SendCount;
