@@ -124,6 +124,47 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         return PromptOutcome.NotSeen;
     }
 
+    /// <summary>How <see cref="PushAsync"/> went.</summary>
+    public enum PushOutcome
+    {
+        /// <summary>The peer acked the payload.</summary>
+        Accepted,
+        /// <summary>The peer answered the offer with something other than <c>send</c>.</summary>
+        OfferRefused,
+        /// <summary>The peer took the offer but answered the payload with something other than <c>ack</c>.</summary>
+        PayloadRefused,
+        /// <summary>The link ended before the peer answered: it hung up,
+        /// or the connection dropped.</summary>
+        PeerClosed,
+    }
+
+    /// <summary>
+    /// The whole push exchange for one message: offer it, send the
+    /// payload, read the ack.
+    /// </summary>
+    public async Task<PushOutcome> PushAsync(Backhaul.BackhaulMessage message, CancellationToken ct)
+    {
+        var offered = await OfferMessageAsync(
+            message.Id, message.Salt, DappsMessage.MessageFormat.Plain, message.Destination, message.Payload.Length, ct,
+            message.Ttl, message.Originator, message.MasterId, message.FragmentIndex, message.FragmentTotal,
+            message.StreamId, message.StreamSeq, message.StreamGapTimeoutSeconds);
+        if (!offered) return lastReplyWasEof ? PushOutcome.PeerClosed : PushOutcome.OfferRefused;
+        if (!await SendMessageAsync(message.Id, message.Payload, ct)) return lastReplyWasEof ? PushOutcome.PeerClosed : PushOutcome.PayloadRefused;
+        return PushOutcome.Accepted;
+    }
+
+    /// <summary>Set by <see cref="ReadLineAsync"/>: the last line read
+    /// came back empty because the stream ended.</summary>
+    private bool lastReplyWasEof;
+
+    /// <summary>
+    /// True once the last <see cref="PollAsync"/> saw the server's
+    /// <c>DAPPSv1&gt;</c> "drained" marker, so the session is still in
+    /// step and can carry more. False when the poll ended any other way
+    /// (the link closed, or an exchange went wrong).
+    /// </summary>
+    public bool LastPollDrained { get; private set; }
+
     /// <summary>
     /// Sends an `ihave` line and waits for `send &lt;id&gt;`. Returns true on
     /// acceptance. Today only fmt=p (plain) is supported on the sender
@@ -209,14 +250,6 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         await stream.FlushAsync(ct);
 
         var line = await ReadLineAsync(ct);
-        if (line == PromptText)
-        {
-            // The spec lets a server re-emit the prompt after any
-            // command. Harmless here, but on a session carrying several
-            // messages it would otherwise be read as the reply to the
-            // next offer.
-            line = await ReadLineAsync(ct);
-        }
         if (line == $"send {id}")
         {
             return true;
@@ -416,6 +449,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         IReadOnlyList<string>? requestedIds,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
+        LastPollDrained = false;
         var cmd = (requestedIds is { Count: > 0 })
             ? "rev " + string.Join(' ', requestedIds) + "\n"
             : "rev\n";
@@ -433,7 +467,11 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
             }
             // Server's "drained" marker. Distinct from `ihave` because
             // the prompt has a `>` and no spaces.
-            if (line == "DAPPSv1>") yield break;
+            if (line == "DAPPSv1>")
+            {
+                LastPollDrained = true;
+                yield break;
+            }
 
             if (!line.StartsWith("ihave ", StringComparison.Ordinal))
             {
@@ -599,10 +637,15 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         var buffer = new List<byte>();
         var oneByte = new byte[1];
         var sawContent = false;
+        lastReplyWasEof = false;
         while (true)
         {
             var n = await ReadWithTimeoutAsync(oneByte, ct);
-            if (n == 0) break;
+            if (n == 0)
+            {
+                lastReplyWasEof = buffer.Count == 0;
+                break;
+            }
             if (oneByte[0] == (byte)'\n' || oneByte[0] == (byte)'\r')
             {
                 if (!sawContent) continue;   // skip leading terminator(s)

@@ -37,6 +37,22 @@ public class Database(
         return rows;
     }
 
+    /// <summary>
+    /// <see cref="GetPendingOutboundMessages"/>, limited to messages queued
+    /// at or after <paramref name="since"/>: what a forwarder run looks
+    /// for when it checks the queue again part way through, without
+    /// re-reading the whole backlog each time.
+    /// </summary>
+    public async Task<ICollection<DbMessage>> GetPendingOutboundMessagesQueuedSince(DateTime since)
+    {
+        var connection = DbInfo.GetAsyncConnection();
+        var local = options.CurrentValue.Callsign.Split('-')[0];
+        var rows = await connection.QueryAsync<DbMessage>(
+            "select * from messages where forwarded=0 and CreatedAt >= ? and not (destination like ?) order by CreatedAt asc;",
+            since, $"%@{local}%");
+        return rows;
+    }
+
     /// <summary>Messages destined for a local app that haven't been ack'd yet.</summary>
     public async Task<ICollection<DbMessage>> GetUnacknowledgedLocalMessagesForApp(string appName)
     {

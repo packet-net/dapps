@@ -39,7 +39,7 @@ S: ack 7e1f3a2\n
 
 (Lines marked `S:` are server-to-client; `C:` is client-to-server. Newlines shown as `\n`; the payload after `data 7e1f3a2\n` is the raw 5 bytes `hello`, no terminator.)
 
-A session can carry several messages. The reference daemon sends everything it has queued for a neighbour in one session, one `ihave` exchange after another, so after an `ack` a receiver should go back to reading commands rather than hang up. The `data` line and its payload arrive in a single write, so read the payload straight after the line.
+A session can carry several messages. The reference daemon sends everything it has queued for a neighbour in one session, one `ihave` exchange after another, so after an `ack` a receiver should go back to reading commands rather than hang up.
 
 Anatomy of the `ihave` line:
 

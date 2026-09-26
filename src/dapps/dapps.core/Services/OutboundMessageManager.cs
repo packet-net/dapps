@@ -78,6 +78,7 @@ public class OutboundMessageManager(
         logger.LogInformation("Starting a run");
 
         var optionsValue = options.CurrentValue;
+        var runStartedAt = DateTime.UtcNow;
         var messages = await database.GetPendingOutboundMessages();
 
         // Every message this run has looked at. A batch that goes back
@@ -111,15 +112,15 @@ public class OutboundMessageManager(
                 case RouteDecision.NextHop nh:
                     if (!batches.TryGetValue(nh.Route, out var batch))
                     {
-                        batch = new NextHopBatch(this, nh.Route, seen);
+                        batch = new NextHopBatch(this, nh.Route, runStartedAt, seen);
                         batches.Add(nh.Route, batch);
                         work.Add(batch);
                     }
-                    batch.Add(message, ToBackhaulMessage(message, residualTtl, nh.SourceRoute));
+                    batch.Add(message, nh.SourceRoute);
                     break;
 
                 case RouteDecision.FloodToNeighbours flood:
-                    work.Add(new PendingFlood(message, flood, residualTtl));
+                    work.Add(new PendingFlood(message, flood));
                     break;
 
                 case RouteDecision.Unreachable:
@@ -147,7 +148,14 @@ public class OutboundMessageManager(
                     await SendBatchAsync(batch, optionsValue, stoppingToken);
                     break;
                 case PendingFlood flood:
-                    await FloodAndMarkAsync(flood.Message, flood.Decision, flood.ResidualTtl,
+                    // Residual TTL as of now, after the work ahead of it.
+                    var residualTtl = TtlMath.Residual(flood.Message.Ttl, flood.Message.CreatedAt, DateTime.UtcNow);
+                    if (residualTtl is <= 0)
+                    {
+                        logger.LogInformation("Not flooding {0}: its ttl ran out while it waited its turn", flood.Message.Id);
+                        break;
+                    }
+                    await FloodAndMarkAsync(flood.Message, flood.Decision, residualTtl,
                         OriginatorOf(flood.Message), optionsValue, stoppingToken);
                     break;
             }
@@ -162,7 +170,7 @@ public class OutboundMessageManager(
     /// </summary>
     internal const int MaxPickedUpPerBatch = 20;
 
-    private sealed record PendingFlood(DbMessage Message, RouteDecision.FloodToNeighbours Decision, int? ResidualTtl);
+    private sealed record PendingFlood(DbMessage Message, RouteDecision.FloodToNeighbours Decision);
 
     private async Task SendBatchAsync(NextHopBatch batch, SystemOptions optionsValue, CancellationToken stoppingToken)
     {
@@ -232,7 +240,8 @@ public class OutboundMessageManager(
 
     // For NextHopBatch: a nested class can't see the primary-constructor
     // parameters these wrap.
-    private Task<ICollection<DbMessage>> PendingOutboundAsync() => database.GetPendingOutboundMessages();
+    private Task<ICollection<DbMessage>> PendingOutboundQueuedSinceAsync(DateTime since) =>
+        database.GetPendingOutboundMessagesQueuedSince(since);
     private Task<RouteDecision> ResolveAsync(DbMessage message, CancellationToken ct) =>
         routingAlgorithm.ResolveAsync(message, routingContext, ct);
 
@@ -292,10 +301,15 @@ public class OutboundMessageManager(
     /// again and adds anything since queued for the same next hop (up to
     /// <see cref="MaxPickedUpPerBatch"/>), so traffic that arrives while
     /// the session is open goes on it instead of waiting for a new one.
+    ///
+    /// A message's residual TTL is worked out when it is handed out, not
+    /// when the run began, so time spent on the messages ahead of it
+    /// counts. One that expired while it waited isn't sent; the next run
+    /// drops it.
     /// </summary>
-    private sealed class NextHopBatch(OutboundMessageManager owner, BackhaulRoute route, HashSet<string> seen) : IBackhaulBatch
+    private sealed class NextHopBatch(OutboundMessageManager owner, BackhaulRoute route, DateTime runStartedAt, HashSet<string> seen) : IBackhaulBatch
     {
-        private readonly Queue<(DbMessage Row, BackhaulMessage Message)> queued = new();
+        private readonly Queue<(DbMessage Row, IReadOnlyList<string>? SourceRoute)> queued = new();
         private readonly Dictionary<string, DbMessage> handedOut = new();
         private int pickedUp;
 
@@ -306,14 +320,24 @@ public class OutboundMessageManager(
 
         public string BackhaulName { get; set; } = "";
 
-        public void Add(DbMessage row, BackhaulMessage message) => queued.Enqueue((row, message));
+        public void Add(DbMessage row, IReadOnlyList<string>? sourceRoute) => queued.Enqueue((row, sourceRoute));
 
         public async ValueTask<BackhaulMessage?> NextAsync(CancellationToken ct)
         {
-            if (queued.Count == 0) await PickUpNewlyQueuedAsync(ct);
-            if (!queued.TryDequeue(out var next)) return null;
-            handedOut[next.Message.Id] = next.Row;
-            return next.Message;
+            while (true)
+            {
+                if (queued.Count == 0) await PickUpNewlyQueuedAsync(ct);
+                if (!queued.TryDequeue(out var next)) return null;
+
+                var residualTtl = TtlMath.Residual(next.Row.Ttl, next.Row.CreatedAt, DateTime.UtcNow);
+                if (residualTtl is <= 0)
+                {
+                    owner.logger.LogInformation("Not sending {0}: its ttl ran out while it waited its turn", next.Row.Id);
+                    continue;
+                }
+                handedOut[next.Row.Id] = next.Row;
+                return owner.ToBackhaulMessage(next.Row, residualTtl, next.SourceRoute);
+            }
         }
 
         public async ValueTask CompleteAsync(BackhaulMessage message, BackhaulSendResult result, TimeSpan elapsed, CancellationToken ct) =>
@@ -322,7 +346,7 @@ public class OutboundMessageManager(
         private async Task PickUpNewlyQueuedAsync(CancellationToken ct)
         {
             if (pickedUp >= MaxPickedUpPerBatch) return;
-            foreach (var row in await owner.PendingOutboundAsync())
+            foreach (var row in await owner.PendingOutboundQueuedSinceAsync(runStartedAt))
             {
                 // Once looked at, a message is the next run's to handle
                 // if it isn't ours: no second look this run.
@@ -336,7 +360,7 @@ public class OutboundMessageManager(
                 if (decision is not RouteDecision.NextHop nh || !SameLinkComparer.Instance.Equals(nh.Route, route)) continue;
 
                 owner.logger.LogInformation("Picked up {0} for {1}, queued while its session was open", row.Id, route.Callsign);
-                queued.Enqueue((row, owner.ToBackhaulMessage(row, residualTtl, nh.SourceRoute)));
+                queued.Enqueue((row, nh.SourceRoute));
                 if (++pickedUp >= MaxPickedUpPerBatch) return;
             }
         }

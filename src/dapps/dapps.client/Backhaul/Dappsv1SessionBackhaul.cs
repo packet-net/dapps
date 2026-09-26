@@ -255,9 +255,11 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             // was queued while the earlier ones were going out.
             for (; next is not null; next = await batch.NextAsync(ct))
             {
-                var result = await PushAsync(protocol, next, route, ct);
+                // The first message's time includes the connect; each
+                // later one is timed on its own exchange.
+                if (!ReferenceEquals(next, first)) sw.Restart();
+                var result = await PushAsync(protocol, next, route, laterOnSession: !ReferenceEquals(next, first), ct);
                 await batch.CompleteAsync(next, result, sw.Elapsed, ct);
-                sw.Restart();
                 if (!result.Accepted)
                 {
                     LogSessionEnd(route, pushed, stoppedEarly: true);
@@ -272,6 +274,8 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                 await PullRoutesAsync(protocol, route, ct);
             }
 
+            // Only a drain that ended cleanly leaves the session fit to
+            // carry more.
             if (!await PollAsync(protocol, route, ct)) break;
 
             // Queued for this peer while we were draining: send it now,
@@ -299,43 +303,43 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     /// a link that fails part way, is a failed send for this message;
     /// the session stops there because the exchange can't be trusted
     /// to be in step any more.
+    ///
+    /// Except when the session has already carried an exchange
+    /// (<paramref name="laterOnSession"/>) and the link simply ends: the
+    /// peer hanging up after an earlier exchange, or the link going, is
+    /// the end of the session rather than a fault of the neighbour. The
+    /// message is deferred, with no cooldown, and goes on the next
+    /// session; if the neighbour really is down, that dial finds out.
     /// </summary>
     private async Task<BackhaulSendResult> PushAsync(
-        DappsProtocolClient protocol, BackhaulMessage message, BackhaulRoute route, CancellationToken ct)
+        DappsProtocolClient protocol, BackhaulMessage message, BackhaulRoute route, bool laterOnSession, CancellationToken ct)
     {
         try
         {
-            if (!await protocol.OfferMessageAsync(
-                    message.Id,
-                    message.Salt,
-                    DappsMessage.MessageFormat.Plain,
-                    message.Destination,
-                    message.Payload.Length,
-                    ct,
-                    ttl: message.Ttl,
-                    originator: message.Originator,
-                    masterId: message.MasterId,
-                    fragmentIndex: message.FragmentIndex,
-                    fragmentTotal: message.FragmentTotal,
-                    streamId: message.StreamId,
-                    streamSeq: message.StreamSeq,
-                    streamGapTimeoutSeconds: message.StreamGapTimeoutSeconds))
+            return await protocol.PushAsync(message, ct) switch
             {
-                return BackhaulSendResult.Fail($"offer rejected for {message.Id}");
-            }
-
-            if (!await protocol.SendMessageAsync(message.Id, message.Payload, ct))
-            {
-                return BackhaulSendResult.Fail($"payload rejected for {message.Id}");
-            }
-
-            return BackhaulSendResult.Ok();
+                DappsProtocolClient.PushOutcome.Accepted => BackhaulSendResult.Ok(),
+                DappsProtocolClient.PushOutcome.PeerClosed when laterOnSession => SessionEnded(message, route),
+                DappsProtocolClient.PushOutcome.OfferRefused or DappsProtocolClient.PushOutcome.PeerClosed =>
+                    BackhaulSendResult.Fail($"offer rejected for {message.Id}"),
+                _ => BackhaulSendResult.Fail($"payload rejected for {message.Id}"),
+            };
+        }
+        catch (Exception ex) when (laterOnSession && ex is IOException or ObjectDisposedException)
+        {
+            return SessionEnded(message, route);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Backhaul send failed for {0} to {1}", message.Id, route.Callsign);
             return BackhaulSendResult.Fail(ex.Message);
         }
+    }
+
+    private BackhaulSendResult SessionEnded(BackhaulMessage message, BackhaulRoute route)
+    {
+        logger.LogInformation("Session with {0} ended before {1} went; it stays queued for the next one", route.Callsign, message.Id);
+        return BackhaulSendResult.Defer($"session with {route.Callsign} ended; {message.Id} stays queued");
     }
 
     /// <summary>
@@ -364,9 +368,11 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     /// <summary>
     /// Opportunistic poll: when the operator has enabled it and we have
     /// somewhere to deliver inbound, send <c>rev</c> and drain anything
-    /// the peer has queued for us. Returns false when no poll ran, or
-    /// when it failed and the session shouldn't be used any further.
-    /// Failures don't count against the pushes.
+    /// the peer has queued for us. Returns true only when the drain
+    /// ended cleanly on the peer's prompt; false when no poll ran, or it
+    /// ended any other way (the peer hung up, the link went, an exchange
+    /// failed) and the session shouldn't be used any further. Failures
+    /// don't count against the pushes.
     /// </summary>
     private async Task<bool> PollAsync(DappsProtocolClient protocol, BackhaulRoute route, CancellationToken ct)
     {
@@ -390,7 +396,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                     StreamGapTimeoutSeconds: polled.StreamGapTimeoutSeconds);
                 await opportunisticInbox.DeliverAsync(inbound, route.Callsign, ct);
             }
-            return true;
+            return protocol.LastPollDrained;
         }
         catch (Exception ex)
         {

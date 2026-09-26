@@ -609,6 +609,57 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DoRun_TtlIsWorkedOutWhenAMessageIsHandedOut_NotWhenTheRunStarted()
+    {
+        // The second message's ttl runs out while the first is being
+        // sent. It must not go out with the ttl it had at the start.
+        var batching = new BatchingFakeBackhaul { OnSent = _ => Thread.Sleep(1200) };
+        var m = MakeManager(batching);
+        InsertMessage(id: "slow001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5));
+        InsertMessage(id: "tight01", ttl: 2, createdAt: DateTime.UtcNow.AddMilliseconds(-500));
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        batching.Batches.Single().Ids.Should().Equal("slow001");
+        (await database.GetPendingOutboundMessages()).Should().ContainSingle(p => p.Id == "tight01",
+            "an expired message isn't sent; the next run drops it");
+    }
+
+    [Fact]
+    public async Task DoRun_NeighbourInCooldown_SkipsItsWholeBatch()
+    {
+        var backoff = new OutboundDestinationBackoff();
+        backoff.RecordFailure("N0DEST");
+        var batching = new BatchingFakeBackhaul();
+        var m = MakeManager(batching, backoff: backoff);
+        InsertMessage(id: "cool001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5));
+        InsertMessage(id: "cool002", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-4));
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        batching.Batches.Should().BeEmpty();
+        (await database.GetPendingOutboundMessages()).Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task DoRun_NeighbourHasASessionOpen_DefersItsWholeBatch()
+    {
+        var peers = new PeerSessionRegistry();
+        var batching = new BatchingFakeBackhaul();
+        var m = MakeManager(batching, peers: peers);
+        InsertMessage(id: "busy101", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5));
+        InsertMessage(id: "busy102", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-4));
+
+        using (peers.Acquire("N0DEST", "inbound"))
+        {
+            await m.DoRun(TestContext.Current.CancellationToken);
+        }
+
+        batching.Batches.Should().BeEmpty();
+        (await database.GetPendingOutboundMessages()).Should().HaveCount(2);
+    }
+
+    [Fact]
     public async Task DoRun_ADatagramBearer_StillSendsMessageByMessage()
     {
         // FakeBackhaul doesn't override SendBatchAsync, so it gets the
@@ -627,9 +678,9 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         new(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
             destinationBackoff: backoff, peerSessions: peers);
 
-    private OutboundMessageManager MakeManager(IDappsBackhaul bearer, OutboundDestinationBackoff? backoff = null) =>
+    private OutboundMessageManager MakeManager(IDappsBackhaul bearer, OutboundDestinationBackoff? backoff = null, PeerSessionRegistry? peers = null) =>
         new(database, NullLoggerFactory.Instance, optionsMonitor, [bearer], routingAlgorithm, routingContext,
-            destinationBackoff: backoff);
+            destinationBackoff: backoff, peerSessions: peers);
 
     /// <summary>Routes every message as a flood to a fixed set of neighbours.</summary>
     private sealed class FloodingAlgorithm(params BackhaulRoute[] routes) : IRoutingAlgorithm

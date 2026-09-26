@@ -215,18 +215,106 @@ public sealed class Dappsv1SessionBackhaulTests
         transport.Connects.Should().Be(0);
     }
 
+    [Fact]
+    public async Task SendBatchAsync_PeerBusy_DefersTheFirstMessage_AndLeavesTheRestUntouched()
+    {
+        var sb = new Dappsv1SessionBackhaul(new ThrowingTransport(new PeerSessionBusyException("N0DEST", "inbound")), NullLoggerFactory.Instance);
+        var batch = new ListBatch(Msg("msg0001"), Msg("msg0002"));
+
+        await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, TestContext.Current.CancellationToken);
+
+        batch.Outcomes.Should().ContainSingle();
+        batch.Outcomes[0].Result.Deferred.Should().BeTrue();
+        batch.Remaining.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task SendBatchAsync_RevGoesOnceAfterAllThePushes()
+    {
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(
+            "DAPPSv1>\nsend msg0001\nack msg0001\nsend msg0002\nack msg0002\nDAPPSv1>\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, new NullInbox(), () => true);
+
+        await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC",
+            new ListBatch(Msg("msg0001"), Msg("msg0002")), TestContext.Current.CancellationToken);
+
+        var written = Encoding.UTF8.GetString(transport.WriteCapture);
+        // Payloads carry no newline, so "rev" follows the last one on
+        // the same line: count the command, not lines.
+        System.Text.RegularExpressions.Regex.Count(written, "rev\n").Should().Be(1);
+        written.IndexOf("rev\n", StringComparison.Ordinal).Should().BeGreaterThan(written.IndexOf("data msg0002", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task SendBatchAsync_PeerHangsUpAfterTheFirstMessage_TheNextIsDeferredNotFailed()
+    {
+        // A peer that closes after an exchange ends the session; the
+        // neighbour isn't failing, so no cooldown for the next message.
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes("DAPPSv1>\nsend msg0001\nack msg0001\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
+        var batch = new ListBatch(Msg("msg0001"), Msg("msg0002"));
+
+        await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, TestContext.Current.CancellationToken);
+
+        batch.Outcomes.Select(o => (o.Id, o.Result.Accepted, o.Result.Deferred)).Should().Equal(
+            ("msg0001", true, false), ("msg0002", false, true));
+    }
+
+    [Fact]
+    public async Task SendBatchAsync_TheFirstMessageOnASilentPeer_StillFails()
+    {
+        // Nothing has been exchanged yet, so a peer that goes away is a
+        // failed send, as it always was.
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes("DAPPSv1>\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
+        var batch = new ListBatch(Msg("msg0001"));
+
+        await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, TestContext.Current.CancellationToken);
+
+        batch.Outcomes.Single().Result.Deferred.Should().BeFalse();
+        batch.Outcomes.Single().Result.Accepted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SendBatchAsync_LinkEndsDuringRev_DoesNotAskForMore()
+    {
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes("DAPPSv1>\nsend msg0001\nack msg0001\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, new NullInbox(), () => true);
+        var batch = new ListBatch(Msg("msg0001")) { SecondWave = [Msg("late001")] };
+
+        await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, TestContext.Current.CancellationToken);
+
+        batch.Outcomes.Select(o => o.Id).Should().Equal("msg0001");
+        batch.SecondWave.Should().ContainSingle("a message queued meanwhile waits for the next session, not a dead link");
+    }
+
     private static BackhaulMessage Msg(string id) => new(id, "app@N0DEST", Salt: 1L, Ttl: 60, Payload: "x"u8.ToArray());
 
-    /// <summary>A fixed list of messages, recording each outcome.</summary>
+    /// <summary>A fixed list of messages, recording each outcome.
+    /// <see cref="SecondWave"/> stands in for traffic queued while the
+    /// session was open: handed out once the first list has run dry and
+    /// the backhaul asks again.</summary>
     private sealed class ListBatch(params BackhaulMessage[] messages) : IBackhaulBatch
     {
         private readonly Queue<BackhaulMessage> queue = new(messages);
+        private bool ranDry;
 
         public List<(string Id, BackhaulSendResult Result)> Outcomes { get; } = [];
         public int Remaining => queue.Count;
+        public List<BackhaulMessage> SecondWave { get; init; } = [];
 
-        public ValueTask<BackhaulMessage?> NextAsync(CancellationToken ct) =>
-            ValueTask.FromResult(queue.TryDequeue(out var next) ? next : null);
+        public ValueTask<BackhaulMessage?> NextAsync(CancellationToken ct)
+        {
+            if (queue.TryDequeue(out var next)) return ValueTask.FromResult<BackhaulMessage?>(next);
+            if (ranDry && SecondWave.Count > 0)
+            {
+                next = SecondWave[0];
+                SecondWave.RemoveAt(0);
+                return ValueTask.FromResult<BackhaulMessage?>(next);
+            }
+            ranDry = true;
+            return ValueTask.FromResult<BackhaulMessage?>(null);
+        }
 
         public ValueTask CompleteAsync(BackhaulMessage message, BackhaulSendResult result, TimeSpan elapsed, CancellationToken ct)
         {
@@ -291,6 +379,11 @@ public sealed class Dappsv1SessionBackhaulTests
             public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
             public override void SetLength(long value) => throw new NotSupportedException();
         }
+    }
+
+    private sealed class NullInbox : IBackhaulInbox
+    {
+        public Task DeliverAsync(BackhaulMessage message, string sourceCallsign, CancellationToken ct) => Task.CompletedTask;
     }
 
     private sealed class ThrowingTransport(Exception toThrow) : IDappsOutboundTransport
