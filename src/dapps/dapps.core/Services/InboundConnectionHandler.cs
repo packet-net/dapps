@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using dapps.client;
 using dapps.client.Backhaul;
@@ -26,7 +27,9 @@ public class InboundConnectionHandler(
     Database database,
     IBackhaulInbox inbox,
     OperationalMetrics? metrics = null,
-    Func<string, CancellationToken, Task<bool>>? compressTo = null)
+    Func<string, CancellationToken, Task<bool>>? compressTo = null,
+    InboundSessionDirectory? directory = null,
+    Func<string, CancellationToken, Task<int>>? tailFor = null)
 {
     private readonly ILogger logger = loggerFactory.CreateLogger<InboundConnectionHandler>();
     private readonly OperationalMetrics metrics = metrics ?? new OperationalMetrics();
@@ -44,11 +47,95 @@ public class InboundConnectionHandler(
     /// </summary>
     private readonly Dictionary<string, IHaveOffer> sessionOffers = new(StringComparer.Ordinal);
 
+    /// <summary>How long to wait for the caller's next command. Longer
+    /// once the caller has asked us to hold the session (<c>tail</c>).</summary>
+    private TimeSpan idleTimeout = InactivityTimeout;
+
+    /// <summary>Traffic the forwarder handed us for the caller, sent on its next <c>rev</c>.</summary>
+    private readonly ConcurrentQueue<IBackhaulBatch> handed = new();
+
+    // Telling the caller it has mail (`pending`) happens from outside
+    // this session's own flow, so it's only written while the session is
+    // idle between commands, and the session takes this gate before it
+    // answers anything: the two writes can't interleave.
+    private readonly SemaphoreSlim stateGate = new(1, 1);
+    private bool idle;
+    private bool closing;
+    private bool pendingWanted;
+    private bool pendingSent;
+
+    /// <summary>
+    /// Take traffic for the caller from the forwarder: tell the caller
+    /// (<c>pending</c>) and send it when the caller asks with <c>rev</c>.
+    /// False once the session is closing; the forwarder then leaves it
+    /// queued and sends it once this session has gone.
+    /// </summary>
+    internal bool TryTakeBatch(IBackhaulBatch batch)
+    {
+        if (closing) return false;
+        handed.Enqueue(batch);
+        _ = RequestPendingAsync();
+        return true;
+    }
+
+    private async Task RequestPendingAsync()
+    {
+        try
+        {
+            await stateGate.WaitAsync();
+            try
+            {
+                pendingWanted = true;
+                if (idle && !closing) await SendPendingIfWantedAsync();
+            }
+            finally
+            {
+                stateGate.Release();
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Couldn't tell {0} it has mail waiting", sourceCallsign);
+        }
+    }
+
+    /// <summary>Call holding <see cref="stateGate"/>.</summary>
+    private async Task SendPendingIfWantedAsync()
+    {
+        if (!pendingWanted || pendingSent) return;
+        await stream.WriteAsync("pending\n"u8.ToArray());
+        await stream.FlushAsync();
+        pendingSent = true;
+        logger.LogInformation("Told {0} it has mail waiting", sourceCallsign);
+    }
+
+    private async Task EnterIdleAsync()
+    {
+        await stateGate.WaitAsync();
+        try
+        {
+            idle = true;
+            await SendPendingIfWantedAsync();
+        }
+        finally
+        {
+            stateGate.Release();
+        }
+    }
+
+    private async Task LeaveIdleAsync()
+    {
+        await stateGate.WaitAsync();
+        idle = false;
+        stateGate.Release();
+    }
+
     public async Task Handle(CancellationToken stoppingToken)
     {
         try
         {
             logger.LogInformation("Inbound session from {0}", sourceCallsign);
+            directory?.Register(sourceCallsign, this);
 
             await stream.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n"), stoppingToken);
             await stream.FlushAsync(stoppingToken);
@@ -58,14 +145,19 @@ public class InboundConnectionHandler(
                 logger.LogInformation("Waiting for command");
 
                 string command;
+                await EnterIdleAsync();
                 try
                 {
-                    command = await Extensions.WithInactivityTimeout(t => stream.ReadLine(t), InactivityTimeout, stoppingToken);
+                    command = await Extensions.WithInactivityTimeout(t => stream.ReadLine(t), idleTimeout, stoppingToken);
                 }
                 catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
                 {
                     logger.LogInformation("Inactivity timeout waiting for command, closing connection");
                     return;
+                }
+                finally
+                {
+                    await LeaveIdleAsync();
                 }
 
                 if (string.IsNullOrWhiteSpace(command))
@@ -135,10 +227,18 @@ public class InboundConnectionHandler(
                     logger.LogInformation("Client is asking for our known routes (gossip)");
                     await HandleRoutes(stream, stoppingToken);
                 }
+                else if (cmd == Command.Tail)
+                {
+                    await HandleTail(stream, command, stoppingToken);
+                }
             }
         }
         finally
         {
+            await stateGate.WaitAsync();
+            closing = true;
+            stateGate.Release();
+            directory?.Unregister(sourceCallsign, this);
             await stream.DisposeAsync();
         }
     }
@@ -176,6 +276,14 @@ public class InboundConnectionHandler(
         /// out not to work.
         /// </summary>
         Routes,
+        /// <summary>
+        /// #187 proposal 9: <c>tail &lt;seconds&gt;</c>, the caller asking
+        /// us to hold the session open until it has been quiet that long.
+        /// We answer <c>tail &lt;seconds&gt;</c> with what we'll allow (0 =
+        /// no), and while holding tell the caller <c>pending</c> when we
+        /// have mail for it.
+        /// </summary>
+        Tail,
     }
 
     private static readonly string[] exitCommands = ["q", "bye", "quit", "exit"];
@@ -218,6 +326,11 @@ public class InboundConnectionHandler(
             // but `who` is the verb a sysop already types at a node prompt
             // so it's a natural alias.
             return Command.Peers;
+        }
+
+        if (parts[0] == "tail")
+        {
+            return Command.Tail;
         }
 
         if (parts[0] == "rev")
@@ -364,14 +477,40 @@ public class InboundConnectionHandler(
         var requestedIds = parts.Skip(1).ToList();   // empty = drain all
         var callerBase = sourceCallsign.Split('-')[0];
 
-        var queue = await database.GetMessagesForCaller(callerBase, requestedIds);
-
         // Sender state machine: reuse DappsProtocolClient but skip its
         // ReadInitialPromptAsync - we're already mid-session, the
         // client doesn't owe us another prompt.
         var protocol = new DappsProtocolClient(stream, loggerFactory);
         var compress = await ShouldCompressToCallerAsync(ct);
         var drained = 0;
+        var handedSent = 0;
+
+        // First what the forwarder handed this session for the caller,
+        // which can include traffic the caller relays onwards, not only
+        // its own mail. A plain `rev` only: a selective one names its ids.
+        if (requestedIds.Count == 0)
+        {
+            // This rev collects whatever the caller was told about.
+            await stateGate.WaitAsync(ct);
+            pendingWanted = false;
+            pendingSent = false;
+            stateGate.Release();
+
+            if (!await DrainHandedAsync(protocol, compress, () => handedSent++, ct))
+            {
+                logger.LogInformation("rev drain to {0}: it hung up part way", sourceCallsign);
+                return;
+            }
+
+            // Handed over while the drain ran and sent by it: nothing
+            // left to tell the caller about.
+            await stateGate.WaitAsync(ct);
+            if (handed.IsEmpty) pendingWanted = false;
+            stateGate.Release();
+        }
+
+        // Read after that drain, which may have sent some of these.
+        var queue = await database.GetMessagesForCaller(callerBase, requestedIds);
         foreach (var msg in queue)
         {
             // Residual TTL: same calculation OutboundMessageManager
@@ -425,8 +564,8 @@ public class InboundConnectionHandler(
         }
 
         logger.LogInformation(
-            "rev drain to {0}: {1}/{2} messages sent (selective={3})",
-            sourceCallsign, drained, queue.Count, requestedIds.Count > 0);
+            "rev drain to {0}: {1}/{2} of its queued messages sent, plus {3} handed over (selective={4})",
+            sourceCallsign, drained, queue.Count, handedSent, requestedIds.Count > 0);
 
         // Done draining. Re-emit DAPPSv1> so the caller's poll loop
         // sees a clean "ready for next command" signal that's distinct
@@ -450,6 +589,90 @@ public class InboundConnectionHandler(
             return false;
         }
     }
+
+    /// <summary>
+    /// Send what the forwarder handed this session, reporting each
+    /// outcome back to its batch. A batch stops at a message the caller
+    /// doesn't take, as it would on a session of our own; the rest of it
+    /// stays queued. False when the caller hung up.
+    /// </summary>
+    private async Task<bool> DrainHandedAsync(DappsProtocolClient protocol, bool compress, Action onSent, CancellationToken ct)
+    {
+        while (handed.TryDequeue(out var batch))
+        {
+            while (await batch.NextAsync(ct) is { } message)
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                BackhaulSendResult result;
+                try
+                {
+                    result = await protocol.PushAsync(message, compress, ct) switch
+                    {
+                        DappsProtocolClient.PushOutcome.Accepted => BackhaulSendResult.Ok(),
+                        DappsProtocolClient.PushOutcome.OfferRefused => BackhaulSendResult.Fail($"offer rejected for {message.Id}"),
+                        DappsProtocolClient.PushOutcome.PeerClosed => BackhaulSendResult.Defer($"{sourceCallsign} hung up; {message.Id} stays queued"),
+                        _ => BackhaulSendResult.Fail($"payload rejected for {message.Id}"),
+                    };
+                }
+                catch (Exception ex)
+                {
+                    // Whatever went wrong (the link, a timeout, shutdown),
+                    // the message must still be completed, or it would stay
+                    // claimed and never be sent.
+                    logger.LogWarning(ex, "rev drain to {0}: sending {1} failed", sourceCallsign, message.Id);
+                    result = BackhaulSendResult.Defer($"sending to {sourceCallsign} failed; {message.Id} stays queued");
+                }
+                await batch.CompleteAsync(message, result, sw.Elapsed, ct);
+                if (result.Accepted)
+                {
+                    onSent();
+                    continue;
+                }
+                if (result.Deferred) return false;
+                break;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// #187 proposal 9: the caller asks us to hold the session open until
+    /// it has been quiet for the given seconds. We allow the lower of
+    /// that and our own setting for the caller (0 = don't hold), and wait
+    /// that long plus a margin for its next command, so its <c>quit</c>
+    /// arrives before we'd give up on it.
+    /// </summary>
+    private async Task HandleTail(Stream stream, string command, CancellationToken ct)
+    {
+        var parts = command.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var asked = parts.Length == 2
+            && int.TryParse(parts[1], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var seconds)
+            ? seconds : 0;
+        var ours = 0;
+        if (tailFor is not null)
+        {
+            try
+            {
+                ours = await tailFor(sourceCallsign, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "Couldn't read the link-hold setting for {0}; not holding", sourceCallsign);
+            }
+        }
+
+        var agreed = Math.Max(0, Math.Min(asked, ours));
+        var held = TimeSpan.FromSeconds(agreed) + TailMargin;
+        idleTimeout = agreed > 0 && held > InactivityTimeout ? held : InactivityTimeout;
+        logger.LogInformation(agreed > 0
+            ? "Holding the session with {0} open until it has been quiet for {1}s"
+            : "Not holding the session with {0} open", sourceCallsign, agreed);
+        await stream.WriteAsync(Encoding.UTF8.GetBytes($"tail {agreed}\n"), ct);
+        await stream.FlushAsync(ct);
+    }
+
+    /// <summary>Added to an agreed hold before we give up on a quiet caller.</summary>
+    private static readonly TimeSpan TailMargin = TimeSpan.FromSeconds(30);
 
     private async Task HandleMessageOffer(Stream stream, string command, CancellationToken stoppingToken)
     {

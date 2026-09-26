@@ -345,6 +345,79 @@ public sealed class Dappsv1SessionBackhaulTests
     private static BackhaulMessage WpsMsg(string id) => new(id, "app@N0DEST", Salt: 1L, Ttl: 60, Payload: Encoding.UTF8.GetBytes(
         """{"v":1,"o":"MB7NPW","s":66,"e":1,"ts":1790410266123,"a":"p.i","data":{"t":"cp","cid":1,"fc":"M0AHN","ts":1790410266050,"p":"Evening all, is anyone on the WPS channel tonight?","dts":1790410266123}}"""));
 
+    [Fact]
+    public async Task AHeldLinkWhoseReadFails_Closes_RatherThanSpinning()
+    {
+        // The peer agrees a hold, then the link read fails (the AGW socket
+        // to the node dropping, say). The held session must end, not loop.
+        var transport = new FailingAfterScriptTransport(Encoding.UTF8.GetBytes(
+            "DAPPSv1>\nsend msg0001\nack msg0001\nDAPPSv1>\ntail 60\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, new NullInbox(), () => true,
+            tailFor: (_, _) => Task.FromResult(60));
+
+        await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", new ListBatch(Msg("msg0001")), TestContext.Current.CancellationToken);
+        transport.ReleaseFailure();
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (sb.HeldPeers.Count > 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+        }
+        sb.HeldPeers.Should().BeEmpty();
+        transport.Disposed.Should().BeTrue("the held session hung up");
+    }
+
+    /// <summary>Replies from a script, then fails the next read once
+    /// the test says so.</summary>
+    private sealed class FailingAfterScriptTransport(byte[] script) : IDappsOutboundTransport
+    {
+        private readonly TaskCompletionSource fail = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool Disposed { get; private set; }
+        public void ReleaseFailure() => fail.TrySetResult();
+
+        public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken) =>
+            Task.FromResult<IDappsConnection>(new Connection(this, new ScriptThenFail(script, fail.Task)));
+
+        private sealed class Connection(FailingAfterScriptTransport owner, Stream stream) : IDappsConnection
+        {
+            public Stream Stream => stream;
+            public ValueTask DisposeAsync()
+            {
+                owner.Disposed = true;
+                return ValueTask.CompletedTask;
+            }
+        }
+
+        private sealed class ScriptThenFail(byte[] script, Task failWhen) : Stream
+        {
+            private readonly MemoryStream reads = new(script);
+
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+            {
+                var n = await reads.ReadAsync(buffer, ct);
+                if (n > 0) return n;
+                await failWhen.WaitAsync(ct);
+                throw new IOException("AGW session disconnected");
+            }
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) =>
+                ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+            public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default) => ValueTask.CompletedTask;
+            public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct) => Task.CompletedTask;
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) { }
+            public override void Flush() { }
+            public override Task FlushAsync(CancellationToken ct) => Task.CompletedTask;
+            public override bool CanRead => true;
+            public override bool CanWrite => true;
+            public override bool CanSeek => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+        }
+    }
+
     private static BackhaulMessage Msg(string id) => new(id, "app@N0DEST", Salt: 1L, Ttl: 60, Payload: "x"u8.ToArray());
 
     /// <summary>A fixed list of messages, recording each outcome.

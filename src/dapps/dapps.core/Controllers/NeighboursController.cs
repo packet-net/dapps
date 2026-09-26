@@ -30,7 +30,8 @@ public class NeighboursController(Database database) : ControllerBase
             return new NeighbourModel(n.Callsign, n.BearerPort, n.UdpEndpoint,
                 ConnectScript: script?.ToLines(),
                 ConnectScriptStepCount: script?.Steps.Count ?? 0,
-                CompressionEnabled: n.CompressionEnabled);
+                CompressionEnabled: n.CompressionEnabled,
+                SessionTailSeconds: n.SessionTailSeconds);
         });
     }
 
@@ -58,7 +59,8 @@ public class NeighboursController(Database database) : ControllerBase
             neighbour.BearerPort,
             string.IsNullOrWhiteSpace(neighbour.UdpEndpoint) ? null : neighbour.UdpEndpoint.Trim(),
             connectScriptJson: scriptJson,
-            compressionEnabled: neighbour.CompressionEnabled);
+            compressionEnabled: neighbour.CompressionEnabled,
+            sessionTailSeconds: neighbour.SessionTailSeconds is { } tail ? Math.Clamp(tail, 0, 600) : null);
         return NoContent();
     }
 
@@ -95,6 +97,14 @@ public class NeighboursController(Database database) : ControllerBase
 /// this neighbour, true compresses when it saves bytes even if the
 /// system setting is off.
 /// </para>
+///
+/// <para>
+/// <see cref="SessionTailSeconds"/> is the per-neighbour override for
+/// <see cref="dapps.core.Models.SystemOptions.SessionTailSeconds"/>:
+/// null defers to the system-wide setting, 0 never holds the link open
+/// to this neighbour after a session, otherwise the number of idle
+/// seconds to hold it for. Clamped 0-600 on upsert.
+/// </para>
 /// </summary>
 public sealed record NeighbourModel(
     string Callsign,
@@ -102,4 +112,5 @@ public sealed record NeighbourModel(
     string? UdpEndpoint = null,
     string? ConnectScript = null,
     int ConnectScriptStepCount = 0,
-    bool? CompressionEnabled = null);
+    bool? CompressionEnabled = null,
+    int? SessionTailSeconds = null);

@@ -64,6 +64,33 @@ public class DappsProtocolClientTests
     }
 
     [Fact]
+    public async Task APendingNotice_InPlaceOfAReply_IsSkippedAndRemembered()
+    {
+        // A peer holding the session sends `pending` when it's idle, so it
+        // can cross with our offer and arrive before the reply.
+        var stream = new FakeDuplexStream(Encoding.UTF8.GetBytes("pending\nsend abc1234\n"));
+        var client = new DappsProtocolClient(stream, NullLoggerFactory.Instance);
+
+        (await client.OfferMessageAsync("abc1234", 1L, DappsMessage.MessageFormat.Plain, "app@N0DEST", 5,
+            TestContext.Current.CancellationToken)).Should().BeTrue();
+        client.PeerHasPending.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("tail 30\n", 30)]
+    [InlineData("tail 0\n", 0)]
+    [InlineData("pending\ntail 45\n", 45)]
+    [InlineData("eh?\n", null)]
+    public async Task RequestTailAsync_ReadsWhatThePeerAgreed(string reply, int? expected)
+    {
+        var stream = new FakeDuplexStream(Encoding.UTF8.GetBytes(reply));
+        var client = new DappsProtocolClient(stream, NullLoggerFactory.Instance);
+
+        (await client.RequestTailAsync(120, TestContext.Current.CancellationToken)).Should().Be(expected);
+        Encoding.UTF8.GetString(stream.WriteCapture.ToArray()).Should().Be("tail 120\n");
+    }
+
+    [Fact]
     public async Task ReadInitialPromptAsync_ReturnsTrueWhenPromptArrives()
     {
         var canned = Encoding.UTF8.GetBytes("DAPPSv1>\n");

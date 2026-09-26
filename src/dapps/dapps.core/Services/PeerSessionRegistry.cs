@@ -25,9 +25,11 @@ namespace dapps.core.Services;
 /// us and release it when the handler finishes; the outbound transport
 /// registers before it dials and releases when the link is torn down.
 /// <see cref="OutboundMessageManager"/> asks <see cref="IsActive"/> and
-/// leaves a message queued for the next tick rather than dial into a
-/// live session; if the peer has opportunistic poll on, its <c>rev</c>
-/// on that session drains our queue for it anyway.
+/// never dials into a live session: it hands the traffic to that session
+/// instead (a link we're holding open, or the peer's session with us via
+/// <see cref="InboundSessionDirectory"/>, which says <c>pending</c>), or
+/// leaves it queued. The last session with a peer ending wakes the
+/// forwarder, so anything still queued goes straight away.
 ///
 /// Keyed on the peer's full callsign (SSID included), case-insensitive:
 /// the identity the inbound 'C' frame and the neighbour table share.

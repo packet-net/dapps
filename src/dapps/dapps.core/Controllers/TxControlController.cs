@@ -99,6 +99,7 @@ public sealed class TxControlController(
         RouteGossipStalenessHours = s.RouteGossipStalenessHours,
         OpportunisticPollEnabled = s.OpportunisticPollEnabled,
         CompressionEnabled = s.CompressionEnabled,
+        SessionTailSeconds = s.SessionTailSeconds,
         ScheduledPollEnabled = s.ScheduledPollEnabled,
         PollIntervalHours = s.PollIntervalHours,
         DiscoveryAirtimeBudgetSecondsPerHour = s.DiscoveryAirtimeBudgetSecondsPerHour,

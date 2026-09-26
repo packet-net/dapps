@@ -92,6 +92,7 @@ public sealed class SystemOptionsStore : IOptionsMonitor<SystemOptions>
         await Upsert(connection, existing, nameof(options.FragmentReassemblyTimeoutSeconds), options.FragmentReassemblyTimeoutSeconds.ToString());
         await Upsert(connection, existing, nameof(options.OpportunisticPollEnabled), options.OpportunisticPollEnabled.ToString());
         await Upsert(connection, existing, nameof(options.CompressionEnabled), options.CompressionEnabled.ToString());
+        await Upsert(connection, existing, nameof(options.SessionTailSeconds), options.SessionTailSeconds.ToString());
         await Upsert(connection, existing, nameof(options.ScheduledPollEnabled), options.ScheduledPollEnabled.ToString());
         await Upsert(connection, existing, nameof(options.PollIntervalHours), options.PollIntervalHours.ToString());
         await Upsert(connection, existing, nameof(options.DiscoveryAirtimeBudgetSecondsPerHour), options.DiscoveryAirtimeBudgetSecondsPerHour.ToString());
@@ -173,6 +174,7 @@ public sealed class SystemOptionsStore : IOptionsMonitor<SystemOptions>
             FragmentReassemblyTimeoutSeconds = TryGetInt(r, nameof(SystemOptions.FragmentReassemblyTimeoutSeconds), 7 * 24 * 3600, min: 1),
             OpportunisticPollEnabled = TryGetBool(r, nameof(SystemOptions.OpportunisticPollEnabled), true),
             CompressionEnabled = TryGetBool(r, nameof(SystemOptions.CompressionEnabled), true),
+            SessionTailSeconds = Math.Clamp(TryGetInt(r, nameof(SystemOptions.SessionTailSeconds), 120), 0, 600),
             ScheduledPollEnabled = TryGetBool(r, nameof(SystemOptions.ScheduledPollEnabled), false),
             PollIntervalHours = TryGetInt(r, nameof(SystemOptions.PollIntervalHours), 6, min: 1),
             DiscoveryAirtimeBudgetSecondsPerHour = TryGetInt(r, nameof(SystemOptions.DiscoveryAirtimeBudgetSecondsPerHour), 0, min: 0),

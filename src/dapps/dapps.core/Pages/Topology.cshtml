@@ -39,6 +39,10 @@
                 </select>
                 <span class="hint">overrides the system-wide setting for this neighbour</span>
             </div>
+            <div class="field"><label>Link hold (s)</label>
+                <input name="sessionTail" type="number" min="0" max="600" placeholder="default" />
+                <span class="hint">blank = system setting, 0 = off</span>
+            </div>
             <div class="field" style="grid-column: 1 / -1;">
                 <label>Connect script (optional)</label>
                 <textarea name="connectScript" rows="3" placeholder="C G0NODE2|Connected to G0NODE2&#10;C G0NODE3|Connected to G0NODE3&#10;DAPPS|DAPPSv1>|60"></textarea>
@@ -48,9 +52,9 @@
         </form>
         <table>
             <thead>
-                <tr><th>Callsign</th><th>Port</th><th>UDP</th><th>Compression</th><th>Script</th><th></th></tr>
+                <tr><th>Callsign</th><th>Port</th><th>UDP</th><th>Compression</th><th>Hold</th><th>Script</th><th></th></tr>
             </thead>
-            <tbody id="neigh-body"><tr><td colspan="6" class="muted" style="text-align:center;">loading</td></tr></tbody>
+            <tbody id="neigh-body"><tr><td colspan="7" class="muted" style="text-align:center;">loading</td></tr></tbody>
         </table>
     </div>
 }
@@ -227,6 +231,7 @@ else
             UdpEndpoint: f.udpEndpoint.value || null,
             ConnectScript: f.connectScript.value || null,
             CompressionEnabled: compression,
+            SessionTailSeconds: f.sessionTail.value === '' ? null : parseInt(f.sessionTail.value, 10),
         };
         if (await dappsPostJson('@Url.Content("~/Neighbours")', body)) location.reload();
     };
@@ -382,14 +387,16 @@ else
                 return desc ? `${idx} <span class="muted">(${escape(desc)})</span>` : String(idx);
             };
             const fmtCompression = (c) => c == null ? '<span class="muted">default</span>' : (c ? 'on' : 'off');
+            const fmtHold = (s) => s == null ? '<span class="muted">default</span>' : (s === 0 ? 'off' : String(s));
             if (!ns.length) {
-                body.innerHTML = '<tr><td colspan="6" class="empty" style="text-align:center;">No neighbours yet. Add one above.</td></tr>';
+                body.innerHTML = '<tr><td colspan="7" class="empty" style="text-align:center;">No neighbours yet. Add one above.</td></tr>';
             } else {
                 body.innerHTML = ns.map(n => `<tr>
                     <td><code>${escape(n.callsign)}</code></td>
                     <td>${fmtPort(n.bearerPort)}</td>
                     <td>${n.udpEndpoint ? '<code>' + escape(n.udpEndpoint) + '</code>' : '<span class="muted">-</span>'}</td>
                     <td>${fmtCompression(n.compressionEnabled)}</td>
+                    <td>${fmtHold(n.sessionTailSeconds)}</td>
                     <td>${n.connectScriptJson ? 'script' : '<span class="muted">-</span>'}</td>
                     <td><div class="actions">
                         <button class="link-btn" onclick="dappsProbeOne('${escape(n.callsign)}')">probe</button>

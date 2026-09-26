@@ -28,7 +28,7 @@ Three counters: total messages in the table, pending outbound (forwards in fligh
 
 ### Outbound queue
 
-Live table of messages waiting to be forwarded - id, destination, source, bytes, residual TTL, age. Updates without a page reload as the forwarder ticks.
+Live table of messages waiting to be forwarded - id, destination, source, bytes, residual TTL, age. Updates without a page reload as messages are sent.
 
 ### Local inbox
 

@@ -89,4 +89,28 @@ public sealed class MeshCoreConfigTests : IAsyncLifetime
         var reloaded = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance).CurrentValue;
         reloaded.CompressionEnabled.Should().BeFalse();
     }
+
+    [Fact]
+    public async Task SessionTailSeconds_DefaultsRoundTripsAndClampsOutOfRange()
+    {
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        store.CurrentValue.SessionTailSeconds.Should().Be(120);
+
+        var opts = store.CurrentValue;
+        opts.SessionTailSeconds = 45;
+        await store.SaveAsync(opts);
+
+        var reloaded = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance).CurrentValue;
+        reloaded.SessionTailSeconds.Should().Be(45);
+
+        // An out-of-range stored value (e.g. from an older build without
+        // the clamp, or a hand-edited row) loads clamped to 600 rather
+        // than falling back to the default.
+        using (var c = new SQLiteConnection(dbPath))
+        {
+            c.Execute("update systemoptions set value=? where option=?", "99999", nameof(SystemOptions.SessionTailSeconds));
+        }
+        var clamped = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance).CurrentValue;
+        clamped.SessionTailSeconds.Should().Be(600);
+    }
 }

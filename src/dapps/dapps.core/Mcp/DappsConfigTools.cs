@@ -48,6 +48,7 @@ public sealed class DappsConfigTools(SystemOptionsStore optionsStore)
         if (update.PollIntervalHours.HasValue) current.PollIntervalHours = ClampPositive(update.PollIntervalHours.Value);
         if (update.OpportunisticPollEnabled.HasValue) current.OpportunisticPollEnabled = update.OpportunisticPollEnabled.Value;
         if (update.CompressionEnabled.HasValue) current.CompressionEnabled = update.CompressionEnabled.Value;
+        if (update.SessionTailSeconds.HasValue) current.SessionTailSeconds = Math.Clamp(update.SessionTailSeconds.Value, 0, 600);
         if (update.HeartbeatEnabled.HasValue) current.HeartbeatEnabled = update.HeartbeatEnabled.Value;
         if (update.HeartbeatIntervalSeconds.HasValue) current.HeartbeatIntervalSeconds = Math.Max(10, update.HeartbeatIntervalSeconds.Value);
         if (update.DiscoveryAirtimeBudgetSecondsPerHour.HasValue) current.DiscoveryAirtimeBudgetSecondsPerHour = Math.Max(0, update.DiscoveryAirtimeBudgetSecondsPerHour.Value);
@@ -101,6 +102,8 @@ public sealed record ConfigUpdate(
     bool? OpportunisticPollEnabled = null,
     [property: Description("Compress message payloads on DAPPSv1 sessions (AGW/RHP neighbours) when it saves bytes and the neighbour supports it. Sender-side only - incoming compressed messages are always accepted. A neighbour's own CompressionEnabled override wins when set. Default true.")]
     bool? CompressionEnabled = null,
+    [property: Description("After a session with a neighbour that moved messages, keep the link open until it has been idle this many seconds, so follow-up messages in either direction go straight away without a new connection. 0 turns it off. Clamped to 0-600 (many nodes drop an idle circuit after 10 minutes). A neighbour's own SessionTailSeconds override wins when set. Default 120.")]
+    int? SessionTailSeconds = null,
     [property: Description("C3 PR-B - periodic MQTT heartbeat publish to dapps/metrics/heartbeat. Default true.")]
     bool? HeartbeatEnabled = null,
     [property: Description("C3 PR-B - seconds between heartbeat publishes (>=10, default 60).")]

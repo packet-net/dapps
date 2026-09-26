@@ -287,6 +287,10 @@ builder.Services.AddSingleton<MeshCoreBearer>();
 builder.Services.AddSingleton<IDappsBackhaul>(sp => sp.GetRequiredService<MeshCoreBearer>());
 builder.Services.AddHostedService<MeshCoreBearerService>();
 builder.Services.AddSingleton<CompressionPolicy>();
+// #187 proposal 9: how long to hold sessions open after their traffic,
+// and the open inbound sessions the forwarder can hand traffic to.
+builder.Services.AddSingleton<SessionTailPolicy>();
+builder.Services.AddSingleton<InboundSessionDirectory>();
 builder.Services.AddSingleton<IDappsBackhaul>(sp => new Dappsv1SessionBackhaul(
     sp.GetRequiredService<IDappsOutboundTransport>(),
     sp.GetRequiredService<ILoggerFactory>(),
@@ -310,9 +314,16 @@ builder.Services.AddSingleton<IDappsBackhaul>(sp => new Dappsv1SessionBackhaul(
         sp.GetRequiredService<Database>(),
         sp.GetRequiredService<IBackhaulInbox>(),
         sp.GetRequiredService<OperationalMetrics>(),
-        sp.GetRequiredService<CompressionPolicy>().ShouldCompressToAsync).Handle(ct),
+        sp.GetRequiredService<CompressionPolicy>().ShouldCompressToAsync,
+        sp.GetRequiredService<InboundSessionDirectory>(),
+        // No hold: this session runs inside the forwarder's run, and
+        // holding it would stall every other neighbour for the hold.
+        tailFor: null).Handle(ct),
     // Payload compression, per the operator's setting for each neighbour.
-    compressTo: sp.GetRequiredService<CompressionPolicy>().ShouldCompressToAsync));
+    compressTo: sp.GetRequiredService<CompressionPolicy>().ShouldCompressToAsync,
+    // Hold sessions open after their traffic, per the operator's
+    // setting for each neighbour.
+    tailFor: sp.GetRequiredService<SessionTailPolicy>().TailSecondsForAsync));
 builder.Services.AddSingleton<DatabaseAndMqttInbox>();
 builder.Services.AddSingleton<IBackhaulInbox>(sp => sp.GetRequiredService<DatabaseAndMqttInbox>());
 builder.Services.AddHostedService<UdpDatagramListener>();
