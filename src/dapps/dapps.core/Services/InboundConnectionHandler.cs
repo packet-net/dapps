@@ -1,8 +1,8 @@
-﻿using System.IO.Compression;
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using dapps.client;
 using dapps.client.Backhaul;
+using dapps.client.Compression;
 
 namespace dapps.core.Services;
 
@@ -25,7 +25,8 @@ public class InboundConnectionHandler(
     ILoggerFactory loggerFactory,
     Database database,
     IBackhaulInbox inbox,
-    OperationalMetrics? metrics = null)
+    OperationalMetrics? metrics = null,
+    Func<string, CancellationToken, Task<bool>>? compressTo = null)
 {
     private readonly ILogger logger = loggerFactory.CreateLogger<InboundConnectionHandler>();
     private readonly OperationalMetrics metrics = metrics ?? new OperationalMetrics();
@@ -361,6 +362,7 @@ public class InboundConnectionHandler(
         // ReadInitialPromptAsync - we're already mid-session, the
         // client doesn't owe us another prompt.
         var protocol = new DappsProtocolClient(stream, loggerFactory);
+        var compress = await ShouldCompressToCallerAsync(ct);
         var drained = 0;
         foreach (var msg in queue)
         {
@@ -375,24 +377,30 @@ public class InboundConnectionHandler(
 
             try
             {
-                var offered = await protocol.OfferMessageAsync(
-                    msg.Id, msg.Salt, DappsMessage.MessageFormat.Plain,
-                    msg.Destination, msg.Payload.Length, ct,
-                    ttl: residualTtl,
-                    originator: string.IsNullOrEmpty(msg.OriginatorCallsign) ? null : msg.OriginatorCallsign,
-                    masterId: msg.MasterId,
-                    fragmentIndex: msg.FragmentIndex,
-                    fragmentTotal: msg.FragmentTotal,
-                    streamId: msg.StreamId,
-                    streamSeq: msg.StreamSeq,
-                    streamGapTimeoutSeconds: msg.StreamGapTimeoutSeconds);
-                if (!offered)
+                var outcome = await protocol.PushAsync(new BackhaulMessage(
+                    Id: msg.Id,
+                    Destination: msg.Destination,
+                    Salt: msg.Salt,
+                    Ttl: residualTtl,
+                    Payload: msg.Payload,
+                    Originator: string.IsNullOrEmpty(msg.OriginatorCallsign) ? null : msg.OriginatorCallsign,
+                    MasterId: msg.MasterId,
+                    FragmentIndex: msg.FragmentIndex,
+                    FragmentTotal: msg.FragmentTotal,
+                    StreamId: msg.StreamId,
+                    StreamSeq: msg.StreamSeq,
+                    StreamGapTimeoutSeconds: msg.StreamGapTimeoutSeconds), compress, ct);
+                if (outcome == DappsProtocolClient.PushOutcome.PeerClosed)
+                {
+                    logger.LogInformation("rev drain: {0} hung up; the rest stay queued", sourceCallsign);
+                    break;
+                }
+                if (outcome == DappsProtocolClient.PushOutcome.OfferRefused)
                 {
                     logger.LogInformation("rev drain: caller declined {0}", msg.Id);
                     continue;
                 }
-                var sent = await protocol.SendMessageAsync(msg.Id, msg.Payload, ct);
-                if (sent)
+                if (outcome == DappsProtocolClient.PushOutcome.Accepted)
                 {
                     await database.MarkMessageAsForwarded(msg.Id);
                     drained++;
@@ -419,6 +427,22 @@ public class InboundConnectionHandler(
         await stream.FlushAsync(ct);
     }
 
+    /// <summary>The operator's compression setting for the caller, for
+    /// what we send it in a rev drain. Plain if it can't be read.</summary>
+    private async Task<bool> ShouldCompressToCallerAsync(CancellationToken ct)
+    {
+        if (compressTo is null) return false;
+        try
+        {
+            return await compressTo(sourceCallsign, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Couldn't read the compression setting for {0}; sending plain", sourceCallsign);
+            return false;
+        }
+    }
+
     private async Task HandleMessageOffer(Stream stream, string command, CancellationToken stoppingToken)
     {
         var result = IHaveValidator.Validate(command);
@@ -441,15 +465,29 @@ public class InboundConnectionHandler(
     {
         var offer = await database.LoadOfferMetadata(id);
 
-        var buffer = new byte[offer.Length];
-
-        if (offer.Format == "d") // deflate
+        byte[] buffer;
+        if (offer.Format is "p" or "")
+        {
+            buffer = new byte[offer.Length];
+            logger.LogInformation("Waiting for {0} uncompressed bytes", buffer.Length);
+            try
+            {
+                await Extensions.WithInactivityTimeout(t => stream.ReadExactlyAsync(buffer, t).AsTask(), InactivityTimeout, stoppingToken);
+            }
+            catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+            {
+                logger.LogWarning("Inactivity timeout waiting for uncompressed payload, closing");
+                return;
+            }
+            logger.LogInformation("Received uncompressed data");
+        }
+        else // fmt=d (deflate) or fmt=z<N> (zstd with shared dictionary N)
         {
             if (offer.CompressedLength is null)
             {
                 // Shouldn't happen - we validate at offer time - but defend
                 // against a corrupted DB row.
-                logger.LogError("Offer {0} marked fmt=d but has no clen stored", id);
+                logger.LogError("Offer {0} marked fmt={1} but has no clen stored", id, offer.Format);
                 await stream.WriteUtf8AndFlush("bad " + id + "\n");
                 return;
             }
@@ -465,35 +503,19 @@ public class InboundConnectionHandler(
                 logger.LogWarning("Inactivity timeout waiting for compressed payload, closing");
                 return;
             }
-            logger.LogInformation("Received compressed bytes, decompressing");
 
-            using var inputMs = new MemoryStream(compressed);
-            using var decompressor = new DeflateStream(inputMs, CompressionMode.Decompress);
-            using var outputMs = new MemoryStream(buffer.Length);
-            await decompressor.CopyToAsync(outputMs, stoppingToken);
-
-            if (outputMs.Length != buffer.Length)
+            try
             {
-                logger.LogWarning("Decompressed length {0} does not match declared len={1}", outputMs.Length, buffer.Length);
+                buffer = PayloadCompression.Decode(offer.Format, compressed, offer.Length);
+            }
+            catch (InvalidDataException ex)
+            {
+                logger.LogWarning("Payload for {0} does not decode: {1}", id, ex.Message);
                 await stream.WriteUtf8AndFlush("bad " + id + "\n");
                 return;
             }
-
-            buffer = outputMs.ToArray();
-        }
-        else // fmt=p (or absent - default plain)
-        {
-            logger.LogInformation("Waiting for {0} uncompressed bytes", buffer.Length);
-            try
-            {
-                await Extensions.WithInactivityTimeout(t => stream.ReadExactlyAsync(buffer, t).AsTask(), InactivityTimeout, stoppingToken);
-            }
-            catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
-            {
-                logger.LogWarning("Inactivity timeout waiting for uncompressed payload, closing");
-                return;
-            }
-            logger.LogInformation("Received uncompressed data");
+            logger.LogInformation("Received {0} as fmt={1}: {2} bytes, {3} decompressed",
+                id, offer.Format, compressed.Length, buffer.Length);
         }
 
         var text = Encoding.UTF8.GetString(buffer);

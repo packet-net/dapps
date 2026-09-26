@@ -51,4 +51,13 @@ public class DbNeighbour
     /// Null = not a MeshCore neighbour. (sqlite-net adds this column on upgrade.)
     /// </summary>
     public string? MeshCoreChannel { get; set; }
+
+    /// <summary>
+    /// Per-neighbour override for <see cref="dapps.core.Models.SystemOptions.CompressionEnabled"/>.
+    /// Null = defer to the system-wide setting. False = never compress
+    /// payloads to this neighbour, even if the system setting is on.
+    /// True = compress when it saves bytes even if the system setting
+    /// is off. (sqlite-net adds this column on upgrade.)
+    /// </summary>
+    public bool? CompressionEnabled { get; set; }
 }

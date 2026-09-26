@@ -288,6 +288,28 @@ public sealed class Dappsv1SessionBackhaulTests
         batch.SecondWave.Should().ContainSingle("a message queued meanwhile waits for the next session, not a dead link");
     }
 
+    [Fact]
+    public async Task APeerWithoutTheDictionary_RefusesTheCompressedOffer_AndGetsItPlainOnTheSameSession()
+    {
+        var payload = Encoding.UTF8.GetBytes(
+            """{"v":1,"o":"MB7NPW","s":66,"e":1,"ts":1790410266123,"a":"p.i","data":{"t":"cp","cid":1,"fc":"M0AHN","ts":1790410266050,"p":"Evening all, is anyone on the WPS channel tonight?","dts":1790410266123}}""");
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(
+            "DAPPSv1>\nerror wps0001\nsend wps0001\nack wps0001\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, null, null,
+            compressTo: (_, _) => Task.FromResult(true));
+
+        var result = await sb.SendAsync(
+            new BackhaulMessage("wps0001", "app@N0DEST", Salt: 1L, Ttl: 60, Payload: payload),
+            new BackhaulRoute("N0DEST"), "N0SRC", TestContext.Current.CancellationToken);
+
+        result.Accepted.Should().BeTrue();
+        transport.Connects.Should().Be(1);
+        var written = Encoding.Latin1.GetString(transport.WriteCapture);
+        written.IndexOf(" fmt=z1 ", StringComparison.Ordinal).Should().BeLessThan(
+            written.IndexOf(" fmt=p ", StringComparison.Ordinal), "compressed first, then plain after the refusal");
+        written.Should().EndWith(Encoding.UTF8.GetString(payload), "what went after the refusal is the readable payload");
+    }
+
     private static BackhaulMessage Msg(string id) => new(id, "app@N0DEST", Salt: 1L, Ttl: 60, Payload: "x"u8.ToArray());
 
     /// <summary>A fixed list of messages, recording each outcome.

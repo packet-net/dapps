@@ -68,7 +68,8 @@ public sealed class AgwInboundService(
     OperationalMetrics? metrics = null,
     IDappsTxGate? txGate = null,
     TimeProvider? timeProvider = null,
-    PeerSessionRegistry? peerSessions = null) : IHostedService
+    PeerSessionRegistry? peerSessions = null,
+    CompressionPolicy? compression = null) : IHostedService
 {
     internal static readonly TimeSpan IdleBackoff = TimeSpan.FromSeconds(2);
     /// <summary>Delay between cycles that ended without a real failure
@@ -433,7 +434,8 @@ public sealed class AgwInboundService(
         var lease = peerSessions?.Acquire(remote, "inbound");
 
         var handler = new InboundConnectionHandler(
-            stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics);
+            stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics,
+            compressTo: compression is null ? null : compression.ShouldCompressToAsync);
 
         // Not tied to the cycle token: a cancellation landing in the gap
         // after the 'C' was read would skip the handler, leaving the

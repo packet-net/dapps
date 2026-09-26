@@ -29,7 +29,8 @@ public class NeighboursController(Database database) : ControllerBase
             var script = ConnectScript.FromJson(n.ConnectScriptJson);
             return new NeighbourModel(n.Callsign, n.BearerPort, n.UdpEndpoint,
                 ConnectScript: script?.ToLines(),
-                ConnectScriptStepCount: script?.Steps.Count ?? 0);
+                ConnectScriptStepCount: script?.Steps.Count ?? 0,
+                CompressionEnabled: n.CompressionEnabled);
         });
     }
 
@@ -56,7 +57,8 @@ public class NeighboursController(Database database) : ControllerBase
             neighbour.Callsign.Trim().ToUpperInvariant(),
             neighbour.BearerPort,
             string.IsNullOrWhiteSpace(neighbour.UdpEndpoint) ? null : neighbour.UdpEndpoint.Trim(),
-            connectScriptJson: scriptJson);
+            connectScriptJson: scriptJson,
+            compressionEnabled: neighbour.CompressionEnabled);
         return NoContent();
     }
 
@@ -85,10 +87,19 @@ public class NeighboursController(Database database) : ControllerBase
 /// fills it on GET so the dashboard can show "N steps" without
 /// re-parsing.
 /// </para>
+///
+/// <para>
+/// <see cref="CompressionEnabled"/> is the per-neighbour override for
+/// <see cref="dapps.core.Models.SystemOptions.CompressionEnabled"/>:
+/// null defers to the system-wide setting, false never compresses to
+/// this neighbour, true compresses when it saves bytes even if the
+/// system setting is off.
+/// </para>
 /// </summary>
 public sealed record NeighbourModel(
     string Callsign,
     int? BearerPort,
     string? UdpEndpoint = null,
     string? ConnectScript = null,
-    int ConnectScriptStepCount = 0);
+    int ConnectScriptStepCount = 0,
+    bool? CompressionEnabled = null);

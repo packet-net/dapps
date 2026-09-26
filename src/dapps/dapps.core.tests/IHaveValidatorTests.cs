@@ -113,6 +113,32 @@ public class IHaveValidatorTests
         result.Offer.CompressedLength.Should().Be(3);
     }
 
+    [Fact]
+    public void Validate_FmtZ1WithClen_Succeeds()
+    {
+        var result = IHaveValidator.Validate("ihave abc len=197 fmt=z1 clen=67 dst=app@x");
+        result.IsValid.Should().BeTrue($"got error: {result.Error}");
+        result.Offer!.Format.Should().Be("z1");
+        result.Offer.CompressedLength.Should().Be(67);
+    }
+
+    [Fact]
+    public void Validate_FmtZ1WithoutClen_Fails()
+    {
+        var result = IHaveValidator.Validate("ihave abc len=197 fmt=z1 dst=app@x");
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("clen");
+    }
+
+    [Fact]
+    public void Validate_ADictionaryThisBuildDoesntHold_Fails()
+    {
+        // The sender reads the refusal and offers the message plain.
+        var result = IHaveValidator.Validate("ihave abc len=197 fmt=z9 clen=67 dst=app@x");
+        result.IsValid.Should().BeFalse();
+        result.Error.Should().Contain("fmt=z9");
+    }
+
     [Theory]
     [InlineData("clen=foo")]
     [InlineData("clen=-1")]

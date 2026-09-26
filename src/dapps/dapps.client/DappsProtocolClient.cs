@@ -1,4 +1,5 @@
 using System.Text;
+using dapps.client.Compression;
 using Microsoft.Extensions.Logging;
 
 namespace dapps.client;
@@ -138,21 +139,6 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         PeerClosed,
     }
 
-    /// <summary>
-    /// The whole push exchange for one message: offer it, send the
-    /// payload, read the ack.
-    /// </summary>
-    public async Task<PushOutcome> PushAsync(Backhaul.BackhaulMessage message, CancellationToken ct)
-    {
-        var offered = await OfferMessageAsync(
-            message.Id, message.Salt, DappsMessage.MessageFormat.Plain, message.Destination, message.Payload.Length, ct,
-            message.Ttl, message.Originator, message.MasterId, message.FragmentIndex, message.FragmentTotal,
-            message.StreamId, message.StreamSeq, message.StreamGapTimeoutSeconds);
-        if (!offered) return lastReplyWasEof ? PushOutcome.PeerClosed : PushOutcome.OfferRefused;
-        if (!await SendMessageAsync(message.Id, message.Payload, ct)) return lastReplyWasEof ? PushOutcome.PeerClosed : PushOutcome.PayloadRefused;
-        return PushOutcome.Accepted;
-    }
-
     /// <summary>Set by <see cref="ReadLineAsync"/>: the last line read
     /// came back empty because the stream ended.</summary>
     private bool lastReplyWasEof;
@@ -166,9 +152,55 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
     public bool LastPollDrained { get; private set; }
 
     /// <summary>
-    /// Sends an `ihave` line and waits for `send &lt;id&gt;`. Returns true on
-    /// acceptance. Today only fmt=p (plain) is supported on the sender
-    /// side; fmt=d would need clen to be threaded through.
+    /// The whole push exchange for one message: offer it, send the
+    /// payload, read the ack. With <paramref name="compress"/>, the
+    /// payload goes as zstd with the shared dictionary when that saves
+    /// enough to be worth it (<see cref="PayloadCompression.TryCompress"/>).
+    /// A peer that refuses the compressed offer, one that doesn't hold
+    /// this dictionary version yet, is offered the same message plain
+    /// straight away on the same session.
+    /// </summary>
+    public async Task<PushOutcome> PushAsync(Backhaul.BackhaulMessage message, bool compress, CancellationToken ct)
+    {
+        var compressed = compress ? PayloadCompression.TryCompress(message.Payload) : null;
+        if (compressed is { } wire)
+        {
+            var reply = await OfferCoreAsync(message, wire.Format, wire.Bytes.Length, ct);
+            if (reply == $"send {message.Id}")
+            {
+                logger.LogInformation("Sending {0} as fmt={1}: {2} bytes compressed to {3}",
+                    message.Id, wire.Format, message.Payload.Length, wire.Bytes.Length);
+                return await SendPayloadAsync(message.Id, wire.Bytes, ct);
+            }
+            if (lastReplyWasEof) return PushOutcome.PeerClosed;
+            logger.LogInformation("Peer answered '{0}' to {1} as fmt={2}; offering it plain", reply, message.Id, wire.Format);
+        }
+
+        var plainReply = await OfferCoreAsync(message, "p", compressedLength: null, ct);
+        if (plainReply != $"send {message.Id}")
+        {
+            if (lastReplyWasEof) return PushOutcome.PeerClosed;
+            logger.LogError("Expected 'send {0}', got '{1}'", message.Id, plainReply);
+            return PushOutcome.OfferRefused;
+        }
+        return await SendPayloadAsync(message.Id, message.Payload, ct);
+    }
+
+    private async Task<PushOutcome> SendPayloadAsync(string id, byte[] wire, CancellationToken ct) =>
+        await SendMessageAsync(id, wire, ct) ? PushOutcome.Accepted
+            : lastReplyWasEof ? PushOutcome.PeerClosed
+            : PushOutcome.PayloadRefused;
+
+    private Task<string> OfferCoreAsync(Backhaul.BackhaulMessage message, string format, int? compressedLength, CancellationToken ct) =>
+        OfferCoreAsync(
+            message.Id, message.Salt, format, compressedLength, message.Destination, message.Payload.Length, ct,
+            message.Ttl, message.Originator, message.MasterId, message.FragmentIndex, message.FragmentTotal,
+            message.StreamId, message.StreamSeq, message.StreamGapTimeoutSeconds);
+
+    /// <summary>
+    /// Sends a plain (<c>fmt=p</c>) `ihave` line and waits for
+    /// `send &lt;id&gt;`. Returns true on acceptance. To send a payload
+    /// compressed, use <see cref="PushAsync"/>.
     /// </summary>
     public async Task<bool> OfferMessageAsync(
         string id,
@@ -188,9 +220,38 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
     {
         if (format != DappsMessage.MessageFormat.Plain)
         {
-            throw new NotImplementedException("Deflate format not yet wired through outbound");
+            throw new NotImplementedException("Compressed offers go through PushAsync");
         }
 
+        var line = await OfferCoreAsync(id, salt, "p", null, destination, length, ct, ttl, originator,
+            masterId, fragmentIndex, fragmentTotal, streamId, streamSeq, streamGapTimeoutSeconds);
+        if (line == $"send {id}")
+        {
+            return true;
+        }
+
+        logger.LogError("Expected 'send {0}', got '{1}'", id, line);
+        return false;
+    }
+
+    /// <summary>Writes an `ihave` line and returns the peer's reply.</summary>
+    private async Task<string> OfferCoreAsync(
+        string id,
+        long? salt,
+        string format,
+        int? compressedLength,
+        string destination,
+        int length,
+        CancellationToken ct,
+        int? ttl,
+        string? originator,
+        string? masterId,
+        int? fragmentIndex,
+        int? fragmentTotal,
+        string? streamId,
+        uint? streamSeq,
+        uint? streamGapTimeoutSeconds)
+    {
         // F2 multi-part: mid= and frag=N/M either both present or both
         // absent. Belt-and-braces - the receiver's parser also enforces
         // this - but catching it sender-side prevents a malformed line
@@ -204,7 +265,12 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
                 "masterId, fragmentIndex, fragmentTotal must all be set together (multi-part) or all be null");
         }
 
-        var sb = new StringBuilder($"ihave {id} len={length} fmt=p dst={destination}");
+        var sb = new StringBuilder($"ihave {id} len={length} fmt={format}");
+        if (compressedLength.HasValue)
+        {
+            sb.Append($" clen={compressedLength.Value}");
+        }
+        sb.Append($" dst={destination}");
         if (salt.HasValue)
         {
             sb.Append($" s={salt}");
@@ -250,13 +316,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         await stream.FlushAsync(ct);
 
         var line = await ReadLineAsync(ct);
-        if (line == $"send {id}")
-        {
-            return true;
-        }
-
-        logger.LogError("Expected 'send {0}', got '{1}'", id, line);
-        return false;
+        return line;
     }
 
     /// <summary>
@@ -490,6 +550,16 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
                 await stream.FlushAsync(ct);
                 continue;
             }
+            if (!PayloadCompression.CanDecode(parsed.Format) || (parsed.Format != "p" && parsed.CompressedLength is null))
+            {
+                // A format we can't read, such as a newer dictionary
+                // than this build holds. Saying no makes the server
+                // offer it again plain.
+                logger.LogInformation("rev poll: can't decode fmt={0} for {1}; declining so it comes plain", parsed.Format, parsed.Id);
+                await stream.WriteAsync(Encoding.UTF8.GetBytes($"no {parsed.Id}\n"), ct);
+                await stream.FlushAsync(ct);
+                continue;
+            }
 
             // Always accept - the client asked for this; "no" is
             // reserved for when the receiver has a strong reason to
@@ -504,8 +574,20 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
                 logger.LogWarning("rev poll: expected 'data {0}', got '{1}' - bailing", parsed.Id, dataHeader);
                 yield break;
             }
-            var payload = new byte[parsed.Length];
-            await ReadExactlyAsync(payload, ct);
+            var wire = new byte[parsed.Format == "p" ? parsed.Length : parsed.CompressedLength!.Value];
+            await ReadExactlyAsync(wire, ct);
+            byte[] payload;
+            try
+            {
+                payload = PayloadCompression.Decode(parsed.Format, wire, parsed.Length);
+            }
+            catch (InvalidDataException ex)
+            {
+                logger.LogWarning("rev poll: {0}; NAKing {1}", ex.Message, parsed.Id);
+                await stream.WriteAsync(Encoding.UTF8.GetBytes($"bad {parsed.Id}\n"), ct);
+                await stream.FlushAsync(ct);
+                continue;
+            }
 
             // Hash check before yielding - same contract as the
             // regular receiver. Bad payloads get NAK'd; the server
@@ -566,12 +648,14 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
     /// minimum fields aren't present.</summary>
     private static (bool Ok, ParsedOffer? Offer) TryParseOffer(string line)
     {
-        // line: "ihave <id> len=N fmt=p dst=… [s=…] [ttl=…] [src=…] [mid=… frag=N/M] [sid=… sn=… gt=…] …"
+        // line: "ihave <id> len=N fmt=<p|d|zN> [clen=…] dst=… [s=…] [ttl=…] [src=…] [mid=… frag=N/M] [sid=… sn=… gt=…] …"
         var parts = line.Split(' ');
         if (parts.Length < 4 || parts[0] != "ihave") return (false, null);
         var id = parts[1];
         string? destination = null;
         int? len = null;
+        var format = "p";
+        int? clen = null;
         long? salt = null;
         int? ttl = null;
         string? originator = null;
@@ -591,6 +675,8 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
             switch (key)
             {
                 case "len": if (int.TryParse(value, out var l)) len = l; break;
+                case "fmt": format = value; break;
+                case "clen": if (int.TryParse(value, out var cl) && cl >= 0) clen = cl; break;
                 case "dst": destination = value; break;
                 case "s": if (long.TryParse(value, out var s)) salt = s; break;
                 case "ttl": if (int.TryParse(value, out var t)) ttl = t; break;
@@ -611,14 +697,15 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
                 case "gt": if (uint.TryParse(value, out var gtv)) streamGapTimeout = gtv; break;
             }
         }
-        if (destination is null || len is null) return (false, new ParsedOffer(id, "", 0, null, null, null, null, null, null, null, null, null));
-        return (true, new ParsedOffer(id, destination, len.Value, salt, ttl, originator, masterId, fragIndex, fragTotal, streamId, streamSeq, streamGapTimeout));
+        if (destination is null || len is null) return (false, new ParsedOffer(id, "", 0, null, null, null, null, null, null, null, null, null, "p", null));
+        return (true, new ParsedOffer(id, destination, len.Value, salt, ttl, originator, masterId, fragIndex, fragTotal, streamId, streamSeq, streamGapTimeout, format, clen));
     }
 
     private sealed record ParsedOffer(
         string Id, string Destination, int Length, long? Salt, int? Ttl,
         string? Originator, string? MasterId, int? FragmentIndex, int? FragmentTotal,
-        string? StreamId, uint? StreamSeq, uint? StreamGapTimeoutSeconds);
+        string? StreamId, uint? StreamSeq, uint? StreamGapTimeoutSeconds,
+        string Format, int? CompressedLength);
 
     /// <summary>
     /// Reads a line terminated by <c>\n</c>, <c>\r</c>, or <c>\r\n</c>.

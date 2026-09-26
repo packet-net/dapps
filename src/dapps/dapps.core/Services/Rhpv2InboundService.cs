@@ -35,7 +35,8 @@ public sealed class Rhpv2InboundService(
     OperationalMetrics metrics,
     IDappsTxGate? txGate = null,
     TimeProvider? timeProvider = null,
-    PeerSessionRegistry? peerSessions = null) : BackgroundService
+    PeerSessionRegistry? peerSessions = null,
+    CompressionPolicy? compression = null) : BackgroundService
 {
     private static readonly TimeSpan IdleBackoff = TimeSpan.FromSeconds(2);
     /// <summary>Delay between cycles that ended without a real failure
@@ -238,7 +239,8 @@ public sealed class Rhpv2InboundService(
             var lease = e.Message.Remote is { Length: > 0 } peer ? peerSessions?.Acquire(peer, "inbound") : null;
 
             var handler = new InboundConnectionHandler(
-                stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics);
+                stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics,
+                compressTo: compression is null ? null : compression.ShouldCompressToAsync);
 
             _ = Task.Run(async () =>
             {

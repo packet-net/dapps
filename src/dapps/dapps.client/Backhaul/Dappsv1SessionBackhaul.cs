@@ -38,6 +38,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     private readonly Func<bool>? opportunisticEnabled;
     private readonly IRouteGossipPort? routeGossip;
     private readonly Func<Stream, string, CancellationToken, Task>? serveOnGlare;
+    private readonly Func<string, CancellationToken, Task<bool>>? compressTo;
 
     /// <summary>
     /// How long a caller with the lower callsign waits for the first byte
@@ -57,13 +58,17 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     /// an already-connected stream to the named peer, prompt included:
     /// what a crossed connect is resolved with. Null leaves the caller
     /// waiting for the prompt as before.</param>
+    /// <param name="compressTo">Whether payloads to the named peer may be
+    /// sent compressed (the operator's setting for that neighbour). Asked
+    /// once per session. Null sends everything plain.</param>
     public Dappsv1SessionBackhaul(
         IDappsOutboundTransport transport,
         ILoggerFactory loggerFactory,
         IBackhaulInbox? opportunisticInbox,
         Func<bool>? opportunisticEnabled,
         IRouteGossipPort? routeGossip = null,
-        Func<Stream, string, CancellationToken, Task>? serveOnGlare = null)
+        Func<Stream, string, CancellationToken, Task>? serveOnGlare = null,
+        Func<string, CancellationToken, Task<bool>>? compressTo = null)
     {
         this.transport = transport;
         this.loggerFactory = loggerFactory;
@@ -71,6 +76,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         this.opportunisticEnabled = opportunisticEnabled;
         this.routeGossip = routeGossip;
         this.serveOnGlare = serveOnGlare;
+        this.compressTo = compressTo;
         logger = loggerFactory.CreateLogger<Dappsv1SessionBackhaul>();
     }
 
@@ -141,7 +147,8 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                 await batch.CompleteAsync(first, failure!, sw.Elapsed, ct);
                 return;
             }
-            await RunSessionAsync(protocol, first, route, batch, sw, ct);
+            var compress = await ShouldCompressAsync(route, ct);
+            await RunSessionAsync(protocol, first, route, compress, batch, sw, ct);
         }
         finally
         {
@@ -238,10 +245,25 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         }
     }
 
+    private async Task<bool> ShouldCompressAsync(BackhaulRoute route, CancellationToken ct)
+    {
+        if (compressTo is null) return false;
+        try
+        {
+            return await compressTo(route.Callsign, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Couldn't read the compression setting for {0}; sending plain", route.Callsign);
+            return false;
+        }
+    }
+
     private async Task RunSessionAsync(
         DappsProtocolClient protocol,
         BackhaulMessage first,
         BackhaulRoute route,
+        bool compress,
         IBackhaulBatch batch,
         System.Diagnostics.Stopwatch sw,
         CancellationToken ct)
@@ -258,7 +280,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                 // The first message's time includes the connect; each
                 // later one is timed on its own exchange.
                 if (!ReferenceEquals(next, first)) sw.Restart();
-                var result = await PushAsync(protocol, next, route, laterOnSession: !ReferenceEquals(next, first), ct);
+                var result = await PushAsync(protocol, next, route, compress, laterOnSession: !ReferenceEquals(next, first), ct);
                 await batch.CompleteAsync(next, result, sw.Elapsed, ct);
                 if (!result.Accepted)
                 {
@@ -299,10 +321,10 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     }
 
     /// <summary>
-    /// Offer one message and send its payload. A peer that says no, or
-    /// a link that fails part way, is a failed send for this message;
-    /// the session stops there because the exchange can't be trusted
-    /// to be in step any more.
+    /// Offer one message and send its payload, compressed when allowed
+    /// and worth it. A peer that says no, or a link that fails part way,
+    /// is a failed send for this message; the session stops there
+    /// because the exchange can't be trusted to be in step any more.
     ///
     /// Except when the session has already carried an exchange
     /// (<paramref name="laterOnSession"/>) and the link simply ends: the
@@ -312,11 +334,11 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     /// session; if the neighbour really is down, that dial finds out.
     /// </summary>
     private async Task<BackhaulSendResult> PushAsync(
-        DappsProtocolClient protocol, BackhaulMessage message, BackhaulRoute route, bool laterOnSession, CancellationToken ct)
+        DappsProtocolClient protocol, BackhaulMessage message, BackhaulRoute route, bool compress, bool laterOnSession, CancellationToken ct)
     {
         try
         {
-            return await protocol.PushAsync(message, ct) switch
+            return await protocol.PushAsync(message, compress, ct) switch
             {
                 DappsProtocolClient.PushOutcome.Accepted => BackhaulSendResult.Ok(),
                 DappsProtocolClient.PushOutcome.PeerClosed when laterOnSession => SessionEnded(message, route),

@@ -47,10 +47,10 @@ Anatomy of the `ihave` line:
 |---|---|---|
 | `<id>` (positional, after `ihave`) | yes | 7-character lowercase hex content hash; see [hash format](#message-id) |
 | `len=<int>` | yes | Payload length in bytes (non-negative integer) |
-| `fmt=<p\|d>` | yes | `p` for plain bytes, `d` for deflate-compressed |
+| `fmt=<p\|d\|z1>` | yes | `p` for plain bytes, `d` for raw deflate, `z1` for zstd with the shared dictionary; see [compression](#compression) |
 | `dst=<callsign>` | yes | Destination, in `app@CALL[-SSID]` form |
 | `s=<int64>` | optional | Salt as decimal int64; mixed into the hash if present |
-| `clen=<int>` | conditional | Compressed length; required when `fmt=d`, forbidden when `fmt=p` |
+| `clen=<int>` | conditional | Compressed length; required when `fmt` is `d` or `z1`, forbidden when `fmt=p` |
 | `chk=<4hex>` | optional | CRC-16/CCITT-FALSE over everything before ` chk=`; see [checksum](#checksum) |
 
 Plus the optional features documented under [Full interoperability](#full-interoperability) (`ttl`, `src`, `mid`, `frag`, `sid`, `sn`, `gt`).
@@ -62,7 +62,7 @@ Receiver replies are one of:
 | Reply | Meaning | Triggered by |
 |---|---|---|
 | `send <id>\n` | "Yes, send the payload" | Successful parse + accept |
-| `error\n` or `error <id>\n` | "Reject the offer" | Malformed `ihave` (missing `len`/`dst`, bad `fmt`, broken `chk`, etc.) |
+| `error\n` or `error <id>\n` | "Reject the offer" | Malformed `ihave` (missing `len`/`dst`, a `fmt` you can't decode, broken `chk`, etc.) |
 | `bad <id>\n` | "Payload arrived but the hash didn't match" | Sent only after `data`, when `SHA1(salt_le ++ payload)[:7] ≠ id` |
 | `ack <id>\n` | "Got it, hash matches" | After `data` succeeds |
 | `eh?\n` | "Unrecognised command" | Verb wasn't `ihave`/`data`/`peers`/`rev`/`quit`/`help` |
@@ -72,9 +72,9 @@ Receiver replies are one of:
 Implement the receiver mirror:
 
 1. After writing `DAPPSv1>\n`, read a line.
-2. If it starts with `ihave `, parse it. If valid, write `send <id>\n` and persist the offer's metadata. If invalid, write `error <id>\n` (or `error\n` if the id couldn't be plucked out) and close.
+2. If it starts with `ihave `, parse it. If valid, write `send <id>\n` and persist the offer's metadata. If invalid, write `error <id>\n` (or `error\n` if the id couldn't be plucked out) and go back to reading commands: a sender whose compressed offer you refused offers the same message again plain.
 3. Read the next line. It must be `data <id>\n` matching the id you just `send`'d. Otherwise, close.
-4. Read exactly `len` bytes from the stream (no framing - just `len` raw bytes). If `fmt=d`, those bytes are deflate-compressed; decompress to `len` bytes (the `len` field is *uncompressed* length, `clen` was the on-wire byte count).
+4. Read exactly `len` bytes from the stream (no framing - just `len` raw bytes), or `clen` bytes for a compressed format, and decompress those to `len` bytes (`len` is always the *uncompressed* length, `clen` the on-wire byte count).
 5. Compute `SHA1(salt_le_8_bytes ++ payload)[:7]`. If it matches `<id>`, write `ack <id>\n`. Otherwise, write `bad <id>\n`.
 
 The receiver MAY then loop and emit `DAPPSv1>\n` again to await another command on the same session, or close.
@@ -176,6 +176,25 @@ Why opt-in: ordering trades latency for predictability. One missing message stal
 Receivers that don't understand `sid`/`sn`/`gt` ignore the keys and deliver each message immediately - the stream survives the per-pair conversation between aware nodes.
 
 Reference: [DappsProtocolClient.cs:138-152](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs#L138-L152), [IHaveValidator.cs:198-227](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/IHaveValidator.cs#L198-L227), full design in [reference.md "Message ordering"](app-developers/reference.md#message-ordering-opt-in).
+
+### Compression (`fmt=z1`) {#compression}
+
+A payload can travel zstd-compressed with a shared dictionary. `fmt=z1` means zstd with dictionary version 1, and `clen=` is the byte count on the wire:
+
+```
+C: ihave 3f9a0c1 len=197 fmt=z1 clen=67 s=1790410266123 dst=wps-repl@G5ALF-3\n
+S: send 3f9a0c1\n
+C: data 3f9a0c1\n<67 bytes of zstd>
+S: ack 3f9a0c1\n
+```
+
+`len=` stays the original length and the id is still the hash of the original payload, so compression never changes a message's identity.
+
+The dictionary is a fixed file shipped with DAPPS ([payload-v1.dict](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/Compression/payload-v1.dict)), loaded as a zstd raw-content dictionary. It holds typical traffic (WPS replication JSON, chat, telemetry), which is what lets a 200-byte WPS post shrink to about a third of its size, where zstd alone barely manages a quarter off.
+
+The reference daemon compresses only when that saves at least 32 bytes, counting the `clen=` field, so short messages stay readable on a monitor. It's on by default; `DAPPS_COMPRESSION_ENABLED` and a per-neighbour setting turn it off. Receivers always accept it.
+
+New dictionaries get new versions (`z2` and so on), and a shipped version never changes. A receiver that doesn't hold the version it's offered replies `error <id>` (or `no <id>` during a `rev` drain), and the sender offers the same message again with `fmt=p` on the same session.
 
 ### TTL (`ttl=`)
 

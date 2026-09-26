@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using dapps.client;
+using dapps.client.Compression;
 
 namespace dapps.core.Services;
 
@@ -13,7 +14,7 @@ namespace dapps.core.Services;
 public sealed record IHaveOffer(
     string Id,
     int Length,
-    string Format,                          // "p" or "d"
+    string Format,                          // "p", "d" or "z<N>" (zstd, shared dictionary N)
     long? Salt,
     int? CompressedLength,
     string Destination,
@@ -104,13 +105,16 @@ public static class IHaveValidator
         if (!kvps.TryGetValue("dst", out var dst))
             return OfferValidationResult.Fail(id, "dst= is required");
 
+        // z<N> is zstd with shared dictionary N: an N this build doesn't
+        // hold is refused like any unknown format, and the sender offers
+        // the message again plain.
         var fmt = kvps.TryGetValue("fmt", out var fmtVal) ? fmtVal : "p";
-        if (fmt != "p" && fmt != "d")
+        if (!PayloadCompression.CanDecode(fmt))
             return OfferValidationResult.Fail(id, $"unknown fmt={fmt}");
 
         var hasClen = kvps.TryGetValue("clen", out var clenStr);
-        if (fmt == "d" && !hasClen)
-            return OfferValidationResult.Fail(id, "clen= is required when fmt=d");
+        if (fmt != "p" && !hasClen)
+            return OfferValidationResult.Fail(id, $"clen= is required when fmt={fmt}");
         if (fmt == "p" && hasClen)
             return OfferValidationResult.Fail(id, "clen= MUST NOT be supplied when fmt=p");
         int? clen = null;

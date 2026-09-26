@@ -115,6 +115,7 @@ public static class DbStartup
         ("FragmentReassemblyTimeoutSeconds", "604800"),
         ("RouteGossipStalenessHours", "6"),
         ("OpportunisticPollEnabled", "true"),
+        ("CompressionEnabled", "true"),
         ("ScheduledPollEnabled", "false"),
         ("PollIntervalHours", "6"),
         ("DiscoveryAirtimeBudgetSecondsPerHour", "0"),

@@ -47,6 +47,7 @@ public sealed class DappsConfigTools(SystemOptionsStore optionsStore)
         if (update.ScheduledPollEnabled.HasValue) current.ScheduledPollEnabled = update.ScheduledPollEnabled.Value;
         if (update.PollIntervalHours.HasValue) current.PollIntervalHours = ClampPositive(update.PollIntervalHours.Value);
         if (update.OpportunisticPollEnabled.HasValue) current.OpportunisticPollEnabled = update.OpportunisticPollEnabled.Value;
+        if (update.CompressionEnabled.HasValue) current.CompressionEnabled = update.CompressionEnabled.Value;
         if (update.HeartbeatEnabled.HasValue) current.HeartbeatEnabled = update.HeartbeatEnabled.Value;
         if (update.HeartbeatIntervalSeconds.HasValue) current.HeartbeatIntervalSeconds = Math.Max(10, update.HeartbeatIntervalSeconds.Value);
         if (update.DiscoveryAirtimeBudgetSecondsPerHour.HasValue) current.DiscoveryAirtimeBudgetSecondsPerHour = Math.Max(0, update.DiscoveryAirtimeBudgetSecondsPerHour.Value);
@@ -98,6 +99,8 @@ public sealed record ConfigUpdate(
     int? PollIntervalHours = null,
     [property: Description("F3a - opportunistic poll-on-push. Drains a peer's queued mail at the end of every push session. Default true.")]
     bool? OpportunisticPollEnabled = null,
+    [property: Description("Compress message payloads on DAPPSv1 sessions (AGW/RHP neighbours) when it saves bytes and the neighbour supports it. Sender-side only - incoming compressed messages are always accepted. A neighbour's own CompressionEnabled override wins when set. Default true.")]
+    bool? CompressionEnabled = null,
     [property: Description("C3 PR-B - periodic MQTT heartbeat publish to dapps/metrics/heartbeat. Default true.")]
     bool? HeartbeatEnabled = null,
     [property: Description("C3 PR-B - seconds between heartbeat publishes (>=10, default 60).")]
