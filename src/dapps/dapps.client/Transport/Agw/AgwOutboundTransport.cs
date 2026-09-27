@@ -10,6 +10,12 @@ namespace dapps.client.Transport.Agw;
 /// Each call to <see cref="ConnectAsync"/> opens a fresh TCP socket to the
 /// node, asks for an AX.25 connection, and returns a Stream once the remote
 /// confirms.
+///
+/// The socket also turns on the node's monitor, to catch a crossed call:
+/// the peer's SABM to us arriving while ours is on its way to it, both
+/// ends having dialled at once. Neither end is answering then, so no
+/// prompt is coming; <see cref="IDappsConnection.CrossedCall"/> says so,
+/// and the session doesn't wait for one.
 /// </summary>
 public sealed class AgwOutboundTransport : IDappsOutboundTransport
 {
@@ -85,6 +91,22 @@ public sealed class AgwOutboundTransport : IDappsOutboundTransport
                 logger.LogDebug("AGW: {local} already registered on this host (e.g. by AgwInboundService); proceeding", localCallsign);
             }
 
+            // Monitor what the node hears, to spot the peer calling us at
+            // the same moment (see the class doc).
+            var crossed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            // BPQ's monitor shows a SABM as "<C C P>" (a connect, as a command).
+            var peerSabm = $"Fm {remoteCallsign} To {localCallsign} <C C";
+            void Watch(AgwFrame monitored)
+            {
+                if (crossed.Task.IsCompleted) return;
+                if (Encoding.ASCII.GetString(monitored.Payload).Contains(peerSabm, StringComparison.OrdinalIgnoreCase))
+                {
+                    logger.LogInformation("AGW: {0} is calling us as we call it: the calls crossed", remoteCallsign);
+                    crossed.TrySetResult();
+                }
+            }
+            await framing.WriteFrameAsync(new AgwFrame(0, 'm', 0, "", "", []), stoppingToken);
+
             logger.LogInformation("AGW: requesting {local}->{remote} on port {p}", localCallsign, remoteCallsign, portByte);
             await framing.WriteFrameAsync(
                 new AgwFrame(portByte, 'C', 0xF0, localCallsign, remoteCallsign, []),
@@ -132,9 +154,9 @@ public sealed class AgwOutboundTransport : IDappsOutboundTransport
 
                     if (matchesAsConfirm || matchesAsEcho)
                     {
-                        logger.LogInformation("AGW: connect confirmed");
-                        var sessionStream = new AgwSessionStream(framing, portByte, localCallsign, remoteCallsign, logger);
-                        return new AgwConnection(tcp, sessionStream, framing, portByte, localCallsign, remoteCallsign, logger);
+                        logger.LogInformation("AGW: connect confirmed ({0})", Printable(frame.Payload));
+                        var sessionStream = new AgwSessionStream(framing, portByte, localCallsign, remoteCallsign, logger, Watch);
+                        return new AgwConnection(tcp, sessionStream, framing, portByte, localCallsign, remoteCallsign, logger, crossed.Task);
                     }
                 }
 
@@ -144,7 +166,7 @@ public sealed class AgwOutboundTransport : IDappsOutboundTransport
                     throw new IOException($"AGW connect to {remoteCallsign} failed: {msg}");
                 }
 
-                logger.LogDebug("AGW: ignoring frame kind '{0}' while waiting for connect confirmation", frame.Kind);
+                Watch(frame);
             }
         }
         catch
@@ -154,6 +176,10 @@ public sealed class AgwOutboundTransport : IDappsOutboundTransport
         }
     }
 
+    /// <summary>Frame text as it can go in a log: printable ASCII only.</summary>
+    private static string Printable(byte[] payload) =>
+        new([.. Encoding.Latin1.GetString(payload).Where(c => c is >= ' ' and <= '~')]);
+
     private sealed class AgwConnection(
         TcpClient tcp,
         Stream sessionStream,
@@ -161,9 +187,21 @@ public sealed class AgwOutboundTransport : IDappsOutboundTransport
         byte portByte,
         string localCallsign,
         string remoteCallsign,
-        ILogger logger) : IDappsConnection
+        ILogger logger,
+        Task crossedCall) : IDappsConnection
     {
         public Stream Stream => sessionStream;
+
+        public Task CrossedCall => crossedCall;
+
+        /// <summary>Close the socket without a 'd': the link is a newer
+        /// session's now.</summary>
+        public ValueTask AbandonAsync()
+        {
+            sessionStream.Dispose();
+            tcp.Dispose();
+            return ValueTask.CompletedTask;
+        }
 
         public async ValueTask DisposeAsync()
         {

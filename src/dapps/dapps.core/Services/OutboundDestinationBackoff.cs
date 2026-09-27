@@ -18,6 +18,12 @@ namespace dapps.core.Services;
 /// destination stops being dialled every 5s and instead backs off like
 /// any other reconnect.
 ///
+/// Each cooldown is lengthened by up to <paramref name="spread"/> of
+/// itself at random (half again, by default). Two neighbours whose link
+/// failed under them both have mail for each other; with fixed delays
+/// they would redial each other at the same moments, cross, and fail
+/// together for as long as the backoff lasts.
+///
 /// Deliberately in-memory only (not persisted): a destination's cooldown
 /// is about *this process's* recent attempts, and resetting on restart
 /// is the right behaviour (give a destination a fresh chance rather than
@@ -31,8 +37,10 @@ namespace dapps.core.Services;
 /// (~15s). Slower fallback-route pickup is the intended trade for not
 /// hammering a failing destination.
 /// </summary>
-public sealed class OutboundDestinationBackoff(TimeProvider? timeProvider = null)
+public sealed class OutboundDestinationBackoff(TimeProvider? timeProvider = null, double spread = OutboundDestinationBackoff.DefaultSpread, Random? random = null)
 {
+    public const double DefaultSpread = 0.5;
+
     private readonly TimeProvider timeProvider = timeProvider ?? TimeProvider.System;
     private readonly ConcurrentDictionary<string, ReconnectBackoffSchedule> schedules =
         new(StringComparer.OrdinalIgnoreCase);
@@ -92,7 +100,7 @@ public sealed class OutboundDestinationBackoff(TimeProvider? timeProvider = null
     /// can't disagree with the actual cooldown expiry.</summary>
     public DateTimeOffset RecordFailure(string destination)
     {
-        var schedule = schedules.GetOrAdd(destination, _ => new ReconnectBackoffSchedule(timeProvider));
+        var schedule = schedules.GetOrAdd(destination, _ => new ReconnectBackoffSchedule(timeProvider, spread, random));
         schedule.RecordFailure();
         return schedule.NextRetryAtUtc!.Value; // RecordFailure() just set this
     }

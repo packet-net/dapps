@@ -138,6 +138,14 @@ public sealed class ExchangeSession
     /// <summary>For a caller: a connect script already read the prompt.</summary>
     public bool PromptConsumed { get; init; }
 
+    /// <summary>
+    /// For a caller: completes if the transport saw the peer's own call to
+    /// us cross ours (<see cref="Transport.IDappsConnection.CrossedCall"/>).
+    /// Neither end is answering then, so the caller sends its exchange at
+    /// once instead of waiting out <see cref="PromptWait"/>.
+    /// </summary>
+    public Task? CrossedCall { get; init; }
+
     /// <summary>For a caller: pull the peer's routes before the exchange
     /// when the gossip gate says so.</summary>
     public IRouteGossipPort? RouteGossip { get; init; }
@@ -324,6 +332,13 @@ public sealed class ExchangeSession
         if (unheard.Count > 0) return true;
         if (!dialled) return false;
 
+        if (!ownSent && !awaitingRoutes && CrossedCall is { IsCompleted: true })
+        {
+            logger.LogInformation("Our call to {0} crossed its call to us, so no prompt is coming; sending our exchange now", peer);
+            SendOwnExchange();
+            return true;
+        }
+
         if (!ownSent && !awaitingRoutes && now - started >= PromptWait)
         {
             if (noiseBytes > 0)
@@ -385,6 +400,7 @@ public sealed class ExchangeSession
             data = link.WaitForDataAsync(waiting.Token).AsTask();
             var waits = new List<Task> { data, Task.Delay(delay, TimeProvider, waiting.Token) };
             if (CanSend) waits.Add(work.Reader.WaitToReadAsync(waiting.Token).AsTask());
+            if (dialled && !ownSent && !awaitingRoutes && CrossedCall is { IsCompleted: false } crossed) waits.Add(crossed);
             await Task.WhenAny(waits);
             await waiting.CancelAsync();
         }
@@ -453,12 +469,15 @@ public sealed class ExchangeSession
                 return;
             case "msg":
                 await ReceiveMessageAsync(line, ct);
+                HeardExchangeTraffic();
                 return;
             case "ihave":
                 await ReceiveOfferAsync(line, ct);
+                HeardExchangeTraffic();
                 return;
             case "data":
                 await ReceiveDataAsync(line, ct);
+                HeardExchangeTraffic();
                 return;
         }
 
@@ -470,9 +489,12 @@ public sealed class ExchangeSession
             return;
         }
 
-        if ((Established || dialled) && id is not null && verb is "send" or "ack" or "no" or "bad" or "error")
+        // Answers are taken before the exchange too: they arrive then when
+        // BPQ has moved a link that was mid-exchange onto this session.
+        if (id is not null && verb is "send" or "ack" or "no" or "bad" or "error")
         {
             await OnAnswerAsync(verb, id, line, ct);
+            HeardExchangeTraffic();
             return;
         }
 
@@ -506,6 +528,20 @@ public sealed class ExchangeSession
     }
 
     private static bool IsQuit(string line) => QuitCommands.Contains(line.Trim().ToLowerInvariant());
+
+    /// <summary>
+    /// A caller hearing exchange traffic before any prompt or rules: the
+    /// peer is mid-exchange with the session this link had before (BPQ
+    /// moved the link to ours). No prompt is coming, so our rules go now,
+    /// and their new tag has the peer send its rules and anything
+    /// unanswered again.
+    /// </summary>
+    private void HeardExchangeTraffic()
+    {
+        if (!dialled || ownSent || awaitingRoutes || done) return;
+        logger.LogInformation("{0} is mid-exchange with an earlier session on this link; sending our exchange now", peer);
+        SendOwnExchange();
+    }
 
     private void Say(string text, bool end)
     {

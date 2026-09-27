@@ -118,4 +118,47 @@ public sealed class PeerSessionRegistryTests
 
         await registry.WaitUntilIdleAsync("G5ALF-3", ct).WaitAsync(TimeSpan.FromSeconds(5), ct);
     }
+
+    // One session per peer: when two end up open with the same peer, the
+    // link is the newest one's, and the older ones are retired.
+
+    [Fact]
+    public void ANewlyConnectedSession_RetiresTheOlderOne_ButNotItself()
+    {
+        var registry = new PeerSessionRegistry();
+        using var older = registry.Acquire("M0AHN-3", "outbound");
+        using var newer = registry.Acquire("M0AHN-3", "inbound");
+
+        older.Retired.IsCancellationRequested.Should().BeTrue();
+        newer.Retired.IsCancellationRequested.Should().BeFalse();
+        registry.IsActive("M0AHN-3", out _).Should().BeTrue("a retired session still holds the peer until it has gone");
+    }
+
+    [Fact]
+    public void ADialStillConnecting_IsNotRetired_AndRetiresTheOthersOnceItConnects()
+    {
+        // The crossing at one node: our dial is on its way when the peer's
+        // call arrives, then BPQ confirms ours and moves the link to it.
+        var registry = new PeerSessionRegistry();
+        var dialling = registry.TryAcquire("M0AHN-3", "outbound", out _)!;
+        using var inbound = registry.Acquire("M0AHN-3", "inbound");
+        dialling.Retired.IsCancellationRequested.Should().BeFalse("it isn't connected yet");
+
+        registry.Connected(dialling);
+
+        inbound.Retired.IsCancellationRequested.Should().BeTrue();
+        dialling.Retired.IsCancellationRequested.Should().BeFalse();
+        dialling.Dispose();
+    }
+
+    [Fact]
+    public void RetiringAPeer_LeavesOtherPeersAlone()
+    {
+        var registry = new PeerSessionRegistry();
+        using var other = registry.Acquire("G5ALF-3", "inbound");
+        using var older = registry.Acquire("M0AHN-3", "inbound");
+        using var newer = registry.Acquire("M0AHN-3", "inbound");
+
+        other.Retired.IsCancellationRequested.Should().BeFalse();
+    }
 }

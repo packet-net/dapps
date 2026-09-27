@@ -1,4 +1,6 @@
+using System.Net.Sockets;
 using System.Text;
+using dapps.client.Transport.Agw;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 
@@ -136,8 +138,60 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
         bpqA = await StartBpqAsync(CallsignA, "AAA", ApplCallA, "APPLA", InsideAgwPortA, KissPortA, 18111);
         bpqB = await StartBpqAsync(CallsignB, "BBB", ApplCallB, "APPLB", InsideAgwPortB, KissPortB, 18112);
 
-        // Give each BPQ a moment to open its KISS link to the simulator.
-        await Task.Delay(3000);
+        // Each BPQ has to open its KISS link to the simulator before it can
+        // transmit; until then a connect request waits (about 8 s after
+        // start-up, seen in the crossed-call experiments), and a test's
+        // first call goes out late enough to cross the other side's.
+        await WaitUntilHeardAsync(AgwPortA, ApplCallA, AgwPortB);
+        await WaitUntilHeardAsync(AgwPortB, ApplCallB, AgwPortA);
+    }
+
+    /// <summary>
+    /// Sends a UI frame from one node until the other node's monitor hears
+    /// it: that node can transmit and the other receive. A BPQ still
+    /// starting up can drop the AGW socket, so that just means try again.
+    /// </summary>
+    private async Task WaitUntilHeardAsync(int fromAgwPort, string fromCall, int toAgwPort)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        while (true)
+        {
+            try
+            {
+                await HearAsync(fromAgwPort, fromCall, toAgwPort, cts.Token);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or SocketException && !cts.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), cts.Token);
+            }
+        }
+    }
+
+    private async Task HearAsync(int fromAgwPort, string fromCall, int toAgwPort, CancellationToken ct)
+    {
+        using var sender = new TcpClient();
+        using var listener = new TcpClient();
+        await sender.ConnectAsync(Host, fromAgwPort, ct);
+        await listener.ConnectAsync(Host, toAgwPort, ct);
+        var send = new AgwFrameTransport(sender.GetStream());
+        var hear = new AgwFrameTransport(listener.GetStream());
+        await send.WriteFrameAsync(new AgwFrame(0, 'X', 0, fromCall, "", []), ct);
+        await hear.WriteFrameAsync(new AgwFrame(0, 'm', 0, "", "", []), ct);
+        var heard = Task.Run(async () =>
+        {
+            while (true)
+            {
+                var frame = await hear.ReadFrameAsync(ct);
+                if (Encoding.Latin1.GetString(frame.Payload).Contains($"Fm {fromCall} To READY", StringComparison.Ordinal)) return;
+            }
+        }, ct);
+        while (!heard.IsCompleted)
+        {
+            await send.WriteFrameAsync(new AgwFrame((byte)RadioPortIndex, 'M', 0xF0, fromCall, "READY", "ready"u8.ToArray()), ct);
+            await Task.WhenAny(heard, Task.Delay(TimeSpan.FromSeconds(3), ct));
+        }
+        await heard;
     }
 
     private async Task<IContainer> StartBpqAsync(

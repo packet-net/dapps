@@ -29,7 +29,8 @@ public sealed class BearerSwitchingOutboundTransport(
     IDappsTxGate txGate,
     TimeProvider timeProvider,
     TimeSpan? linkSettleDelay = null,
-    PeerSessionRegistry? peerSessions = null) : IDappsOutboundTransport
+    PeerSessionRegistry? peerSessions = null,
+    TimeSpan? linkSettleSpread = null) : IDappsOutboundTransport
 {
     /// <summary>
     /// Minimum gap between releasing a link to a given (bearer, local,
@@ -46,8 +47,16 @@ public sealed class BearerSwitchingOutboundTransport(
     /// </summary>
     public static readonly TimeSpan DefaultLinkSettleDelay = TimeSpan.FromSeconds(2);
 
+    /// <summary>
+    /// Up to this much more, at random, on top of the settle delay. When a
+    /// link fails, both ends' sessions end together and both forwarders
+    /// redial straight away; without a spread they'd dial each other at the
+    /// same moment, cross, and fail together again, in lockstep.
+    /// </summary>
+    public static readonly TimeSpan DefaultLinkSettleSpread = TimeSpan.FromSeconds(3);
+
     private readonly ILogger logger = loggerFactory.CreateLogger<BearerSwitchingOutboundTransport>();
-    private readonly LinkSettleGate settle = new(timeProvider, linkSettleDelay ?? DefaultLinkSettleDelay);
+    private readonly LinkSettleGate settle = new(timeProvider, linkSettleDelay ?? DefaultLinkSettleDelay, linkSettleSpread ?? DefaultLinkSettleSpread);
 
     public async Task<IDappsConnection> ConnectAsync(
         string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken)
@@ -80,7 +89,7 @@ public sealed class BearerSwitchingOutboundTransport(
         // still be caught here - the last point at which backing off
         // still means no SABM went out. Released on dispose, or right
         // away when the connect fails.
-        IDisposable? lease = null;
+        PeerSessionLease? lease = null;
         if (peerSessions is not null)
         {
             lease = peerSessions.TryAcquire(remoteCallsign, "outbound", out var openDirection);
@@ -121,23 +130,39 @@ public sealed class BearerSwitchingOutboundTransport(
             throw;
         }
 
+        // Connected: any older session with this peer at this node has
+        // lost the link to this one (BPQ moves it to the newest socket).
+        if (lease is not null) peerSessions!.Connected(lease);
         return new SettleTrackingConnection(inner, settle, key, lease);
     }
 
     /// <summary>
-    /// Wraps the real connection purely to learn *when* it's actually
-    /// disposed - the moment our own disconnect frame went out - so the
-    /// next connect to the same key knows how long it's been waiting,
-    /// and so the peer's session lease is released at that same moment.
+    /// Wraps the real connection to learn *when* it's actually disposed -
+    /// the moment our own disconnect frame went out - so the next connect
+    /// to the same key knows how long it's been waiting, and so the peer's
+    /// session lease is released at that same moment. Also where the
+    /// lease's retirement reaches the session: a retired connection is
+    /// closed without a disconnect, which would take the link from the
+    /// newer session.
     /// </summary>
     private sealed class SettleTrackingConnection(
-        IDappsConnection inner, LinkSettleGate settle, string key, IDisposable? lease) : IDappsConnection
+        IDappsConnection inner, LinkSettleGate settle, string key, PeerSessionLease? lease) : IDappsConnection
     {
         public Stream Stream => inner.Stream;
+        public CancellationToken Retired => lease?.Retired ?? CancellationToken.None;
+        public Task CrossedCall => inner.CrossedCall;
 
-        public async ValueTask DisposeAsync()
+        public ValueTask AbandonAsync() => CloseAsync(abandon: true);
+
+        public ValueTask DisposeAsync() => CloseAsync(abandon: Retired.IsCancellationRequested);
+
+        private async ValueTask CloseAsync(bool abandon)
         {
-            try { await inner.DisposeAsync(); }
+            try
+            {
+                if (abandon) await inner.AbandonAsync();
+                else await inner.DisposeAsync();
+            }
             finally
             {
                 settle.RecordRelease(key);

@@ -132,4 +132,17 @@ public sealed class LinkSettleGateTests
 
         gate.TrackedKeys.Should().Be(1, "keys whose delay has fully elapsed are dropped, so a busy node's table stays bounded");
     }
+
+    [Fact]
+    public void WithASpread_TheWaitIsLengthenedAtRandom()
+    {
+        var clock = new FakeTimeProvider();
+        var gate = new LinkSettleGate(clock, Delay, spread: TimeSpan.FromSeconds(3), random: new FixedRandom(0.5));
+
+        gate.RecordRelease(Key);
+
+        gate.PendingWait(Key).Should().Be(Delay + TimeSpan.FromSeconds(1.5));
+        clock.Advance(Delay + TimeSpan.FromSeconds(1.5));
+        gate.PendingWait(Key).Should().Be(TimeSpan.Zero);
+    }
 }

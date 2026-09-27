@@ -56,6 +56,20 @@ It runs on AFSK 1200 (samoyed) and QPSK 3600 (pdn-soundmodem, 7200 bps). It chec
 
 To try other BPQ radio settings without a rebuild, set `DAPPS_NETSIM_RADIO`, e.g. `DAPPS_NETSIM_RADIO=PERSIST=64,SLOTTIME=100,MAXFRAME=7`.
 
+The fixture waits until each BPQ has been heard by the other before any test starts. Until its KISS link to the simulator is up, BPQ holds a connect request for about 8 s; a test's first call then went out late enough for the other side to dial as well, and the calls crossed (seen once in the WPS scenario at 1200 baud, with three SABMs for one link).
+
+### Crossed calls
+
+`CrossedCallScenarioTests` has both daemons submit two messages to each other at the same moment, so both dial, in three rounds that each start from no link (no hold). Every message must arrive exactly once, with at most two dials a round between the two nodes, and a round finishes within 60 s at QPSK 3600 and 90 s at AFSK 1200. Its report goes to `scenario-reports/crossed-*.md`. What's bounded is dials, not SABMs: BPQ sends two to four SABMs to set up one crossed link.
+
+`BpqCrossedCallExperiments` drives BPQ's AGW interface by hand, with no DAPPS, to see what BPQ does when calls cross. They only run when `DAPPS_BPQ_EXPERIMENTS` is set, and write what every AGW socket and the air saw to `scenario-reports/bpq-*.md`. Run one at a time (`--filter-method`), as each leaves the link in its own state. What they showed (linbpq image below, QPSK 3600):
+
+- **Our call for a pair already connected inbound** (the #194 sighting): B's listener has A's call; B then calls A. BPQ-B sends a SABM on the live link (A answers UA) and confirms B's call ("*** CONNECTED With Station"). From then on A's data arrives only on B's new socket. B's listener session gets no 'd' and can still send: its data reaches A. A 'd' from either B socket disconnects the link, and both B sockets then get a 'd'.
+- **Both calls at once** (or the second 0.3 s after the first): neither listener gets a connect. Both callers are confirmed with the usual "*** CONNECTED With Station", indistinguishable from an ordinary call, and one link carries data both ways between the two callers' sockets. Setting it up took three or four SABMs and as many UAs.
+- Each node's monitor does show the other's SABM arriving (BPQ writes a SABM as `<C C P>`), which is how a caller tells its call crossed.
+
+So DAPPS keeps one session per peer at a node: the newest connected one has the link, and an older one is retired without sending a 'd' (`PeerSessionRegistry`). A caller that sees the peer's SABM while its own call is on the way sends its `exchange` at once instead of waiting 10 s for a prompt, and one that hears exchange traffic before any prompt does the same.
+
 ### The soak
 
 `NetSimSoakTests` is a long run on a noisy AFSK 1200 channel, where frames are lost and retried. Both ends send random bursts, with a few messages of 2 to 5 KB. A third of the way in, net-sim stops for a minute (both modems off, so BPQ loses its KISS link too); two thirds in, B's daemon restarts as for an upgrade. Then traffic stops and the test waits for the queues to drain. Every message must arrive exactly once, byte for byte.
@@ -70,7 +84,7 @@ DAPPS_SOAK_MINUTES=30 src/dapps/dapps.core.tests/bin/Debug/net10.0/dapps.core.te
 
 ## Not covered yet
 
-- Crossed connects: both nodes dialling within one round trip can't be forced.
+- A link moved onto an inbound session (our dial connected first, then BPQ handed the peer's later call to the listener): the unit tests cover retiring the older session, but no scenario forces it.
 - Relaying and floods across three or more nodes: the fixture has two BPQs.
 - XRouter and the RHPv2 bearer.
 - The MQTT app interface.

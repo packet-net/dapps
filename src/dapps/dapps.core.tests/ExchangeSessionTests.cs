@@ -131,6 +131,69 @@ public sealed class ExchangeSessionTests : IDisposable
     }
 
     [Fact]
+    public async Task ACallerWhoseCallCrossedThePeers_SendsItsRulesAtOnce()
+    {
+        // Both ends dialled: neither is answering, so no prompt is coming,
+        // and there's no need to wait for one.
+        var (ours, theirs) = await LoopbackPairAsync(Ct);
+        var crossed = new TaskCompletionSource();
+        var session = new ExchangeSession(ours, Them, dialled: true, new ExchangeSettings(), new RecordingInbox(), NullLoggerFactory.Instance)
+        {
+            PromptWait = TimeSpan.FromSeconds(30),
+            CrossedCall = crossed.Task,
+        };
+        _ = session.RunAsync(Ct);
+        var peer = new LinePeer(theirs);
+        (await peer.TryReadLineAsync(Short, Ct)).Should().BeNull();
+
+        crossed.SetResult();
+
+        (await peer.ReadLineAsync(Ct, TimeSpan.FromSeconds(5))).Should().StartWith("exchange ");
+    }
+
+    [Fact]
+    public async Task ACallerThatHearsExchangeTrafficBeforeAnyPrompt_TakesIt_AndSendsItsRulesAtOnce()
+    {
+        // BPQ moved a link that was mid-exchange onto our new session: the
+        // peer carries on as before, and our rules (with a new tag) have it
+        // send its own and anything unanswered again.
+        var inbox = new RecordingInbox();
+        var (ours, theirs) = await LoopbackPairAsync(Ct);
+        var session = new ExchangeSession(ours, Them, dialled: true, new ExchangeSettings(), inbox, NullLoggerFactory.Instance)
+        {
+            PromptWait = TimeSpan.FromSeconds(30),
+        };
+        _ = session.RunAsync(Ct);
+        var peer = new LinePeer(theirs);
+        var m = Message("in flight when the link moved", $"app@{Us}");
+
+        await peer.WriteLineAsync("ack 1234567", Ct);
+        await peer.SendMessageAsync(m, Ct);
+
+        (await peer.ReadLineAsync(Ct, TimeSpan.FromSeconds(5))).Should().StartWith("exchange ");
+        (await peer.ReadLineAsync(Ct)).Should().Be($"ack {m.Id}");
+        inbox.Texts.Should().Equal("in flight when the link moved");
+    }
+
+    [Fact]
+    public async Task TheAnsweringNode_TakesAnswersBeforeTheCallersRules_WithoutHangingUp()
+    {
+        // As when BPQ moves a link that was mid-exchange onto a new inbound
+        // session: the peer's answers to the old session arrive first.
+        var inbox = new RecordingInbox();
+        var (session, peer, run) = await CalleeAsync(inbox: inbox);
+
+        await peer.WriteLineAsync("ack 1234567\nsend 7654321\nno 1111111 not wanted", Ct);
+        (await peer.TryReadLineAsync(Short, Ct)).Should().BeNull("no eh?, and no hang-up");
+
+        var m = Message("after the rules", $"app@{Us}");
+        await peer.WriteLineAsync(Rules(), Ct);
+        await peer.SendMessageAsync(m, Ct);
+        (await peer.ReadLineAsync(Ct)).Should().Be($"ack {m.Id}");
+        run.IsCompleted.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task TheAnsweringNode_DoesNotAnswerTheCallersExchange_WithAnotherOne()
     {
         var inbox = new RecordingInbox();

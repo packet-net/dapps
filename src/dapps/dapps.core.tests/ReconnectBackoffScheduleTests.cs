@@ -160,4 +160,28 @@ public sealed class InboundReconnectControllerTests
             await Task.Delay(10, ct);
         }
     }
+
+    [Fact]
+    public void WithASpread_EachDelayIsLengthenedByUpToThatFraction()
+    {
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-01T00:00:00Z"));
+        var schedule = new ReconnectBackoffSchedule(clock, spread: 0.5, random: new FixedRandom(0.5));
+
+        schedule.RecordFailure().Should().Be(TimeSpan.FromSeconds(12.5));
+        schedule.NextRetryAtUtc.Should().Be(clock.GetUtcNow() + TimeSpan.FromSeconds(12.5));
+    }
+
+    [Fact]
+    public void WithASpread_TwoSchedulesFailingTogether_RetryAtDifferentTimes()
+    {
+        // Two nodes whose link failed under them: fixed delays would have
+        // them redial each other at the same moments, again and again.
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-01T00:00:00Z"));
+        var delays = Enumerable.Range(0, 20)
+            .Select(_ => new ReconnectBackoffSchedule(clock, spread: 0.5).RecordFailure())
+            .ToList();
+
+        delays.Should().AllSatisfy(d => d.Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(10)).And.BeLessThan(TimeSpan.FromSeconds(15)));
+        delays.Distinct().Count().Should().BeGreaterThan(15);
+    }
 }

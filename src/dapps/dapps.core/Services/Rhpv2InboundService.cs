@@ -246,7 +246,10 @@ public sealed class Rhpv2InboundService(
 
             _ = Task.Run(async () =>
             {
-                try { await handler.Handle(stoppingToken); }
+                // Retired when a newer session with this peer connects here.
+                using var session = CancellationTokenSource.CreateLinkedTokenSource(
+                    stoppingToken, lease?.Retired ?? CancellationToken.None);
+                try { await handler.Handle(session.Token); }
                 catch (Exception ex) { logger.LogWarning(ex, "RHP inbound: session handler {child} failed", child); }
                 finally
                 {

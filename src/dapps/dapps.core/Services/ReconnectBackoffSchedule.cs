@@ -10,9 +10,12 @@ namespace dapps.core.Services;
 /// get hit every few seconds forever.
 ///
 /// Schedule: 10s x3, 30s x3, 1min x3, then 5min steady-state. Resets to
-/// the top of the schedule on the next successful connect.
+/// the top of the schedule on the next successful connect. With a
+/// <paramref name="spread"/>, each delay is lengthened by up to that
+/// fraction of itself at random, so two parties that failed together
+/// don't retry in lockstep.
 /// </summary>
-public sealed class ReconnectBackoffSchedule(TimeProvider? timeProvider = null)
+public sealed class ReconnectBackoffSchedule(TimeProvider? timeProvider = null, double spread = 0, Random? random = null)
 {
     private static readonly (TimeSpan Delay, int Attempts)[] RampSteps =
     [
@@ -24,6 +27,7 @@ public sealed class ReconnectBackoffSchedule(TimeProvider? timeProvider = null)
     private static readonly TimeSpan SteadyState = TimeSpan.FromMinutes(5);
 
     private readonly TimeProvider timeProvider = timeProvider ?? TimeProvider.System;
+    private readonly Random random = random ?? Random.Shared;
 
     /// <summary>Consecutive failures since the last successful connect. 0
     /// means either never tried, currently connected, or idle-gated.</summary>
@@ -39,6 +43,7 @@ public sealed class ReconnectBackoffSchedule(TimeProvider? timeProvider = null)
     {
         FailureStreak++;
         var delay = DelayForAttempt(FailureStreak);
+        if (spread > 0) delay += delay * (spread * random.NextDouble());
         NextRetryAtUtc = timeProvider.GetUtcNow() + delay;
         return delay;
     }

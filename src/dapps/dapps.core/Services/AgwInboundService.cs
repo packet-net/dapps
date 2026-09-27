@@ -401,13 +401,21 @@ public sealed class AgwInboundService(
         // discard it.
 
         var key = SessionKey.For(local, remote, port);
+        // Once retired (below), the link is a newer session's: anything
+        // this one still tried to send, a 'd' above all, would land in
+        // that session, so it goes nowhere. Checked here rather than left
+        // to the retirement callback, which can run after the handler has
+        // already seen its token cancelled and started tearing down.
+        PeerSessionLease? lease = null;
         var stream = new MultiplexedAgwSessionStream(
             writeOutgoing: async (data, c) =>
             {
+                if (lease is { Retired.IsCancellationRequested: true }) return;
                 await framing.WriteDataAsync(port, local, remote, data, c);
             },
             sendRemoteDisconnect: async c =>
             {
+                if (lease is { Retired.IsCancellationRequested: true }) return;
                 await framing.WriteFrameAsync(
                     new AgwFrame(port, 'd', 0, local, remote, []), c);
             });
@@ -430,8 +438,21 @@ public sealed class AgwInboundService(
 
         // #178: while this session is open the forwarder must not dial
         // this peer (see PeerSessionRegistry). Released once the
-        // handler is done and our 'd', if any, has gone out.
-        var lease = peerSessions?.Acquire(remote, "inbound");
+        // handler is done and our 'd', if any, has gone out. Connected
+        // now, so any older session with this peer is retired.
+        lease = peerSessions?.Acquire(remote, "inbound");
+
+        // Retired: a newer session with this peer has connected here, and
+        // the link is that one's. Out of the table, so nothing more is
+        // routed to it, and marked closed by the far end, so its teardown
+        // never sends the 'd' that BPQ would apply to the newer session
+        // (rule 3).
+        lease?.Retired.Register(() =>
+        {
+            sessions.TryRemove(new KeyValuePair<SessionKey, MultiplexedAgwSessionStream>(key, stream));
+            stream.SignalRemoteDisconnect();
+            logger.LogInformation("AGW inbound: session {0}<->{1} retired: a newer session with that peer has the link", local, remote);
+        });
 
         var handler = new InboundConnectionHandler(
             stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics,
@@ -444,7 +465,9 @@ public sealed class AgwInboundService(
         // cycle's teardown ends this session through the table instead.
         _ = Task.Run(async () =>
         {
-            try { await handler.Handle(stoppingTokenSource.Token); }
+            using var session = CancellationTokenSource.CreateLinkedTokenSource(
+                stoppingTokenSource.Token, lease?.Retired ?? CancellationToken.None);
+            try { await handler.Handle(session.Token); }
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "AGW inbound: session handler {0}<->{1} failed", local, remote);

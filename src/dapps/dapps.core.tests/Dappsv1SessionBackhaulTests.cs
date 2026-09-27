@@ -294,6 +294,63 @@ public sealed class Dappsv1SessionBackhaulTests
     }
 
     [Fact]
+    public async Task ASessionRetiredForANewerOne_Stops_DefersItsWork_AndDropsTheLinkWithoutADisconnect()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (ours, theirs) = await ExchangeTestKit.LoopbackPairAsync(ct);
+        var connection = new RetirableConnection(ours);
+        var peer = new LinePeer(theirs);
+        var sb = new Dappsv1SessionBackhaul(new SingleConnectionTransport(connection), NullLoggerFactory.Instance);
+        var message = ExchangeTestKit.Message("waiting for its ack", "app@N0DEST");
+        var batch = new RecordingBatch(message);
+
+        var send = sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, ct);
+        await peer.WriteLineAsync("DAPPSv1>\nexchange id=far001 hold=60 inline=256", ct);
+        await peer.ReadLineAsync(ct);
+        await peer.ReadWithPayloadAsync(ct);
+
+        connection.Retire();
+        await send.WaitAsync(TimeSpan.FromSeconds(5), ct);
+
+        batch.Outcomes.Single().Result.Deferred.Should().BeTrue("it goes on the newer session, not counted as a failure");
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (!connection.Abandoned && DateTime.UtcNow < deadline) await Task.Delay(10, ct);
+        connection.Abandoned.Should().BeTrue();
+        connection.Disposed.Should().BeFalse("a disconnect would take the link from the newer session");
+        sb.OpenPeers.Should().BeEmpty();
+    }
+
+    private sealed class RetirableConnection(Stream stream) : IDappsConnection
+    {
+        private readonly CancellationTokenSource retired = new();
+        public Stream Stream => stream;
+        public CancellationToken Retired => retired.Token;
+        public bool Abandoned { get; private set; }
+        public bool Disposed { get; private set; }
+        public void Retire() => retired.Cancel();
+
+        public ValueTask AbandonAsync()
+        {
+            Abandoned = true;
+            stream.Dispose();
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            stream.Dispose();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class SingleConnectionTransport(IDappsConnection connection) : IDappsOutboundTransport
+    {
+        public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken) =>
+            Task.FromResult(connection);
+    }
+
+    [Fact]
     public async Task APeerWithoutTheDictionary_RefusesTheCompressedMessage_AndGetsItPlainOnTheSameSession()
     {
         var payload = Encoding.UTF8.GetBytes(

@@ -206,6 +206,50 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         await peers.WaitUntilIdleAsync(Remote, ct).WaitAsync(FakeAgwHost.FrameTimeout, ct);
     }
 
+    // One session per peer: our dial to a peer that has just called us
+    // makes BPQ move the link to our dial's socket. The inbound session is
+    // then retired: out of the table, no 'd' from it (BPQ would apply that
+    // to the link, now the newer session's), and its handler ended.
+
+    [Fact]
+    public async Task OurDialConnectingForAPeer_RetiresItsInboundSession_WithoutADisconnect()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
+        var bpq = await h.StartAsync(ct);
+        var dialling = peers.TryAcquire(Remote, "outbound", out _)!;   // on its way already
+
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
+
+        peers.Connected(dialling);
+        await h.Logs.WaitForAsync("retired", ct);
+
+        // Data for the pair has nowhere to go now, and nothing answers it.
+        await bpq.WriteAsync(ct, FakeAgwSocket.Data(Remote, Local, Port, "help\n"));
+        var sent = await bpq.DrainAsync(ct, TimeSpan.FromMilliseconds(500));
+        sent.Should().NotContain(f => f.Kind == 'd', "a retired session never disconnects the link");
+        sent.Should().NotContain(f => f.Kind == 'D', "a retired session sends nothing more");
+        peers.IsActive(Remote, out var direction).Should().BeTrue();
+        dialling.Dispose();
+    }
+
+    [Fact]
+    public async Task AnInboundConnect_RetiresAnOlderOutboundSessionWithThatPeer()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
+        var bpq = await h.StartAsync(ct);
+        using var ours = peers.Acquire(Remote, "outbound");
+
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
+
+        ours.Retired.IsCancellationRequested.Should().BeTrue("the link is the inbound session's now");
+    }
+
     [Fact]
     public async Task DataStampedWithTheWrongPort_ReachesTheOnlySessionForThatPair()
     {
