@@ -39,6 +39,7 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
     private readonly HashSet<string> seenIds = [];
     private readonly HashSet<string> ackedIds = [];
     private readonly HashSet<string> resubmitted = [];
+    private readonly HashSet<string> abandoned = [];
     private readonly List<string> duplicateNotes = [];
     private int duplicates;
     private int resubmittedTwice;
@@ -85,21 +86,31 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
 
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var pumps = new[] { PumpAsync(a, stop.Token), PumpAsync(b, stop.Token) };
-        var senders = new[]
-        {
-            SendAsync("A", a, b.Callsign, new Random(seed), traffic, ct),
-            SendAsync("B", b, a.Callsign, new Random(seed + 1), traffic, ct),
-        };
-        var disruptions = DisruptAsync(b, traffic, ct);
         var reporter = ProgressAsync(stop.Token);
+        Exception? failure = null;
+        try
+        {
+            await Task.WhenAll(
+                SendAsync("A", a, b.Callsign, new Random(seed), traffic, ct),
+                SendAsync("B", b, a.Callsign, new Random(seed + 1), traffic, ct),
+                DisruptAsync(b, traffic, ct));
+            Note("traffic stops; draining");
+            var drainDeadline = clock.Elapsed + DrainLimit;
+            while (clock.Elapsed < drainDeadline && Missing().Count > 0) await Task.Delay(1000, ct);
+            Note(Missing().Count == 0 ? "all delivered" : $"gave up with {Missing().Count} undelivered");
 
-        await Task.WhenAll(senders);
-        await disruptions;
-        Note("traffic stops; draining");
-        var drainDeadline = clock.Elapsed + DrainLimit;
-        while (clock.Elapsed < drainDeadline && Missing().Count > 0) await Task.Delay(1000, ct);
+            // Keep reading until neither daemon has anything left to send:
+            // a message re-offered after a lost ack would arrive then.
+            while (clock.Elapsed < drainDeadline && await PendingAsync(ct) > 0) await Task.Delay(1000, ct);
+            await Task.Delay(TimeSpan.FromSeconds(10), ct);
+            Note("queues empty");
+        }
+        catch (Exception e) when (!ct.IsCancellationRequested)
+        {
+            failure = e;
+            Note($"stopped by an error: {e.GetType().Name}: {e.Message}");
+        }
         var elapsed = clock.Elapsed;
-        Note(Missing().Count == 0 ? "all delivered" : $"gave up with {Missing().Count} undelivered");
         await stop.CancelAsync();
         try { await Task.WhenAll([.. pumps, reporter]); } catch (OperationCanceledException) { }
 
@@ -109,9 +120,21 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
         foreach (var d in running) await File.WriteAllTextAsync(Path.Combine(reports, $"soak-{d.Name}.log"), d.Log, ct);
         TestContext.Current.TestOutputHelper?.WriteLine(report);
 
+        failure.Should().BeNull($"the soak's own sending, disruptions and reading should work\n{report}");
         Missing().Should().BeEmpty($"every message should arrive\n{report}");
         duplicates.Should().Be(0, $"no message should arrive twice\n{report}");
         corrupt.Should().Be(0, $"every message should arrive intact\n{report}");
+    }
+
+    private async Task<int> PendingAsync(CancellationToken ct)
+    {
+        var pending = 0;
+        foreach (var d in running)
+        {
+            try { pending += await d.PendingOutboundAsync(ct); }
+            catch (Exception) when (!ct.IsCancellationRequested) { pending++; }
+        }
+        return pending;
     }
 
     private async Task<DappsDaemon> StartNodeAsync(string name, string callsign, int agwPort, string neighbour, CancellationToken ct)
@@ -149,16 +172,21 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
                         await node.SubmitAsync(App, peer, payload, ct, ttl: 3600);
                         break;
                     }
-                    catch (InvalidOperationException) when (!ct.IsCancellationRequested)
+                    catch (Exception e) when (!ct.IsCancellationRequested)
                     {
-                        // Refused: not queued, so send again.
-                        await Task.Delay(2000, ct);
-                    }
-                    catch (Exception e) when (e is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
-                    {
-                        // No answer: it may have been queued, so sending again
-                        // may deliver it twice, which is the app's doing.
-                        lock (sent) resubmitted.Add(tag);
+                        // Refused (InvalidOperationException) means not queued.
+                        // No answer at all means it may have been, so sending
+                        // again may deliver it twice, which is then the app's doing.
+                        lock (sent)
+                        {
+                            if (e is not InvalidOperationException) resubmitted.Add(tag);
+                            if (clock.Elapsed > until + TimeSpan.FromMinutes(2))
+                            {
+                                // Its daemon isn't coming back; stop trying.
+                                abandoned.Add(tag);
+                                break;
+                            }
+                        }
                         await Task.Delay(2000, ct);
                     }
                 }
@@ -217,9 +245,9 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
                     if (ack.IsSuccessStatusCode) lock (sent) ackedIds.Add(m.Id);
                 }
             }
-            catch (Exception e) when (e is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+            catch (Exception) when (!ct.IsCancellationRequested)
             {
-                // Daemon restarting.
+                // Daemon restarting (refused, cut off mid-reply); try again.
             }
             await Task.Delay(250, ct);
         }
@@ -229,14 +257,14 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
     {
         await Task.Delay(traffic / 3, ct);
         Note($"channel outage: net-sim stopped for {Outage.TotalSeconds:F0} s");
-        await fixture.ChannelOutageAsync(Outage, ct);
+        await fixture.ChannelOutageAsync(Outage, ct, channel);
         Note("channel back");
 
         var wait = traffic * 2 / 3 - clock.Elapsed;
         if (wait > TimeSpan.Zero) await Task.Delay(wait, ct);
         Note("restarting B's daemon");
-        await b.RestartAsync(ct);
-        Note("B's daemon back");
+        var killed = await b.RestartAsync(ct);
+        Note(killed ? "B's daemon back (it didn't stop within 15 s and was killed)" : "B's daemon back");
     }
 
     private async Task ProgressAsync(CancellationToken ct)
@@ -258,7 +286,7 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
 
     private List<string> Missing()
     {
-        lock (sent) return [.. sent.Keys.Where(k => !delivered.ContainsKey(k)).Order()];
+        lock (sent) return [.. sent.Keys.Where(k => !delivered.ContainsKey(k) && !abandoned.Contains(k)).Order()];
     }
 
     private string Call(string side) => side == "A" ? fixture.ApplCallA : fixture.ApplCallB;
@@ -291,6 +319,7 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
         sb.AppendLine($"| Undelivered | {Missing().Count} {string.Join(' ', Missing().Take(20))} |");
         sb.AppendLine($"| Duplicates | {duplicates} {string.Join("; ", duplicateNotes)} |");
         sb.AppendLine($"| Sent twice by the test (a submit got no answer), arrived twice | {resubmittedTwice} of {resubmitted.Count} |");
+        sb.AppendLine($"| Given up by the test (its daemon never answered) | {abandoned.Count} |");
         sb.AppendLine($"| Corrupt or unknown | {corrupt} |");
         sb.AppendLine($"| Delivery time, short messages: median, 95th percentile, worst | {Pct(shortLatency, 0.5):F0} s, {Pct(shortLatency, 0.95):F0} s, {Pct(shortLatency, 1):F0} s |");
         sb.AppendLine($"| Delivery time, long messages: median, worst | {Pct(longLatency, 0.5):F0} s, {Pct(longLatency, 1):F0} s |");

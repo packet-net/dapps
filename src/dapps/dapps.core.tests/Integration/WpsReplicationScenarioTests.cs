@@ -15,8 +15,10 @@ namespace dapps.core.tests.Integration;
 /// acked. Before 0.40.0 that exchange took 77 s, six connections and about
 /// 150 frames at 1200 baud.
 ///
-/// The test checks every message arrives exactly once, and bounds the
-/// number of connections; it writes a report with the real on-air timings
+/// The test checks every message arrives exactly once (reading both inboxes
+/// until neither daemon has anything left to send, so a late re-offer
+/// counts), and bounds connections and frames; it writes a report with the
+/// real on-air timings
 /// (net-sim runs in real time) to scenario-reports/ beside the test build,
 /// which CI keeps as an artifact.
 /// </summary>
@@ -24,15 +26,15 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
 {
     private const string App = "wps-repl";
     private static readonly TimeSpan AckDelay = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan Deadline = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan Deadline = TimeSpan.FromMinutes(3);
 
     // Offsets of each post from the trace's s= timestamps.
     private static readonly double[] DpststPosts = [0, 0.556, 1.134, 1.692];
     private static readonly double[] Mb7npwPosts = [4.100, 4.484, 4.888, 5.585];
 
     private readonly List<IAsyncDisposable> running = [];
-    private AirMonitor air = null!;
-    private ChannelLog channel = null!;
+    private AirMonitor? air;
+    private ChannelLog? channel;
 
     public async ValueTask InitializeAsync()
     {
@@ -43,8 +45,8 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
     public async ValueTask DisposeAsync()
     {
         foreach (var r in running) await r.DisposeAsync();
-        await air.DisposeAsync();
-        await channel.DisposeAsync();
+        if (air is not null) await air.DisposeAsync();
+        if (channel is not null) await channel.DisposeAsync();
         await Task.Delay(3000);
     }
 
@@ -67,19 +69,37 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
         var posting = Task.WhenAll(sideA.PostAtAsync(DpststPosts, ct), sideB.PostAtAsync(Mb7npwPosts, ct));
 
         // Done when each side holds all four of the other's posts and an
-        // ack from the other side covering its own last post.
-        while (clock.Elapsed < Deadline && !(sideA.Complete && sideB.Complete))
+        // ack from the other side covering its own last post. Then keep
+        // reading until neither daemon has anything left to send: a
+        // message re-offered after a lost ack would arrive then.
+        var elapsed = Deadline;
+        Exception? failure = null;
+        try
         {
-            await Task.Delay(200, ct);
+            while (clock.Elapsed < Deadline && !(sideA.Complete && sideB.Complete) && !pumps.Any(p => p.IsFaulted))
+            {
+                await Task.Delay(200, ct);
+            }
+            elapsed = clock.Elapsed;
+            await posting;
+            if (sideA.Complete && sideB.Complete) await SettleAsync([a, b], ct);
         }
-        var elapsed = clock.Elapsed;
-        await posting;
+        catch (Exception e) when (!ct.IsCancellationRequested)
+        {
+            failure = e;
+        }
         await stop.CancelAsync();
-        try { await Task.WhenAll(pumps); } catch (OperationCanceledException) { }
+        foreach (var pump in pumps)
+        {
+            try { await pump; }
+            catch (OperationCanceledException) { }
+            catch (Exception e) { failure ??= e; }
+        }
 
-        var report = Report(sideA, sideB, elapsed, channel.Summarise(started, started + elapsed));
+        var report = Report(sideA, sideB, elapsed, channel!.Summarise(started, started + elapsed));
         WriteReport(report);
 
+        failure.Should().BeNull($"the test's own posting and inbox reading should work\n{report}\n{Diagnostics()}");
         sideA.Complete.Should().BeTrue($"everything should arrive within {Deadline.TotalMinutes:F0} minutes\n{report}\n{Diagnostics()}");
         sideB.Complete.Should().BeTrue($"{report}\n{Diagnostics()}");
         (sideA.Duplicates + sideB.Duplicates).Should().Be(0, "every message should arrive exactly once\n" + report);
@@ -88,6 +108,20 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
         var messages = sideA.PostsReceived + sideB.PostsReceived + sideA.AcksReceived + sideB.AcksReceived;
         (Frames("A") + Frames("B")).Should().BeLessThanOrEqualTo(11 * messages,
             "Kevin's trace took about 14 frames a message; a clean run takes about 9\n" + report);
+    }
+
+    /// <summary>Wait (up to a minute) until neither daemon has anything left to send, then a few seconds more.</summary>
+    private static async Task SettleAsync(DappsDaemon[] nodes, CancellationToken ct)
+    {
+        var until = DateTime.UtcNow + TimeSpan.FromMinutes(1);
+        while (DateTime.UtcNow < until)
+        {
+            var pending = 0;
+            foreach (var n in nodes) pending += await n.PendingOutboundAsync(ct);
+            if (pending == 0) break;
+            await Task.Delay(500, ct);
+        }
+        await Task.Delay(TimeSpan.FromSeconds(5), ct);
     }
 
     private async Task<DappsDaemon> StartNodeAsync(string name, string callsign, int agwPort, string neighbour, CancellationToken ct)
@@ -99,13 +133,13 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
     }
 
     private int Connects(string side) =>
-        air.CountSentBy(side, $"Fm {Call(side)} To {Call(side == "A" ? "B" : "A")} <C C");
+        air!.CountSentBy(side, $"Fm {Call(side)} To {Call(side == "A" ? "B" : "A")} <C C");
 
     private string Call(string side) => side == "A" ? fixture.ApplCallA : fixture.ApplCallB;
 
     /// <summary>Frames between the two DAPPS callsigns, either way.</summary>
     private int Frames(string side, string kind = "") =>
-        air.SentBy(side).Count(f => f.Contains($"Fm {Call(side)} To {Call(side == "A" ? "B" : "A")} <{kind}", StringComparison.Ordinal));
+        air!.SentBy(side).Count(f => f.Contains($"Fm {Call(side)} To {Call(side == "A" ? "B" : "A")} <{kind}", StringComparison.Ordinal));
 
     private string Report(WpsSide a, WpsSide b, TimeSpan elapsed, ChannelLog.Summary onAir)
     {
@@ -137,7 +171,7 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
         sb.AppendLine("<details><summary>What went over the air</summary>");
         sb.AppendLine();
         sb.AppendLine("```");
-        sb.AppendLine(Printable(air.Transcript()));
+        sb.AppendLine(Printable(air!.Transcript()));
         sb.AppendLine("```");
         sb.AppendLine("</details>");
         return sb.ToString();
@@ -166,11 +200,14 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
     /// out as short-key envelopes on the <c>wps-repl</c> app, about 200
     /// bytes like Kevin's; posts that arrive are acked cumulatively
     /// <see cref="AckDelay"/> after the first unacked one, with the highest
-    /// seq seen. A duplicate is the same payload arriving twice.
+    /// seq seen. A duplicate is a post arriving twice, or any message
+    /// coming back after this side had acked it from the inbox.
     /// </summary>
     private sealed class WpsSide(DappsDaemon node, string peer, Stopwatch clock, string origin, string author, int firstSeq)
     {
-        private readonly HashSet<string> seen = [];
+        private readonly HashSet<string> seenIds = [];
+        private readonly HashSet<string> ackedIds = [];
+        private readonly HashSet<int> seenPosts = [];
         private readonly Dictionary<int, TimeSpan> submittedAt = [];
         private int highestReceived = -1;
         private TimeSpan? firstUnacked;
@@ -202,6 +239,27 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
             }
         }
 
+        private void Take(DappsDaemon.Inbound m)
+        {
+            var json = JsonDocument.Parse(m.Payload).RootElement;
+            var seq = json.GetProperty("s").GetInt32();
+            if (json.GetProperty("a").GetString() == "ack")
+            {
+                AcksReceived++;
+                HighestAckReceived = Math.Max(HighestAckReceived, seq);
+                return;
+            }
+            if (!seenPosts.Add(seq))
+            {
+                Duplicates++;
+                return;
+            }
+            PostsReceived++;
+            highestReceived = Math.Max(highestReceived, seq);
+            if (Peer!.SubmittedAt(seq) is { } sent) Latencies.Add((clock.Elapsed - sent).TotalSeconds);
+            firstUnacked ??= clock.Elapsed;
+        }
+
         private TimeSpan? SubmittedAt(int seq)
         {
             lock (submittedAt) return submittedAt.TryGetValue(seq, out var at) ? at : null;
@@ -214,24 +272,10 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
             {
                 foreach (var m in await node.InboundAsync(App, ct))
                 {
-                    await node.Http.PostAsync($"AppApi/inbound/{App}/{m.Id}/ack", null, ct);
-                    if (!seen.Add(Encoding.UTF8.GetString(m.Payload)))
-                    {
-                        Duplicates++;
-                        continue;
-                    }
-                    var json = JsonDocument.Parse(m.Payload).RootElement;
-                    var seq = json.GetProperty("s").GetInt32();
-                    if (json.GetProperty("a").GetString() == "ack")
-                    {
-                        AcksReceived++;
-                        HighestAckReceived = Math.Max(HighestAckReceived, seq);
-                        continue;
-                    }
-                    PostsReceived++;
-                    highestReceived = Math.Max(highestReceived, seq);
-                    if (Peer!.SubmittedAt(seq) is { } sent) Latencies.Add((clock.Elapsed - sent).TotalSeconds);
-                    firstUnacked ??= clock.Elapsed;
+                    if (seenIds.Add(m.Id)) Take(m);
+                    else if (ackedIds.Contains(m.Id)) Duplicates++;
+                    (await node.Http.PostAsync($"AppApi/inbound/{App}/{m.Id}/ack", null, ct)).EnsureSuccessStatusCode();
+                    ackedIds.Add(m.Id);
                 }
 
                 if (firstUnacked is { } since && clock.Elapsed - since >= AckDelay)

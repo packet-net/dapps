@@ -28,7 +28,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 45   # the simulated-radio scenarios run in real time
+    timeout-minutes: 60   # the simulated-radio scenarios run in real time
     steps:
       - uses: actions/checkout@v6
 
@@ -91,7 +91,7 @@ jobs:
           exit 1
 
       - name: Upload test results on failure
-        if: failure()
+        if: failure() || cancelled()   # cancelled covers hitting the time limit
         uses: actions/upload-artifact@v6
         with:
           name: test-results

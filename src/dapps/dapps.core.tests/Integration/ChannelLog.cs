@@ -4,7 +4,7 @@ namespace dapps.core.tests.Integration;
 
 /// <summary>
 /// When each simulated radio was on air, from net-sim's event stream
-/// (<c>/api/events</c>), to the block (tens of milliseconds) where BPQ's
+/// (<c>/api/events</c>), to about 10 ms (net-sim's audio block) where BPQ's
 /// monitor only stamps whole seconds. This is what shows where an
 /// exchange's time goes: on air, or in the quiet gaps between
 /// transmissions (TX delay, turnarounds, the software on each end).
@@ -14,9 +14,10 @@ namespace dapps.core.tests.Integration;
 /// output instead, and samoyed produces a burst's audio faster than real
 /// time, so those would make every transmission look short.
 ///
-/// net-sim's stream is lossy by design (a slow reader loses events). The
-/// listener reconnects if the stream ends, e.g. across
-/// <see cref="NetSimTwoBpqFixture.ChannelOutageAsync"/>.
+/// net-sim's stream is lossy by design (a slow reader loses events), and
+/// the listener reconnects if the stream drops. The stream outlives a
+/// stop of the simulator, but a transmission cut off by one never gets
+/// its end, so <see cref="ChannelStopped"/> closes it.
 /// </summary>
 internal sealed class ChannelLog : IAsyncDisposable
 {
@@ -100,6 +101,16 @@ internal sealed class ChannelLog : IAsyncDisposable
         {
             if (hearing) keyed.TryAdd(side, at);
             else if (keyed.Remove(side, out var start)) overs.Add(new Over(side, start, at));
+        }
+    }
+
+    /// <summary>The simulator stopped at <paramref name="at"/>: anything on air then ended.</summary>
+    public void ChannelStopped(DateTime at)
+    {
+        lock (overs)
+        {
+            foreach (var (side, start) in keyed) overs.Add(new Over(side, start, at > start ? at : start));
+            keyed.Clear();
         }
     }
 

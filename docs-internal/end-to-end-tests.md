@@ -46,7 +46,7 @@ The tests above use AXIP, so frames cost no airtime. `NetSimTwoBpqFixture` puts 
 DAPPS A -AGW- BPQ-A -KISS- [net-sim: modem ~ channel ~ modem] -KISS- BPQ-B -AGW- DAPPS B
 ```
 
-Frames take real airtime, with TX delay, turnarounds and a shared channel. The image is pinned by digest in `NetSimFixtures.cs`; CI pulls whatever that pins. `ChannelLog` records when each radio transmits, to the millisecond, from net-sim's event stream.
+Frames take real airtime, with TX delay, turnarounds and a shared channel. The image is pinned by digest in `NetSimFixtures.cs`; CI pulls whatever that pins. `ChannelLog` records when each radio is on air, to about 10 ms, from what each simulated receiver hears.
 
 ### Kevin's WPS trace
 

@@ -125,14 +125,23 @@ internal sealed class DappsDaemon : IAsyncDisposable
     /// Stop the daemon as a service stop would (SIGTERM) and start it
     /// again on the same database, as after an upgrade.
     /// </summary>
-    public async Task RestartAsync(CancellationToken ct)
+    /// <returns>True if it didn't stop within 15 s and had to be killed.</returns>
+    public async Task<bool> RestartAsync(CancellationToken ct)
     {
-        await StopAsync();
+        var killed = await StopAsync();
         Append($"--- restarted by the test at {DateTime.UtcNow:HH:mm:ss.fff} ---");
         var start = process.StartInfo;
         process.Dispose();
         process = new Process { StartInfo = start, EnableRaisingEvents = true };
         await LaunchAsync(ct);
+        return killed;
+    }
+
+    /// <summary>Messages this daemon still has to forward.</summary>
+    public async Task<int> PendingOutboundAsync(CancellationToken ct)
+    {
+        var snapshot = await Http.GetFromJsonAsync<JsonElement>("Operational", ct);
+        return snapshot.GetProperty("pendingOutboundCount").GetInt32();
     }
 
     /// <summary>Queue a message for <paramref name="destCallsign"/>'s <paramref name="app"/>.</summary>
@@ -232,19 +241,29 @@ internal sealed class DappsDaemon : IAsyncDisposable
         throw new TimeoutException($"{Name} didn't reach its node within 60s.\n{Tail()}");
     }
 
-    private async Task StopAsync()
+    /// <returns>True if it had to be killed.</returns>
+    private async Task<bool> StopAsync()
     {
         bool running;
         try { running = !process.HasExited; }
         catch (InvalidOperationException) { running = false; } // never started
-        if (running)
+        if (!running) return false;
+
+        // SIGTERM first, so the host stops cleanly: held links are
+        // closed and the AGW registration released, as in service.
+        if (!OperatingSystem.IsWindows()) _ = kill(process.Id, 15);
+        using var wait = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        try
         {
-            // SIGTERM first, so the host stops cleanly: held links are
-            // closed and the AGW registration released, as in service.
-            if (!OperatingSystem.IsWindows()) _ = kill(process.Id, 15);
-            using var wait = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            try { await process.WaitForExitAsync(wait.Token); }
-            catch (OperationCanceledException) { process.Kill(entireProcessTree: true); }
+            await process.WaitForExitAsync(wait.Token);
+            return false;
+        }
+        catch (OperationCanceledException)
+        {
+            Append($"--- didn't stop within 15 s; killed by the test at {DateTime.UtcNow:HH:mm:ss.fff} ---");
+            process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync();
+            return true;
         }
     }
 

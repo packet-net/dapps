@@ -125,7 +125,8 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
             .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(r => r
                 .ForPort(InsideWebPort)
                 .ForPath("/api/status")
-                .ForResponseMessageMatching(async m => (await m.Content.ReadAsStringAsync()).Contains("\"running\":true"))))
+                .ForResponseMessageMatching(async m => (await m.Content.ReadAsStringAsync()).Contains("\"running\":true")),
+                o => o.WithTimeout(TimeSpan.FromMinutes(2))))
             .Build();
         await netSim.StartAsync();
         NetSimWebPort = netSim.GetMappedPublicPort(InsideWebPort);
@@ -154,13 +155,15 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
 
     /// <summary>
     /// Take the channel down for <paramref name="outage"/>, then bring it
-    /// back: net-sim stops its router, so nothing either end sends is
-    /// heard, as on a link that fades out.
+    /// back: net-sim stops its router and modems, as if both radios were
+    /// switched off, so each BPQ loses its KISS link and has to reconnect.
+    /// <paramref name="log"/>, if given, is told the channel went quiet.
     /// </summary>
-    public async Task ChannelOutageAsync(TimeSpan outage, CancellationToken ct)
+    internal async Task ChannelOutageAsync(TimeSpan outage, CancellationToken ct, ChannelLog? log = null)
     {
         using var http = new HttpClient { BaseAddress = new Uri($"http://{Host}:{NetSimWebPort}/") };
         (await http.PostAsync("api/stop", null, ct)).EnsureSuccessStatusCode();
+        log?.ChannelStopped(DateTime.UtcNow);
         await Task.Delay(outage, ct);
         (await http.PostAsync("api/start", null, ct)).EnsureSuccessStatusCode();
     }
