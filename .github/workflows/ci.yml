@@ -28,7 +28,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45   # the simulated-radio scenarios run in real time
     steps:
       - uses: actions/checkout@v6
 
@@ -45,6 +45,8 @@ jobs:
         run: |
           docker pull m0lte/linbpq:latest
           docker pull ghcr.io/packethacking/xrouter:latest
+          # net-sim, for the simulated-radio scenarios, at the digest the tests pin.
+          docker pull "$(grep -oE 'ghcr\.io/packet-net/net-sim@sha256:[0-9a-f]{64}' src/dapps/dapps.core.tests/Integration/NetSimFixtures.cs)"
 
       - name: Restore
         run: dotnet restore src/dapps/dapps.sln
@@ -96,6 +98,18 @@ jobs:
           path: src/dapps/dapps.core.tests/bin/Release/net10.0/TestResults/
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Upload scenario reports
+        # Timings and air transcripts from the simulated-radio scenarios
+        # (Kevin's WPS trace on AFSK 1200 and QPSK 3600), kept on every
+        # run so a change's effect on air can be compared.
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: scenario-reports
+          path: src/dapps/dapps.core.tests/bin/Release/net10.0/scenario-reports/
+          if-no-files-found: ignore
+          retention-days: 30
 
   # UI tests live in dapps.core.uitests - they boot dapps.core as a
   # subprocess and drive Razor pages with headless Chromium via

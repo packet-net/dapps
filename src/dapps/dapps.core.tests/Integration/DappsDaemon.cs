@@ -21,7 +21,7 @@ namespace dapps.core.tests.Integration;
 /// </summary>
 internal sealed class DappsDaemon : IAsyncDisposable
 {
-    private readonly Process process;
+    private Process process;
     private readonly StringBuilder output = new();
     private readonly string directory;
 
@@ -91,7 +91,6 @@ internal sealed class DappsDaemon : IAsyncDisposable
         foreach (var (key, value) in settings ?? new Dictionary<string, string>()) env[key] = value;
         foreach (var (key, value) in env) start.Environment[key] = value;
 
-        var process = new Process { StartInfo = start, EnableRaisingEvents = true };
         // Cookies for the admin session (see SignInAsAdminAsync); no
         // redirects followed, so an auth redirect shows up as one.
         var http = new HttpClient(new HttpClientHandler { CookieContainer = new CookieContainer(), AllowAutoRedirect = false })
@@ -99,16 +98,10 @@ internal sealed class DappsDaemon : IAsyncDisposable
             BaseAddress = new Uri($"http://127.0.0.1:{httpPort}/"),
             Timeout = TimeSpan.FromSeconds(60),
         };
-        var daemon = new DappsDaemon(name, callsign, directory, process, http);
-        process.OutputDataReceived += (_, e) => daemon.Append(e.Data);
-        process.ErrorDataReceived += (_, e) => daemon.Append(e.Data);
-        process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-
+        var daemon = new DappsDaemon(name, callsign, directory, new Process { StartInfo = start, EnableRaisingEvents = true }, http);
         try
         {
-            await daemon.WaitUntilOnTheNodeAsync(ct);
+            await daemon.LaunchAsync(ct);
         }
         catch
         {
@@ -116,6 +109,30 @@ internal sealed class DappsDaemon : IAsyncDisposable
             throw;
         }
         return daemon;
+    }
+
+    private async Task LaunchAsync(CancellationToken ct)
+    {
+        process.OutputDataReceived += (_, e) => Append(e.Data);
+        process.ErrorDataReceived += (_, e) => Append(e.Data);
+        process.Start();
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        await WaitUntilOnTheNodeAsync(ct);
+    }
+
+    /// <summary>
+    /// Stop the daemon as a service stop would (SIGTERM) and start it
+    /// again on the same database, as after an upgrade.
+    /// </summary>
+    public async Task RestartAsync(CancellationToken ct)
+    {
+        await StopAsync();
+        Append($"--- restarted by the test at {DateTime.UtcNow:HH:mm:ss.fff} ---");
+        var start = process.StartInfo;
+        process.Dispose();
+        process = new Process { StartInfo = start, EnableRaisingEvents = true };
+        await LaunchAsync(ct);
     }
 
     /// <summary>Queue a message for <paramref name="destCallsign"/>'s <paramref name="app"/>.</summary>
@@ -215,9 +232,12 @@ internal sealed class DappsDaemon : IAsyncDisposable
         throw new TimeoutException($"{Name} didn't reach its node within 60s.\n{Tail()}");
     }
 
-    public async ValueTask DisposeAsync()
+    private async Task StopAsync()
     {
-        if (!process.HasExited)
+        bool running;
+        try { running = !process.HasExited; }
+        catch (InvalidOperationException) { running = false; } // never started
+        if (running)
         {
             // SIGTERM first, so the host stops cleanly: held links are
             // closed and the AGW registration released, as in service.
@@ -226,6 +246,11 @@ internal sealed class DappsDaemon : IAsyncDisposable
             try { await process.WaitForExitAsync(wait.Token); }
             catch (OperationCanceledException) { process.Kill(entireProcessTree: true); }
         }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await StopAsync();
         Http.Dispose();
         process.Dispose();
         try { Directory.Delete(directory, recursive: true); } catch { /* best effort */ }
