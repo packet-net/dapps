@@ -351,6 +351,11 @@ public sealed class ExchangeSession
             // peer that sends us DAPPS traffic is a DAPPS node, whatever
             // else we heard: the tail of a message cut off when its node
             // moved the link, say. Its rules follow when it sees ours.)
+            // Two known costs, both one cooldown at worst: a cut-off tail
+            // with nothing DAPPS after it yet counts as other text, so a
+            // peer whose rules take over 10 s to come back (a busy 1200
+            // baud channel) is hung up on; and the 10 s run from when our
+            // exchange was queued, not from when it went on air.
             logger.LogWarning("No exchange from {0} {1:F0}s after ours, only other text: whatever answered isn't a DAPPS session",
                 peer, PromptWait.TotalSeconds);
             Failure = $"no exchange from {peer}, only other text";

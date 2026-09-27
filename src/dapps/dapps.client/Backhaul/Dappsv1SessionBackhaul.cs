@@ -361,9 +361,17 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         private int outstanding;
         private bool ranDry;
         private bool released;
-        private long lastProgressTicks;
+        private volatile bool firstHandedOut;
+        private long lastProgressTicks = clock.GetUtcNow().UtcTicks;
 
-        public bool FirstHandedOut { get; private set; }
+        /// <summary>
+        /// The first message has gone to the session. Set, and
+        /// <see cref="Started"/> completed, only once that hand-out is in
+        /// <see cref="LastProgress"/>: the wait for answers measures its
+        /// patience from there, and reading it any earlier once made it
+        /// look 60 s gone and give up at once.
+        /// </summary>
+        public bool FirstHandedOut => firstHandedOut;
         public Task Done => done.Task;
         public Task Started => started.Task;
 
@@ -376,17 +384,8 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             try
             {
                 if (released) return null;
-                BackhaulMessage? next;
-                if (!FirstHandedOut)
-                {
-                    FirstHandedOut = true;
-                    next = first;
-                    started.TrySetResult();
-                }
-                else
-                {
-                    next = await inner.NextAsync(ct);
-                }
+                var handingOutFirst = !firstHandedOut;
+                var next = handingOutFirst ? first : await inner.NextAsync(ct);
                 if (next is null)
                 {
                     ranDry = true;
@@ -396,6 +395,11 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                 {
                     outstanding++;
                     Progress();
+                }
+                if (handingOutFirst)
+                {
+                    firstHandedOut = true;
+                    started.TrySetResult();
                 }
                 return next;
             }

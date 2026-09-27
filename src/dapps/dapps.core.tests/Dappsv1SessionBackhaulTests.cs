@@ -294,6 +294,47 @@ public sealed class Dappsv1SessionBackhaulTests
     }
 
     [Fact]
+    public async Task SendBatchAsync_WaitsForTheAnswer_HoweverTheFirstHandOutIsTimed()
+    {
+        // The wait for answers starts when the first message is handed to
+        // the session, and measures its patience from when that happened.
+        // It once woke between the two, read "last progress" as the year 1
+        // and moved on at once: the forwarder's run returned before the
+        // message had even gone. A clock that's slow to answer holds that
+        // gap open.
+        var ct = TestContext.Current.CancellationToken;
+        var (ours, theirs) = await ExchangeTestKit.LoopbackPairAsync(ct);
+        var peer = new LinePeer(theirs);
+        var sb = new Dappsv1SessionBackhaul(new SingleConnectionTransport(new RetirableConnection(ours)), NullLoggerFactory.Instance)
+        {
+            TimeProvider = new SlowClock(TimeSpan.FromMilliseconds(20)),
+        };
+        var message = ExchangeTestKit.Message("waiting for its ack", "app@N0DEST");
+        var batch = new RecordingBatch(message);
+
+        var send = sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, ct);
+        await peer.WriteLineAsync("DAPPSv1>\nexchange id=far001 hold=0 inline=256", ct);
+        await peer.ReadLineAsync(ct);
+        await peer.ReadWithPayloadAsync(ct);
+        await Task.Delay(300, ct);
+
+        send.IsCompleted.Should().BeFalse("its message hasn't been answered, and 60 s haven't passed");
+        await peer.WriteLineAsync($"ack {message.Id}", ct);
+        await send.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        batch.Outcomes.Single().Result.Accepted.Should().BeTrue();
+    }
+
+    /// <summary>The system clock, taking a while to answer.</summary>
+    private sealed class SlowClock(TimeSpan lag) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow()
+        {
+            Thread.Sleep(lag);
+            return base.GetUtcNow();
+        }
+    }
+
+    [Fact]
     public async Task ASessionRetiredForANewerOne_Stops_DefersItsWork_AndDropsTheLinkWithoutADisconnect()
     {
         var ct = TestContext.Current.CancellationToken;
