@@ -83,5 +83,5 @@ Observed on BPQ (CI run of #194): a node's outbound AGW connect for a callsign p
 ## Order of work
 
 - [ ] 1. Exchange protocol: a shared exchange engine (both ends), session start and handshake rules, the receiver's rules and `no`, window, ending, peer restart; replace `rev`, `tail`, `pending` and the held session's poll; `NodePoller` via exchange; forwarder hands work to open sessions of either direction; Refused result. Spec rewritten in `docs/implement.md`. Unit tests, and the end-to-end tests (`DappsEndToEndTests`) moved from rev/pending/tail to exchange. PR:
-- [ ] 2. Crossed calls: AGW one-session-per-peer, confirmed by experiment; a net-sim scenario that forces a crossed call. PR:
+- [ ] 2. Crossed calls: AGW one-session-per-peer, confirmed by experiment; random spread on retry and redial timing, so two nodes that fail together can't keep dialling each other in lockstep (the 12-minute soak on #195 did exactly that for 13 minutes after a daemon restart: both had mail, dialled within 2 s, crossed, then retried on the same fixed 10/10/10/30/30 s schedule, 27 connections); a net-sim scenario that forces a crossed call, and the soak's restart recovering in seconds. PR:
 - [ ] 3. Measure: WPS scenario on AFSK 1200 and QPSK 3600, and the soak. Tighten the scenario's ceilings to what the new protocol does. Report against Kevin's baseline. PR (or with 2):
