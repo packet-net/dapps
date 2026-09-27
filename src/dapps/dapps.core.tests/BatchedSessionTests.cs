@@ -40,7 +40,6 @@ public sealed class BatchedSessionTests : IAsyncLifetime
         DbInfo.OverridePath = dbPath;
         using (var c = DbInfo.GetConnection())
         {
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();
@@ -89,7 +88,7 @@ public sealed class BatchedSessionTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         var farInbox = new RecordingInbox();
         var farWakeup = new ForwarderWakeup();
-        var farDirectory = new InboundSessionDirectory(farWakeup);
+        var farDirectory = new SessionDirectory(farWakeup);
         var transport = new LoopbackPeerTransport(database, farInbox, farDirectory);
         var ourWakeup = new ForwarderWakeup();
         var ourInbox = new RecordingInbox
@@ -145,7 +144,7 @@ public sealed class BatchedSessionTests : IAsyncLifetime
 
     /// <summary>The far end's forwarder: it only ever hands its traffic to
     /// the session we open, never dials.</summary>
-    private static OutboundMessageManager MakeFarForwarder(InboundSessionDirectory farDirectory)
+    private static OutboundMessageManager MakeFarForwarder(SessionDirectory farDirectory)
     {
         var farOptions = new TestOptionsMonitor<SystemOptions>(new SystemOptions { Callsign = Them });
         var farDatabase = new Database(NullLogger<Database>.Instance, farOptions);
@@ -158,16 +157,68 @@ public sealed class BatchedSessionTests : IAsyncLifetime
             [new Dappsv1SessionBackhaul(new NoDialTransport(), NullLoggerFactory.Instance)],
             new StaticRoutingAlgorithm(NullLogger<StaticRoutingAlgorithm>.Instance),
             new DatabaseRoutingContext(farDatabase, farOptions),
-            inboundSessions: farDirectory);
+            openSessions: farDirectory);
     }
 
-    private OutboundMessageManager MakeForwarder(IDappsOutboundTransport transport, IBackhaulInbox? ourInbox)
+    [Fact]
+    public async Task ALinkThatDropsBeforeAnyAnswer_PutsTheNeighbourInCooldown_InsteadOfRedialling()
+    {
+        // The rules crossed, then the link went before our message was
+        // answered (a marginal link, or the peer failing on it). Without a
+        // failure, the session ending would have the forwarder dial
+        // straight back, again and again.
+        var ct = TestContext.Current.CancellationToken;
+        var transport = new ScriptedFarEnd(async (peer, c) =>
+        {
+            await peer.WriteLineAsync($"DAPPSv1>\nexchange id=far001 hold=0 inline=256", c);
+            await peer.ReadLineAsync(c);            // our rules
+            await peer.ReadWithPayloadAsync(c);     // our message
+            peer.Close();
+        });
+        var backoff = new OutboundDestinationBackoff();
+        var forwarder = MakeForwarder(transport, ourInbox: null, backoff);
+        Queue("doomed", DateTime.UtcNow.AddSeconds(-5));
+
+        await forwarder.DoRun(ct).WaitAsync(Patience, ct);
+        await forwarder.DoRun(ct).WaitAsync(Patience, ct);
+
+        transport.Connects.Should().Be(1, "the second run is in the cooldown the failure started");
+        backoff.IsInCooldown(Them, out _).Should().BeTrue();
+        (await database.GetPendingOutboundMessages()).Should().ContainSingle("it's still queued for when the cooldown ends");
+    }
+
+    private OutboundMessageManager MakeForwarder(IDappsOutboundTransport transport, IBackhaulInbox? ourInbox, OutboundDestinationBackoff? backoff = null)
     {
         var backhaul = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, inbox: ourInbox);
         return new OutboundMessageManager(
             database, NullLoggerFactory.Instance, options, [backhaul],
             new StaticRoutingAlgorithm(NullLogger<StaticRoutingAlgorithm>.Instance),
-            new DatabaseRoutingContext(database, options));
+            new DatabaseRoutingContext(database, options),
+            destinationBackoff: backoff);
+    }
+
+    /// <summary>Each connect is a loopback socket with a script playing the far end.</summary>
+    private sealed class ScriptedFarEnd(Func<LinePeer, CancellationToken, Task> script) : IDappsOutboundTransport
+    {
+        public int Connects;
+
+        public async Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken)
+        {
+            Interlocked.Increment(ref Connects);
+            var (ours, theirs) = await ExchangeTestKit.LoopbackPairAsync(stoppingToken);
+            _ = Task.Run(() => script(new LinePeer(theirs), stoppingToken), stoppingToken);
+            return new StreamConnection(ours);
+        }
+
+        private sealed class StreamConnection(Stream stream) : IDappsConnection
+        {
+            public Stream Stream => stream;
+            public ValueTask DisposeAsync()
+            {
+                stream.Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
     }
 
     private static void Queue(string text, DateTime createdAt) => Insert(text, $"app@{Them}", createdAt);
@@ -196,7 +247,7 @@ public sealed class BatchedSessionTests : IAsyncLifetime
     /// Each connect is a fresh loopback socket with the real receiver on
     /// the far end, serving the session as the peer would.
     /// </summary>
-    private sealed class LoopbackPeerTransport(Database database, IBackhaulInbox farInbox, InboundSessionDirectory? farDirectory = null) : IDappsOutboundTransport
+    private sealed class LoopbackPeerTransport(Database database, IBackhaulInbox farInbox, SessionDirectory? farDirectory = null) : IDappsOutboundTransport
     {
         public int Connects;
 

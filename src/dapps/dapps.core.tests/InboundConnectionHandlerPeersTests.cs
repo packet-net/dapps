@@ -33,7 +33,6 @@ public sealed class InboundConnectionHandlerPeersTests : IAsyncLifetime
         {
             c.CreateTable<DbNeighbour>();
             c.CreateTable<DbDiscoveredPeer>();
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
         }

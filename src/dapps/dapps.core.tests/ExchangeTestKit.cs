@@ -64,6 +64,9 @@ internal sealed class LinePeer(Stream stream)
         await stream.FlushAsync(ct);
     }
 
+    /// <summary>Hangs up: the other end sees the link close.</summary>
+    public void Close() => stream.Dispose();
+
     /// <summary>A <c>msg</c> line and its payload, in one write.</summary>
     public Task SendMessageAsync(BackhaulMessage m, CancellationToken ct) =>
         WriteAsync([.. Encoding.UTF8.GetBytes(ExchangeTestKit.Line("msg", m)), .. m.Payload], ct);

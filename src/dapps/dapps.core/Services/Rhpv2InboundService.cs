@@ -37,7 +37,7 @@ public sealed class Rhpv2InboundService(
     TimeProvider? timeProvider = null,
     PeerSessionRegistry? peerSessions = null,
     ExchangePolicy? exchangePolicy = null,
-    InboundSessionDirectory? inboundSessions = null) : BackgroundService
+    SessionDirectory? openSessions = null) : BackgroundService
 {
     private static readonly TimeSpan IdleBackoff = TimeSpan.FromSeconds(2);
     /// <summary>Delay between cycles that ended without a real failure
@@ -242,7 +242,7 @@ public sealed class Rhpv2InboundService(
             var handler = new InboundConnectionHandler(
                 stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics,
                 settingsFor: exchangePolicy is null ? null : exchangePolicy.ForPeerAsync,
-            directory: inboundSessions);
+            directory: openSessions);
 
             _ = Task.Run(async () =>
             {

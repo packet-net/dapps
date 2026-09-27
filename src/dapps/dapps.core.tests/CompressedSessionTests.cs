@@ -40,7 +40,6 @@ public sealed class CompressedSessionTests : IAsyncLifetime
         DbInfo.OverridePath = dbPath;
         using (var c = DbInfo.GetConnection())
         {
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();
@@ -96,7 +95,7 @@ public sealed class CompressedSessionTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         var farInbox = new RecordingInbox();
         var ourInbox = new RecordingInbox();
-        var farDirectory = new InboundSessionDirectory();
+        var farDirectory = new SessionDirectory();
         var transport = new TappedLoopbackTransport(database, farInbox, farEndCompresses: true, farDirectory);
         Queue("hello", $"app@{Them}", DateTime.UtcNow.AddSeconds(-10));
         var payload = Encoding.UTF8.GetBytes(WpsPost);
@@ -142,8 +141,8 @@ public sealed class CompressedSessionTests : IAsyncLifetime
     [Fact]
     public async Task TwoSessionsOfferingTheSameMessage_EachReadsItsOwnEncoding()
     {
-        // The stored offer is keyed by id alone. One neighbour offers it
-        // plain, the other compressed, and the plain one's payload
+        // Each session keeps the offers it accepted. One neighbour offers
+        // it plain, the other compressed, and the plain one's payload
         // arrives last: it must be read as plain, not with the other
         // session's clen.
         var ct = TestContext.Current.CancellationToken;
@@ -259,7 +258,7 @@ public sealed class CompressedSessionTests : IAsyncLifetime
     /// far end, and a record of every byte our end wrote and read.
     /// </summary>
     private sealed class TappedLoopbackTransport(Database database, IBackhaulInbox farInbox, bool farEndCompresses,
-        InboundSessionDirectory? farDirectory = null) : IDappsOutboundTransport
+        SessionDirectory? farDirectory = null) : IDappsOutboundTransport
     {
         private readonly MemoryStream written = new();
         private readonly MemoryStream read = new();

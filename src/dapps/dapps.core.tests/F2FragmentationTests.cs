@@ -33,7 +33,6 @@ public sealed class F2FragmentationTests : IAsyncLifetime
         DbInfo.OverridePath = dbPath;
         using (var c = DbInfo.GetConnection())
         {
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();

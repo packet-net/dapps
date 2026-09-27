@@ -32,7 +32,7 @@ public class OutboundMessageManager(
     TransmissionAuditService? transmissionAudit = null,
     OutboundDestinationBackoff? destinationBackoff = null,
     PeerSessionRegistry? peerSessions = null,
-    InboundSessionDirectory? inboundSessions = null)
+    SessionDirectory? openSessions = null)
 {
     private readonly ILogger logger = loggerFactory.CreateLogger<OutboundMessageManager>();
     private readonly IReadOnlyList<IDappsBackhaul> backhauls = backhauls.ToList();
@@ -64,12 +64,18 @@ public class OutboundMessageManager(
 
     /// <summary>
     /// Next hops that answered <c>no</c> to a message, with what they
-    /// said, by message id. The message stays queued for another route;
-    /// if the next run can only find one of these, it is dropped with
-    /// their reason. Only in memory: after a restart a refusing hop is
-    /// asked once more, and says no again.
+    /// said, by <see cref="RefusalKey"/>. The message stays queued for
+    /// another route; if the next run can only find one of these, it is
+    /// dropped with their reason. Each run forgets the entries for messages
+    /// no longer queued, however they left. Only in memory: after a restart
+    /// a refusing hop is asked once more, and says no again.
     /// </summary>
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, string>> refusals = new(StringComparer.Ordinal);
+
+    /// <summary>A message's id with its salt and length: the id alone is
+    /// only 28 bits of hash.</summary>
+    private static string RefusalKey(DbMessage message) =>
+        string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{message.Id}|{message.Salt}|{message.Payload.Length}");
 
     /// <summary>
     /// Internal counter incremented at the start of each *actually
@@ -109,11 +115,17 @@ public class OutboundMessageManager(
         // to the queue for more only picks up messages queued since.
         var seen = new HashSet<string>(messages.Select(m => m.Id));
 
+        // Refusals of messages that have left the queue since (expired,
+        // deleted, sent another way) are no longer wanted.
+        var queuedKeys = messages.Select(RefusalKey).ToHashSet(StringComparer.Ordinal);
+        foreach (var key in refusals.Keys.Where(k => !queuedKeys.Contains(k)).ToList()) refusals.TryRemove(key, out _);
+
         // Messages for the same next hop go out together on one session
         // rather than one session each. The work runs in queue order: a
         // batch where its first message sits in the queue, a flood where
         // its message does.
         var batches = new Dictionary<BackhaulRoute, NextHopBatch>(SameLinkComparer.Instance);
+        var callerBatches = new Dictionary<string, NextHopBatch>(StringComparer.OrdinalIgnoreCase);
         var work = new List<object>();
 
         foreach (var message in messages)
@@ -129,13 +141,13 @@ public class OutboundMessageManager(
                     (int)(DateTime.UtcNow - message.CreatedAt).TotalSeconds, message.Ttl);
                 metrics.RecordTtlExpired(message.Id, message.Destination);
                 await database.SoftDeleteMessage(message.Id, "ttl-expired");
-                refusals.TryRemove(message.Id, out _);
+                refusals.TryRemove(RefusalKey(message), out _);
                 continue;
             }
 
             var decision = await routingAlgorithm.ResolveAsync(message, routingContext, stoppingToken);
 
-            if (refusals.TryGetValue(message.Id, out var refusedBy)
+            if (refusals.TryGetValue(RefusalKey(message), out var refusedBy)
                 && !(decision is RouteDecision.NextHop other && !refusedBy.ContainsKey(other.Route.Callsign)))
             {
                 // Refused by its next hop, and there's no other way to send it.
@@ -143,7 +155,7 @@ public class OutboundMessageManager(
                 logger.LogWarning("Dropping message {0} for {1}: no route left that will take it ({2})",
                     message.Id, message.Destination, reason);
                 await database.SoftDeleteMessage(message.Id, "refused: " + reason);
-                refusals.TryRemove(message.Id, out _);
+                refusals.TryRemove(RefusalKey(message), out _);
                 continue;
             }
 
@@ -163,14 +175,14 @@ public class OutboundMessageManager(
                     work.Add(new PendingFlood(message, flood));
                     break;
 
-                case RouteDecision.Unreachable when inboundSessions?.CallerFor(message.Destination) is { } caller:
-                    // No route, but the node it's for has called us: it
-                    // goes on that session (what `rev` used to collect).
-                    var callerRoute = new BackhaulRoute(caller);
-                    if (!batches.TryGetValue(callerRoute, out var callerBatch))
+                case RouteDecision.Unreachable when openSessions?.CallerFor(message.Destination) is { } caller:
+                    // No route, but the node it's for has a session open
+                    // with us: it goes on that session (what `rev` used to
+                    // collect), and nowhere else. We have no route to dial.
+                    if (!callerBatches.TryGetValue(caller, out var callerBatch))
                     {
-                        callerBatch = new NextHopBatch(this, callerRoute, runStartedAt, seen);
-                        batches.Add(callerRoute, callerBatch);
+                        callerBatch = new NextHopBatch(this, new BackhaulRoute(caller), runStartedAt, seen) { HandOffOnly = true };
+                        callerBatches.Add(caller, callerBatch);
                         work.Add(callerBatch);
                     }
                     callerBatch.Add(message, null);
@@ -247,12 +259,21 @@ public class OutboundMessageManager(
             logger.LogInformation("Handed {0} message(s) for {1} to the session we have open with it", batch.Count, route.Callsign);
             return;
         }
-        if (RidesASession(route) && inboundSessions is not null && inboundSessions.TryHand(route.Callsign, batch))
+        if (RidesASession(route) && openSessions is not null && openSessions.TryHand(route.Callsign, batch))
         {
-            logger.LogInformation("Handed {0} message(s) for {1} to the session it has open with us", batch.Count, route.Callsign);
+            logger.LogInformation("Handed {0} message(s) for {1} to the session open with it", batch.Count, route.Callsign);
             return;
         }
         batch.Detached = false;
+
+        if (batch.HandOffOnly)
+        {
+            // Its session ended before the batch got there, and with no
+            // route there's nothing to dial: the messages stay queued.
+            logger.LogInformation("Leaving {0} message(s) for {1} queued: its session has ended and there's no route to it",
+                batch.Count, route.Callsign);
+            return;
+        }
 
         if (destinationBackoff.IsInCooldown(route.Callsign, out var nextRetryAtUtc))
         {
@@ -356,7 +377,7 @@ public class OutboundMessageManager(
             // The neighbour is fine; it just won't take this one. The next
             // run sends it another way if there is one, else drops it.
             logger.LogWarning("{0} won't take message {1} ({2}); it goes another way if there is one", route.Callsign, message.Id, result.Error);
-            refusals.GetOrAdd(message.Id, _ => new(StringComparer.OrdinalIgnoreCase))[route.Callsign] = result.Error ?? "refused";
+            refusals.GetOrAdd(RefusalKey(message), _ => new(StringComparer.OrdinalIgnoreCase))[route.Callsign] = result.Error ?? "refused";
         }
         else
         {
@@ -368,7 +389,7 @@ public class OutboundMessageManager(
                 activityTracker?.RecordTransmission();
                 await database.MarkMessageAsForwarded(message.Id);
                 destinationBackoff.RecordSuccess(route.Callsign);
-                refusals.TryRemove(message.Id, out _);
+                refusals.TryRemove(RefusalKey(message), out _);
             }
             else
             {
@@ -430,6 +451,9 @@ public class OutboundMessageManager(
         /// looking at the queue again would race the run that made it.
         /// </summary>
         public bool Detached { get; set; }
+
+        /// <summary>Only for a session already open: never dialled for.</summary>
+        public bool HandOffOnly { get; init; }
 
         public void Add(DbMessage row, IReadOnlyList<string>? sourceRoute) => queued.Enqueue((row, sourceRoute));
 
@@ -564,9 +588,9 @@ public class OutboundMessageManager(
                 logger.LogInformation("Flood of {0}: handed to the session we have open with {1}", message.Id, route.Callsign);
                 continue;
             }
-            if (RidesASession(route) && inboundSessions is not null && inboundSessions.TryHand(route.Callsign, copy))
+            if (RidesASession(route) && openSessions is not null && openSessions.TryHand(route.Callsign, copy))
             {
-                logger.LogInformation("Flood of {0}: handed to the session {1} has open with us", message.Id, route.Callsign);
+                logger.LogInformation("Flood of {0}: handed to the session open with {1}", message.Id, route.Callsign);
                 continue;
             }
             if (WouldDialIntoOpenSession(route, out var openDirection))

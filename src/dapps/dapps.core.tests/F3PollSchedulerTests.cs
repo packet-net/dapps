@@ -31,7 +31,6 @@ public sealed class F3PollSchedulerTests : IAsyncLifetime
         {
             c.CreateTable<DbNeighbour>();
             c.CreateTable<DbPolledNode>();
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
         }

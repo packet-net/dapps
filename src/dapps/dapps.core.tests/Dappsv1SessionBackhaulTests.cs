@@ -219,18 +219,19 @@ public sealed class Dappsv1SessionBackhaulTests
     }
 
     [Fact]
-    public async Task SendBatchAsync_ThePeerHangsUpWithAMessageUnanswered_ItIsDeferredNotFailed()
+    public async Task SendBatchAsync_ThePeerHangsUpWithMessagesUnanswered_TheOldestFails_TheRestAreDeferred()
     {
-        // A peer that closes mid-session ends the session; the neighbour
-        // isn't failing, so no cooldown for what it hadn't answered.
+        // A session that breaks off without a quit is a failure of the
+        // link or the neighbour: one message fails, so the neighbour gets
+        // a cooldown instead of an immediate redial; the others just wait.
         var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(Hello + "ack msg0001\n"));
         var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
-        var batch = new ListBatch(Msg("msg0001"), Msg("msg0002"));
+        var batch = new ListBatch(Msg("msg0001"), Msg("msg0002"), Msg("msg0003"));
 
         await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, TestContext.Current.CancellationToken);
 
         batch.Outcomes.Select(o => (o.Id, o.Result.Accepted, o.Result.Deferred)).Should().Equal(
-            ("msg0001", true, false), ("msg0002", false, true));
+            ("msg0001", true, false), ("msg0002", false, false), ("msg0003", false, true));
     }
 
     [Fact]
@@ -263,6 +264,33 @@ public sealed class Dappsv1SessionBackhaulTests
 
         batch.Outcomes.Select(o => o.Id).Should().Equal("msg0001");
         batch.SecondWave.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task SendBatchAsync_ASessionThatAnswersNothing_DoesNotHoldTheForwarderPastItsPatience()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (ours, theirs) = await ExchangeTestKit.LoopbackPairAsync(ct);
+        var peer = new LinePeer(theirs);
+        var sb = new Dappsv1SessionBackhaul(new OneStreamTransport(ours), NullLoggerFactory.Instance)
+        {
+            BatchPatience = TimeSpan.FromMilliseconds(300),
+        };
+        var message = ExchangeTestKit.Message("slow to answer", "app@N0DEST");
+        var batch = new RecordingBatch(message);
+
+        var send = sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, ct);
+        await peer.WriteLineAsync("DAPPSv1>\nexchange id=far001 hold=60 inline=256", ct);
+        await peer.ReadLineAsync(ct);
+        await peer.ReadWithPayloadAsync(ct);
+
+        await send.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        batch.Outcomes.Should().BeEmpty("the answer hasn't come yet");
+
+        // It still counts when it does.
+        await peer.WriteLineAsync($"ack {message.Id}", ct);
+        await batch.WaitForOutcomesAsync(1, ct);
+        batch.Outcomes.Single().Result.Accepted.Should().BeTrue();
     }
 
     [Fact]

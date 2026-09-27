@@ -66,7 +66,7 @@ public sealed class InboundConnectionHandlerTests : IAsyncLifetime
     {
         var ct = TestContext.Current.CancellationToken;
         var (ours, theirs) = await LoopbackPairAsync(ct);
-        var directory = new InboundSessionDirectory();
+        var directory = new SessionDirectory();
         var handler = new InboundConnectionHandler(ours, "N0THEM", NullLoggerFactory.Instance, database, new RecordingInbox(), directory: directory);
         var run = handler.Handle(ct);
         var peer = new LinePeer(theirs);

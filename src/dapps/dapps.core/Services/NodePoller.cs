@@ -10,7 +10,9 @@ namespace dapps.core.Services;
 /// runs an <see cref="ExchangeSession"/> with nothing of our own to send,
 /// takes whatever the neighbour sends through
 /// <see cref="IBackhaulInbox.DeliverAsync"/>, and hangs up once the link
-/// has been quiet for the agreed hold. Stateless - the same instance can
+/// has been quiet for the agreed hold. Once established the session is
+/// registered in the <see cref="SessionDirectory"/>, so anything we have
+/// for the neighbour goes on it too. Stateless - the same instance can
 /// serve many concurrent polls.
 ///
 /// Mirror of <see cref="NodeProber"/> for the C5.1-style reachability
@@ -25,7 +27,8 @@ public sealed class NodePoller(
     ILoggerFactory loggerFactory,
     ILogger<NodePoller> logger,
     IRouteGossipPort? routeGossip = null,
-    ExchangePolicy? exchangePolicy = null)
+    ExchangePolicy? exchangePolicy = null,
+    SessionDirectory? openSessions = null)
 {
     /// <summary>Outcome of a single poll. Failure is captured rather
     /// than thrown - the scheduler catches per-callsign failures so
@@ -77,8 +80,16 @@ public sealed class NodePoller(
                 MinQuiet = MinQuiet,
                 PromptConsumed = connectScript is not null,
                 RouteGossip = routeGossip,
+                Opened = s => openSessions?.Register(remoteCallsign, s),
             };
-            await session.RunAsync(ct);
+            try
+            {
+                await session.RunAsync(ct);
+            }
+            finally
+            {
+                openSessions?.Unregister(remoteCallsign, session);
+            }
             if (!session.Established)
             {
                 var error = session.Failure ?? "no session";

@@ -32,7 +32,6 @@ public sealed class RemainingControllersTests : IAsyncLifetime
 
         using (var c = DbInfo.GetConnection())
         {
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();

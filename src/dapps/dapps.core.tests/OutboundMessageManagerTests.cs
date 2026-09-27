@@ -36,7 +36,6 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
 
         using (var c = DbInfo.GetConnection())
         {
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();
@@ -748,10 +747,10 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         backoff.RecordFailure("N0DEST");
         var peers = new PeerSessionRegistry();
         using var lease = peers.Acquire("N0DEST", "inbound");
-        var directory = new InboundSessionDirectory();
+        var directory = new SessionDirectory();
         var peer = await EstablishedInboundSessionAsync("N0DEST", directory);
         var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
-            destinationBackoff: backoff, peerSessions: peers, inboundSessions: directory);
+            destinationBackoff: backoff, peerSessions: peers, openSessions: directory);
         InsertMessage(id: "cool002", ttl: null, createdAt: DateTime.UtcNow);
 
         await m.DoRun(TestContext.Current.CancellationToken);
@@ -765,10 +764,10 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
     {
         // What `rev` used to collect: we have no route to N0FAR, but it's
         // on the line.
-        var directory = new InboundSessionDirectory();
+        var directory = new SessionDirectory();
         var peer = await EstablishedInboundSessionAsync("N0FAR-2", directory);
         var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
-            inboundSessions: directory);
+            openSessions: directory);
         InsertMessage(id: "caller1", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR");
 
         await m.DoRun(TestContext.Current.CancellationToken);
@@ -777,10 +776,62 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         backhaul.Sent.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task DoRun_MailForANodeWhoseSessionHasJustEnded_IsNotDialledForWithoutARoute()
+    {
+        // The session still shows in the directory when the run looks, but
+        // has ended by the time the batch gets there. With no route to that
+        // node there's nothing to dial: the mail waits.
+        var ct = TestContext.Current.CancellationToken;
+        var directory = new SessionDirectory();
+        var (ours, theirs) = await ExchangeTestKit.LoopbackPairAsync(ct);
+        var session = new dapps.client.Backhaul.ExchangeSession(ours, "N0FAR-2", dialled: false, new ExchangeSettings(), new RecordingInbox(), NullLoggerFactory.Instance);
+        var run = session.RunAsync(ct);
+        new LinePeer(theirs).Close();
+        await run.WaitAsync(ExchangeTestKit.Patience, ct);
+        directory.Register("N0FAR-2", session);
+        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
+            openSessions: directory);
+        InsertMessage(id: "gone001", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR");
+
+        await m.DoRun(ct);
+
+        backhaul.Sent.Should().BeEmpty("nothing is dialled on a made-up route");
+        (await database.GetPendingOutboundMessages()).Select(r => r.Id).Should().Equal("gone001");
+    }
+
+    [Fact]
+    public async Task DoRun_ARefusalIsForThatMessage_NotForAnotherWithTheSameId()
+    {
+        // The refused one is deleted; a different message whose 7-character
+        // id happens to match goes as normal.
+        var bearer = new BatchingFakeBackhaul
+        {
+            ResultFor = msg => msg.Salt == 1L ? BackhaulSendResult.Refuse("not that one") : BackhaulSendResult.Ok(),
+        };
+        var m = MakeManager(bearer);
+        InsertMessage(id: "same001", ttl: null, createdAt: DateTime.UtcNow);
+        await m.DoRun(TestContext.Current.CancellationToken);
+        using (var c = DbInfo.GetConnection()) c.Delete<DbMessage>("same001");
+
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbMessage
+            {
+                Id = "same001", Payload = Encoding.UTF8.GetBytes("a different one"), Salt = 2L, Destination = "app@N0DEST",
+                SourceCallsign = "N0CALL", AdditionalProperties = "{}", CreatedAt = DateTime.UtcNow,
+            });
+        }
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        bearer.Batches.Should().HaveCount(2);
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty("the second was sent and acked, not dropped as refused");
+    }
+
     /// <summary>A session <paramref name="peerCall"/> dialled, established
     /// and registered in <paramref name="directory"/>; returns the peer's
     /// end of the link, past the handshake.</summary>
-    private static async Task<LinePeer> EstablishedInboundSessionAsync(string peerCall, InboundSessionDirectory directory)
+    private static async Task<LinePeer> EstablishedInboundSessionAsync(string peerCall, SessionDirectory directory)
     {
         var ct = TestContext.Current.CancellationToken;
         var (ours, theirs) = await ExchangeTestKit.LoopbackPairAsync(ct);

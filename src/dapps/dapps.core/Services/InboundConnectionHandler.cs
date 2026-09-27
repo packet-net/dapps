@@ -28,7 +28,7 @@ public class InboundConnectionHandler(
     IBackhaulInbox inbox,
     OperationalMetrics? metrics = null,
     Func<string, CancellationToken, Task<ExchangeSettings>>? settingsFor = null,
-    InboundSessionDirectory? directory = null)
+    SessionDirectory? directory = null)
 {
     private readonly ILogger logger = loggerFactory.CreateLogger<InboundConnectionHandler>();
     private readonly OperationalMetrics metrics = metrics ?? new OperationalMetrics();

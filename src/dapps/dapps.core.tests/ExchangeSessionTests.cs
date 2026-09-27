@@ -35,7 +35,7 @@ public sealed class ExchangeSessionTests : IDisposable
     /// <summary>A session that dialled: the peer plays the answering node.</summary>
     private async Task<(ExchangeSession Session, LinePeer Peer, Task Run, WriteRecordingStream Wire)> CallerAsync(
         ExchangeSettings? settings = null, IBackhaulInbox? inbox = null, Action<ExchangeSession>? opened = null,
-        TimeSpan? maxLength = null)
+        TimeSpan? maxLength = null, TimeSpan? inactivity = null)
     {
         var (ours, theirs) = await LoopbackPairAsync(Ct);
         var wire = new WriteRecordingStream(ours);
@@ -44,6 +44,7 @@ public sealed class ExchangeSessionTests : IDisposable
             PromptWait = Short,
             MinQuiet = Short,
             MaxLength = maxLength ?? TimeSpan.FromMinutes(30),
+            InactivityTimeout = inactivity ?? TimeSpan.FromMinutes(3),
             Opened = opened,
         };
         return (session, new LinePeer(theirs), session.RunAsync(Ct), wire);
@@ -457,24 +458,182 @@ public sealed class ExchangeSessionTests : IDisposable
     }
 
     [Fact]
-    public async Task TheLinkEndingWithOursUnanswered_DefersThem()
+    public async Task ASessionWeDialledThatBreaksOff_FailsItsOldestUnanswered_AndDefersTheRest()
+    {
+        // The link carried the exchange and then dropped before any answer
+        // (a marginal link, or the peer failing on what we sent). Failing
+        // one gives the neighbour a cooldown: deferring everything would
+        // have the forwarder dial straight back into the same failure.
+        var first = Message("first", $"app@{Them}", 1);
+        var second = Message("second", $"app@{Them}", 2);
+        var batch = new RecordingBatch(first, second);
+        var (session, peer, run, _) = await CallerAsync();
+        session.TryTake(batch);
+        await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
+        await peer.ReadLineAsync(Ct);
+        await peer.ReadWithPayloadAsync(Ct);
+        await peer.ReadWithPayloadAsync(Ct);
+
+        peer.Close();
+        await run.WaitAsync(Patience, Ct);
+
+        batch.Outcomes.Select(o => (o.Id, o.Result.Accepted, o.Result.Deferred)).Should().Equal(
+            (first.Id, false, false), (second.Id, false, true));
+        batch.Outcomes[0].Result.Error.Should().Contain("broke off");
+        session.Established.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ASessionTheyDialledThatBreaksOff_DefersEverything()
+    {
+        // The caller's side of it fails its own; ours just waits for the
+        // next session, whoever makes it.
+        var (session, peer, run) = await CalleeAsync();
+        await peer.WriteLineAsync(Rules(), Ct);
+        var m = Message("for you", $"app@{Them}");
+        var batch = new RecordingBatch(m);
+        while (!session.Established) await Task.Delay(10, Ct);
+        session.TryTake(batch);
+        await peer.ReadWithPayloadAsync(Ct);
+
+        peer.Close();
+        await run.WaitAsync(Patience, Ct);
+
+        batch.Outcomes.Single().Result.Deferred.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task APeersQuit_WithOursUnanswered_DefersThem()
     {
         var m = Message("in flight", $"app@{Them}");
         var batch = new RecordingBatch(m);
-        var (ours, theirs) = await LoopbackPairAsync(Ct);
-        var session = new ExchangeSession(ours, Them, dialled: true, new ExchangeSettings(), new RecordingInbox(), NullLoggerFactory.Instance);
+        var (session, peer, run, _) = await CallerAsync();
         session.TryTake(batch);
-        var run = session.RunAsync(Ct);
-        var peer = new LinePeer(theirs);
         await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
         await peer.ReadLineAsync(Ct);
         await peer.ReadWithPayloadAsync(Ct);
 
-        theirs.Close();
+        await peer.WriteLineAsync("quit", Ct);
+        (await peer.ReadLineAsync(Ct)).Should().Be("bye");
         await run.WaitAsync(Patience, Ct);
 
-        batch.Outcomes.Single().Result.Deferred.Should().BeTrue();
-        session.Established.Should().BeTrue();
+        batch.Outcomes.Single().Result.Deferred.Should().BeTrue("a quit is a clean end, not a failure");
+    }
+
+    [Fact]
+    public async Task WorkHandedToTheSessionButNotStarted_IsDeferredWhenItEnds()
+    {
+        // The window is full, so the second batch is still waiting when the
+        // link goes: each of its messages still gets an outcome (a flood
+        // copy has no other chance of one).
+        var first = Enumerable.Range(1, ExchangeSession.DefaultWindow).Select(i => Message($"message {i}", $"app@{Them}", i)).ToArray();
+        var waiting = Message("still waiting", $"app@{Them}", 99);
+        var batch = new RecordingBatch(first);
+        var later = new RecordingBatch(waiting);
+        var (session, peer, run, _) = await CallerAsync();
+        session.TryTake(batch);
+        await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
+        await peer.ReadLineAsync(Ct);
+        for (var i = 0; i < first.Length; i++) await peer.ReadWithPayloadAsync(Ct);
+        session.TryTake(later).Should().BeTrue();
+
+        peer.Close();
+        await run.WaitAsync(Patience, Ct);
+
+        later.Outcomes.Single().Result.Deferred.Should().BeTrue();
+        batch.Outcomes.Should().HaveCount(first.Length);
+        session.TryTake(new RecordingBatch(waiting)).Should().BeFalse("an ended session takes no more work");
+    }
+
+    [Fact]
+    public async Task AnswersArrivingAfterOurQuit_StillCount_AndPayloadsArriveThenAreReadPast()
+    {
+        var m = Message("in flight", $"app@{Them}");
+        var batch = new RecordingBatch(m);
+        var (session, peer, run, _) = await CallerAsync(maxLength: TimeSpan.FromSeconds(1));
+        session.TryTake(batch);
+        await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
+        await peer.ReadLineAsync(Ct);
+        await peer.ReadWithPayloadAsync(Ct);
+        (await peer.ReadLineAsync(Ct)).Should().Be("quit");
+
+        // Sent before the peer saw our quit: a message of its own, whose
+        // payload happens to hold a line that reads "bye", then the ack.
+        var theirs = new BackhaulMessage("tricky1", $"app@{Us}", 5L, 600, Encoding.UTF8.GetBytes("x\nbye\n"));
+        await peer.SendMessageAsync(theirs, Ct);
+        await peer.WriteLineAsync($"ack {m.Id}\nbye", Ct);
+        await run.WaitAsync(Patience, Ct);
+
+        batch.Outcomes.Single().Result.Accepted.Should().BeTrue("its ack came before the real bye");
+    }
+
+    [Fact]
+    public async Task APeerRestartWithAPayloadWeAskedForOutstanding_ForgetsIt_SoTheSessionCanStillEndOnQuiet()
+    {
+        var (session, peer, run, _) = await CallerAsync();
+        await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules("old001") + "\n"), Ct);
+        await peer.ReadLineAsync(Ct);
+        var offered = Message(new string('o', 400), $"app@{Us}");
+        await peer.WriteLineAsync(Line("ihave", offered).TrimEnd('\n'), Ct);
+        (await peer.ReadLineAsync(Ct)).Should().Be($"send {offered.Id}");
+
+        // The old session object won't send it now; the new one would
+        // offer it again itself.
+        await peer.WriteLineAsync(Rules("new002"), Ct);
+        (await peer.ReadLineAsync(Ct)).Should().StartWith("exchange ");
+
+        (await peer.ReadLineAsync(Ct)).Should().Be("quit", "nothing is left waiting, so the quiet spell ends it");
+        await peer.WriteLineAsync("bye", Ct);
+        await run.WaitAsync(Patience, Ct);
+    }
+
+    [Fact]
+    public async Task AMessageThatNeverGetsAnAnswer_FailsAfterTheAnswerTimeout_WhileTheSessionGoesOn()
+    {
+        // e.g. the peer couldn't read its id and said `error ??`.
+        var unanswerable = Message("never answered", $"app@{Them}", 1);
+        var answered = Message("answered", $"app@{Them}", 2);
+        var batch = new RecordingBatch(unanswerable, answered);
+        var (session, peer, run, _) = await CallerAsync(new ExchangeSettings(HoldSeconds: 60), inactivity: TimeSpan.FromSeconds(1));
+        session.TryTake(batch);
+        await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
+        await peer.ReadLineAsync(Ct);
+        await peer.ReadWithPayloadAsync(Ct);
+        await peer.ReadWithPayloadAsync(Ct);
+        await peer.WriteLineAsync($"error ??\nack {answered.Id}", Ct);
+
+        await batch.WaitForOutcomesAsync(2, Ct);
+
+        var failed = batch.Outcomes.Single(o => o.Id == unanswerable.Id).Result;
+        failed.Accepted.Should().BeFalse();
+        failed.Deferred.Should().BeFalse();
+        failed.Error.Should().Contain("no answer");
+        run.IsCompleted.Should().BeFalse("the session itself is fine");
+    }
+
+    [Fact]
+    public async Task TwoEnds_EachSendingMoreThanAWindowAtOnce_GetEverythingThrough()
+    {
+        var (a, b) = await LoopbackPairAsync(Ct);
+        var inboxA = new RecordingInbox();
+        var inboxB = new RecordingInbox();
+        var fromA = Enumerable.Range(1, 20).Select(i => Message($"from A {i} " + new string('a', i * 20), $"app@{Them}", i)).ToArray();
+        var fromB = Enumerable.Range(1, 20).Select(i => Message($"from B {i} " + new string('b', i * 20), $"app@{Us}", 100 + i)).ToArray();
+        var batchA = new RecordingBatch(fromA);
+        var batchB = new RecordingBatch(fromB);
+        var caller = new ExchangeSession(a, Them, dialled: true, new ExchangeSettings(), inboxA, NullLoggerFactory.Instance) { MinQuiet = Short };
+        var callee = new ExchangeSession(b, Us, dialled: false, new ExchangeSettings(), inboxB, NullLoggerFactory.Instance)
+        {
+            Opened = s => s.TryTake(batchB),
+        };
+        caller.TryTake(batchA);
+
+        await Task.WhenAll(caller.RunAsync(Ct), callee.RunAsync(Ct)).WaitAsync(Patience, Ct);
+
+        inboxB.Texts.Should().Equal(fromA.Select(m => Encoding.UTF8.GetString(m.Payload)), "in the order they were sent");
+        inboxA.Texts.Should().Equal(fromB.Select(m => Encoding.UTF8.GetString(m.Payload)));
+        batchA.Outcomes.Should().HaveCount(20).And.AllSatisfy(o => o.Result.Accepted.Should().BeTrue());
+        batchB.Outcomes.Should().HaveCount(20).And.AllSatisfy(o => o.Result.Accepted.Should().BeTrue());
     }
 
     // ---- Receiving ----
@@ -526,6 +685,26 @@ public sealed class ExchangeSessionTests : IDisposable
 
         await run.WaitAsync(Patience, Ct);
         session.Established.Should().BeTrue("it ended because nothing after that line can be read in step");
+    }
+
+    [Fact]
+    public async Task AReceiverWhoseInboxFails_EndsTheSession_WithoutAnAck()
+    {
+        // Storing it failed, so it mustn't be acked: the sender keeps it,
+        // and a session it dialled fails it and backs off.
+        var (session, peer, run) = await CalleeAsync(inbox: new FailingInbox());
+        await peer.WriteLineAsync(Rules(), Ct);
+
+        await peer.SendMessageAsync(Message("poison", $"app@{Us}"), Ct);
+
+        await run.WaitAsync(Patience, Ct);
+        (await peer.TryReadLineAsync(Short, Ct)).Should().BeNull("no ack went");
+    }
+
+    private sealed class FailingInbox : IBackhaulInbox
+    {
+        public Task DeliverAsync(BackhaulMessage message, string sourceCallsign, CancellationToken ct) =>
+            throw new InvalidOperationException("the database is unwell");
     }
 
     [Fact]

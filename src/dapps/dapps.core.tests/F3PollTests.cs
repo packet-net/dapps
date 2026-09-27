@@ -109,6 +109,34 @@ public sealed class F3PollTests
         gossip.Pulled.Should().Be(1);
     }
 
+    [Fact]
+    public async Task WhileAPollIsOpen_ItTakesOurMailForThatNeighbourToo()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (ours, theirs) = await LoopbackPairAsync(ct);
+        var sessions = new SessionDirectory();
+        var poller = new NodePoller(new OneStreamTransport(ours), new RecordingInbox(), TimeProvider.System, NullLoggerFactory.Instance,
+            NullLogger<NodePoller>.Instance, openSessions: sessions)
+        {
+            MinQuiet = Quiet,
+        };
+        var peer = new LinePeer(theirs);
+        var ourMail = Message("for you, while you're here", $"app@{Them}");
+
+        var poll = poller.PollAsync(Us, Them, 1, ct);
+        await peer.WriteLineAsync("DAPPSv1>\nexchange id=far001 hold=0 inline=256", ct);
+        (await peer.ReadLineAsync(ct)).Should().StartWith("exchange ");
+        var deadline = DateTime.UtcNow + Patience;
+        while (!sessions.TryHand(Them, new RecordingBatch(ourMail)) && DateTime.UtcNow < deadline) await Task.Delay(10, ct);
+
+        (await peer.ReadWithPayloadAsync(ct)).Line.Should().StartWith($"msg {ourMail.Id} ");
+        await peer.WriteLineAsync($"ack {ourMail.Id}", ct);
+        (await peer.ReadLineAsync(ct)).Should().Be("quit");
+        await peer.WriteLineAsync("bye", ct);
+        (await poll.WaitAsync(Patience, ct)).Success.Should().BeTrue();
+        sessions.TryHand(Them, new RecordingBatch()).Should().BeFalse("the poll has ended");
+    }
+
     private static NodePoller MakePoller(Stream stream, IBackhaulInbox inbox, IRouteGossipPort? gossip = null) =>
         new(new OneStreamTransport(stream), inbox, TimeProvider.System, NullLoggerFactory.Instance, NullLogger<NodePoller>.Instance, gossip)
         {

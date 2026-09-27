@@ -49,6 +49,15 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     /// (<see cref="ExchangeSession.MinQuiet"/>).</summary>
     public TimeSpan MinQuiet { get; init; } = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// How long <see cref="SendBatchAsync"/> keeps the forwarder waiting
+    /// on a session with nothing of its batch answered, before it lets the
+    /// forwarder get on with other neighbours. Answers still to come are
+    /// recorded when they arrive, and what the batch hadn't handed out yet
+    /// goes on the session by hand-off in a later run.
+    /// </summary>
+    public TimeSpan BatchPatience { get; init; } = TimeSpan.FromSeconds(60);
+
     public Dappsv1SessionBackhaul(IDappsOutboundTransport transport, ILoggerFactory loggerFactory)
         : this(transport, loggerFactory, inbox: null)
     {
@@ -111,14 +120,17 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     {
         var single = new SingleMessageBatch(message);
         await SendBatchAsync(route, localCallsign, single, ct);
-        return single.Result!;
+        // Answered by now, unless the batch ran out of patience: then it
+        // comes by the answer timeout at the latest.
+        return await single.Result;
     }
 
     /// <summary>
     /// Dial the route's peer and carry <paramref name="batch"/> on an
     /// exchange session. Returns once every message the batch had has
-    /// been answered (or the session ended); the session itself stays up
-    /// in the background, taking whatever else the forwarder hands it and
+    /// been answered, the session ended, or nothing has been answered for
+    /// <see cref="BatchPatience"/>; the session itself stays up in the
+    /// background, taking whatever else the forwarder hands it and
     /// whatever the peer sends, until the link has been quiet for the
     /// agreed hold.
     ///
@@ -203,10 +215,30 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             throw;
         }
 
-        var tracked = new TrackedBatch(batch, first);
+        var tracked = new TrackedBatch(batch, first, TimeProvider);
         session.TryTake(tracked);
         var run = RunAsync(session, route, connection, stream, ct);
-        await Task.WhenAny(tracked.Done, run);
+        while (!tracked.Done.IsCompleted && !run.IsCompleted)
+        {
+            if (!tracked.FirstHandedOut)
+            {
+                // The handshake has its own limits.
+                await Task.WhenAny(tracked.Started, tracked.Done, run);
+                continue;
+            }
+            var left = tracked.LastProgress + BatchPatience - TimeProvider.GetUtcNow();
+            if (left <= TimeSpan.Zero)
+            {
+                await tracked.ReleaseAsync();
+                logger.LogInformation(
+                    "Nothing answered by {0} for {1:F0}s; moving on, its answers are recorded as they come",
+                    route.Callsign, BatchPatience.TotalSeconds);
+                break;
+            }
+            using var waiting = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            await Task.WhenAny(tracked.Done, run, Task.Delay(left, TimeProvider, waiting.Token));
+            await waiting.CancelAsync();
+        }
 
         if (!tracked.FirstHandedOut)
         {
@@ -288,39 +320,61 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     /// out (to know there was something to dial for). Done once the batch
     /// has run dry and everything it handed out has been answered: from
     /// then on the forwarder's run can go on, and the batch is never
-    /// asked again.
+    /// asked again. Released early when the forwarder stops waiting: it
+    /// then hands out nothing more (what's left stays queued for a later
+    /// run), and the batch is never touched from the session again except
+    /// to record answers to what it already handed out.
     /// </summary>
-    private sealed class TrackedBatch(IBackhaulBatch inner, BackhaulMessage first) : IBackhaulBatch
+    private sealed class TrackedBatch(IBackhaulBatch inner, BackhaulMessage first, TimeProvider clock) : IBackhaulBatch
     {
+        private readonly SemaphoreSlim gate = new(1, 1);
         private readonly TaskCompletionSource done = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int outstanding;
         private bool ranDry;
+        private bool released;
+        private long lastProgressTicks;
 
         public bool FirstHandedOut { get; private set; }
         public Task Done => done.Task;
+        public Task Started => started.Task;
+
+        /// <summary>When a message last went out or was answered.</summary>
+        public DateTimeOffset LastProgress => new(Interlocked.Read(ref lastProgressTicks), TimeSpan.Zero);
 
         public async ValueTask<BackhaulMessage?> NextAsync(CancellationToken ct)
         {
-            BackhaulMessage? next;
-            if (!FirstHandedOut)
+            await gate.WaitAsync(ct);
+            try
             {
-                FirstHandedOut = true;
-                next = first;
+                if (released) return null;
+                BackhaulMessage? next;
+                if (!FirstHandedOut)
+                {
+                    FirstHandedOut = true;
+                    next = first;
+                    started.TrySetResult();
+                }
+                else
+                {
+                    next = await inner.NextAsync(ct);
+                }
+                if (next is null)
+                {
+                    ranDry = true;
+                    if (outstanding == 0) done.TrySetResult();
+                }
+                else
+                {
+                    outstanding++;
+                    Progress();
+                }
+                return next;
             }
-            else
+            finally
             {
-                next = await inner.NextAsync(ct);
+                gate.Release();
             }
-            if (next is null)
-            {
-                ranDry = true;
-                if (outstanding == 0) done.TrySetResult();
-            }
-            else
-            {
-                outstanding++;
-            }
-            return next;
         }
 
         public async ValueTask CompleteAsync(BackhaulMessage message, BackhaulSendResult result, TimeSpan elapsed, CancellationToken ct)
@@ -331,20 +385,32 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             }
             finally
             {
+                Progress();
                 if (--outstanding == 0 && ranDry) done.TrySetResult();
             }
         }
+
+        /// <summary>Hand out nothing more. Waits for a hand-out in progress to finish.</summary>
+        public async Task ReleaseAsync()
+        {
+            await gate.WaitAsync();
+            released = true;
+            gate.Release();
+        }
+
+        private void Progress() => Interlocked.Exchange(ref lastProgressTicks, clock.GetUtcNow().UtcTicks);
     }
 
     /// <summary>A batch of exactly one message, for <see cref="SendAsync"/>.</summary>
     private sealed class SingleMessageBatch(BackhaulMessage message) : IBackhaulBatch
     {
+        private readonly TaskCompletionSource<BackhaulSendResult> result = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private bool handedOut;
 
-        /// <summary>Set once the message has been completed, which
-        /// <see cref="SendBatchAsync"/> always does for a message it
-        /// was handed.</summary>
-        public BackhaulSendResult? Result { get; private set; }
+        /// <summary>Completes once the message has been completed, which
+        /// always happens to a message <see cref="SendBatchAsync"/> was
+        /// handed: by an answer, by the session, or by the dial failing.</summary>
+        public Task<BackhaulSendResult> Result => result.Task;
 
         public ValueTask<BackhaulMessage?> NextAsync(CancellationToken ct)
         {
@@ -353,9 +419,9 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             return ValueTask.FromResult<BackhaulMessage?>(message);
         }
 
-        public ValueTask CompleteAsync(BackhaulMessage completed, BackhaulSendResult result, TimeSpan elapsed, CancellationToken ct)
+        public ValueTask CompleteAsync(BackhaulMessage completed, BackhaulSendResult outcome, TimeSpan elapsed, CancellationToken ct)
         {
-            Result = result;
+            result.TrySetResult(outcome);
             return ValueTask.CompletedTask;
         }
     }

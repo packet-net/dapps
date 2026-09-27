@@ -173,7 +173,9 @@ public static class DbStartup
         using var db = DbInfo.GetConnection();
         logger?.LogInformation($"DB: {db.DatabasePath}");
 
-        db.CreateTable<DbOffer>();
+        // Offers used to be stored until their payload came; a session
+        // keeps them itself now. Drop the table an older version left.
+        db.Execute("drop table if exists offers");
         db.CreateTable<DbMessage>();
         db.CreateTable<DbSystemOption>();
         db.CreateTable<DbRouteHint>();

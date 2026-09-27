@@ -55,7 +55,6 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         DbInfo.OverridePath = dbPath;
         using (var c = DbInfo.GetConnection())
         {
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
         }

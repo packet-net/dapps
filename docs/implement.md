@@ -68,7 +68,7 @@ Receiver replies are one of:
 | `send <id>\n` | "Yes, send the payload" | Successful parse + accept |
 | `ack <id>\n` | "Already got it" | An offer for a message you already have (same id, `s=` and `len`): the sender counts it delivered and doesn't send the payload |
 | `no <id> [reason]\n` | "Won't take it" | Bigger than your `max=`, or refused for a reason of your own. The sender doesn't offer it to you again |
-| `error <id>\n` | "Reject the offer" | Malformed `ihave` (missing `len`/`dst`, a `fmt` you can't decode, broken `chk`, etc.) |
+| `error <id>\n` or `error ??\n` | "Reject the offer" | Malformed `ihave` (missing `len`/`dst`, a `fmt` you can't decode, broken `chk`, etc.) |
 | `bad <id>\n` | "Payload arrived but was no good" | Sent only after `data`: a compressed payload that doesn't decode to `len` bytes, or `SHA1(salt_le ++ payload)[:7] ≠ id` |
 | `ack <id>\n` | "Got it, hash matches" | After `data` succeeds |
 | `eh?\n` | "Unrecognised command" | Before an exchange, a verb that isn't `ihave`/`data`/`msg`/`exchange`/`peers`/`routes`/`quit`/`help`. The session then ends |
@@ -78,7 +78,7 @@ Receiver replies are one of:
 Implement the receiver mirror:
 
 1. After writing the prompt and your `exchange` line, read a line.
-2. If it starts with `ihave `, parse it. If it's a message you already have, write `ack <id>\n` and go back to reading. If valid, write `send <id>\n` and remember the offer for this session. If invalid, write `error <id>\n` (or `error\n` if the id couldn't be plucked out) and go back to reading: a sender whose compressed offer you refused offers the same message again plain.
+2. If it starts with `ihave `, parse it. If it's a message you already have, write `ack <id>\n` and go back to reading. If valid, write `send <id>\n` and remember the offer for this session. If invalid, write `error <id>\n` (or `error ??\n` if the id couldn't be plucked out) and go back to reading: a sender whose compressed offer you refused offers the same message again plain.
 3. When `data <id>\n` arrives for an offer you accepted, read exactly `len` bytes from the stream (no framing - just `len` raw bytes), or `clen` bytes for a compressed format, and decompress those to `len` bytes (`len` is always the *uncompressed* length, `clen` the on-wire byte count). A `data` line for an offer you didn't accept can't be read past: close the session.
 4. Compute `SHA1(salt_le_8_bytes ++ payload)[:7]`. If it matches `<id>`, write `ack <id>\n`. Otherwise, write `bad <id>\n`.
 
@@ -120,7 +120,7 @@ chk_value = crc16_ccitt_false( bytes_of_line_up_to_and_excluding_" chk=" )
 
 CRC-16/CCITT-FALSE: polynomial 0x1021, initial value 0xFFFF, no reflection, no final XOR. Rendered as 4 lowercase hex digits ([Crc16CcittFalse.cs:21](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/Crc16CcittFalse.cs#L21)). The covered region is "everything before the literal ` chk=`": including `ihave`, the id, every other KV, and the spaces between them, but not the trailing ` chk=NNNN` itself.
 
-Validation is positional too: `chk` MUST be the last KV. The validator rejects any line where `chk=` appears earlier or where `chk=NNNN` isn't followed by end-of-line ([IHaveValidator.cs:208-228](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/IHaveValidator.cs#L208-L228)). This makes the covered range computable from a single string scan, not from a re-serialisation of the parsed KVs.
+Validation is positional too: `chk` MUST be the last KV. The validator rejects any line where `chk=` appears earlier or where `chk=NNNN` isn't followed by end-of-line ([IHaveValidator.ValidateChecksum](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/IHaveValidator.cs)). This makes the covered range computable from a single string scan, not from a re-serialisation of the parsed KVs.
 
 ### That's the bare essentials
 
@@ -159,7 +159,7 @@ This is how DAPPS nodes talk to each other. Every time a station transmits, it s
 | `max=<bytes>` | Largest message (`len`) it takes at all. Bigger ones are neither sent nor offered to it | no limit |
 | `z=<list>` | Compression dictionaries it holds, e.g. `z=1` | plain only |
 
-Unknown keys are ignored. A node can still refuse any message with `no`: an offer before its payload goes on air, or a small unasked one after it arrives (not stored or passed on). A node that wants to judge every message before any payload is sent says `inline=0`.
+Unknown keys are ignored. `inline` binds the sender: a receiver takes a `msg` over its own limit that arrives anyway, since its payload has already crossed the air. A node can still refuse any message with `no`: an offer before its payload goes on air, or a small unasked one after it arrives (not stored or passed on). A node that wants to judge every message before any payload is sent says `inline=0`.
 
 **Lines.** Either side, any time, once both `exchange` lines have crossed. Header fields are exactly the `ihave` fields above.
 
@@ -175,7 +175,7 @@ Unknown keys are ignored. A node can still refuse any message with `no`: an offe
 | `no <id> [reason]\n` | Won't take it. Not stored or passed on | none; the sender doesn't offer it on this link again |
 | `quit\n` | Ending | `bye\n`, then hang up |
 
-- A `msg` or `data` whose length can't be made out (no `len`, or `clen` missing for a compressed format, or a `data` for an offer you didn't accept) leaves the stream out of step: close the session. If the lengths parse but anything else is refused, read past the payload, then answer.
+- A `msg` or `data` whose length can't be made out (no `len`, or `clen` missing for a compressed format, or a `data` for an offer you didn't accept) leaves the stream out of step: close the session. The reference daemon does the same for a payload said to be over 16 MB, rather than wait for it. If the lengths parse but anything else is refused, read past the payload, then answer.
 - Window: at most 8 messages sent and not yet answered, in each direction.
 - Order: each side sends in its queue order and handles what arrives in order. Ordered streams (`sid`/`sn`) are put in order at the destination.
 - Writes: write whatever is ready as soon as it is ready. Everything answered from one burst goes in one write, and so in one frame where it fits.
@@ -183,7 +183,7 @@ Unknown keys are ignored. A node can still refuse any message with `no`: an offe
 
 **Ending.** The session stays up while anything moves. The node that dialled sends `quit` once there has been no traffic either way for the agreed hold (at least 10 seconds, so the answering node's first traffic, which can follow its `exchange` by a moment, isn't cut off), nothing is unanswered either way, and it has nothing more to send. In a crossed call either may; that's harmless. The reference daemon also ends a session after 30 minutes however busy, and the next message dials afresh. With no bytes at all from the peer for 3 minutes, or the hold plus 30 seconds if that's longer, give up on the link.
 
-A message still unanswered when a session ends stays queued and goes on the next one.
+A message still unanswered when a session ends stays queued and goes on the next one. The reference daemon adds two limits of its own: it gives up on a message that has gone unanswered for as long as the inactivity timeout, and when a session it dialled breaks off without a `quit` (the link failed, or the peer hung up) it counts the oldest unanswered message as failed, so it waits a while before dialling that neighbour again rather than straight away.
 
 A normal call, with the answering node's traffic going the other way on the same link:
 
@@ -216,7 +216,7 @@ ihave 7e1f3a2 len=5 fmt=p s=1714982400000 src=G0ORIG dst=mail@G0RCV chk=a31f
 
 Why have it: without `src=`, a receiver three hops down can't tell whether a message originated at G0FIRST or just transited through G0FIRST. With `src=`, the receiver's app sees the originator (exposed as the `dapps-origin` MQTT user property) and can route replies back to the right source. Forwarders that don't propagate it omit `src=`; receivers treat absent `src=` as "originator unknown".
 
-Reference: [DappsProtocolClient.cs:122-128](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs#L122-L128), [IHaveValidator.cs:144-152](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/IHaveValidator.cs#L144-L152).
+Reference: [OfferLine.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/OfferLine.cs) (writing it), [IHaveValidator.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/IHaveValidator.cs) (reading it).
 
 ### Multi-part fragmentation (`mid=` + `frag=`)
 
@@ -230,7 +230,7 @@ ihave 33eeefe len=512  fmt=p s=1714982400003 mid=4cf02b1 frag=3/3 dst=mail@G0RCV
 
 - `mid=<7hex>` is a master id - opaque grouping key, same hex format as a regular id.
 - `frag=N/M` where N is the 1-based index, M is the total. M ≥ 2 (single-fragment messages omit `mid`/`frag` entirely). N ∈ [1, M].
-- `mid` and `frag` MUST both be present or both absent. A partial set is rejected as malformed ([IHaveValidator.cs:160-165](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/IHaveValidator.cs#L160-L165)).
+- `mid` and `frag` MUST both be present or both absent. A partial set is rejected as malformed ([IHaveValidator.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/IHaveValidator.cs)).
 - Each fragment has its own id (hash of its own chunk + its own salt). Intermediate hops forward fragments as opaque messages.
 - Only the final destination groups by `mid`, holds fragments in a reassembly buffer, and delivers the assembled payload to the app once all M arrive.
 
@@ -238,7 +238,7 @@ Why two-id'd: each fragment is independently content-addressed so it can be dedu
 
 Reassembly buffer entries time out after `FragmentReassemblyTimeoutSeconds` (default 7 days) - long because HF / mesh propagation gaps legitimately last days, and we'd rather hold the partial bytes than throw away most of a near-complete message.
 
-Reference: [DappsProtocolClient.cs:131-134](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs#L131-L134), [IHaveValidator.cs:154-196](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/IHaveValidator.cs#L154-L196), [DatabaseAndMqttInbox.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/DatabaseAndMqttInbox.cs) (reassembly).
+Reference: [OfferLine.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/OfferLine.cs), [IHaveValidator.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/IHaveValidator.cs), [DatabaseAndMqttInbox.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/DatabaseAndMqttInbox.cs) (reassembly).
 
 ### Opt-in ordering (`sid=`, `sn=`, `gt=`)
 
@@ -259,7 +259,7 @@ Why opt-in: ordering trades latency for predictability. One missing message stal
 
 Receivers that don't understand `sid`/`sn`/`gt` ignore the keys and deliver each message immediately - the stream survives the per-pair conversation between aware nodes.
 
-Reference: [DappsProtocolClient.cs:138-152](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs#L138-L152), [IHaveValidator.cs:198-227](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/IHaveValidator.cs#L198-L227), full design in [reference.md "Message ordering"](app-developers/reference.md#message-ordering-opt-in).
+Reference: [OfferLine.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/OfferLine.cs), [IHaveValidator.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/IHaveValidator.cs), full design in [reference.md "Message ordering"](app-developers/reference.md#message-ordering-opt-in).
 
 ### Compression (`fmt=z1`) {#compression}
 
@@ -364,7 +364,7 @@ The reference daemon's emitter filters: only routes whose failure counter is zer
 
 Implementations that don't care about route gossip should respond `eh?\n` to the command. Senders treat `eh?` as "this peer doesn't gossip" and don't ask again for a while.
 
-Reference: [InboundConnectionHandler.HandleRoutes](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/InboundConnectionHandler.cs), [DappsProtocolClient.RequestRoutesAsync](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs).
+Reference: [InboundConnectionHandler.RoutesAsync](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/InboundConnectionHandler.cs), [DappsProtocolClient.RequestRoutesAsync](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs).
 
 ### Quit / help
 

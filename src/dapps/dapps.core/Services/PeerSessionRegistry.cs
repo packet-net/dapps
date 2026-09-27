@@ -26,8 +26,8 @@ namespace dapps.core.Services;
 /// registers before it dials and releases when the link is torn down.
 /// <see cref="OutboundMessageManager"/> asks <see cref="IsActive"/> and
 /// never dials into a live session: it hands the traffic to that session
-/// instead once it is established (one we dialled, or the peer's session
-/// with us via <see cref="InboundSessionDirectory"/>), or leaves it
+/// instead once it is established (one we dialled for traffic, or one
+/// in <see cref="SessionDirectory"/>), or leaves it
 /// queued. The last session with a peer ending wakes the
 /// forwarder, so anything still queued goes straight away.
 ///

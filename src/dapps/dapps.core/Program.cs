@@ -292,7 +292,7 @@ builder.Services.AddSingleton<CompressionPolicy>();
 // open with us, which the forwarder hands traffic to.
 builder.Services.AddSingleton<SessionTailPolicy>();
 builder.Services.AddSingleton<ExchangePolicy>();
-builder.Services.AddSingleton<InboundSessionDirectory>();
+builder.Services.AddSingleton<SessionDirectory>();
 builder.Services.AddSingleton<IDappsBackhaul>(sp => new Dappsv1SessionBackhaul(
     sp.GetRequiredService<IDappsOutboundTransport>(),
     sp.GetRequiredService<ILoggerFactory>(),

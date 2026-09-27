@@ -37,7 +37,6 @@ public sealed class MqttBrokerRoundTripTests : IAsyncLifetime
         // Recreate schema in the temp DB.
         using (var c = DbInfo.GetConnection())
         {
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();

@@ -24,6 +24,10 @@ namespace dapps.client.Backhaul;
 /// A message of ours leaves the queue only when the peer acks it; one
 /// still unanswered when the session ends goes back to the forwarder as
 /// deferred, and the peer's duplicate memory makes sending it again safe.
+/// When a session we dialled ends any way other than a <c>quit</c>, the
+/// oldest unanswered message fails instead, so the neighbour gets a
+/// cooldown and routing hears about it rather than the forwarder dialling
+/// straight back into a link that can't carry it.
 /// </para>
 /// </summary>
 public sealed class ExchangeSession
@@ -69,6 +73,7 @@ public sealed class ExchangeSession
     private bool awaitingRoutes;
     private bool plainOnly;
     private bool quitting;
+    private bool peerQuit;
     private bool done;
     private int noiseBytes;
     private DateTimeOffset started;
@@ -166,7 +171,9 @@ public sealed class ExchangeSession
     /// <summary>
     /// Take a batch of work for the peer. Its messages go once the
     /// session is established, as the window allows. False once the
-    /// session is ending; the messages then stay queued.
+    /// session is ending; the messages then stay queued. A batch taken
+    /// and not finished when the session ends has what's left of it
+    /// deferred.
     /// </summary>
     public bool TryTake(IBackhaulBatch batch) => work.Writer.TryWrite(batch);
 
@@ -195,7 +202,7 @@ public sealed class ExchangeSession
                 if (!done) await FillWindowAsync(ct);
                 await FlushAsync(ct);
                 if (done) break;
-                if (CheckTimers()) continue;
+                if (await CheckTimersAsync()) continue;
                 await WaitAsync(ct);
             }
         }
@@ -215,12 +222,57 @@ public sealed class ExchangeSession
         }
         finally
         {
-            work.Writer.TryComplete();
-            foreach (var o in unanswered.ToList())
-            {
-                await CompleteAsync(o, BackhaulSendResult.Defer($"session with {peer} ended before {o.Message.Id} was answered; it stays queued"));
-            }
+            End();
+            await SettleUnfinishedAsync(ct.IsCancellationRequested);
             if (ownsLink) link.Dispose();
+        }
+    }
+
+    /// <summary>Ends the session: nothing more is read, and no more work is taken.</summary>
+    private void End()
+    {
+        done = true;
+        work.Writer.TryComplete();
+    }
+
+    /// <summary>
+    /// What's still ours when the session ends. Unanswered messages go
+    /// back to the queue, except that a session we dialled which ended
+    /// without a <c>quit</c> (the peer hung up, the link failed or went
+    /// silent, the stream went out of step) fails its oldest one: the
+    /// neighbour gets a cooldown, and routing learns of it. Work handed to
+    /// the session and not started yet is deferred too, so every message
+    /// handed out gets an outcome, a flood copy included.
+    /// </summary>
+    private async Task SettleUnfinishedAsync(bool shuttingDown)
+    {
+        var failOldest = dialled && Established && !quitting && !peerQuit && !shuttingDown;
+        foreach (var o in unanswered.ToList())
+        {
+            await CompleteAsync(o, failOldest
+                ? BackhaulSendResult.Fail($"the session with {peer} broke off before {o.Message.Id} was answered")
+                : BackhaulSendResult.Defer($"session with {peer} ended before {o.Message.Id} was answered; it stays queued"));
+            failOldest = false;
+        }
+
+        // Before the exchange nothing was taken from the batches: the
+        // caller's first message is settled by whoever dialled.
+        if (!Established) return;
+        while (current is not null || work.Reader.TryRead(out current))
+        {
+            try
+            {
+                while (await current.NextAsync(CancellationToken.None) is { } message)
+                {
+                    await CompleteAsync(new Outgoing(message, current, Now),
+                        BackhaulSendResult.Defer($"session with {peer} ended before {message.Id} went; it stays queued"));
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Couldn't hand back the work left for {0}", peer);
+            }
+            current = null;
         }
     }
 
@@ -240,23 +292,36 @@ public sealed class ExchangeSession
 
     private bool CanSend => Established && !quitting && unanswered.Count < Window;
 
+    /// <summary>How long one of ours waits for its answer before we give
+    /// up on it: a peer that answers other messages but never this one
+    /// would otherwise keep the session, and the forwarder, waiting. The
+    /// inactivity timeout, whatever the hold.</summary>
+    private TimeSpan AnswerTimeout => InactivityTimeout;
+
     /// <summary>Acts on whichever timer has run out. True when it did something.</summary>
-    private bool CheckTimers()
+    private async Task<bool> CheckTimersAsync()
     {
         var now = Now;
         if (quitting)
         {
             if (now < quitDeadline) return false;
-            done = true;
+            End();
             return true;
         }
         if (now - lastHeard >= Inactivity)
         {
             logger.LogInformation("Nothing from {0} for {1:F0}s; closing the session", peer, Inactivity.TotalSeconds);
             Failure ??= Established ? null : $"no data from {peer} within {Inactivity.TotalSeconds:F0}s";
-            done = true;
+            End();
             return true;
         }
+        var unheard = unanswered.Where(o => now - o.SentAt >= AnswerTimeout).ToList();
+        foreach (var o in unheard)
+        {
+            logger.LogWarning("No answer from {0} to {1} in {2:F0}s; giving up on it for this session", peer, o.Message.Id, AnswerTimeout.TotalSeconds);
+            await CompleteAsync(o, BackhaulSendResult.Fail($"no answer from {peer} to {o.Message.Id} in {AnswerTimeout.TotalSeconds:F0}s"));
+        }
+        if (unheard.Count > 0) return true;
         if (!dialled) return false;
 
         if (!ownSent && !awaitingRoutes && now - started >= PromptWait)
@@ -265,7 +330,7 @@ public sealed class ExchangeSession
             {
                 logger.LogWarning("No DAPPSv1> prompt from {0}: whatever answered isn't a DAPPS node", peer);
                 Failure = $"no DAPPSv1> prompt from {peer}";
-                done = true;
+                End();
                 return true;
             }
             logger.LogInformation(
@@ -293,6 +358,7 @@ public sealed class ExchangeSession
     {
         if (quitting) return quitDeadline;
         var next = lastHeard + Inactivity;
+        foreach (var o in unanswered) next = Min(next, o.SentAt + AnswerTimeout);
         if (!dialled) return next;
         if (!ownSent && !awaitingRoutes) next = Min(next, started + PromptWait);
         if (Established)
@@ -345,7 +411,7 @@ public sealed class ExchangeSession
             ? $"{peer} hung up before the exchange"
             : $"no DAPPSv1> prompt from {peer}";
         logger.LogInformation("{0} hung up", peer);
-        done = true;
+        End();
     }
 
     private async Task ReadAndHandleLineAsync(CancellationToken ct)
@@ -364,9 +430,13 @@ public sealed class ExchangeSession
 
         if (quitting)
         {
-            // Waiting for bye: nothing else matters now.
-            if (line == "bye") done = true;
+            // Waiting for bye. Answers to what we sent still count, and a
+            // payload the peer sent before it heard our quit still has to
+            // be read past; nothing new is taken on.
+            if (line == "bye") End();
             else if (IsQuit(line)) Say("bye\n", end: true);
+            else if (id is not null && verb is "ack" or "no" or "bad" or "error") await OnAnswerAsync(verb, id, line, ct);
+            else if (verb is "msg" or "data") await SkipPayloadAsync(verb, line, ct);
             return;
         }
 
@@ -395,6 +465,7 @@ public sealed class ExchangeSession
         if (IsQuit(line))
         {
             logger.LogInformation("{0} has asked to quit", peer);
+            peerQuit = true;
             Say("bye\n", end: true);
             return;
         }
@@ -439,7 +510,7 @@ public sealed class ExchangeSession
     private void Say(string text, bool end)
     {
         Queue(text);
-        if (end) done = true;
+        if (end) End();
     }
 
     private async Task OnPromptAsync(CancellationToken ct)
@@ -529,6 +600,9 @@ public sealed class ExchangeSession
                 peer, rules.Tag, unanswered.Count);
             Queue(OwnRules.ToLine());
             foreach (var o in unanswered.ToList()) await SendAsync(o);
+            // Its offers we asked for belong to the old session object:
+            // their payloads won't come, and it offers them again itself.
+            accepted.Clear();
         }
         if (!Established) Establish();
     }
@@ -551,6 +625,35 @@ public sealed class ExchangeSession
         work.Writer.TryComplete();
         Queue("quit\n");
         quitDeadline = Now + TimeSpan.FromSeconds(10);
+    }
+
+    /// <summary>
+    /// A <c>msg</c> or <c>data</c> that arrived after our <c>quit</c>: its
+    /// payload is read and dropped, unanswered, so the lines after it are
+    /// still read in step. The sender sends it again next time.
+    /// </summary>
+    private async Task SkipPayloadAsync(string verb, string line, CancellationToken ct)
+    {
+        int length;
+        if (verb == "msg")
+        {
+            if (!IHaveValidator.TryGetWireLength(line, out _, out length) || length > MaxWireBytes)
+            {
+                End();
+                return;
+            }
+        }
+        else
+        {
+            var parts = line.Split(' ');
+            if (parts.Length != 2 || !accepted.Remove(parts[1], out var offer))
+            {
+                End();
+                return;
+            }
+            length = offer.Format == "p" ? offer.Length : offer.CompressedLength!.Value;
+        }
+        await ReadPayloadAsync(length, ct);
     }
 
     // ---- Sending ----
@@ -639,6 +742,7 @@ public sealed class ExchangeSession
             Queue(header);
             o.State = OutgoingState.Offered;
         }
+        o.SentAt = Now;
     }
 
     private async Task OnAnswerAsync(string verb, string id, string line, CancellationToken ct)
@@ -652,9 +756,10 @@ public sealed class ExchangeSession
 
         switch (verb)
         {
-            case "send" when o.State == OutgoingState.Offered:
+            case "send" when o.State == OutgoingState.Offered && !quitting:
                 Queue($"data {id}\n", o.Wire);
                 o.State = OutgoingState.Sent;
+                o.SentAt = Now;
                 return;
             case "send":
                 logger.LogInformation("{0} asked for {1}, which isn't waiting on an offer; ignored", peer, id);
@@ -672,7 +777,13 @@ public sealed class ExchangeSession
                 await CompleteAsync(o, BackhaulSendResult.Refuse($"{peer} refused {id}: {reason}"));
                 return;
             default:
-                // bad or error: one more go, plain.
+                // bad or error: one more go, plain; or, when the session
+                // is ending, next time.
+                if (!o.Retried && quitting)
+                {
+                    await CompleteAsync(o, BackhaulSendResult.Defer($"{peer} answered {verb} to {id} as the session ended; it goes again next time"));
+                    return;
+                }
                 if (!o.Retried)
                 {
                     o.Retried = true;
@@ -748,7 +859,7 @@ public sealed class ExchangeSession
             // We can't tell where its payload ends, so nothing after it
             // can be read either.
             logger.LogWarning("Can't tell how long the payload after '{0}' is; ending the session with {1}", Printable(line), peer);
-            done = true;
+            End();
             return;
         }
         var wire = await ReadPayloadAsync(wireLength, ct);
@@ -775,7 +886,7 @@ public sealed class ExchangeSession
         {
             logger.LogWarning("'{0}' from {1} isn't for an offer we accepted, so its length is unknown; ending the session",
                 Printable(line), peer);
-            done = true;
+            End();
             return;
         }
         var wire = await ReadPayloadAsync(offer.Format == "p" ? offer.Length : offer.CompressedLength!.Value, ct);
@@ -928,6 +1039,9 @@ public sealed class ExchangeSession
         public BackhaulMessage Message { get; } = message;
         public IBackhaulBatch Batch { get; } = batch;
         public DateTimeOffset Started { get; } = started;
+
+        /// <summary>When it last went on the wire: the answer timeout runs from here.</summary>
+        public DateTimeOffset SentAt { get; set; } = started;
         public OutgoingState State { get; set; }
         public string Format { get; set; } = "p";
         public byte[] Wire { get; set; } = [];

@@ -284,11 +284,7 @@ public class Database(
         => await DbInfo.GetAsyncConnection().FindAsync<DbDroppedMessage>(id);
 
     /// <summary>
-    /// Soft-delete every message whose TTL has elapsed. Hard-delete
-    /// every offer whose TTL has elapsed (offers are protocol-level
-    /// scaffolding - there's no audit value in keeping a "we never
-    /// got the data for that offer" row around). Returns the count of
-    /// rows actioned across both tables.
+    /// Soft-delete every message whose TTL has elapsed. Returns how many.
     /// </summary>
     internal async Task<int> DeleteExpired(DateTime now)
     {
@@ -296,16 +292,7 @@ public class Database(
 
         // SQLite-net stores DateTime as ticks. CreatedAt + ttl seconds < now.
         // We can't do "+ ttl seconds" portably in SQL, so do the comparison
-        // in C# after pulling the candidate rows. Both tables are small.
-        var expiredOffers = (await connection.QueryAsync<DbOffer>(
-                "select * from offers where Ttl is not null"))
-            .Where(o => TtlMath.HasExpired(o.Ttl, o.CreatedAt, now))
-            .ToList();
-        foreach (var offer in expiredOffers)
-        {
-            await connection.DeleteAsync<DbOffer>(offer.Id);
-        }
-
+        // in C# after pulling the candidate rows. The table is small.
         var expiredMessages = (await connection.QueryAsync<DbMessage>(
                 "select * from messages where Ttl is not null"))
             .Where(m => TtlMath.HasExpired(m.Ttl, m.CreatedAt, now))
@@ -315,7 +302,7 @@ public class Database(
             await SoftDeleteMessage(message.Id, "ttl-expired");
         }
 
-        return expiredOffers.Count + expiredMessages.Count;
+        return expiredMessages.Count;
     }
 
     internal async Task<ICollection<DbNeighbour>> GetNeighbours()

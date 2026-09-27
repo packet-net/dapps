@@ -4,13 +4,14 @@ using dapps.client.Backhaul;
 namespace dapps.core.Services;
 
 /// <summary>
-/// The established sessions neighbours have open with us, by the calling
-/// peer's callsign, so the forwarder can hand traffic for that peer to
-/// the session it already has with us. While a peer has a session open
-/// we can't dial it (#178), so without this our mail for it would wait
-/// until it hung up.
+/// Established sessions with neighbours, by the peer's callsign, that the
+/// forwarder can hand traffic for that peer to: sessions neighbours opened
+/// with us, and our polls. (Sessions the session backhaul dialled for
+/// traffic are its own, <see cref="dapps.client.Backhaul.Dappsv1SessionBackhaul.TryHandToOpenSession"/>.)
+/// While a session with a peer is open we can't dial it (#178), so
+/// without this our mail for it would wait until the session ended.
 /// </summary>
-public sealed class InboundSessionDirectory(ForwarderWakeup? forwarderWakeup = null)
+public sealed class SessionDirectory(ForwarderWakeup? forwarderWakeup = null)
 {
     private readonly ConcurrentDictionary<string, ExchangeSession> sessions = new(StringComparer.OrdinalIgnoreCase);
 
@@ -39,7 +40,7 @@ public sealed class InboundSessionDirectory(ForwarderWakeup? forwarderWakeup = n
     }
 
     /// <summary>
-    /// Give <paramref name="batch"/> to the established session from
+    /// Give <paramref name="batch"/> to the established session with
     /// <paramref name="peer"/>, which sends it as the window allows.
     /// False when no session from that peer is established, or it is
     /// ending.

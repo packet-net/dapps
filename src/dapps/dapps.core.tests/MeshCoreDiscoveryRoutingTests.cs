@@ -37,7 +37,6 @@ public sealed class MeshCoreDiscoveryRoutingTests : IAsyncLifetime
 
         using (var c = DbInfo.GetConnection())
         {
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();

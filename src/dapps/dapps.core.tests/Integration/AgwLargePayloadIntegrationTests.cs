@@ -26,7 +26,7 @@ public sealed class AgwLargePayloadIntegrationTests(TwoInstanceLinbpqFixture fix
     private Database database = null!;
     private RecordingInbox farInbox = null!;
     private AgwInboundService service = null!;
-    private readonly InboundSessionDirectory farSessions = new();
+    private readonly SessionDirectory farSessions = new();
 
     public async ValueTask InitializeAsync()
     {
@@ -34,7 +34,6 @@ public sealed class AgwLargePayloadIntegrationTests(TwoInstanceLinbpqFixture fix
         DbInfo.OverridePath = dbPath;
         using (var c = DbInfo.GetConnection())
         {
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
         }
@@ -50,7 +49,7 @@ public sealed class AgwLargePayloadIntegrationTests(TwoInstanceLinbpqFixture fix
         service = new AgwInboundService(
             receiverOptions, database, farInbox,
             NullLoggerFactory.Instance, NullLogger<AgwInboundService>.Instance,
-            inboundSessions: farSessions);
+            openSessions: farSessions);
         await service.StartAsync(CancellationToken.None);
         await Task.Delay(500);
     }

@@ -36,7 +36,7 @@ public sealed class PersistentSessionTests : IAsyncLifetime
     private readonly RecordingInbox ourInbox = new();
     private readonly RecordingInbox farInbox = new();
     private readonly ForwarderWakeup farWakeup = new();
-    private readonly InboundSessionDirectory farDirectory;
+    private readonly SessionDirectory farDirectory;
     private readonly PeerSessionRegistry farRegistry = new();
     private readonly PeerSessionRegistry ourRegistry = new();
 
@@ -45,7 +45,7 @@ public sealed class PersistentSessionTests : IAsyncLifetime
 
     public PersistentSessionTests()
     {
-        farDirectory = new InboundSessionDirectory(farWakeup);
+        farDirectory = new SessionDirectory(farWakeup);
     }
 
     public ValueTask InitializeAsync()
@@ -54,7 +54,6 @@ public sealed class PersistentSessionTests : IAsyncLifetime
         DbInfo.OverridePath = dbPath;
         using (var c = DbInfo.GetConnection())
         {
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();
@@ -209,7 +208,7 @@ public sealed class PersistentSessionTests : IAsyncLifetime
             farDatabase, NullLoggerFactory.Instance, farOptions, [backhaul],
             new StaticRoutingAlgorithm(NullLogger<StaticRoutingAlgorithm>.Instance),
             new DatabaseRoutingContext(farDatabase, farOptions),
-            peerSessions: farRegistry, inboundSessions: farDirectory);
+            peerSessions: farRegistry, openSessions: farDirectory);
         return (forwarder, dials);
     }
 
