@@ -205,6 +205,84 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DeliverAsync_TwoCopiesAtOnce_AreDeliveredOnce()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var bm = new BackhaulMessage(Id: "dup0004", Destination: "myapp@N0CALL", Salt: 7L, Ttl: 600, Payload: "twice at once"u8.ToArray());
+
+        await Task.WhenAll(
+            inbox.DeliverAsync(bm, sourceCallsign: "G7XYZ-3", ct),
+            inbox.DeliverAsync(bm, sourceCallsign: "G7XYZ-4", ct));
+        await database.MarkLocallyDelivered("dup0004");
+        await inbox.DeliverAsync(bm, sourceCallsign: "G7XYZ-5", ct);
+
+        (await database.GetUnacknowledgedLocalMessagesForApp("myapp")).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task DeliverAsync_AnUnsaltedMessageAgain_IsDeliveredAgain()
+    {
+        // With no salt, the same text sent later has the same id and length:
+        // it can't be told from a repeat, so it isn't remembered.
+        var ct = TestContext.Current.CancellationToken;
+        var bm = new BackhaulMessage(Id: "dup0005", Destination: "myapp@N0CALL", Salt: null, Ttl: 600, Payload: "OK"u8.ToArray());
+
+        await inbox.DeliverAsync(bm, sourceCallsign: "G7XYZ-3", ct);
+        await database.MarkLocallyDelivered("dup0005");
+        await inbox.DeliverAsync(bm, sourceCallsign: "G7XYZ-3", ct);
+
+        (await database.GetUnacknowledgedLocalMessagesForApp("myapp")).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task DeliverAsync_AMessageClaimedByANodeThatDied_IsStoredWhenItComesAgain()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var bm = new BackhaulMessage(Id: "dup0006", Destination: "myapp@N0CALL", Salt: 7L, Ttl: 600, Payload: "claimed, never stored"u8.ToArray());
+        await database.ClaimReceivedAsync(DbReceived.MakeKey("dup0006", 7L, bm.Payload.Length), DateTime.UtcNow.AddHours(1), "G7XYZ-3");
+
+        await inbox.DeliverAsync(bm, sourceCallsign: "G7XYZ-3", ct);
+
+        (await database.GetUnacknowledgedLocalMessagesForApp("myapp")).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task AMessageDeliveredOverASession_IsAnsweredAck_WhenOfferedAgain()
+    {
+        // The whole path: the session hands the message to this inbox, and
+        // the same message offered again is recognised at the offer.
+        var ct = TestContext.Current.CancellationToken;
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        using var client = new TcpClient();
+        var connecting = client.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, ct);
+        using var server = await listener.AcceptTcpClientAsync(ct);
+        await connecting;
+        _ = Task.Run(() => new InboundConnectionHandler(server.GetStream(), "G7XYZ-3", NullLoggerFactory.Instance, database, inbox).Handle(ct), ct);
+        var link = client.GetStream();
+        var reader = new StreamReader(link, Encoding.ASCII);
+
+        var payload = Encoding.UTF8.GetBytes("sent once, offered twice");
+        var id = dapps.client.DappsMessage.ComputeHash(payload, 11L)[..7];
+        var offer = $"ihave {id} len={payload.Length} fmt=p s=11 dst=myapp@N0CALL\n";
+
+        (await reader.ReadLineAsync(ct)).Should().Be("DAPPSv1>");
+        (await reader.ReadLineAsync(ct)).Should().StartWith("exchange ");
+        await link.WriteAsync(Encoding.ASCII.GetBytes(offer), ct);
+        (await reader.ReadLineAsync(ct)).Should().Be($"send {id}");
+        await link.WriteAsync((byte[])[.. Encoding.ASCII.GetBytes($"data {id}\n"), .. payload], ct);
+        (await reader.ReadLineAsync(ct)).Should().Be($"ack {id}");
+
+        await link.WriteAsync(Encoding.ASCII.GetBytes(offer), ct);
+        (await reader.ReadLineAsync(ct)).Should().Be($"ack {id}", "we have it, so its payload needn't come again");
+
+        // In an exchange, the same message sent unasked is acked and dropped.
+        await link.WriteAsync((byte[])[.. Encoding.ASCII.GetBytes($"exchange id=xyz003 hold=0 inline=256\nmsg {id} len={payload.Length} fmt=p s=11 dst=myapp@N0CALL\n"), .. payload], ct);
+        (await reader.ReadLineAsync(ct)).Should().Be($"ack {id}");
+        (await database.GetUnacknowledgedLocalMessagesForApp("myapp")).Should().ContainSingle();
+    }
+
+    [Fact]
     public async Task DeliverAsync_PreservesHeadersAsJson()
     {
         var ct = TestContext.Current.CancellationToken;

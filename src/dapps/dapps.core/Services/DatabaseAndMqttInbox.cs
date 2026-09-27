@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using dapps.client.Backhaul;
 using dapps.core.Models;
@@ -25,8 +26,10 @@ public sealed class DatabaseAndMqttInbox(
     TimeProvider timeProvider,
     ILogger<DatabaseAndMqttInbox> logger) : IBackhaulInbox
 {
-    public Task<bool> HasAsync(string id, long? salt, int length, CancellationToken ct) =>
-        database.HasReceivedAsync(DbReceived.MakeKey(id, salt, length), timeProvider.GetUtcNow().UtcDateTime);
+    /// <summary>Only a stored message counts, and never one without a
+    /// salt: those aren't remembered.</summary>
+    public async Task<bool> HasAsync(string id, long? salt, int length, CancellationToken ct) =>
+        salt is { } s && await database.HasReceivedAsync(DbReceived.MakeKey(id, s, length));
 
     public async Task DeliverAsync(
         BackhaulMessage message,
@@ -53,41 +56,119 @@ public sealed class DatabaseAndMqttInbox(
             await routingContext.RecordFloodSeenAsync(message.Id, sourceCallsign, ct);
         }
 
-        // Hand the message to the routing algorithm BEFORE persistence -
-        // passive-learning algorithms care about the (originator, link-source)
-        // pair, and that pair is only meaningful here at the wire boundary.
-        // Algorithms that don't observe inbound (StaticRoutingAlgorithm) no-op
-        // immediately.
-        await routingAlgorithm.ObserveInboundAsync(message, sourceCallsign, routingContext, ct);
+        // A message with no salt can't be told apart from a later one with
+        // the same content (same id, same length), so it isn't remembered:
+        // it's delivered every time it arrives, as before.
+        if (message.Salt is not { } salt)
+        {
+            await routingAlgorithm.ObserveInboundAsync(message, sourceCallsign, routingContext, ct);
+            await AcceptAsync(message, sourceCallsign, ct);
+            return;
+        }
 
         // Never deliver or forward the same message twice (DbReceived): a
         // sender that restarted or lost our ack offers it again, and a
-        // second neighbour can pass on a copy by another path. Recording
-        // first, in one insert, means two copies arriving at once can't
-        // both get through. If storing it then fails, the record goes, so
-        // the sender's retry isn't turned away: a message is never lost
-        // to this, at worst delivered twice after an internal failure.
-        var now = timeProvider.GetUtcNow().UtcDateTime;
-        var receivedKey = DbReceived.MakeKey(message.Id, message.Salt, message.Payload.Length);
-        var remember = message.Ttl is { } ttl
-            ? TimeSpan.FromSeconds(ttl) + DbReceived.ExpirySlack
-            : TimeSpan.FromSeconds(options.CurrentValue.ReceivedMemorySeconds);
-        if (!await database.TryRecordReceivedAsync(receivedKey, now, now + remember, sourceCallsign))
+        // second neighbour can pass on a copy by another path. A copy that
+        // arrives while another is being stored waits for it: if that one
+        // is stored this one is a repeat, and if storing it failed this one
+        // gets its turn, so no copy is dropped in favour of one that failed.
+        var key = DbReceived.MakeKey(message.Id, salt, message.Payload.Length);
+        while (true)
         {
-            logger.LogInformation("Message {0} from {1} is one we already have; not delivering or forwarding it again",
-                message.Id, sourceCallsign);
+            var attempt = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var inProgress = accepting.GetOrAdd(key, attempt.Task);
+            if (inProgress != attempt.Task)
+            {
+                if (await inProgress)
+                {
+                    logger.LogInformation("Message {0} from {1} is one we already have; not delivering or forwarding it again",
+                        message.Id, sourceCallsign);
+                    return;
+                }
+                continue;
+            }
+
+            try
+            {
+                await AcceptOnceAsync(message, sourceCallsign, key, ct);
+                attempt.SetResult(true);
+                return;
+            }
+            catch
+            {
+                attempt.SetResult(false);
+                throw;
+            }
+            finally
+            {
+                accepting.TryRemove(new KeyValuePair<string, Task<bool>>(key, attempt.Task));
+            }
+        }
+    }
+
+    /// <summary>Messages being stored right now, by <see cref="DbReceived"/> key: true once stored.</summary>
+    private readonly ConcurrentDictionary<string, Task<bool>> accepting = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Claim, store and commit one message, unless this node already has
+    /// it. The claim is written before the message is stored and only
+    /// counts once committed, so dying in between costs a repeat, never
+    /// the message; and if storing fails the claim goes, so the sender's
+    /// retry isn't turned away.
+    /// </summary>
+    private async Task AcceptOnceAsync(BackhaulMessage message, string sourceCallsign, string key, CancellationToken ct)
+    {
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        var memory = TimeSpan.FromSeconds(options.CurrentValue.ReceivedMemorySeconds);
+        var remember = message.Ttl is { } ttl && TimeSpan.FromSeconds(ttl) + DbReceived.ExpirySlack < memory
+            ? TimeSpan.FromSeconds(ttl) + DbReceived.ExpirySlack
+            : memory;
+        if (await database.ClaimReceivedAsync(key, now + remember, sourceCallsign) is { } first)
+        {
+            LogRepeat(message, sourceCallsign, first);
             return;
         }
 
         try
         {
+            // Hand the message to the routing algorithm BEFORE persistence -
+            // passive-learning algorithms care about the (originator, link-source)
+            // pair, and that pair is only meaningful here at the wire boundary.
+            // Algorithms that don't observe inbound (StaticRoutingAlgorithm) no-op
+            // immediately. First arrivals only: a late copy by a longer path
+            // mustn't replace what the first one taught.
+            await routingAlgorithm.ObserveInboundAsync(message, sourceCallsign, routingContext, ct);
             await AcceptAsync(message, sourceCallsign, ct);
+            await database.CommitReceivedAsync(key);
         }
         catch
         {
-            try { await database.ForgetReceivedAsync(receivedKey); }
-            catch (Exception e) { logger.LogWarning(e, "Couldn't forget {0} after failing to store it", message.Id); }
+            try { await database.ForgetReceivedAsync(key); }
+            catch (Exception e) { logger.LogWarning(e, "Couldn't drop the claim on {0} after failing to store it", message.Id); }
             throw;
+        }
+    }
+
+    /// <summary>
+    /// A repeat is dropped. One for another node, arriving by a different
+    /// neighbour from the first copy, usually means a routing loop (we
+    /// passed it on and it came back), so that's worth an operator's eye.
+    /// </summary>
+    private void LogRepeat(BackhaulMessage message, string sourceCallsign, DbReceived first)
+    {
+        var looped = message.FloodHopsRemaining is null
+            && !DestinationParser.IsLocal(message.Destination, options.CurrentValue.Callsign)
+            && !string.Equals(first.LinkSourceCallsign, sourceCallsign, StringComparison.OrdinalIgnoreCase);
+        if (looped)
+        {
+            logger.LogWarning(
+                "Message {0} for {1} came back from {2} after we had it from {3}: dropped as a repeat. If this recurs, look for a routing loop",
+                message.Id, message.Destination, sourceCallsign, first.LinkSourceCallsign);
+        }
+        else
+        {
+            logger.LogInformation("Message {0} from {1} is one we already have; not delivering or forwarding it again",
+                message.Id, sourceCallsign);
         }
     }
 

@@ -211,14 +211,16 @@ public class InboundConnectionHandler(
     /// <summary>
     /// The inbox, answering "do we have it already?" from the received
     /// ledger (<see cref="DbReceived"/>), so an offer of a message we hold
-    /// is answered <c>ack</c> whatever inbox the bearer was given.
+    /// is answered <c>ack</c> whatever inbox the bearer was given. Only a
+    /// stored message counts, and never one without a salt: the ledger
+    /// doesn't remember those.
     /// </summary>
     private sealed class ReceivedLedgerInbox(IBackhaulInbox inner, Database database) : IBackhaulInbox
     {
         public Task DeliverAsync(BackhaulMessage message, string sourceCallsign, CancellationToken ct) =>
             inner.DeliverAsync(message, sourceCallsign, ct);
 
-        public Task<bool> HasAsync(string id, long? salt, int length, CancellationToken ct) =>
-            database.HasReceivedAsync(DbReceived.MakeKey(id, salt, length), DateTime.UtcNow);
+        public async Task<bool> HasAsync(string id, long? salt, int length, CancellationToken ct) =>
+            salt is { } s && await database.HasReceivedAsync(DbReceived.MakeKey(id, s, length));
     }
 }

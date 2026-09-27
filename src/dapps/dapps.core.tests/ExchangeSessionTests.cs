@@ -241,6 +241,24 @@ public sealed class ExchangeSessionTests : IDisposable
     }
 
     [Fact]
+    public async Task ACompressedOfferThePeerAlreadyHas_IsAcked_AndItsPayloadNeverGoes()
+    {
+        var post = new BackhaulMessage("wps0009", $"app@{Them}", 9L, 600, Encoding.UTF8.GetBytes(WpsPost));
+        var batch = new RecordingBatch(post);
+        var (session, peer, _, _) = await CallerAsync(new ExchangeSettings(HoldSeconds: 60, Compress: true));
+        session.TryTake(batch);
+        await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules(inline: 0) + "\n"), Ct);
+        await peer.ReadLineAsync(Ct);
+        (await peer.ReadLineAsync(Ct)).Should().StartWith($"ihave {post.Id} ").And.Contain(" fmt=z1 ");
+
+        await peer.WriteLineAsync($"ack {post.Id}", Ct);
+
+        await batch.WaitForOutcomesAsync(1, Ct);
+        batch.Outcomes.Single().Result.Accepted.Should().BeTrue();
+        (await peer.TryReadLineAsync(Short, Ct)).Should().BeNull("the payload wasn't sent");
+    }
+
+    [Fact]
     public async Task AMessageOverThePeersMax_IsRefused_WithoutGoingOnAir()
     {
         var big = Message(new string('z', 20), $"app@{Them}", 1);

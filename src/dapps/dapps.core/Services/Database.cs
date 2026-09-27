@@ -611,35 +611,48 @@ public class Database(
     }
 
     /// <summary>
-    /// Record that this node has accepted a message (<see cref="DbReceived"/>),
-    /// unless it already had it. The insert does nothing when the key is
-    /// there, so of two copies arriving at once only one gets through.
-    /// A row past its expiry that the sweeper hasn't reached yet doesn't count.
+    /// Claim a message for storing (<see cref="DbReceived"/>): write its
+    /// row as "being stored", unless a committed row says this node
+    /// already has it. A row left "being stored" by a run that died part
+    /// way doesn't count and is taken over, as is one whose memory has
+    /// run out. The caller makes sure no other copy of the same message
+    /// is being stored in this process at the same time
+    /// (<see cref="DatabaseAndMqttInbox"/> does).
     /// </summary>
-    /// <returns>True the first time; false for a message we already have.</returns>
-    internal async Task<bool> TryRecordReceivedAsync(string key, DateTime now, DateTime expiresAt, string linkSourceCallsign)
+    /// <returns>Null when the claim is ours; otherwise the committed row
+    /// for the copy we already have.</returns>
+    internal async Task<DbReceived?> ClaimReceivedAsync(string key, DateTime expiresAt, string linkSourceCallsign)
     {
+        var now = timeProvider.GetUtcNow().UtcDateTime;
         var connection = DbInfo.GetAsyncConnection();
-        await connection.ExecuteAsync("delete from received where Key = ? and ExpiresAt < ?", key, now.Ticks);
+        await connection.ExecuteAsync(
+            "delete from received where Key = ? and (Committed = 0 or ExpiresAt < ?)", key, now.Ticks);
         var inserted = await connection.ExecuteAsync(
-            "insert or ignore into received (Key, ReceivedAt, ExpiresAt, LinkSourceCallsign) values (?, ?, ?, ?)",
+            "insert or ignore into received (Key, ReceivedAt, ExpiresAt, LinkSourceCallsign, Committed) values (?, ?, ?, ?, 0)",
             key, now.Ticks, expiresAt.Ticks, linkSourceCallsign);
-        return inserted == 1;
+        return inserted == 1 ? null : await connection.FindAsync<DbReceived>(key);
     }
 
-    /// <summary>Whether this node already has a message (and still remembers it).</summary>
-    internal async Task<bool> HasReceivedAsync(string key, DateTime now)
+    /// <summary>The message claimed under <paramref name="key"/> is stored: from now on it counts.</summary>
+    internal async Task CommitReceivedAsync(string key)
+    {
+        var connection = DbInfo.GetAsyncConnection();
+        await connection.ExecuteAsync("update received set Committed = 1 where Key = ?", key);
+    }
+
+    /// <summary>Whether this node has a message stored (and still remembers it).</summary>
+    internal async Task<bool> HasReceivedAsync(string key)
     {
         var connection = DbInfo.GetAsyncConnection();
         var row = await connection.FindAsync<DbReceived>(key);
-        return row is not null && row.ExpiresAt >= now;
+        return row is { Committed: true } && row.ExpiresAt >= timeProvider.GetUtcNow().UtcDateTime;
     }
 
-    /// <summary>Undo <see cref="TryRecordReceivedAsync"/> for a message that couldn't be stored after all.</summary>
+    /// <summary>Drop a claim whose message couldn't be stored after all.</summary>
     internal async Task ForgetReceivedAsync(string key)
     {
         var connection = DbInfo.GetAsyncConnection();
-        await connection.DeleteAsync<DbReceived>(key);
+        await connection.ExecuteAsync("delete from received where Key = ? and Committed = 0", key);
     }
 
     /// <summary>Drop received-message rows whose memory has run out.</summary>

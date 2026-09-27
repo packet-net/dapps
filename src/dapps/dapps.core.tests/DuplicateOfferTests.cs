@@ -68,8 +68,7 @@ public sealed class DuplicateOfferTests : IAsyncLifetime
 
         var had = Encoding.UTF8.GetBytes("delivered before the sender restarted");
         var hadId = DappsMessage.ComputeHash(had, 7L)[..7];
-        var now = DateTime.UtcNow;
-        (await database.TryRecordReceivedAsync(DbReceived.MakeKey(hadId, 7L, had.Length), now, now.AddHours(1), Them)).Should().BeTrue();
+        await StoredAsync(DbReceived.MakeKey(hadId, 7L, had.Length));
 
         await peer.WriteLineAsync($"ihave {hadId} len={had.Length} fmt=p s=7 dst=app@{Us}", ct);
         (await peer.ReadLineAsync(ct)).Should().Be($"ack {hadId}", "we already have it, so the payload needn't cross the air again");
@@ -100,33 +99,88 @@ public sealed class DuplicateOfferTests : IAsyncLifetime
 
         var payload = Encoding.UTF8.GetBytes("hello");
         var id = DappsMessage.ComputeHash(payload, 9L)[..7];
-        var now = DateTime.UtcNow;
-        await database.TryRecordReceivedAsync(DbReceived.MakeKey(id, 1L, payload.Length), now, now.AddHours(1), Them);
+        await StoredAsync(DbReceived.MakeKey(id, 1L, payload.Length));
 
         await peer.WriteLineAsync($"ihave {id} len={payload.Length} fmt=p s=9 dst=app@{Us}", ct);
         (await peer.ReadLineAsync(ct)).Should().Be($"send {id}");
     }
 
     [Fact]
-    public async Task TheMemory_RecordsEachMessageOnce_UntilItExpiresOrIsForgotten()
+    public async Task AMessageLeftBeingStored_ByANodeThatDied_IsTakenAgain()
+    {
+        // The node claimed the message, then died before storing it. The
+        // sender never saw an ack and offers it again: answering "already
+        // got it" would lose it.
+        var ct = TestContext.Current.CancellationToken;
+        var inbox = new RecordingInbox();
+        var (ours, theirs) = await LoopbackPairAsync(ct);
+        _ = Task.Run(() => new InboundConnectionHandler(theirs, Them, NullLoggerFactory.Instance, database, inbox).Handle(ct), ct);
+        var peer = new LinePeer(ours);
+        (await peer.ReadLineAsync(ct)).Should().Be("DAPPSv1>");
+        (await peer.ReadLineAsync(ct)).Should().StartWith("exchange ");
+
+        var payload = Encoding.UTF8.GetBytes("claimed, never stored");
+        var id = DappsMessage.ComputeHash(payload, 3L)[..7];
+        (await database.ClaimReceivedAsync(DbReceived.MakeKey(id, 3L, payload.Length), DateTime.UtcNow.AddHours(1), Them)).Should().BeNull();
+
+        await peer.WriteLineAsync($"ihave {id} len={payload.Length} fmt=p s=3 dst=app@{Us}", ct);
+        (await peer.ReadLineAsync(ct)).Should().Be($"send {id}");
+    }
+
+    [Fact]
+    public async Task AnUnsaltedOffer_IsNeverAnsweredAck()
+    {
+        // Without s= a message can't be told from a later one with the same
+        // content, so it isn't remembered, and its payload is always taken.
+        var ct = TestContext.Current.CancellationToken;
+        var inbox = new RecordingInbox();
+        var (ours, theirs) = await LoopbackPairAsync(ct);
+        _ = Task.Run(() => new InboundConnectionHandler(theirs, Them, NullLoggerFactory.Instance, database, inbox).Handle(ct), ct);
+        var peer = new LinePeer(ours);
+        (await peer.ReadLineAsync(ct)).Should().Be("DAPPSv1>");
+        (await peer.ReadLineAsync(ct)).Should().StartWith("exchange ");
+        var payload = Encoding.UTF8.GetBytes("no salt");
+        var id = DappsMessage.ComputeHash(payload, null)[..7];
+
+        for (var i = 0; i < 2; i++)
+        {
+            await peer.WriteLineAsync($"ihave {id} len={payload.Length} fmt=p dst=app@{Us}", ct);
+            (await peer.ReadLineAsync(ct)).Should().Be($"send {id}");
+            await peer.WriteAsync([.. Encoding.UTF8.GetBytes($"data {id}\n"), .. payload], ct);
+            (await peer.ReadLineAsync(ct)).Should().Be($"ack {id}");
+        }
+    }
+
+    [Fact]
+    public async Task TheMemory_CountsAMessageOnceStored_UntilItExpires()
     {
         var now = DateTime.UtcNow;
         var key = DbReceived.MakeKey("abc1234", 42L, 10);
 
-        (await database.TryRecordReceivedAsync(key, now, now.AddMinutes(10), Them)).Should().BeTrue();
-        (await database.TryRecordReceivedAsync(key, now, now.AddMinutes(10), Them)).Should().BeFalse("it's a repeat");
-        (await database.HasReceivedAsync(key, now)).Should().BeTrue();
+        (await database.ClaimReceivedAsync(key, now.AddMinutes(10), Them)).Should().BeNull("the first copy is ours to store");
+        (await database.HasReceivedAsync(key)).Should().BeFalse("it isn't stored yet");
 
-        // Storing it failed: forget it, so the sender's retry is accepted.
+        // Storing it failed: the claim goes, and the retry is ours again.
         await database.ForgetReceivedAsync(key);
-        (await database.TryRecordReceivedAsync(key, now, now.AddMinutes(10), Them)).Should().BeTrue();
+        (await database.ClaimReceivedAsync(key, now.AddMinutes(10), Them)).Should().BeNull();
 
-        // Once its memory has run out it counts as new again, swept or not.
-        var later = now.AddMinutes(11);
-        (await database.HasReceivedAsync(key, later)).Should().BeFalse();
-        (await database.TryRecordReceivedAsync(key, later, later.AddMinutes(10), Them)).Should().BeTrue();
-        (await database.SweepReceivedAsync(later.AddMinutes(11))).Should().Be(1);
-        (await database.HasReceivedAsync(key, later)).Should().BeFalse();
+        // A claim left behind (the node died before storing it) is taken over.
+        (await database.ClaimReceivedAsync(key, now.AddMinutes(10), Them)).Should().BeNull();
+
+        await database.CommitReceivedAsync(key);
+        (await database.HasReceivedAsync(key)).Should().BeTrue();
+        (await database.ClaimReceivedAsync(key, now.AddMinutes(10), "N0OTHR"))!.LinkSourceCallsign.Should().Be(Them, "it's a repeat of the first copy");
+        await database.ForgetReceivedAsync(key);
+        (await database.HasReceivedAsync(key)).Should().BeTrue("a stored message is never forgotten early");
+
+        (await database.SweepReceivedAsync(now.AddMinutes(11))).Should().Be(1);
+        (await database.HasReceivedAsync(key)).Should().BeFalse();
+    }
+
+    private async Task StoredAsync(string key)
+    {
+        (await database.ClaimReceivedAsync(key, DateTime.UtcNow.AddHours(1), Them)).Should().BeNull();
+        await database.CommitReceivedAsync(key);
     }
 
     private static async Task<(NetworkStream Ours, NetworkStream Theirs)> LoopbackPairAsync(CancellationToken ct)
