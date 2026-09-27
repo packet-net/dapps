@@ -35,16 +35,50 @@ public abstract class BpqCrossedCallExperiments(NetSimTwoBpqFixture fixture) : I
 
     public async ValueTask DisposeAsync()
     {
+        if (!Wanted) return;
         foreach (var s in sockets) await s.DisposeAsync();
         if (air is not null) await air.DisposeAsync();
         await Task.Delay(3000);
     }
 
     [Fact]
+    public async Task AnOutboundCall_ForAPairAlreadyConnectedInbound_AfterTheListenerHasSpoken()
+    {
+        // As DAPPS does it: A calls B, B's listener gets the connect and
+        // answers straight away (DAPPS sends its prompt), so A's node has
+        // had an I-frame on the link. Then B calls A as well.
+        Assert.SkipUnless(Wanted, "Set DAPPS_BPQ_EXPERIMENTS to run the BPQ experiments.");
+        var ct = TestContext.Current.CancellationToken;
+        var listenerB = await OpenAsync("B listener", fixture.AgwPortB, fixture.ApplCallB, ct);
+        var listenerA = await OpenAsync("A listener", fixture.AgwPortA, fixture.ApplCallA, ct);
+        var callerA = await OpenAsync("A caller", fixture.AgwPortA, fixture.ApplCallA, ct);
+
+        await callerA.CallAsync(fixture.ApplCallB, ct);
+        await WaitForAsync(() => listenerB.Saw('C'), ct);
+        Note("B's listener has A's connect; it answers");
+        await listenerB.SendAsync("B listener's prompt\r", ct, to: fixture.ApplCallA);
+        await WaitForAsync(() => callerA.Saw('D'), ct);
+        Note(callerA.Saw('D') ? "A's caller has the answer; now B calls A" : "A's caller never got the answer; B calls A anyway");
+        var callerB = await OpenAsync("B caller", fixture.AgwPortB, fixture.ApplCallB, ct);
+        await callerB.CallAsync(fixture.ApplCallA, ct);
+        await Task.Delay(TimeSpan.FromSeconds(8), ct);
+        Note($"A caller saw 'd': {callerA.Saw('d')}; A listener saw 'C': {listenerA.Saw('C')}");
+
+        // What a DAPPS caller would send when no prompt comes. (A line
+        // starting "B" would be taken for BYE if this lands at A's node.)
+        await SendAndWatchAsync(callerB, "exchange id=0badcafe hold=0", ct);
+        await SendAndWatchAsync(listenerA, "A listener -> B", ct, to: fixture.ApplCallB);
+        await SendAndWatchAsync(callerA, "A caller -> B", ct);
+        await SendAndWatchAsync(listenerB, "B listener -> A", ct, to: fixture.ApplCallA);
+        await HangUpAndWatchAsync(callerB, ct);
+        Write("inbound-then-outbound-active");
+    }
+
+    [Fact]
     public async Task AnOutboundCall_ForAPairAlreadyConnectedInbound()
     {
         // The #194 sighting: A calls B, B's listener gets the connect, then
-        // B calls A as well.
+        // B calls A as well, before anything has gone over the link.
         Assert.SkipUnless(Wanted, "Set DAPPS_BPQ_EXPERIMENTS to run the BPQ experiments.");
         var ct = TestContext.Current.CancellationToken;
         var listenerB = await OpenAsync("B listener", fixture.AgwPortB, fixture.ApplCallB, ct);

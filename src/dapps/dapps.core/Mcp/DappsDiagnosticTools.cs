@@ -233,8 +233,8 @@ public sealed class DappsDiagnosticTools(
     [McpServerTool(Name = "find_path_to")]
     [Description(
         "Show how a message would currently be routed to a destination callsign. Walks the resolution " +
-        "precedence: manual route hint → learned route (B5) → discovered path (B5.1 meshcore) → discovered " +
-        "peer (direct) → manual neighbour. Returns the chosen next hop + which surface it came from + " +
+        "precedence: manual route hint -> learned route (B5) -> discovered path (B5.1 meshcore) -> discovered " +
+        "peer (direct) -> manual neighbour. Returns the chosen next hop + which surface it came from + " +
         "freshness info, or 'no path' when nothing matches (a flood would be the fallback in that case).")]
     public async Task<RouteFinding> FindPathToAsync(
         [Description("Destination callsign (case-insensitive). The base callsign without SSID is what gets resolved against the routing tables.")]

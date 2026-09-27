@@ -218,7 +218,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var peers = new PeerSessionRegistry();
         await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
         var bpq = await h.StartAsync(ct);
-        var dialling = peers.TryAcquire(Remote, "outbound", out _)!;   // on its way already
+        var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Port)!;   // on its way already
 
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
         (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
@@ -242,7 +242,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var peers = new PeerSessionRegistry();
         await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
         var bpq = await h.StartAsync(ct);
-        using var ours = peers.Acquire(Remote, "outbound");
+        using var ours = peers.Acquire(Remote, "outbound", linkPort: Port);
 
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
         (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);

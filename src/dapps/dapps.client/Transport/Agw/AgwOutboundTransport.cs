@@ -94,12 +94,10 @@ public sealed class AgwOutboundTransport : IDappsOutboundTransport
             // Monitor what the node hears, to spot the peer calling us at
             // the same moment (see the class doc).
             var crossed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            // BPQ's monitor shows a SABM as "<C C P>" (a connect, as a command).
-            var peerSabm = $"Fm {remoteCallsign} To {localCallsign} <C C";
             void Watch(AgwFrame monitored)
             {
                 if (crossed.Task.IsCompleted) return;
-                if (Encoding.ASCII.GetString(monitored.Payload).Contains(peerSabm, StringComparison.OrdinalIgnoreCase))
+                if (IsPeerCallingUs(monitored, portByte, localCallsign, remoteCallsign))
                 {
                     logger.LogInformation("AGW: {0} is calling us as we call it: the calls crossed", remoteCallsign);
                     crossed.TrySetResult();
@@ -176,13 +174,26 @@ public sealed class AgwOutboundTransport : IDappsOutboundTransport
         }
     }
 
+    /// <summary>
+    /// A monitored frame that is the peer's SABM to us, direct, on the port
+    /// we're calling it on. BPQ's monitor shows that as
+    /// " 1:Fm PEER To US &lt;C C P&gt;[12:00:00]" (a connect, as a command).
+    /// A SABM through digipeaters (" Via ...") or a SABME ("&lt;?? C P&gt;")
+    /// prints differently and isn't counted: the session then falls back
+    /// to waiting out the prompt.
+    /// </summary>
+    internal static bool IsPeerCallingUs(AgwFrame monitored, byte port, string localCallsign, string remoteCallsign) =>
+        monitored.Port == port
+        && Encoding.ASCII.GetString(monitored.Payload).Contains(
+            $":Fm {remoteCallsign} To {localCallsign} <C C", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Frame text as it can go in a log: printable ASCII only.</summary>
     private static string Printable(byte[] payload) =>
         new([.. Encoding.Latin1.GetString(payload).Where(c => c is >= ' ' and <= '~')]);
 
     private sealed class AgwConnection(
         TcpClient tcp,
-        Stream sessionStream,
+        AgwSessionStream sessionStream,
         AgwFrameTransport framing,
         byte portByte,
         string localCallsign,
@@ -210,16 +221,28 @@ public sealed class AgwOutboundTransport : IDappsOutboundTransport
             // timeout. Without this, a follow-up connect from the same
             // callsign pair within a few minutes collides with the stale
             // half-up link - surfaced repeatedly in integration runs.
-            try
+            //
+            // Not once the node has told us the link is gone, though. BPQ
+            // applies a 'd' to whichever session it has for the callsign
+            // pair and port, so after ours has gone a 'd' could only find
+            // a newer one, such as our listener's next call from the peer.
+            if (sessionStream.RemoteDisconnected)
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-                await framing.WriteFrameAsync(
-                    new AgwFrame(portByte, 'd', 0, localCallsign, remoteCallsign, []),
-                    cts.Token);
+                logger.LogDebug("AGW: the link to {0} has already gone; no 'd' to send", remoteCallsign);
             }
-            catch (Exception ex)
+            else
             {
-                logger.LogDebug(ex, "AGW: best-effort 'd' frame on dispose failed");
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    await framing.WriteFrameAsync(
+                        new AgwFrame(portByte, 'd', 0, localCallsign, remoteCallsign, []),
+                        cts.Token);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogDebug(ex, "AGW: best-effort 'd' frame on dispose failed");
+                }
             }
             sessionStream.Dispose();
             tcp.Dispose();

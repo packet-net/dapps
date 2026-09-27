@@ -246,10 +246,7 @@ public sealed class Rhpv2InboundService(
 
             _ = Task.Run(async () =>
             {
-                // Retired when a newer session with this peer connects here.
-                using var session = CancellationTokenSource.CreateLinkedTokenSource(
-                    stoppingToken, lease?.Retired ?? CancellationToken.None);
-                try { await handler.Handle(session.Token); }
+                try { await handler.Handle(stoppingToken); }
                 catch (Exception ex) { logger.LogWarning(ex, "RHP inbound: session handler {child} failed", child); }
                 finally
                 {
@@ -401,7 +398,7 @@ public sealed class Rhpv2InboundService(
                 if (taken.Count > 0)
                 {
                     logger.LogInformation(
-                        "RHP inbound: derived callsign {winner} — {taken} was taken on the node",
+                        "RHP inbound: derived callsign {winner}: {taken} was taken on the node",
                         candidate, string.Join(", ", taken.Select(t => $"-{t.Split('-')[^1]}")));
                     // Reload so every consumer (outbound forwarder,
                     // beacons, UI) sees the confirmed identity. The
@@ -421,7 +418,7 @@ public sealed class Rhpv2InboundService(
         // DAPPS_CALLSIGN, or the next daemon restart re-derives and
         // probes again.
         logger.LogError(
-            "RHP inbound: no free SSID for the derived callsign {call} — every candidate ({candidates}) is taken " +
+            "RHP inbound: no free SSID for the derived callsign {call}: every candidate ({candidates}) is taken " +
             "on the node. Reverting to setup-required mode; configure a callsign via the dashboard or DAPPS_CALLSIGN.",
             opts.Callsign, string.Join(", ", candidates));
         DbStartup.AbandonDerivedCallsign();

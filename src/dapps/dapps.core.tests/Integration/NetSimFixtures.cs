@@ -135,13 +135,38 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
         AgwPortA = netSim.GetMappedPublicPort(InsideAgwPortA);
         AgwPortB = netSim.GetMappedPublicPort(InsideAgwPortB);
 
+        await StartBpqsAsync();
+        await WaitUntilReadyAsync();
+    }
+
+    private async Task StartBpqsAsync()
+    {
         bpqA = await StartBpqAsync(CallsignA, "AAA", ApplCallA, "APPLA", InsideAgwPortA, KissPortA, 18111);
         bpqB = await StartBpqAsync(CallsignB, "BBB", ApplCallB, "APPLB", InsideAgwPortB, KissPortB, 18112);
+    }
 
-        // Each BPQ has to open its KISS link to the simulator before it can
-        // transmit; until then a connect request waits (about 8 s after
-        // start-up, seen in the crossed-call experiments), and a test's
-        // first call goes out late enough to cross the other side's.
+    /// <summary>
+    /// Restart both BPQs, as after a reboot, and don't wait for them: each
+    /// holds its first connects (about 8 s) until its KISS link to the
+    /// simulator is up. Call <see cref="WaitUntilReadyAsync"/> afterwards,
+    /// so later tests start warm.
+    /// </summary>
+    internal async Task RestartBpqsColdAsync()
+    {
+        if (bpqB is not null) await bpqB.DisposeAsync();
+        if (bpqA is not null) await bpqA.DisposeAsync();
+        await StartBpqsAsync();
+    }
+
+    /// <summary>
+    /// Wait until each BPQ has been heard by the other. Each BPQ has to
+    /// open its KISS link to the simulator before it can transmit; until
+    /// then a connect request waits (about 8 s after start-up, seen in the
+    /// crossed-call experiments), and a test's first call goes out late
+    /// enough to cross the other side's.
+    /// </summary>
+    internal async Task WaitUntilReadyAsync()
+    {
         await WaitUntilHeardAsync(AgwPortA, ApplCallA, AgwPortB);
         await WaitUntilHeardAsync(AgwPortB, ApplCallB, AgwPortA);
     }
@@ -153,18 +178,28 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
     /// </summary>
     private async Task WaitUntilHeardAsync(int fromAgwPort, string fromCall, int toAgwPort)
     {
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-        while (true)
+        var limit = TimeSpan.FromMinutes(2);
+        using var cts = new CancellationTokenSource(limit);
+        try
         {
-            try
+            while (true)
             {
-                await HearAsync(fromAgwPort, fromCall, toAgwPort, cts.Token);
-                return;
+                try
+                {
+                    await HearAsync(fromAgwPort, fromCall, toAgwPort, cts.Token);
+                    return;
+                }
+                catch (Exception ex) when (ex is IOException or SocketException && !cts.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(2), cts.Token);
+                }
             }
-            catch (Exception ex) when (ex is IOException or SocketException && !cts.IsCancellationRequested)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(2), cts.Token);
-            }
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"{ChannelName}: the BPQ on AGW port {fromAgwPort} sent UI frames from {fromCall} for {limit.TotalMinutes:F0} minutes " +
+                $"and the one on AGW port {toAgwPort} never heard them. Is net-sim running both modems, and did each BPQ open its KISS link?");
         }
     }
 

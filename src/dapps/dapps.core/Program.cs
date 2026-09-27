@@ -241,7 +241,7 @@ builder.Services.AddSingleton<IRoutingAlgorithm>(sp =>
     switch ((optsValue.RoutingAlgorithm ?? "passive-flood").ToLowerInvariant())
     {
         case "meshcore":
-            startupLog.LogInformation("Routing stack: MeshCoreLikeRoutingAlgorithm → StaticRoutingAlgorithm");
+            startupLog.LogInformation("Routing stack: MeshCoreLikeRoutingAlgorithm -> StaticRoutingAlgorithm");
             return new MeshCoreLikeRoutingAlgorithm(staticAlg, lf.CreateLogger<MeshCoreLikeRoutingAlgorithm>());
         case "passive-flood":
         default:
@@ -255,7 +255,7 @@ builder.Services.AddSingleton<IRoutingAlgorithm>(sp =>
                     "Unknown RoutingAlgorithm '{0}'; falling back to passive-flood",
                     optsValue.RoutingAlgorithm);
             }
-            startupLog.LogInformation("Routing stack: FloodFallback → PassiveLearning → Static");
+            startupLog.LogInformation("Routing stack: FloodFallback -> PassiveLearning -> Static");
             return new FloodFallbackAlgorithm(
                 sp.GetRequiredService<PassiveLearningAlgorithm>(),
                 lf.CreateLogger<FloodFallbackAlgorithm>());

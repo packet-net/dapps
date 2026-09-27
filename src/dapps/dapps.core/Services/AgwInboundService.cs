@@ -405,13 +405,17 @@ public sealed class AgwInboundService(
         // this one still tried to send, a 'd' above all, would land in
         // that session, so it goes nowhere. Checked here rather than left
         // to the retirement callback, which can run after the handler has
-        // already seen its token cancelled and started tearing down.
+        // already seen its token cancelled and started tearing down. A
+        // write that got past the check goes out whole, though, not cut
+        // off by the handler's token (which retirement cancels) part way
+        // through its frames: half a message would leave the peer's new
+        // session reading our next bytes as payload or commands.
         PeerSessionLease? lease = null;
         var stream = new MultiplexedAgwSessionStream(
-            writeOutgoing: async (data, c) =>
+            writeOutgoing: async (data, _) =>
             {
                 if (lease is { Retired.IsCancellationRequested: true }) return;
-                await framing.WriteDataAsync(port, local, remote, data, c);
+                await framing.WriteDataAsync(port, local, remote, data, stoppingTokenSource.Token);
             },
             sendRemoteDisconnect: async c =>
             {
@@ -440,7 +444,7 @@ public sealed class AgwInboundService(
         // this peer (see PeerSessionRegistry). Released once the
         // handler is done and our 'd', if any, has gone out. Connected
         // now, so any older session with this peer is retired.
-        lease = peerSessions?.Acquire(remote, "inbound");
+        lease = peerSessions?.Acquire(remote, "inbound", port);
 
         // Retired: a newer session with this peer has connected here, and
         // the link is that one's. Out of the table, so nothing more is

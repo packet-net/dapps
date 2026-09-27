@@ -19,9 +19,14 @@ namespace dapps.client.Backhaul;
 ///
 /// Crossed calls: when two neighbours dial each other at once, each
 /// node's BPQ can attach its link to its own outbound session, so
-/// neither hears a prompt. The session copes by itself: after a few
-/// seconds of silence each caller sends its <c>exchange</c> anyway, and
-/// the two sessions carry on as if one had answered.
+/// neither hears a prompt. The session copes by itself: each caller
+/// sends its <c>exchange</c> as soon as the transport says the calls
+/// crossed, or after a few seconds of silence, and the two sessions
+/// carry on as if one had answered.
+///
+/// Moved links: a newer session with the peer at this node takes the
+/// link (<see cref="IDappsConnection.Retired"/>); ours stops and defers
+/// what it had.
 /// </summary>
 public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
 {

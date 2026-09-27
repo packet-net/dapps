@@ -320,6 +320,113 @@ public sealed class Dappsv1SessionBackhaulTests
         sb.OpenPeers.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task ARetirement_WithHandedOnWorkInFlight_DefersAllOfIt()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (ours, theirs) = await ExchangeTestKit.LoopbackPairAsync(ct);
+        var connection = new RetirableConnection(ours);
+        var peer = new LinePeer(theirs);
+        var sb = new Dappsv1SessionBackhaul(new SingleConnectionTransport(connection), NullLoggerFactory.Instance);
+        var route = new BackhaulRoute("N0DEST");
+        var first = ExchangeTestKit.Message("the one that dialled", "app@N0DEST");
+        var batch = new RecordingBatch(first);
+        var send = sb.SendBatchAsync(route, "N0SRC", batch, ct);
+        await peer.WriteLineAsync("DAPPSv1>\nexchange id=far001 hold=60 inline=256", ct);
+        await peer.ReadLineAsync(ct);
+        await peer.ReadWithPayloadAsync(ct);
+        await peer.WriteLineAsync($"ack {first.Id}", ct);
+        await send.WaitAsync(TimeSpan.FromSeconds(5), ct);
+
+        var more = new RecordingBatch(
+            ExchangeTestKit.Message("handed on, one", "app@N0DEST"),
+            ExchangeTestKit.Message("handed on, two", "app@N0DEST"));
+        sb.TryHandToOpenSession(route, more).Should().BeTrue("the session is still open, on its hold");
+        await peer.ReadWithPayloadAsync(ct);
+        await peer.ReadWithPayloadAsync(ct);
+        connection.Retire();
+
+        await more.WaitForOutcomesAsync(2, ct);
+        more.Outcomes.Should().AllSatisfy(o => o.Result.Deferred.Should().BeTrue("they go on the newer session"));
+        await WaitForAsync(() => connection.Abandoned, ct);
+        connection.Disposed.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ARetirement_WhileQuitting_DropsTheLinkWithoutADisconnect()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (ours, theirs) = await ExchangeTestKit.LoopbackPairAsync(ct);
+        var connection = new RetirableConnection(ours);
+        var peer = new LinePeer(theirs);
+        var sb = new Dappsv1SessionBackhaul(new SingleConnectionTransport(connection), NullLoggerFactory.Instance)
+        {
+            MinQuiet = TimeSpan.FromMilliseconds(200),
+        };
+        var message = ExchangeTestKit.Message("answered before the quit", "app@N0DEST");
+        var batch = new RecordingBatch(message);
+        var send = sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, ct);
+        await peer.WriteLineAsync("DAPPSv1>\nexchange id=far001 hold=0 inline=256", ct);
+        await peer.ReadLineAsync(ct);
+        await peer.ReadWithPayloadAsync(ct);
+        await peer.WriteLineAsync($"ack {message.Id}", ct);
+        await send.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        (await peer.ReadLineAsync(ct)).Should().Be("quit");
+
+        connection.Retire();
+
+        await WaitForAsync(() => connection.Abandoned, ct);
+        connection.Disposed.Should().BeFalse();
+        batch.Outcomes.Single().Result.Accepted.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ARetirementRacingThePeerHangingUp_SettlesTheMessageOnce_AndClosesTheLinkOnce(bool retiredFirst)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (ours, theirs) = await ExchangeTestKit.LoopbackPairAsync(ct);
+        var connection = new RetirableConnection(ours);
+        var peer = new LinePeer(theirs);
+        var sb = new Dappsv1SessionBackhaul(new SingleConnectionTransport(connection), NullLoggerFactory.Instance);
+        var message = ExchangeTestKit.Message("in flight", "app@N0DEST");
+        var batch = new RecordingBatch(message);
+        var send = sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, ct);
+        await peer.WriteLineAsync("DAPPSv1>\nexchange id=far001 hold=60 inline=256", ct);
+        await peer.ReadLineAsync(ct);
+        await peer.ReadWithPayloadAsync(ct);
+
+        if (retiredFirst)
+        {
+            connection.Retire();
+            peer.Close();
+        }
+        else
+        {
+            peer.Close();
+            connection.Retire();
+        }
+
+        await send.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        await WaitForAsync(() => connection.Abandoned || connection.Disposed, ct);
+        await Task.Delay(200, ct);
+        batch.Outcomes.Should().ContainSingle();
+        (connection.Abandoned && connection.Disposed).Should().BeFalse("the link is closed once");
+        if (retiredFirst)
+        {
+            batch.Outcomes.Single().Result.Deferred.Should().BeTrue();
+            connection.Abandoned.Should().BeTrue();
+        }
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (!condition() && DateTime.UtcNow < deadline) await Task.Delay(10, ct);
+        condition().Should().BeTrue();
+    }
+
     private sealed class RetirableConnection(Stream stream) : IDappsConnection
     {
         private readonly CancellationTokenSource retired = new();

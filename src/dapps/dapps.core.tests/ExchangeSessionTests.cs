@@ -176,6 +176,73 @@ public sealed class ExchangeSessionTests : IDisposable
     }
 
     [Fact]
+    public async Task ACallerHearingSomethingElseBeforeAnyPrompt_DoesNotTakeItForExchangeTraffic()
+    {
+        // "no such command" from whatever answered isn't an answer to one
+        // of ours: no message id. So our rules don't go early, and it still
+        // fails for want of a prompt.
+        var (session, peer, run, wire) = await CallerAsync();
+
+        await peer.WriteLineAsync("no such command", Ct);
+        await run.WaitAsync(TimeSpan.FromSeconds(5), Ct);
+
+        session.Failure.Should().Contain("no DAPPSv1> prompt");
+        wire.Writes.Should().NotContain(w => w.StartsWith("exchange ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ACallerWhoseRulesGetOnlyANodesReply_GivesUpAfterThePromptWait()
+    {
+        // BPQ leaves a link it has reset at the node's command prompt: our
+        // rules went, and the node answered them as a command.
+        var (session, peer, run, _) = await CallerAsync();
+        (await peer.ReadLineAsync(Ct, TimeSpan.FromSeconds(5))).Should().StartWith("exchange ", "no prompt came, so it sent its rules anyway");
+
+        await peer.WriteLineAsync("AAA:N0AAA} Invalid command - Enter ? for command list", Ct);
+
+        await run.WaitAsync(TimeSpan.FromSeconds(5), Ct);
+        session.Failure.Should().Contain("no exchange from");
+        session.Established.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ACallerHearingDappsTrafficAmongTheOtherText_KeepsTheSession()
+    {
+        // The link moved mid-message: the tail of one arrives as text, then
+        // the peer carries on in DAPPS. Its rules follow once it sees ours.
+        var inbox = new RecordingInbox();
+        var (session, peer, run, _) = await CallerAsync(inbox: inbox);
+        (await peer.ReadLineAsync(Ct, TimeSpan.FromSeconds(5))).Should().StartWith("exchange ");
+
+        await peer.WriteLineAsync("the lazy dog", Ct);
+        var m = Message("after the cut", $"app@{Us}");
+        await peer.SendMessageAsync(m, Ct);
+        (await peer.ReadLineAsync(Ct)).Should().Be($"ack {m.Id}");
+
+        await Task.Delay(Short * 3, Ct);
+        run.IsCompleted.Should().BeFalse("it's talking to a DAPPS node");
+        await peer.WriteLineAsync(Rules(), Ct);
+        await Task.Delay(Short, Ct);
+        session.Established.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ACallerThatHeardABannerBeforeThePrompt_IsNotHurriedAfterItsRules()
+    {
+        // The banner came before the prompt, not in answer to our rules.
+        var (session, peer, run, _) = await CallerAsync();
+        await peer.WriteLineAsync("Welcome to the node", Ct);
+        await peer.WriteLineAsync("DAPPSv1>", Ct);
+        (await peer.ReadLineAsync(Ct)).Should().StartWith("exchange ");
+
+        await Task.Delay(Short * 3, Ct);
+        run.IsCompleted.Should().BeFalse();
+        await peer.WriteLineAsync(Rules(), Ct);
+        await Task.Delay(Short, Ct);
+        session.Established.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task TheAnsweringNode_TakesAnswersBeforeTheCallersRules_WithoutHangingUp()
     {
         // As when BPQ moves a link that was mid-exchange onto a new inbound

@@ -22,7 +22,10 @@ internal sealed class AgwSessionStream(
 {
     private byte[] readBuffer = [];
     private int readPos;
-    private bool disconnected;
+    private volatile bool disconnected;
+
+    /// <summary>The node has told us the link is gone: a 'd' came.</summary>
+    public bool RemoteDisconnected => disconnected;
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
     {
