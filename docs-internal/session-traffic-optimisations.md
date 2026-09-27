@@ -1,5 +1,32 @@
 # DAPPSv1 session traffic optimisations - PROPOSAL
 
+## Status
+
+Closed out on 2026-09-27. What shipped from each proposal:
+
+| # | Proposal | Status |
+|---|---|---|
+| 1 | Batch pending messages per next hop | Shipped in 0.40.0 (#188) |
+| 2 | Check the queue again before disconnecting | Shipped in 0.40.0 (#188); a session picks up to 20 newly queued messages |
+| 3 | `data` line and payload in one write | Shipped in 0.40.0 (#188). BPQ drops an AGW data frame over 256 bytes, so since 0.41.1 (#192) writes are split into frames of that size; a short message still goes in one |
+| 4 | Pipelined offers, or the payload with the offer | Not done |
+| 5 | Cumulative, delayed wps-repl acks | Done on the WPS side (`ackDelaySeconds`) |
+| 6 | T2/RESPTIME and MAXFRAME tuning docs | Not done |
+| 7 | Shorter `ihave` header | Not done |
+| 8 | Skip `rev` when nothing is queued | Not done; worth less now that a held session hears `pending` instead of polling |
+| 9 | Connection tail | Shipped in 0.41.0 (#191), with the differences below |
+| 10 | Compression | Shipped in 0.40.0 (#189) as zstd with a shared dictionary rather than deflate |
+
+Two more changes came out of this analysis: the forwarder now sends as soon as a message is queued instead of on a 5-second tick (0.41.0, #190), and end-to-end tests run the protocol between two DAPPS nodes on real BPQ (0.41.1, #193).
+
+Where what shipped differs from the text below:
+
+- **Connection tail (9).** There's no negotiation or old-node fallback: DAPPS isn't deployed anywhere yet, so every node understands `tail` and `pending`. (A DAPPS node hangs up after answering `eh?`, so the fallback as described wouldn't have worked.) The default is 120 s rather than 540, the maximum is 600, and a held link closes after 30 minutes however busy it is. The callee sends traffic it relays through the caller over the held link too, not only mail addressed to the caller. Flood copies go over held links as well.
+- **Compression (10).** `fmt=z1` is zstd with a versioned shared dictionary; a 197-byte WPS post goes as 67 bytes. It's used when it saves at least 32 bytes, and a node that can't decode it gets the message plain on the same session.
+- **Configuration.** The table under "Configuration" is superseded: the settings are `DAPPS_SESSION_TAIL_SECONDS` and `DAPPS_COMPRESSION_ENABLED` (on or off), each with a per-neighbour override on the Topology page.
+
+The protocol as built is described in `docs/implement.md` (held sessions and compression), and each release in `plan.md`.
+
 ## TL;DR
 
 A captured exchange between G5ALF-3 and M0AHN-3 (AGW, 1200 baud, wps-repl
