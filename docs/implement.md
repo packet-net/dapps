@@ -84,10 +84,11 @@ The receiver MAY then loop and emit `DAPPSv1>\n` again to await another command 
 
 A sender offers a message again whenever it didn't see your `ack`: it restarted mid-transfer, or the link dropped after you'd taken the payload. A second neighbour can also pass on a copy by another path. So a receiver MUST remember the messages it has accepted, whether for a local app or to pass on, and neither deliver nor forward one twice:
 
-- Identify a message by its id together with its salt (`s=`) and `len`. The id alone is 28 bits of hash, and a node remembering weeks of traffic would sometimes mistake a new message for an old one and drop it.
-- Remember it until it would have expired anyway: its `ttl=` at receipt, plus some slack. The reference daemon adds an hour, and keeps messages with no `ttl=` for 30 days (`DAPPS_RECEIVED_MEMORY_SECONDS`).
-- Answer an `ihave` for one with `ack <id>`, so the payload doesn't cross the air again. If one arrives anyway (sent in the same session before you'd recorded the first), `ack` it and discard it.
-- Record a message before storing it, as one atomic step, so two copies arriving at once can't both get through; and if storing it fails, forget it again, so the sender's retry isn't turned away.
+- Identify a message by its id together with its salt (`s=`) and `len`. The id alone is 28 bits of hash, and a node remembering weeks of traffic would sometimes mistake a new message for an old one and drop it. A message without `s=` can't be told apart from a later one with the same content, so don't remember it; senders SHOULD always include `s=`.
+- Remember it until it would have expired anyway: its `ttl=` at receipt, plus some slack. The reference daemon adds an hour, and remembers for at most 30 days (`DAPPS_RECEIVED_MEMORY_SECONDS`), which is also how long it keeps a message with no `ttl=`. Forgetting early can only cost a repeat, never a message.
+- Answer an `ihave` for one with `ack <id>`, so the payload doesn't cross the air again. If one arrives anyway (sent before you'd finished storing the first), `ack` it and discard it.
+- Never let the memory lose a message. Record the message as "being stored" before storing it, and mark it stored once you have; a record left "being stored" (the node died in between) doesn't count, so the sender's retry is taken. If storing fails, drop the record. And if a second copy arrives while the first is still being stored, wait for the first: if it was stored the second is a repeat, if not the second gets its turn. A crash can then cost a repeat, never a loss.
+- A repeat of a message for another node, arriving from a different neighbour from the first copy, usually means a routing loop: the message was passed on and came back. It is still dropped, but it's worth logging.
 
 A sender that gets `ack <id>` in reply to `ihave` treats the message as delivered.
 

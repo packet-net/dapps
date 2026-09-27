@@ -125,7 +125,6 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         return PromptOutcome.NotSeen;
     }
 
-    /// <summary>How <see cref="PushAsync"/> went.</summary>
     /// <summary>
     /// The peer answered the offer with <c>ack</c>: it already has the
     /// message (we restarted, or lost its ack last time), so it's
@@ -137,6 +136,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         return PushOutcome.Accepted;
     }
 
+    /// <summary>How <see cref="PushAsync"/> went.</summary>
     public enum PushOutcome
     {
         /// <summary>The peer acked the payload, or answered the offer

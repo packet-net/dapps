@@ -117,7 +117,7 @@ public sealed record ConfigUpdate(
     int? FragmentThresholdBytes = null,
     [property: Description("F2 - drop incomplete reassembly buffer rows older than this many seconds. Default 7 days.")]
     int? FragmentReassemblyTimeoutSeconds = null,
-    [property: Description("How long, in seconds, to remember a message that arrived with no TTL, so a repeat of it isn't delivered or forwarded again. Messages with a TTL are remembered until it runs out. Default 30 days.")]
+    [property: Description("Longest, in seconds, a received message is remembered so a repeat isn't delivered or forwarded again: one with a TTL until that runs out plus an hour, capped at this; one with no TTL for this long. Default 30 days.")]
     int? ReceivedMemorySeconds = null,
     [property: Description("A4 - when true, MQTT/REST app-interface clients must present a per-app token.")]
     bool? AuthRequired = null,

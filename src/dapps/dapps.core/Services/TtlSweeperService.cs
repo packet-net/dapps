@@ -88,15 +88,20 @@ public class TtlSweeperService(
         try
         {
             var forgotten = await database.SweepReceivedAsync(now);
-            var floods = await database.SweepFloodSeenAsync(now - FloodSeenWindow);
-            if (forgotten + floods > 0)
-            {
-                logger.LogInformation("TTL sweeper forgot {0} received message(s) and {1} flood record(s)", forgotten, floods);
-            }
+            if (forgotten > 0) logger.LogInformation("TTL sweeper forgot {0} received message(s)", forgotten);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Received-message sweep threw");
+        }
+        try
+        {
+            var floods = await database.SweepFloodSeenAsync(now - FloodSeenWindow);
+            if (floods > 0) logger.LogInformation("TTL sweeper forgot {0} flood record(s)", floods);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Flood-seen sweep threw");
         }
 
         // Transmission audit retention. Default 90 days; 0 disables.

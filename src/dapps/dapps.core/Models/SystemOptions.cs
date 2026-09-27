@@ -202,10 +202,10 @@ public class SystemOptions
     public int FragmentReassemblyTimeoutSeconds { get; set; } = 7 * 24 * 3600;
 
     /// <summary>
-    /// How long to remember a message that arrived with no TTL, so a
-    /// repeat of it is recognised and not delivered or forwarded again
-    /// (<see cref="DbReceived"/>). A message with a TTL is remembered
-    /// until that runs out. Default 30 days.
+    /// Longest a received message is remembered, so a repeat of it is
+    /// recognised and not delivered or forwarded again
+    /// (<see cref="DbReceived"/>): one with a TTL until that runs out plus
+    /// an hour, capped at this; one with no TTL for this long. Default 30 days.
     /// </summary>
     public int ReceivedMemorySeconds { get; set; } = 30 * 24 * 3600;
 

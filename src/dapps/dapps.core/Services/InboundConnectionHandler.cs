@@ -687,7 +687,7 @@ public class InboundConnectionHandler(
         }
 
         var offer = result.Offer!;
-        if (await database.HasReceivedAsync(DbReceived.MakeKey(offer.Id, offer.Salt, offer.Length), DateTime.UtcNow))
+        if (offer.Salt is { } salt && await database.HasReceivedAsync(DbReceived.MakeKey(offer.Id, salt, offer.Length)))
         {
             // We have it already (the sender restarted, or lost our ack):
             // say so now, and the payload doesn't go over the air again.
