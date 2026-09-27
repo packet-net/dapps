@@ -16,26 +16,28 @@ The fix: every time a station transmits, it says everything it has to say, in bo
 
 ### Session start
 
-1. The answering node sends `DAPPSv1>\n` on connect, as now. Humans and probes carry on with commands (`help`, `peers`, `routes`, `quit`) as now; `ihave`/`send`/`data`/`ack` also keep working outside exchange mode, so a minimal third-party sender still can push one message at a time.
-2. A DAPPS caller waits for the prompt (it avoids a collision on air with the prompt, which the callee sends straight after UA), but no longer than 10 s. After a connect script the script has consumed the prompt already.
-3. When the gossip gate says so, the caller runs `routes` first (command/response, as now).
-4. The caller sends `exchange <rules>\n` and in the same write its first messages (window permitting), without waiting for a reply.
-5. Handshake rule, the same for both ends: on receiving `exchange <rules>`, a node that has not yet sent its own `exchange` in this session sends it now. A node that has already sent its own does not reply. Either way it takes the peer's rules, and the hold becomes min(own, peer's). Result: normal call, the callee replies once; crossed call, both sent theirs and neither replies; no ping-pong in any case.
-6. A second `exchange` from the peer in the same session means the peer's session object restarted (BPQ moved the link to a newer session there). Send our `exchange` again and re-send everything of ours that is still unanswered; the peer's duplicate memory makes re-sending safe.
-7. In exchange mode a `DAPPSv1>` line is ignored.
+The rule that everything else follows: **a node never sends message contents to a peer before it has that peer's rules.** So a node never receives contents it hasn't agreed to take, either through the rules it stated or by answering an offer with `send`.
 
-Crossed calls: a caller that got no prompt within 10 s sends `exchange` anyway, which is harmless whatever the peer is doing (a callee processes it as a command; a caller that is itself waiting for a prompt answers it by rule 5). So the lower-callsign glare timer (`GlareSilenceBudget`, `serveOnGlare`) is no longer needed between DAPPS nodes. Also see "AGW: one session per peer" below.
+1. The answering node sends `DAPPSv1>\n` on connect, as now, followed straight away by its own `exchange <rules>\n` line (below). Humans and probes see that extra line once and carry on with commands (`help`, `peers`, `routes`, `quit`) as now; the prober ignores `exchange` lines. `ihave`/`send`/`data`/`ack` also keep working outside exchange mode, so a minimal third-party sender can still push one message at a time.
+2. Every node sends its own `exchange` line exactly once per session object: the answering node right after the prompt; a DAPPS caller as soon as it sees the prompt or the peer's `exchange`, or after 10 s with neither (crossed calls, below). After a connect script, the script has consumed the prompt; the caller sends its `exchange` then.
+3. When the gossip gate says so, a caller runs `routes` before sending its `exchange` (command/response, as now).
+4. A node is in exchange mode once it has both sent its own `exchange` and received the peer's. From then on either side sends its traffic, following the peer's rules; the hold is min(own, peer's).
+5. Session tags: each session object picks a random tag at creation and sends it as `id=<tag>` in its `exchange`. An `exchange` carrying a tag not seen before in this session, after we already had one, means the peer's session object changed (BPQ moved the link to a newer session there): send our `exchange` again (same tag as before) and re-send everything of ours that is still unanswered; the peer's duplicate memory makes re-sending safe. An `exchange` repeating a tag we already have is only the peer re-sending its rules: take them, send nothing. This converges without ping-pong whatever mix of old and new session objects is on the link.
+6. In exchange mode a `DAPPSv1>` line is ignored.
+
+Crossed calls: two callers each waiting for a prompt hear none; after 10 s each sends its `exchange`, each receives the other's, and the session is symmetric. So the lower-callsign glare timer (`GlareSilenceBudget`, `serveOnGlare`) is no longer needed between DAPPS nodes. Also see "AGW: one session per peer" below.
 
 ### The receiver's rules
 
 `exchange` carries the sending node's rules for what it will receive:
 
+- `id=<tag>`: the session tag (rule 5).
 - `hold=<s>`: seconds of quiet to keep the link up for (its setting for that peer, today's `SessionTailSeconds`).
-- `inline=<bytes>`: largest on-air payload it takes unasked as `msg`. Bigger ones must be offered with `ihave` first. `inline=0`: offer everything first. Reference default 256.
+- `inline=<bytes>`: largest on-air payload it takes unasked as `msg`. Bigger ones must be offered with `ihave` first. `inline=0`: offer everything first (today's behaviour, and today's cost). Reference default 256.
 - `max=<bytes>`: largest message (`len`) it takes at all; bigger ones are neither sent nor offered to it. Omitted: no limit. New setting, default no limit.
 - `z=<list>`: compression dictionaries it holds, e.g. `z=1`. Omitted: plain only.
 
-Until the peer's `exchange` arrives, a caller's first turn uses defaults: `inline=256`, compression as the operator set for that neighbour, no `max`, and at most 4 messages. So a receiver's own rules apply from its first reply; the worst it can be sent unasked is 4 small payloads once per session. A message the rules exclude that arrives anyway is answered `no` and dropped.
+A node can still refuse any message with `no`: an offer before its contents go on air, a small unasked one after it arrives (not stored or passed on). A node that wants to judge every message by its sender, destination or app before any contents are sent sets `inline=0`.
 
 ### Lines in exchange mode
 
@@ -54,7 +56,7 @@ Either side, any time. Header fields are exactly today's `ihave` fields (`len`, 
 | `quit\n` | Ending | `bye\n`, then hang up |
 
 - A `msg` or `data` whose header can't be parsed far enough to know how many payload bytes follow desynchronises the stream: close the session (the sender's messages stay queued). If `len`/`clen` parse but anything else is refused, read and discard the payload, then answer.
-- Window: at most 8 messages sent and not yet answered, per direction (4 in a caller's first turn).
+- Window: at most 8 messages sent and not yet answered, per direction.
 - Order: each side writes in queue order and handles received lines in order. Ordered streams (`sid`/`sn`) keep their reordering at the destination.
 - Writes: one writer per session; write whatever is ready as soon as it is ready. BPQ packs it into frames for its next over, so no DAPPS batching timer.
 - Duplicate memory: `ihave` for a held message is answered `ack`; a `msg` for one is `ack`ed and discarded; the inbox never delivers twice.
