@@ -659,6 +659,45 @@ public class Database(
         await connection.InsertAsync(new DbFloodSeen { Key = key, SeenAt = now });
     }
 
+    /// <summary>
+    /// Record that this node has accepted a message (<see cref="DbReceived"/>),
+    /// unless it already had it. The insert does nothing when the key is
+    /// there, so of two copies arriving at once only one gets through.
+    /// A row past its expiry that the sweeper hasn't reached yet doesn't count.
+    /// </summary>
+    /// <returns>True the first time; false for a message we already have.</returns>
+    internal async Task<bool> TryRecordReceivedAsync(string key, DateTime now, DateTime expiresAt, string linkSourceCallsign)
+    {
+        var connection = DbInfo.GetAsyncConnection();
+        await connection.ExecuteAsync("delete from received where Key = ? and ExpiresAt < ?", key, now.Ticks);
+        var inserted = await connection.ExecuteAsync(
+            "insert or ignore into received (Key, ReceivedAt, ExpiresAt, LinkSourceCallsign) values (?, ?, ?, ?)",
+            key, now.Ticks, expiresAt.Ticks, linkSourceCallsign);
+        return inserted == 1;
+    }
+
+    /// <summary>Whether this node already has a message (and still remembers it).</summary>
+    internal async Task<bool> HasReceivedAsync(string key, DateTime now)
+    {
+        var connection = DbInfo.GetAsyncConnection();
+        var row = await connection.FindAsync<DbReceived>(key);
+        return row is not null && row.ExpiresAt >= now;
+    }
+
+    /// <summary>Undo <see cref="TryRecordReceivedAsync"/> for a message that couldn't be stored after all.</summary>
+    internal async Task ForgetReceivedAsync(string key)
+    {
+        var connection = DbInfo.GetAsyncConnection();
+        await connection.DeleteAsync<DbReceived>(key);
+    }
+
+    /// <summary>Drop received-message rows whose memory has run out.</summary>
+    internal async Task<int> SweepReceivedAsync(DateTime now)
+    {
+        var connection = DbInfo.GetAsyncConnection();
+        return await connection.ExecuteAsync("delete from received where ExpiresAt < ?", now.Ticks);
+    }
+
     /// <summary>Drop flood-seen rows older than <paramref name="cutoff"/>.
     /// The dedup window must outlive the maximum expected flood
     /// propagation time; everything older than that is just memory

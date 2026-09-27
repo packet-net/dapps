@@ -57,6 +57,40 @@ public sealed class DatabaseAndMqttInbox(
         // immediately.
         await routingAlgorithm.ObserveInboundAsync(message, sourceCallsign, routingContext, ct);
 
+        // Never deliver or forward the same message twice (DbReceived): a
+        // sender that restarted or lost our ack offers it again, and a
+        // second neighbour can pass on a copy by another path. Recording
+        // first, in one insert, means two copies arriving at once can't
+        // both get through. If storing it then fails, the record goes, so
+        // the sender's retry isn't turned away: a message is never lost
+        // to this, at worst delivered twice after an internal failure.
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        var receivedKey = DbReceived.MakeKey(message.Id, message.Salt, message.Payload.Length);
+        var remember = message.Ttl is { } ttl
+            ? TimeSpan.FromSeconds(ttl) + DbReceived.ExpirySlack
+            : TimeSpan.FromSeconds(options.CurrentValue.ReceivedMemorySeconds);
+        if (!await database.TryRecordReceivedAsync(receivedKey, now, now + remember, sourceCallsign))
+        {
+            logger.LogInformation("Message {0} from {1} is one we already have; not delivering or forwarding it again",
+                message.Id, sourceCallsign);
+            return;
+        }
+
+        try
+        {
+            await AcceptAsync(message, sourceCallsign, ct);
+        }
+        catch
+        {
+            try { await database.ForgetReceivedAsync(receivedKey); }
+            catch (Exception e) { logger.LogWarning(e, "Couldn't forget {0} after failing to store it", message.Id); }
+            throw;
+        }
+    }
+
+    /// <summary>Store a message arriving for the first time, and hand it to its app or leave it queued to pass on.</summary>
+    private async Task AcceptAsync(BackhaulMessage message, string sourceCallsign, CancellationToken ct)
+    {
         var headersJson = message.Headers is null
             ? "{}"
             : JsonSerializer.Serialize(message.Headers);

@@ -18,6 +18,9 @@ public class TtlSweeperService(
 {
     public TimeSpan SweepInterval { get; init; } = TimeSpan.FromMinutes(1);
 
+    /// <summary>How long a flood-seen record (DbFloodSeen) is kept.</summary>
+    public static readonly TimeSpan FloodSeenWindow = TimeSpan.FromDays(1);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // PeriodicTimer takes a TimeProvider in .NET 8 - FakeTimeProvider
@@ -77,6 +80,23 @@ public class TtlSweeperService(
         catch (Exception ex)
         {
             logger.LogError(ex, "Fragment sweep threw");
+        }
+
+        // Messages we've received are remembered until they'd have
+        // expired anyway (DbReceived); after that, forget them. Flood
+        // copies are kept a day, far longer than a flood takes to spread.
+        try
+        {
+            var forgotten = await database.SweepReceivedAsync(now);
+            var floods = await database.SweepFloodSeenAsync(now - FloodSeenWindow);
+            if (forgotten + floods > 0)
+            {
+                logger.LogInformation("TTL sweeper forgot {0} received message(s) and {1} flood record(s)", forgotten, floods);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Received-message sweep threw");
         }
 
         // Transmission audit retention. Default 90 days; 0 disables.

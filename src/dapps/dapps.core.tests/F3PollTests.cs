@@ -165,6 +165,7 @@ public sealed class F3PollServerTests : IAsyncLifetime
         {
             c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
+            c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();
         }
         var options = new TestOptionsMonitor<SystemOptions>(new SystemOptions

@@ -47,6 +47,7 @@ public sealed class CrossedConnectTests : IAsyncLifetime
         {
             c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
+            c.CreateTable<DbReceived>();
         }
         var options = new TestOptionsMonitor<SystemOptions>(new SystemOptions { Callsign = Lower });
         database = new Database(NullLogger<Database>.Instance, options);

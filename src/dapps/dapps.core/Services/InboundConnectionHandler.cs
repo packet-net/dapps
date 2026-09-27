@@ -4,6 +4,7 @@ using System.Text.Json;
 using dapps.client;
 using dapps.client.Backhaul;
 using dapps.client.Compression;
+using dapps.core.Models;
 
 namespace dapps.core.Services;
 
@@ -686,6 +687,15 @@ public class InboundConnectionHandler(
         }
 
         var offer = result.Offer!;
+        if (await database.HasReceivedAsync(DbReceived.MakeKey(offer.Id, offer.Salt, offer.Length), DateTime.UtcNow))
+        {
+            // We have it already (the sender restarted, or lost our ack):
+            // say so now, and the payload doesn't go over the air again.
+            logger.LogInformation("Offered {0}, which we already have; answering ack", offer.Id);
+            await stream.WriteAsync(Encoding.UTF8.GetBytes($"ack {offer.Id}\n"), stoppingToken);
+            return;
+        }
+
         logger.LogInformation("Accepting message {0} (len={1}, fmt={2}, dst={3})", offer.Id, offer.Length, offer.Format, offer.Destination);
 
         await stream.WriteAsync(Encoding.UTF8.GetBytes($"send {offer.Id}\n"));

@@ -96,6 +96,7 @@ public sealed class TxControlController(
         ProbeIntervalHours = s.ProbeIntervalHours,
         FragmentThresholdBytes = s.FragmentThresholdBytes,
         FragmentReassemblyTimeoutSeconds = s.FragmentReassemblyTimeoutSeconds,
+        ReceivedMemorySeconds = s.ReceivedMemorySeconds,
         RouteGossipStalenessHours = s.RouteGossipStalenessHours,
         OpportunisticPollEnabled = s.OpportunisticPollEnabled,
         CompressionEnabled = s.CompressionEnabled,

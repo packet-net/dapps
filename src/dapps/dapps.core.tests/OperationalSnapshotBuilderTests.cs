@@ -32,6 +32,7 @@ public sealed class OperationalSnapshotBuilderTests : IAsyncLifetime
         DbInfo.OverridePath = dbPath;
         using var c = DbInfo.GetConnection();
         c.CreateTable<DbMessage>();
+        c.CreateTable<DbReceived>();
         c.CreateTable<DbNeighbour>();
         c.CreateTable<DbDiscoveredPeer>();
         c.CreateTable<DbDiscoveryChannel>();

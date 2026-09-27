@@ -113,6 +113,7 @@ public static class DbStartup
         ("ProbeIntervalHours", "24"),
         ("FragmentThresholdBytes", "4096"),
         ("FragmentReassemblyTimeoutSeconds", "604800"),
+        ("ReceivedMemorySeconds", "2592000"),
         ("RouteGossipStalenessHours", "6"),
         ("OpportunisticPollEnabled", "true"),
         ("CompressionEnabled", "true"),
@@ -183,6 +184,7 @@ public static class DbStartup
         db.CreateTable<DbDroppedMessage>();
         db.CreateTable<DbLearnedRoute>();
         db.CreateTable<DbFloodSeen>();
+        db.CreateTable<DbReceived>();
         db.CreateTable<DbDiscoveredPath>();
         db.CreateTable<DbProbedNode>();
         db.CreateTable<DbFragment>();

@@ -56,6 +56,7 @@ public sealed class AgwInboundDeliveryTests(TwoInstanceLinbpqFixture fixture) : 
         {
             c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
+            c.CreateTable<DbReceived>();
         }
 
         // Receiver-side dapps: the AGW inbound service registers as

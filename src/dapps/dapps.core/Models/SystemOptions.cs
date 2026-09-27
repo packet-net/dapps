@@ -202,6 +202,14 @@ public class SystemOptions
     public int FragmentReassemblyTimeoutSeconds { get; set; } = 7 * 24 * 3600;
 
     /// <summary>
+    /// How long to remember a message that arrived with no TTL, so a
+    /// repeat of it is recognised and not delivered or forwarded again
+    /// (<see cref="DbReceived"/>). A message with a TTL is remembered
+    /// until that runs out. Default 30 days.
+    /// </summary>
+    public int ReceivedMemorySeconds { get; set; } = 30 * 24 * 3600;
+
+    /// <summary>
     /// Route gossip: minimum hours between consecutive <c>routes</c>
     /// pulls from the same neighbour. The piggyback gate skips the
     /// gossip step on a session if the previous pull is younger than

@@ -36,6 +36,7 @@ public sealed class TimeProviderInjectionTests : IAsyncLifetime
         {
             c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
+            c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();
         }
 

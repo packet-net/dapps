@@ -35,6 +35,7 @@ public sealed class F2FragmentationTests : IAsyncLifetime
         {
             c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
+            c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();
             c.CreateTable<DbFragment>();
             c.CreateTable<DbSystemOption>();
