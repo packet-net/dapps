@@ -63,6 +63,15 @@ public class OutboundMessageManager(
     private readonly SemaphoreSlim outcomeGate = new(1, 1);
 
     /// <summary>
+    /// Next hops that answered <c>no</c> to a message, with what they
+    /// said, by message id. The message stays queued for another route;
+    /// if the next run can only find one of these, it is dropped with
+    /// their reason. Only in memory: after a restart a refusing hop is
+    /// asked once more, and says no again.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, string>> refusals = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// Internal counter incremented at the start of each *actually
     /// executed* run (skipped contended calls don't bump it). Used by
     /// the auto-forwarder integration test to verify the background
@@ -120,10 +129,23 @@ public class OutboundMessageManager(
                     (int)(DateTime.UtcNow - message.CreatedAt).TotalSeconds, message.Ttl);
                 metrics.RecordTtlExpired(message.Id, message.Destination);
                 await database.SoftDeleteMessage(message.Id, "ttl-expired");
+                refusals.TryRemove(message.Id, out _);
                 continue;
             }
 
             var decision = await routingAlgorithm.ResolveAsync(message, routingContext, stoppingToken);
+
+            if (refusals.TryGetValue(message.Id, out var refusedBy)
+                && !(decision is RouteDecision.NextHop other && !refusedBy.ContainsKey(other.Route.Callsign)))
+            {
+                // Refused by its next hop, and there's no other way to send it.
+                var reason = string.Join("; ", refusedBy.Values);
+                logger.LogWarning("Dropping message {0} for {1}: no route left that will take it ({2})",
+                    message.Id, message.Destination, reason);
+                await database.SoftDeleteMessage(message.Id, "refused: " + reason);
+                refusals.TryRemove(message.Id, out _);
+                continue;
+            }
 
             switch (decision)
             {
@@ -139,6 +161,19 @@ public class OutboundMessageManager(
 
                 case RouteDecision.FloodToNeighbours flood:
                     work.Add(new PendingFlood(message, flood));
+                    break;
+
+                case RouteDecision.Unreachable when inboundSessions?.CallerFor(message.Destination) is { } caller:
+                    // No route, but the node it's for has called us: it
+                    // goes on that session (what `rev` used to collect).
+                    var callerRoute = new BackhaulRoute(caller);
+                    if (!batches.TryGetValue(callerRoute, out var callerBatch))
+                    {
+                        callerBatch = new NextHopBatch(this, callerRoute, runStartedAt, seen);
+                        batches.Add(callerRoute, callerBatch);
+                        work.Add(callerBatch);
+                    }
+                    callerBatch.Add(message, null);
                     break;
 
                 case RouteDecision.Unreachable:
@@ -193,13 +228,6 @@ public class OutboundMessageManager(
     private async Task SendBatchAsync(NextHopBatch batch, SystemOptions optionsValue, CancellationToken stoppingToken)
     {
         var route = batch.Route;
-        if (destinationBackoff.IsInCooldown(route.Callsign, out var nextRetryAtUtc))
-        {
-            logger.LogDebug(
-                "Skipping {0} message(s) for {1}: in reconnect cooldown until {2:O}",
-                batch.Count, route.Callsign, nextRetryAtUtc);
-            return;
-        }
         var backhaul = backhauls.FirstOrDefault(b => b.CanHandle(route));
         if (backhaul is null)
         {
@@ -210,37 +238,37 @@ public class OutboundMessageManager(
         }
         batch.BackhaulName = backhaul.GetType().Name;
 
-        // A link we're holding open to this neighbour takes the batch at
-        // once, in the background.
+        // A session already open with this neighbour takes the batch at
+        // once, in the background: one we dialled, or one it dialled.
+        // It's a live link, so this goes ahead even in a cooldown.
         batch.Detached = true;
         if (backhaul.TryHandToOpenSession(route, batch))
         {
-            logger.LogInformation("Handed {0} message(s) for {1} to the link we're holding open", batch.Count, route.Callsign);
+            logger.LogInformation("Handed {0} message(s) for {1} to the session we have open with it", batch.Count, route.Callsign);
+            return;
+        }
+        if (RidesASession(route) && inboundSessions is not null && inboundSessions.TryHand(route.Callsign, batch))
+        {
+            logger.LogInformation("Handed {0} message(s) for {1} to the session it has open with us", batch.Count, route.Callsign);
             return;
         }
         batch.Detached = false;
 
+        if (destinationBackoff.IsInCooldown(route.Callsign, out var nextRetryAtUtc))
+        {
+            logger.LogDebug(
+                "Skipping {0} message(s) for {1}: in reconnect cooldown until {2:O}",
+                batch.Count, route.Callsign, nextRetryAtUtc);
+            return;
+        }
+
         if (WouldDialIntoOpenSession(route, out var openDirection))
         {
-            // The neighbour has a session open with us: give the batch to
-            // it. It tells the neighbour (`pending`), and the neighbour
-            // collects it with `rev`.
-            if (openDirection == "inbound" && inboundSessions is not null)
-            {
-                batch.Detached = true;
-                if (inboundSessions.TryHand(route.Callsign, batch))
-                {
-                    logger.LogInformation(
-                        "Handed {0} message(s) for {1} to the session it has open with us; it collects them with rev",
-                        batch.Count, route.Callsign);
-                    return;
-                }
-                batch.Detached = false;
-            }
-
             // #178: dialling now would send a SABM down the live link
-            // and reset the session at both ends. Leave the messages
-            // queued: the forwarder runs again when that session ends.
+            // and reset the session at both ends. That session isn't
+            // established yet (or it would have taken the batch above),
+            // so leave the messages queued: the forwarder runs again when
+            // it is, or when it ends.
             logger.LogInformation(
                 "Deferring {0} message(s) for {1}: an {2} session with it is already open, dialling now would reset it",
                 batch.Count, route.Callsign, openDirection);
@@ -318,12 +346,17 @@ public class OutboundMessageManager(
     {
         if (result.Deferred)
         {
-            // #178: the bearer resolved a crossed connect by serving the
-            // peer's session on the link instead of pushing. Nothing
-            // failed, so no cooldown and no outcome for the route to
-            // learn from; the message is still pending for the next
-            // tick, unless the peer's rev on that session drained it.
+            // Not sent, and nothing failed: the session ended before it
+            // went, or the peer was busy. No cooldown and no outcome for
+            // the route to learn from; it's still queued for the next run.
             logger.LogInformation("Deferred {0}: {1}", message.Id, result.Error);
+        }
+        else if (result.Refused)
+        {
+            // The neighbour is fine; it just won't take this one. The next
+            // run sends it another way if there is one, else drops it.
+            logger.LogWarning("{0} won't take message {1} ({2}); it goes another way if there is one", route.Callsign, message.Id, result.Error);
+            refusals.GetOrAdd(message.Id, _ => new(StringComparer.OrdinalIgnoreCase))[route.Callsign] = result.Error ?? "refused";
         }
         else
         {
@@ -335,6 +368,7 @@ public class OutboundMessageManager(
                 activityTracker?.RecordTransmission();
                 await database.MarkMessageAsForwarded(message.Id);
                 destinationBackoff.RecordSuccess(route.Callsign);
+                refusals.TryRemove(message.Id, out _);
             }
             else
             {
@@ -357,9 +391,12 @@ public class OutboundMessageManager(
                 reason: $"forwarder tick: route via {route.Callsign}",
                 success: result.Accepted,
                 durationMs: (int)elapsed.TotalMilliseconds,
-                errorTag: result.Accepted ? "" : result.Deferred ? "deferred" : (result.Error ?? "unknown"));
+                errorTag: ErrorTag(result));
         }
     }
+
+    private static string ErrorTag(BackhaulSendResult result) =>
+        result.Accepted ? "" : result.Deferred ? "deferred" : result.Refused ? "refused" : (result.Error ?? "unknown");
 
     /// <summary>
     /// The messages one run has for one next hop, handed to the backhaul
@@ -518,23 +555,22 @@ public class OutboundMessageManager(
             var backhaul = backhauls.FirstOrDefault(b => b.CanHandle(route));
             if (backhaul is null) continue;
 
-            // A link we're holding open to the neighbour, or one it has
-            // open with us, takes the copy: with sessions held for minutes
-            // at a time, skipping them would lose most floods.
+            // A session open with the neighbour, either way, takes the
+            // copy: with sessions held for minutes at a time, skipping
+            // them would lose most floods.
             var copy = new FloodCopyBatch(this, message, route, bm, flood.HopBudget);
             if (backhaul.TryHandToOpenSession(route, copy))
             {
-                logger.LogInformation("Flood of {0}: handed to the link we're holding open to {1}", message.Id, route.Callsign);
+                logger.LogInformation("Flood of {0}: handed to the session we have open with {1}", message.Id, route.Callsign);
+                continue;
+            }
+            if (RidesASession(route) && inboundSessions is not null && inboundSessions.TryHand(route.Callsign, copy))
+            {
+                logger.LogInformation("Flood of {0}: handed to the session {1} has open with us", message.Id, route.Callsign);
                 continue;
             }
             if (WouldDialIntoOpenSession(route, out var openDirection))
             {
-                if (openDirection == "inbound" && inboundSessions is not null && inboundSessions.TryHand(route.Callsign, copy))
-                {
-                    logger.LogInformation("Flood of {0}: handed to the session {1} has open with us", message.Id, route.Callsign);
-                    continue;
-                }
-
                 // #178: a flood copy is one-shot, so this one is skipped
                 // rather than deferred - the outcome a failed send to
                 // that neighbour already had, minus the collision on
@@ -564,12 +600,12 @@ public class OutboundMessageManager(
         await outcomeGate.WaitAsync(stoppingToken);
         try
         {
-            if (result.Deferred)
+            if (result.Deferred || result.Refused)
             {
-                // #178: crossed connect, served instead of pushed. This
-                // copy is lost like a failed one (floods are one-shot)
-                // but it is not a failure of the neighbour.
-                logger.LogInformation("Flood of {0}: deferred, {1}", message.Id, result.Error);
+                // Not sent, or not wanted: this copy is lost like a failed
+                // one (floods are one-shot), but it is not a failure of
+                // the neighbour.
+                logger.LogInformation("Flood of {0}: {1}, {2}", message.Id, result.Refused ? "refused" : "deferred", result.Error);
             }
             else
             {
@@ -606,7 +642,7 @@ public class OutboundMessageManager(
                     reason: $"flood to neighbour (hop budget {hopBudget})",
                     success: result.Accepted,
                     durationMs: (int)elapsed.TotalMilliseconds,
-                    errorTag: result.Accepted ? "" : result.Deferred ? "deferred" : (result.Error ?? "unknown"));
+                    errorTag: ErrorTag(result));
             }
         }
         finally
@@ -656,7 +692,11 @@ public class OutboundMessageManager(
     private bool WouldDialIntoOpenSession(BackhaulRoute route, out string? openDirection)
     {
         openDirection = null;
-        if (peerSessions is null || route.UdpEndpoint is not null || route.MeshCoreChannel is not null) return false;
+        if (peerSessions is null || !RidesASession(route)) return false;
         return peerSessions.IsActive(route.Callsign, out openDirection);
     }
+
+    /// <summary>AGW and RHP routes ride a connected-mode session; UDP and
+    /// MeshCore are datagram bearers with no session to share.</summary>
+    private static bool RidesASession(BackhaulRoute route) => route.UdpEndpoint is null && route.MeshCoreChannel is null;
 }

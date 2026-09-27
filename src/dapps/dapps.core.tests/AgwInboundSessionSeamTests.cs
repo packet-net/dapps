@@ -43,7 +43,9 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
     private const string Local = "G5ALF-3";
     /// <summary>AGW port index 1 = BPQ port 2, the RF/AXIP port in the field logs.</summary>
     private const byte Port = 1;
-    private const string Prompt = "DAPPSv1>\n";
+    /// <summary>What a new session sends first: the prompt, and the
+    /// node's rules straight after it, in one write.</summary>
+    private const string Prompt = "DAPPSv1>\nexchange id=";
 
     private string dbPath = null!;
 
@@ -76,7 +78,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
 
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
         var prompt = await bpq.ReadUntilAsync('D', ct);
-        Encoding.UTF8.GetString(prompt.Payload).Should().Be(Prompt);
+        Encoding.UTF8.GetString(prompt.Payload).Should().StartWith(Prompt);
         prompt.Port.Should().Be(Port, "dapps writes on the port the session came in on");
         prompt.CallFrom.Should().Be(Local);
         prompt.CallTo.Should().Be(Remote);
@@ -91,7 +93,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         // The pair is free again: the redial is a clean new session, not
         // a stale-entry rescue.
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
-        (await bpq.ReadTextAsync(ct)).Should().Be(Prompt);
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
 
         await bpq.DrainAsync(ct);
         h.Logs.Warnings.Should().BeEmpty("the 'd' was matched by callsign pair, so nothing ever went stale");
@@ -115,7 +117,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         await bpq.WriteAsync(ct, connect);
         for (var i = 0; i <= reconnects; i++)
         {
-            (await bpq.ReadTextAsync(ct)).Should().Be(Prompt, $"session {i} should be prompted when {because}");
+            (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt, $"session {i} should be prompted when {because}");
 
             // Peer hangs up and redials in the same TCP write, the way
             // BPQ's poll loop flushes both when a client redials at once.
@@ -137,13 +139,13 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var bpq = await h.StartAsync(ct);
 
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
-        (await bpq.ReadTextAsync(ct)).Should().Be(Prompt);
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
 
         // No 'd' ever arrives for that session. BPQ refuses live
         // duplicates itself, so when it dispatches the peer's next
         // connect for the pair, our entry can only be stale.
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
-        (await bpq.ReadTextAsync(ct)).Should().Be(Prompt, "the new connect is legitimate and must not be rejected");
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt, "the new connect is legitimate and must not be rejected");
         var warning = await h.Logs.WaitForAsync(e => e.Level == LogLevel.Warning, ct);
         warning.Message.Should().Contain("retiring the stale entry");
 
@@ -176,7 +178,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         peers.IsActive(Remote, out _).Should().BeFalse();
 
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
-        (await bpq.ReadTextAsync(ct)).Should().Be(Prompt);
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
         peers.IsActive(Remote, out var direction).Should().BeTrue("the session is open from the moment BPQ hands it to us");
         direction.Should().Be("inbound");
 
@@ -193,9 +195,9 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var bpq = await h.StartAsync(ct);
 
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
-        (await bpq.ReadTextAsync(ct)).Should().Be(Prompt);
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
-        (await bpq.ReadTextAsync(ct)).Should().Be(Prompt);
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
         await h.Logs.WaitForAsync("retiring the stale entry", ct);
         peers.IsActive(Remote, out _).Should().BeTrue("the live replacement holds a lease of its own");
 
@@ -213,7 +215,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var bpq = await h.StartAsync(ct);
 
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
-        (await bpq.ReadTextAsync(ct)).Should().Be(Prompt);
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
 
         await bpq.WriteAsync(ct, FakeAgwSocket.Data(Remote, Local, port: 0, "quit\n"));
 
@@ -261,7 +263,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var bpq = await h.StartAsync(ct);
 
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
-        (await bpq.ReadTextAsync(ct)).Should().Be(Prompt);
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
         await bpq.WriteAsync(ct, FakeAgwSocket.Data(Remote, Local, Port, "quit\n"));
         (await bpq.ReadTextAsync(ct)).Should().Be("bye\n");
         var ours = await bpq.ReadUntilAsync('d', ct);
@@ -274,7 +276,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         await h.Logs.WaitForAsync("'d' for unknown session", ct);
 
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
-        (await bpq.ReadTextAsync(ct)).Should().Be(Prompt);
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
         h.Logs.Warnings.Should().BeEmpty();
     }
 

@@ -23,71 +23,17 @@ public class DappsProtocolClientTests
     }
 
     [Fact]
-    public async Task PollAsync_AFormatItCantRead_IsDeclined_AndThePlainRetryIsTaken()
+    public async Task TheAnsweringNodesExchangeLine_AfterThePrompt_IsNotTakenForAReply()
     {
-        var payload = "hello"u8.ToArray();
-        var id = DappsMessage.ComputeHash(payload, 1L)[..7];
-        var stream = new FakeDuplexStream([
-            .. Encoding.UTF8.GetBytes($"ihave {id} len=5 fmt=z9 clen=3 dst=app@N0CALL s=1\n"),
-            .. Encoding.UTF8.GetBytes($"ihave {id} len=5 fmt=p dst=app@N0CALL s=1\n"),
-            .. Encoding.UTF8.GetBytes($"data {id}\n"), .. payload,
-            .. Encoding.UTF8.GetBytes("DAPPSv1>\n"),
-        ]);
+        // A simple sender reads the prompt, then offers: the exchange line
+        // the answering node sends after its prompt comes first.
+        var stream = new FakeDuplexStream(Encoding.UTF8.GetBytes("DAPPSv1>\nexchange id=ab12cd hold=120 inline=256 z=1\nsend abc1234\nack abc1234\n"));
         var client = new DappsProtocolClient(stream, NullLoggerFactory.Instance);
 
-        var polled = new List<DappsProtocolClient.PolledMessage>();
-        await foreach (var m in client.PollAsync(null, TestContext.Current.CancellationToken)) polled.Add(m);
-
-        polled.Should().ContainSingle().Which.Payload.Should().Equal(payload);
-        Encoding.UTF8.GetString(stream.WriteCapture.ToArray()).Should().Be($"rev\nno {id}\nsend {id}\nack {id}\n");
-    }
-
-    [Fact]
-    public async Task PollAsync_ACompressedPayload_IsDecodedBeforeTheHashCheck()
-    {
-        var payload = Encoding.UTF8.GetBytes(
-            """{"v":1,"o":"MB7NPW","s":66,"e":1,"ts":1790410266123,"a":"p.i","data":{"t":"cp","cid":1,"fc":"M0AHN","ts":1790410266050,"p":"Evening all, is anyone on the WPS channel tonight?","dts":1790410266123}}""");
-        var id = DappsMessage.ComputeHash(payload, 1L)[..7];
-        var wire = dapps.client.Compression.PayloadCompression.TryCompress(payload)!.Value;
-        var stream = new FakeDuplexStream([
-            .. Encoding.UTF8.GetBytes($"ihave {id} len={payload.Length} fmt={wire.Format} clen={wire.Bytes.Length} dst=app@N0CALL s=1\n"),
-            .. Encoding.UTF8.GetBytes($"data {id}\n"), .. wire.Bytes,
-            .. Encoding.UTF8.GetBytes("DAPPSv1>\n"),
-        ]);
-        var client = new DappsProtocolClient(stream, NullLoggerFactory.Instance);
-
-        var polled = new List<DappsProtocolClient.PolledMessage>();
-        await foreach (var m in client.PollAsync(null, TestContext.Current.CancellationToken)) polled.Add(m);
-
-        polled.Should().ContainSingle().Which.Payload.Should().Equal(payload);
-        Encoding.UTF8.GetString(stream.WriteCapture.ToArray()).Should().EndWith($"ack {id}\n");
-    }
-
-    [Fact]
-    public async Task APendingNotice_InPlaceOfAReply_IsSkippedAndRemembered()
-    {
-        // A peer holding the session sends `pending` when it's idle, so it
-        // can cross with our offer and arrive before the reply.
-        var stream = new FakeDuplexStream(Encoding.UTF8.GetBytes("pending\nsend abc1234\n"));
-        var client = new DappsProtocolClient(stream, NullLoggerFactory.Instance);
-
+        (await client.ReadInitialPromptAsync(TestContext.Current.CancellationToken)).Should().BeTrue();
         (await client.OfferMessageAsync("abc1234", 1L, DappsMessage.MessageFormat.Plain, "app@N0DEST", 5,
             TestContext.Current.CancellationToken)).Should().BeTrue();
-        client.PeerHasPending.Should().BeTrue();
-    }
-
-    [Theory]
-    [InlineData("tail 30\n", 30)]
-    [InlineData("tail 0\n", 0)]
-    [InlineData("pending\ntail 45\n", 45)]
-    [InlineData("eh?\n", null)]
-    public async Task RequestTailAsync_ReadsWhatThePeerAgreed(string reply, int? expected)
-    {
-        var stream = new FakeDuplexStream(Encoding.UTF8.GetBytes(reply));
-        var client = new DappsProtocolClient(stream, NullLoggerFactory.Instance);
-
-        (await client.RequestTailAsync(120, TestContext.Current.CancellationToken)).Should().Be(expected);
-        Encoding.UTF8.GetString(stream.WriteCapture.ToArray()).Should().Be("tail 120\n");
+        (await client.SendMessageAsync("abc1234", "hello"u8.ToArray(), TestContext.Current.CancellationToken)).Should().BeTrue();
     }
 
     [Fact]

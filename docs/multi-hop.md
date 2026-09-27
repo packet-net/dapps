@@ -79,8 +79,8 @@ When the outbound forwarder picks a message destined for C:
 1. Resolves the route to the C-neighbour row, which has the connect-script attached.
 2. Opens an AGW connection to the *first hop* (G0NODE2) via the configured bearer port.
 3. Plays the script: send line, wait for substring, send line, wait, ... until `DAPPSv1>`.
-4. Falls into the regular `ihave` / `data` / `ack` exchange.
-5. On success, all the usual things happen: opportunistic `rev` poll, route gossip pull (subject to staleness gate), audit log entry.
+4. Falls into the regular exchange: route gossip pull (subject to staleness gate), then traffic both ways.
+5. On success, all the usual things happen: messages acked, anything the far end has for us collected on the same session, audit log entry.
 
 If any step times out (default 30s) or the stream closes, the script aborts and the forward fails like any other transport failure. The route's failure counter increments; after enough consecutive failures, the daemon falls back to whatever else is available.
 

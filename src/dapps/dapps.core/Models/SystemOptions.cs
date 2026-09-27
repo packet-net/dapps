@@ -218,25 +218,12 @@ public class SystemOptions
     ///
     /// <para>
     /// Pulls only happen on a session that's already opened for real
-    /// work (a push, a probe, an opportunistic poll). The staleness
+    /// work (a session for traffic, a probe, a poll). The staleness
     /// floor bounds airtime cost without adding any scheduled
     /// transmission.
     /// </para>
     /// </summary>
     public int RouteGossipStalenessHours { get; set; } = 6;
-
-    /// <summary>
-    /// Plan F3 - opportunistic poll on every successful push. After
-    /// <see cref="dapps.client.Backhaul.Dappsv1SessionBackhaul"/>
-    /// finishes pushing a message, send <c>rev</c> on the same session
-    /// to drain anything the remote has queued for us. Free in
-    /// connection-time terms (the link is already up) and turns every
-    /// outbound session into a bidirectional drain - the difference
-    /// between "B has my mail until B can reach me" and "B has my mail
-    /// until I push to B." Default true; disable for nodes that want
-    /// to push without ever pulling.
-    /// </summary>
-    public bool OpportunisticPollEnabled { get; set; } = true;
 
     /// <summary>
     /// Compress message payloads on DAPPSv1 sessions (AGW/RHP
@@ -251,12 +238,14 @@ public class SystemOptions
     public bool CompressionEnabled { get; set; } = true;
 
     /// <summary>
-    /// After a DAPPSv1 session with a neighbour that moved messages,
-    /// keep the AX.25 link open until it has been idle this many
-    /// seconds, so follow-up messages in either direction go straight
-    /// away without a new connection. 0 turns the tail off. Capped at
-    /// 600 (10 minutes), because many nodes drop an idle circuit after
-    /// that. The per-neighbour override
+    /// Keep a DAPPSv1 session with a neighbour open until it has been
+    /// idle this many seconds, so follow-up messages in either direction
+    /// go straight away without a new connection: the <c>hold=</c> this
+    /// node states in its <c>exchange</c> line. The session holds for the
+    /// lower of the two ends' values. 0 turns the hold off (the caller
+    /// still waits 10 seconds after the last traffic). Capped at 600 (10
+    /// minutes), because many nodes drop an idle circuit after that. The
+    /// per-neighbour override
     /// <see cref="dapps.core.Models.DbNeighbour.SessionTailSeconds"/>
     /// wins when set (null there defers to this system-wide setting).
     /// Default 120.
@@ -264,13 +253,22 @@ public class SystemOptions
     public int SessionTailSeconds { get; set; } = 120;
 
     /// <summary>
+    /// The largest message, in bytes, this node takes from a neighbour:
+    /// the <c>max=</c> in its <c>exchange</c> line. Neighbours don't send
+    /// or offer bigger ones, and one that arrives anyway is refused. 0
+    /// means no limit (the default).
+    /// </summary>
+    public int MaxMessageBytes { get; set; }
+
+    /// <summary>
     /// Plan F3b - scheduled poll. When true, the
     /// <c>PollSchedulerService</c> walks every AGW-reachable manual
-    /// neighbour on a slow cadence and drains queued mail via
-    /// <c>rev</c>. Off by default - opportunistic poll on every push
-    /// covers the majority of cases for free; this is for nodes that
-    /// don't push often (read-only consumers, scheduled HF stations)
-    /// and would otherwise let mail rot at their forwarding partners.
+    /// neighbour on a slow cadence and calls it, so it can send whatever
+    /// it holds for us. Off by default - every session carries traffic
+    /// both ways, so mail usually rides a call made for other traffic;
+    /// this is for nodes that don't send often (read-only consumers,
+    /// scheduled HF stations) and would otherwise let mail rot at their
+    /// forwarding partners.
     /// </summary>
     public bool ScheduledPollEnabled { get; set; } = false;
 

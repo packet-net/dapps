@@ -159,9 +159,9 @@ public class TtlForwardingIntegrationTests(TwoInstanceLinbpqFixture fixture) : I
     }
 
     /// <summary>
-    /// Plays the receiver half of the DAPPS protocol just far enough to
-    /// read the offer line, ack it, accept the data, and ack again. The
-    /// captured offer line is what the test asserts on.
+    /// Plays the answering half of a DAPPS session just far enough to
+    /// state its rules, read the offer line, accept it, take the data,
+    /// and ack. The captured offer line is what the test asserts on.
     ///
     /// Operates at the AGW frame level: the sender's stream bytes arrive
     /// as 'D' frames (data records) on our AGW socket; we respond with
@@ -176,11 +176,15 @@ public class TtlForwardingIntegrationTests(TwoInstanceLinbpqFixture fixture) : I
         var connectFrame = await ReadFrame(receiver, 'C', ct);
         var remoteCall = connectFrame.CallFrom;
 
-        // 2. Send the DAPPSv1> prompt back as a 'D' frame.
-        await SendDataBytes(receiver, fixture.ApplCallB, remoteCall, "DAPPSv1>\n"u8.ToArray(), ct);
+        // 2. Send the DAPPSv1> prompt back as a 'D' frame, with our rules:
+        //    inline=0 asks for every message to be offered first.
+        await SendDataBytes(receiver, fixture.ApplCallB, remoteCall, "DAPPSv1>\nexchange id=ttl001 hold=0 inline=0\n"u8.ToArray(), ct);
 
         // 3. Read 'D' frames until we have a complete line ending in '\n'.
-        //    That's the `ihave ...` line we want to capture.
+        //    The sender's own rules come first, then the `ihave ...` line
+        //    we want to capture.
+        var rules = await ReadLine(receiver, ct);
+        if (!rules.StartsWith("exchange ", StringComparison.Ordinal)) return;
         var ihave = await ReadLine(receiver, ct);
         capturedIhave.TrySetResult(ihave);
 

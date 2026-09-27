@@ -4,19 +4,25 @@ namespace dapps.client.Backhaul;
 /// Outcome of a backhaul send. <c>Accepted=true</c> means the neighbour
 /// confirmed receipt per the bearer's ack contract; the caller can mark
 /// the message as forwarded and stop retrying. Otherwise <c>Error</c>
-/// carries a human-readable reason for logging. <c>Deferred=true</c>
-/// is the third case: the message was not sent, but nothing failed
-/// either - the bearer used the link for something else (see
-/// <see cref="Defer"/>), so the caller leaves the message queued and
-/// records neither a success nor a failure against the route.
+/// carries a human-readable reason for logging. Two outcomes are neither
+/// a success nor a failure of the link:
+/// <list type="bullet">
+/// <item><c>Deferred</c>: the message was not sent and nothing failed
+/// either (the session ended before it went, or the peer was busy), so
+/// the caller leaves it queued and records nothing against the route.</item>
+/// <item><c>Refused</c>: the neighbour said it won't take this message
+/// (<c>no</c>), for a reason of its own such as its size limit. The link
+/// is fine; the message needs another route or is dropped.</item>
+/// </list>
 /// </summary>
-public sealed record BackhaulSendResult(bool Accepted, string? Error, bool Deferred = false)
+public sealed record BackhaulSendResult(bool Accepted, string? Error, bool Deferred = false, bool Refused = false)
 {
     public static BackhaulSendResult Ok() => new(true, null);
     public static BackhaulSendResult Fail(string error) => new(false, error);
     /// <summary>Not sent, not failed: <paramref name="reason"/> says
-    /// what the bearer did with the link instead. Today that is #178's
-    /// crossed connect, where the caller ended up serving the peer's
-    /// session rather than pushing its own message.</summary>
+    /// why, for the log.</summary>
     public static BackhaulSendResult Defer(string reason) => new(false, reason, Deferred: true);
+    /// <summary>The neighbour won't take it: <paramref name="reason"/> is
+    /// what it said.</summary>
+    public static BackhaulSendResult Refuse(string reason) => new(false, reason, Refused: true);
 }

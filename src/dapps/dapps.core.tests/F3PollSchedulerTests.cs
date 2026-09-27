@@ -90,8 +90,8 @@ public sealed class F3PollSchedulerTests : IAsyncLifetime
     public async Task PollAndRecord_SuccessNoMessages_RecordsCleanRow()
     {
         await database.UpsertNeighbour("N0EMPTY-9", bearerPort: 1);
-        // Server: just emits the prompt, then immediate drained-prompt for rev.
-        var transport = new RecordingPollTransport(("N0EMPTY-9", "DAPPSv1>\nDAPPSv1>\n"));
+        // Server: the prompt and its rules, and nothing to send.
+        var transport = new RecordingPollTransport(("N0EMPTY-9", Hello));
         var inbox = new RecordingInbox();
 
         var sched = MakeScheduler(transport, inbox);
@@ -108,16 +108,14 @@ public sealed class F3PollSchedulerTests : IAsyncLifetime
     public async Task PollAndRecord_OneQueuedMessage_DrainsAndIncrementsCount()
     {
         await database.UpsertNeighbour("N0HASMAIL-9", bearerPort: 2);
-        // Build server bytes: prompt → ihave → data + payload → drained-prompt.
+        // Server bytes: prompt and rules, then one message with its payload.
         var payload = "queued"u8.ToArray();
         long salt = 555;
         var id = DappsMessage.ComputeHash(payload, salt)[..7];
         var serverBytes = new MemoryStream();
-        AppendUtf8(serverBytes, "DAPPSv1>\n");
-        AppendUtf8(serverBytes, $"ihave {id} len={payload.Length} fmt=p dst=app@N0US s={salt}\n");
-        AppendUtf8(serverBytes, $"data {id}\n");
+        AppendUtf8(serverBytes, Hello);
+        AppendUtf8(serverBytes, $"msg {id} len={payload.Length} fmt=p dst=app@N0US s={salt}\n");
         serverBytes.Write(payload);
-        AppendUtf8(serverBytes, "DAPPSv1>\n");
         var transport = new RecordingPollTransport(("N0HASMAIL-9", Encoding.UTF8.GetString(serverBytes.ToArray())));
         var inbox = new RecordingInbox();
 
@@ -139,7 +137,7 @@ public sealed class F3PollSchedulerTests : IAsyncLifetime
         // emits prompt + immediate drained - success.
         var transport = new RecordingPollTransport(
             ("N0FLAP-9", ""),                       // EOF before prompt
-            ("N0FLAP-9", "DAPPSv1>\nDAPPSv1>\n"));   // empty drain
+            ("N0FLAP-9", Hello));                   // nothing to send
         var sched = MakeScheduler(transport, new RecordingInbox());
 
         await sched.PollAndRecordAsync("N0US", "N0FLAP-9", 1, CancellationToken.None);
@@ -157,7 +155,7 @@ public sealed class F3PollSchedulerTests : IAsyncLifetime
     {
         await database.UpsertNeighbour("N0OPT-9", bearerPort: 1);
         await database.UpsertPolledNode(new DbPolledNode { Callsign = "N0OPT-9", OptOut = true });
-        var transport = new RecordingPollTransport(("N0OPT-9", "DAPPSv1>\nDAPPSv1>\n"));
+        var transport = new RecordingPollTransport(("N0OPT-9", Hello));
         var sched = MakeScheduler(transport, new RecordingInbox());
 
         await sched.PollAndRecordAsync("N0US", "N0OPT-9", 1, CancellationToken.None);
@@ -167,6 +165,11 @@ public sealed class F3PollSchedulerTests : IAsyncLifetime
         row!.OptOut.Should().BeTrue("opt-out is operator state and survives result updates");
         row.LastSuccessAt.Should().NotBeNull();
     }
+
+    /// <summary>What the answering node says first: its prompt and rules.
+    /// The canned replies end there or after a message, and the link
+    /// closing ends the poll.</summary>
+    private const string Hello = "DAPPSv1>\nexchange id=far001 hold=0 inline=256 z=1\n";
 
     private PollSchedulerService MakeScheduler(IDappsOutboundTransport transport, IBackhaulInbox inbox)
     {

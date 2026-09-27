@@ -19,11 +19,6 @@ public class Database(
     // production semantics without each test having to construct a
     // FakeTimeProvider. Cadence-sensitive tests inject one.
     private readonly TimeProvider timeProvider = timeProviderOpt ?? TimeProvider.System;
-    internal async Task DeleteOffer(string id)
-    {
-        await DbInfo.GetAsyncConnection().DeleteAsync<DbOffer>(id);
-    }
-
     public async Task<ICollection<DbMessage>> GetPendingOutboundMessages()
     {
         var connection = DbInfo.GetAsyncConnection();
@@ -178,13 +173,6 @@ public class Database(
         return id;
     }
 
-    internal async Task<DbOffer> LoadOfferMetadata(string id)
-    {
-        var data = await DbInfo.GetAsyncConnection().GetAsync<DbOffer>(id);
-        logger.LogInformation("Loaded metadata for offer {0}", id);
-        return data;
-    }
-
     internal async Task SaveMessage(string id, byte[] buffer, long? salt, string destination, string sourceCallsign, string additionalProperties, int? ttl, string originatorCallsign = "", byte? floodHopsRemaining = null, string? sourceRouteCsv = null, string? traversedHopsCsv = null, string? masterId = null, int? fragmentIndex = null, int? fragmentTotal = null, string? streamId = null, uint? streamSeq = null, uint? streamGapTimeoutSeconds = null, bool pendingInOrder = false)
     {
         var connection = DbInfo.GetAsyncConnection();
@@ -225,43 +213,6 @@ public class Database(
         // arriving can also teach a route to something already queued.
         forwarderWakeup?.Wake();
     }
-
-    internal async Task SaveOffer(IHaveOffer offer)
-    {
-        var connection = DbInfo.GetAsyncConnection();
-
-        var existing = await connection.FindAsync<DbOffer>(offer.Id);
-        if (existing != null)
-        {
-            logger.LogWarning("We already have metadata for offer {0}, overwriting", offer.Id);
-        }
-
-        // One statement, so a second session offering the same id at the
-        // same moment can't land between a delete and an insert.
-        await connection.InsertOrReplaceAsync(ToDbOffer(offer, timeProvider.GetUtcNow().UtcDateTime));
-
-        logger.LogInformation("Saved metadata for offer {0}", offer.Id);
-    }
-
-    internal static DbOffer ToDbOffer(IHaveOffer offer, DateTime createdAt) => new()
-    {
-        Id = offer.Id,
-        Length = offer.Length,
-        Format = offer.Format,
-        Salt = offer.Salt,
-        CompressedLength = offer.CompressedLength,
-        Destination = offer.Destination,
-        OriginatorCallsign = offer.Originator ?? "",
-        AdditionalProperties = JsonSerializer.Serialize(offer.AdditionalHeaders),
-        Ttl = offer.Ttl,
-        CreatedAt = createdAt,
-        MasterId = offer.MasterId,
-        FragmentIndex = offer.Fragment?.Index,
-        FragmentTotal = offer.Fragment?.Total,
-        StreamId = offer.StreamId,
-        StreamSeq = offer.StreamSeq,
-        StreamGapTimeoutSeconds = offer.StreamGapTimeoutSeconds,
-    };
 
     internal async Task<DbRouteHint?> GetRouteHint(string destination)
     {
@@ -885,54 +836,6 @@ public class Database(
         var connection = DbInfo.GetAsyncConnection();
         return await connection.QueryAsync<DbFragment>(
             "select * from fragments order by FirstSeenAt desc, FragmentIndex asc");
-    }
-
-    // ── F3 rev poll: messages we'd hand to a polling caller ─────────
-
-    /// <summary>
-    /// Plan F3 - return outbound queue entries whose final destination
-    /// matches <paramref name="callerBaseCallsign"/> (the SSID-stripped
-    /// base of the polling station's callsign). These are the messages
-    /// that the rev handler would drain to a station calling <c>rev</c>.
-    ///
-    /// When <paramref name="requestedIds"/> is empty, returns every
-    /// matching un-forwarded row. When non-empty, narrows to that
-    /// specific set - used for selective polling
-    /// (<c>rev id1 id2 ...</c>).
-    ///
-    /// Final destination only - we don't drain transit messages where
-    /// the caller is just a known forwarder; the caller's session is
-    /// for THEIR mail, not for them to act as a downstream relay
-    /// (that's a separate request shape; design decision in plan F3).
-    /// </summary>
-    internal async Task<IReadOnlyList<DbMessage>> GetMessagesForCaller(
-        string callerBaseCallsign, IReadOnlyList<string> requestedIds)
-    {
-        var connection = DbInfo.GetAsyncConnection();
-        // Two cases on the wire: "app@CALL" (no SSID) and
-        // "app@CALL-N" (with SSID). The two `like` patterns cover both
-        // and the C# filter below pins the base-callsign suffix exactly
-        // (so e.g. caller "N0THEM" doesn't pick up dst="app@N0THEMA").
-        var rows = await connection.QueryAsync<DbMessage>(
-            "select * from messages where forwarded=0 and (destination like ? or destination like ?) " +
-            "order by CreatedAt asc",
-            $"%@{callerBaseCallsign}",
-            $"%@{callerBaseCallsign}-%");
-        var matching = rows
-            .Where(r => MatchesCallerBase(r.Destination, callerBaseCallsign))
-            .ToList();
-        if (requestedIds.Count == 0) return matching;
-        var idSet = requestedIds.ToHashSet(StringComparer.Ordinal);
-        return matching.Where(r => idSet.Contains(r.Id)).ToList();
-    }
-
-    private static bool MatchesCallerBase(string destination, string callerBase)
-    {
-        var at = destination.LastIndexOf('@');
-        if (at < 0 || at == destination.Length - 1) return false;
-        var destCall = destination[(at + 1)..];
-        var destBase = destCall.Split('-')[0];
-        return string.Equals(destBase, callerBase, StringComparison.OrdinalIgnoreCase);
     }
 
     // ── Polled nodes (F3b) ─────────────────────────────────────────

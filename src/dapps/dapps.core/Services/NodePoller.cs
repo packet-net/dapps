@@ -6,15 +6,15 @@ using Microsoft.Extensions.Logging;
 namespace dapps.core.Services;
 
 /// <summary>
-/// Plan F3b - single-shot rev poll over an existing AGW transport.
-/// Opens a fresh session to the target, waits for the
-/// <c>DAPPSv1&gt;</c> banner, sends <c>rev</c>, drains every offered
-/// message through <see cref="IBackhaulInbox.DeliverAsync"/>, and
-/// disconnects. Stateless - the same instance can serve many
-/// concurrent polls.
+/// Plan F3b - one poll of a neighbour for mail it holds for us. Dials,
+/// runs an <see cref="ExchangeSession"/> with nothing of our own to send,
+/// takes whatever the neighbour sends through
+/// <see cref="IBackhaulInbox.DeliverAsync"/>, and hangs up once the link
+/// has been quiet for the agreed hold. Stateless - the same instance can
+/// serve many concurrent polls.
 ///
 /// Mirror of <see cref="NodeProber"/> for the C5.1-style reachability
-/// case; the difference is that this one actually drains the
+/// case; the difference is that this one actually collects the
 /// remote's queued mail, where the prober just confirms the session
 /// reaches the prompt.
 /// </summary>
@@ -24,7 +24,8 @@ public sealed class NodePoller(
     TimeProvider timeProvider,
     ILoggerFactory loggerFactory,
     ILogger<NodePoller> logger,
-    IRouteGossipPort? routeGossip = null)
+    IRouteGossipPort? routeGossip = null,
+    ExchangePolicy? exchangePolicy = null)
 {
     /// <summary>Outcome of a single poll. Failure is captured rather
     /// than thrown - the scheduler catches per-callsign failures so
@@ -35,6 +36,10 @@ public sealed class NodePoller(
         int MessagesDrained,
         string Error,
         DateTime At);
+
+    /// <summary>The shortest quiet spell before hanging up
+    /// (<see cref="ExchangeSession.MinQuiet"/>).</summary>
+    public TimeSpan MinQuiet { get; init; } = TimeSpan.FromSeconds(10);
 
     public async Task<PollResult> PollAsync(
         string localCallsign,
@@ -51,80 +56,44 @@ public sealed class NodePoller(
                 remoteCallsign: remoteCallsign,
                 bearerPort: bearerPort,
                 stoppingToken: ct);
-
-            var protocol = new DappsProtocolClient(connection.Stream, loggerFactory);
+            using var stream = new PumpedReadStream(connection.Stream);
 
             if (connectScript is not null)
             {
                 try
                 {
-                    await ConnectScriptRunner.RunAsync(connection.Stream, connectScript, logger, ct);
+                    await ConnectScriptRunner.RunAsync(stream, connectScript, logger, ct);
                 }
                 catch (Exception ex) when (ex is ConnectScriptException or EndOfStreamException)
                 {
                     return new PollResult(remoteCallsign, false, 0, $"connect-script: {ex.Message}", at);
                 }
             }
-            else if (!await protocol.ReadInitialPromptAsync(ct))
+
+            var settings = exchangePolicy is null ? new ExchangeSettings() : await exchangePolicy.ForPeerAsync(remoteCallsign, ct);
+            var session = new ExchangeSession(stream, remoteCallsign, dialled: true, settings, inbox, loggerFactory)
             {
-                return new PollResult(remoteCallsign, false, 0, "no DAPPSv1> prompt", at);
+                TimeProvider = timeProvider,
+                MinQuiet = MinQuiet,
+                PromptConsumed = connectScript is not null,
+                RouteGossip = routeGossip,
+            };
+            await session.RunAsync(ct);
+            if (!session.Established)
+            {
+                var error = session.Failure ?? "no session";
+                logger.LogInformation("Poll failed: {0} ({1})", remoteCallsign, error);
+                return new PollResult(remoteCallsign, false, 0, error, at);
             }
 
-            var drained = 0;
-            await foreach (var polled in protocol.PollAsync(requestedIds: null, ct))
-            {
-                var inbound = new BackhaulMessage(
-                    Id: polled.Id,
-                    Destination: polled.Destination,
-                    Salt: polled.Salt,
-                    Ttl: polled.Ttl,
-                    Payload: polled.Payload,
-                    Originator: polled.Originator,
-                    MasterId: polled.MasterId,
-                    FragmentIndex: polled.FragmentIndex,
-                    FragmentTotal: polled.FragmentTotal,
-                    StreamId: polled.StreamId,
-                    StreamSeq: polled.StreamSeq,
-                    StreamGapTimeoutSeconds: polled.StreamGapTimeoutSeconds);
-                await inbox.DeliverAsync(inbound, remoteCallsign, ct);
-                drained++;
-            }
-
-            logger.LogInformation("Poll ok: {0} drained {1} message(s)", remoteCallsign, drained);
-
-            // Route gossip: piggyback when the staleness gate allows.
-            // Poll sessions are infrequent (scheduled or operator-
-            // triggered); a small `routes` exchange on top is fine.
-            if (routeGossip is not null)
-            {
-                try
-                {
-                    if (await routeGossip.ShouldPullAsync(remoteCallsign, ct))
-                    {
-                        var gossiped = await protocol.RequestRoutesAsync(ct);
-                        await routeGossip.ImportAsync(remoteCallsign, gossiped, ct);
-                        await routeGossip.RecordPulledAsync(remoteCallsign, ct);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    logger.LogInformation(
-                        "Poll ok but routes gossip failed: {0} ({1})", remoteCallsign, ex.Message);
-                }
-            }
-
-            return new PollResult(remoteCallsign, true, drained, "", at);
+            logger.LogInformation("Poll ok: {0} sent us {1} message(s)", remoteCallsign, session.Delivered);
+            return new PollResult(remoteCallsign, true, session.Delivered, "", at);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             // Caller-driven cancellation - re-throw so the scheduler
             // can exit cleanly on shutdown.
             throw;
-        }
-        catch (TimeoutException ex)
-        {
-            logger.LogInformation("Poll timeout: {0} ({1})", remoteCallsign, ex.Message);
-            return new PollResult(remoteCallsign, false, 0, $"timeout: {ex.Message}", at);
         }
         catch (Exception ex)
         {

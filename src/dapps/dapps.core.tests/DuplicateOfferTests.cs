@@ -13,10 +13,11 @@ namespace dapps.core.tests;
 /// <summary>
 /// The received-message memory (<see cref="DbReceived"/>) on the wire and
 /// in the database: an offer for a message the node already has is
-/// answered <c>ack</c> without its payload, the offering side counts that
-/// as delivered, and the memory itself records each message once, forgets
-/// it when asked and sweeps it when it expires. The inbox's own refusal to
-/// deliver a repeat is in <see cref="DatabaseAndMqttInboxTests"/>.
+/// answered <c>ack</c> without its payload, and the memory itself records
+/// each message once, forgets it when asked and sweeps it when it
+/// expires. The offering side counting that <c>ack</c> as delivered is in
+/// <see cref="ExchangeSessionTests"/>; the inbox's own refusal to deliver a
+/// repeat is in <see cref="DatabaseAndMqttInboxTests"/>.
 /// </summary>
 [Collection(SqliteOverridePathCollection.Name)]
 public sealed class DuplicateOfferTests : IAsyncLifetime
@@ -63,6 +64,7 @@ public sealed class DuplicateOfferTests : IAsyncLifetime
         _ = Task.Run(() => new InboundConnectionHandler(theirs, Them, NullLoggerFactory.Instance, database, inbox).Handle(ct), ct);
         var peer = new LinePeer(ours);
         (await peer.ReadLineAsync(ct)).Should().Be("DAPPSv1>");
+        (await peer.ReadLineAsync(ct)).Should().StartWith("exchange ");
 
         var had = Encoding.UTF8.GetBytes("delivered before the sender restarted");
         var hadId = DappsMessage.ComputeHash(had, 7L)[..7];
@@ -94,6 +96,7 @@ public sealed class DuplicateOfferTests : IAsyncLifetime
         _ = Task.Run(() => new InboundConnectionHandler(theirs, Them, NullLoggerFactory.Instance, database, inbox).Handle(ct), ct);
         var peer = new LinePeer(ours);
         (await peer.ReadLineAsync(ct)).Should().Be("DAPPSv1>");
+        (await peer.ReadLineAsync(ct)).Should().StartWith("exchange ");
 
         var payload = Encoding.UTF8.GetBytes("hello");
         var id = DappsMessage.ComputeHash(payload, 9L)[..7];
@@ -102,32 +105,6 @@ public sealed class DuplicateOfferTests : IAsyncLifetime
 
         await peer.WriteLineAsync($"ihave {id} len={payload.Length} fmt=p s=9 dst=app@{Us}", ct);
         (await peer.ReadLineAsync(ct)).Should().Be($"send {id}");
-    }
-
-    [Fact]
-    public async Task ThePushingSide_CountsAnAckedOffer_AsDelivered_WithoutSendingThePayload()
-    {
-        var ct = TestContext.Current.CancellationToken;
-        var (ours, theirs) = await LoopbackPairAsync(ct);
-        var peer = new LinePeer(theirs);
-        var payload = Encoding.UTF8.GetBytes("the peer already has this one");
-        var message = new BackhaulMessage(DappsMessage.ComputeHash(payload, 5L)[..7], $"app@{Them}", 5L, 600, payload);
-
-        var farEnd = Task.Run(async () =>
-        {
-            await peer.WriteLineAsync("DAPPSv1>", ct);
-            var offer = await peer.ReadLineAsync(ct);
-            await peer.WriteLineAsync($"ack {message.Id}", ct);
-            return offer;
-        }, ct);
-
-        var client = new DappsProtocolClient(ours, NullLoggerFactory.Instance);
-        (await client.ReadInitialPromptAsync(ct)).Should().BeTrue();
-        var outcome = await client.PushAsync(message, compress: true, ct);
-
-        outcome.Should().Be(DappsProtocolClient.PushOutcome.Accepted);
-        (await farEnd).Should().StartWith($"ihave {message.Id} ");
-        (await peer.NothingMoreArrivesWithinAsync(TimeSpan.FromMilliseconds(300), ct)).Should().BeTrue("the payload wasn't sent");
     }
 
     [Fact]
@@ -195,11 +172,6 @@ public sealed class DuplicateOfferTests : IAsyncLifetime
             }
         }
 
-        public async Task<bool> NothingMoreArrivesWithinAsync(TimeSpan wait, CancellationToken ct)
-        {
-            await Task.Delay(wait, ct);
-            return !stream.DataAvailable;
-        }
     }
 
     private sealed class RecordingInbox : IBackhaulInbox

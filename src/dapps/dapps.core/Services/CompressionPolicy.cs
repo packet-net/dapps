@@ -9,7 +9,8 @@ namespace dapps.core.Services;
 /// (<see cref="DbNeighbour.CompressionEnabled"/>), otherwise the
 /// system-wide <see cref="SystemOptions.CompressionEnabled"/>. Only
 /// governs what this node sends; compressed payloads from anyone are
-/// always accepted. "Compressed" still means only when it saves bytes,
+/// always accepted (our <c>exchange</c> line lists every dictionary we
+/// hold). "Compressed" still means only when it saves bytes,
 /// see <see cref="dapps.client.Compression.PayloadCompression"/>.
 /// </summary>
 public sealed class CompressionPolicy(Database database, IOptionsMonitor<SystemOptions> options)

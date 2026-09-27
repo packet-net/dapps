@@ -17,6 +17,7 @@ namespace dapps.core.tests;
 /// forwarder and session backhaul against the real
 /// <see cref="InboundConnectionHandler"/> over a loopback socket, with a
 /// tap on our end of the link to see what actually went on the wire.
+/// Each end lists the dictionaries it holds in its <c>exchange</c> line.
 /// </summary>
 [Collection(SqliteOverridePathCollection.Name)]
 public sealed class CompressedSessionTests : IAsyncLifetime
@@ -90,16 +91,21 @@ public sealed class CompressedSessionTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task MailInTheRevDrain_ComesBackCompressed_AndArrivesIntact()
+    public async Task MailFromTheFarEnd_ComesBackCompressed_AndArrivesIntact()
     {
         var ct = TestContext.Current.CancellationToken;
         var farInbox = new RecordingInbox();
         var ourInbox = new RecordingInbox();
-        var transport = new TappedLoopbackTransport(database, farInbox, farEndCompresses: true);
+        var farDirectory = new InboundSessionDirectory();
+        var transport = new TappedLoopbackTransport(database, farInbox, farEndCompresses: true, farDirectory);
         Queue("hello", $"app@{Them}", DateTime.UtcNow.AddSeconds(-10));
-        Queue(WpsPost, $"app@{Us}", DateTime.UtcNow.AddSeconds(-5));
+        var payload = Encoding.UTF8.GetBytes(WpsPost);
+        var post = new BackhaulMessage(dapps.client.DappsMessage.ComputeHash(payload, 3L)[..7], $"app@{Us}", 3L, 600, payload);
 
         await MakeForwarder(transport, compress: false, ourInbox).DoRun(ct).WaitAsync(Patience, ct);
+        // The far end's forwarder would hand it to our session like this.
+        farDirectory.TryHand(Us, new ExchangeTestBatch(post)).Should().BeTrue("our session is established there");
+        await ourInbox.WaitForAsync(1, ct);
 
         ourInbox.Texts.Should().Equal(WpsPost);
         transport.Received.Should().Contain(" fmt=z1 clen=");
@@ -114,6 +120,7 @@ public sealed class CompressedSessionTests : IAsyncLifetime
         _ = Task.Run(() => new InboundConnectionHandler(theirs, Them, NullLoggerFactory.Instance, database, inbox).Handle(ct), ct);
         var peer = new LinePeer(ours);
         (await peer.ReadLineAsync(ct)).Should().Be("DAPPSv1>");
+        (await peer.ReadLineAsync(ct)).Should().StartWith("exchange ").And.Contain(" z=1");
 
         var first = Encoding.UTF8.GetBytes(WpsPost);
         var firstId = dapps.client.DappsMessage.ComputeHash(first, 1L)[..7];
@@ -152,7 +159,9 @@ public sealed class CompressedSessionTests : IAsyncLifetime
         var a = new LinePeer(oursA);
         var b = new LinePeer(oursB);
         (await a.ReadLineAsync(ct)).Should().Be("DAPPSv1>");
+        (await a.ReadLineAsync(ct)).Should().StartWith("exchange ");
         (await b.ReadLineAsync(ct)).Should().Be("DAPPSv1>");
+        (await b.ReadLineAsync(ct)).Should().StartWith("exchange ");
 
         await a.WriteLineAsync($"ihave {id} len={payload.Length} fmt=p s=1 dst=app@{Us}", ct);
         (await a.ReadLineAsync(ct)).Should().Be($"send {id}");
@@ -220,9 +229,8 @@ public sealed class CompressedSessionTests : IAsyncLifetime
     {
         var backhaul = new Dappsv1SessionBackhaul(
             transport, NullLoggerFactory.Instance,
-            opportunisticInbox: ourInbox,
-            opportunisticEnabled: () => ourInbox is not null,
-            compressTo: (_, _) => Task.FromResult(compress));
+            inbox: ourInbox,
+            settingsFor: (_, _) => Task.FromResult(new ExchangeSettings(Compress: compress)));
         return new OutboundMessageManager(
             database, NullLoggerFactory.Instance, options, [backhaul],
             new StaticRoutingAlgorithm(NullLogger<StaticRoutingAlgorithm>.Instance),
@@ -250,7 +258,8 @@ public sealed class CompressedSessionTests : IAsyncLifetime
     /// A fresh loopback socket per connect with the real receiver on the
     /// far end, and a record of every byte our end wrote and read.
     /// </summary>
-    private sealed class TappedLoopbackTransport(Database database, IBackhaulInbox farInbox, bool farEndCompresses) : IDappsOutboundTransport
+    private sealed class TappedLoopbackTransport(Database database, IBackhaulInbox farInbox, bool farEndCompresses,
+        InboundSessionDirectory? farDirectory = null) : IDappsOutboundTransport
     {
         private readonly MemoryStream written = new();
         private readonly MemoryStream read = new();
@@ -270,7 +279,8 @@ public sealed class CompressedSessionTests : IAsyncLifetime
                 await connecting;
                 var handler = new InboundConnectionHandler(
                     server.GetStream(), localCallsign, NullLoggerFactory.Instance, database, farInbox,
-                    compressTo: (_, _) => Task.FromResult(farEndCompresses));
+                    settingsFor: (_, _) => Task.FromResult(new ExchangeSettings(Compress: farEndCompresses)),
+                    directory: farDirectory);
                 _ = Task.Run(() => handler.Handle(stoppingToken), stoppingToken);
                 return new Connection(client, new TapStream(client.GetStream(), written, read));
             }
@@ -325,20 +335,19 @@ public sealed class CompressedSessionTests : IAsyncLifetime
         }
     }
 
-    private sealed class RecordingInbox : IBackhaulInbox
+    /// <summary>One message, for handing to a session by hand.</summary>
+    private sealed class ExchangeTestBatch(BackhaulMessage message) : IBackhaulBatch
     {
-        private readonly List<string> texts = [];
+        private bool handedOut;
 
-        public IReadOnlyList<string> Texts
+        public ValueTask<BackhaulMessage?> NextAsync(CancellationToken ct)
         {
-            get { lock (texts) return [.. texts]; }
+            if (handedOut) return ValueTask.FromResult<BackhaulMessage?>(null);
+            handedOut = true;
+            return ValueTask.FromResult<BackhaulMessage?>(message);
         }
 
-        public Task DeliverAsync(BackhaulMessage message, string sourceCallsign, CancellationToken ct)
-        {
-            lock (texts) texts.Add(Encoding.UTF8.GetString(message.Payload));
-            return Task.CompletedTask;
-        }
+        public ValueTask CompleteAsync(BackhaulMessage m, BackhaulSendResult result, TimeSpan elapsed, CancellationToken ct) => ValueTask.CompletedTask;
     }
 
     private sealed class TestOptionsMonitor<T>(T value) : IOptionsMonitor<T>

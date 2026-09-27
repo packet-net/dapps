@@ -104,6 +104,6 @@ For most operators, the simplest workable setup is:
 1. Add **one or two manual neighbours** for the peers you actually want to talk to. This works without any discovery system at all.
 2. **Add a discovery channel** for the bearer port your DAPPS beacon should go on, with a sensible cadence (e.g. every 10 minutes for VHF FM, longer for HF). Set a per-channel airtime budget.
 3. Once you've heard from a few peers via beacons and have an idea of the on-air ecosystem, **enable probing** with the `Overnight` strategy so the connectivity matrix is verified during quiet hours.
-4. Decide whether you want **scheduled polling** on (you probably don't if your peers are well-behaved; opportunistic polling already covers the common case).
+4. Decide whether you want **scheduled polling** on (you probably don't if your peers are well-behaved; every session carries traffic both ways, which covers the common case).
 
 The dashboard's discovery panels show the live state of all of this - heard peers, probed nodes, learned routes - so you can confirm what's working without guessing.

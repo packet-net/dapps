@@ -25,6 +25,9 @@ public sealed class DatabaseAndMqttInbox(
     TimeProvider timeProvider,
     ILogger<DatabaseAndMqttInbox> logger) : IBackhaulInbox
 {
+    public Task<bool> HasAsync(string id, long? salt, int length, CancellationToken ct) =>
+        database.HasReceivedAsync(DbReceived.MakeKey(id, salt, length), timeProvider.GetUtcNow().UtcDateTime);
+
     public async Task DeliverAsync(
         BackhaulMessage message,
         string sourceCallsign,

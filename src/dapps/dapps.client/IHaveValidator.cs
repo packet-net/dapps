@@ -1,15 +1,15 @@
 using System.Globalization;
 using System.Text;
-using dapps.client;
 using dapps.client.Compression;
 
-namespace dapps.core.Services;
+namespace dapps.client;
 
 /// <summary>
-/// Pure parsed-and-validated representation of an `ihave` line. Constructed
-/// only by <see cref="IHaveValidator.Validate"/>; the receiver promises
-/// every constraint the spec mandates is already checked here, so callers
-/// can act on the fields without re-validating.
+/// Pure parsed-and-validated representation of an `ihave` or `msg` line
+/// (the two carry the same header fields). Constructed only by
+/// <see cref="IHaveValidator.Validate"/>; the receiver promises every
+/// constraint the spec mandates is already checked here, so callers can
+/// act on the fields without re-validating.
 /// </summary>
 public sealed record IHaveOffer(
     string Id,
@@ -29,8 +29,9 @@ public sealed record IHaveOffer(
 
 /// <summary>F2 multi-part fragment metadata. Index is 1-based; total is
 /// the number of fragments in the original payload. Both must satisfy
-/// <c>0 &lt; Index ≤ Total</c>; Total must be ≥ 2 (a single-fragment
-/// "M=1" message is just a regular message, no fragmentation needed).</summary>
+/// <c>0 &lt; Index &lt;= Total</c>; Total must be at least 2 (a
+/// single-fragment "M=1" message is just a regular message, no
+/// fragmentation needed).</summary>
 public sealed record FragmentInfo(int Index, int Total);
 
 public sealed record OfferValidationResult
@@ -49,9 +50,11 @@ public sealed record OfferValidationResult
 }
 
 /// <summary>
-/// Pure parser/validator for the `ihave` command line. Decoupled from I/O,
-/// the database, and any framework concerns so the rejection paths can be
-/// exercised by unit tests without standing up a TCP listener.
+/// Pure parser/validator for the header line of a message: `ihave` (an
+/// offer) or `msg` (the message with its payload straight after). Both
+/// ends of a DAPPSv1 session use it. Decoupled from I/O, the database,
+/// and any framework concerns so the rejection paths can be exercised by
+/// unit tests without standing up a TCP listener.
 /// </summary>
 public static class IHaveValidator
 {
@@ -64,9 +67,9 @@ public static class IHaveValidator
     public static OfferValidationResult Validate(string ihaveCommand)
     {
         var parts = ihaveCommand.Split(' ');
-        if (parts.Length < 2 || parts[0] != "ihave")
+        if (parts.Length < 2 || parts[0] is not ("ihave" or "msg"))
         {
-            return OfferValidationResult.Fail(null, "not an ihave command");
+            return OfferValidationResult.Fail(null, "not an ihave or msg line");
         }
 
         var id = parts[1];
@@ -159,7 +162,7 @@ public static class IHaveValidator
         // both absent; mid= alone means "fragmented but how-many-of-
         // how-many is missing" (rejected); frag= alone means "fragment
         // metadata without an id to group on" (also rejected). Total
-        // must be ≥ 2; a single-fragment message is just a normal
+        // must be at least 2; a single-fragment message is just a normal
         // message, no fragmentation needed.
         string? masterId = null;
         FragmentInfo? fragment = null;
@@ -175,7 +178,7 @@ public static class IHaveValidator
             masterId = midVal!;
 
             // frag wire form is "N/M"; both N and M positive integers,
-            // N ≤ M, M ≥ 2.
+            // N <= M, M >= 2.
             var slash = fragVal!.IndexOf('/');
             if (slash <= 0 || slash == fragVal.Length - 1)
             {
@@ -189,12 +192,12 @@ public static class IHaveValidator
             if (fragM < 2)
             {
                 return OfferValidationResult.Fail(id,
-                    "frag= total must be ≥ 2; single-part messages must omit mid/frag entirely");
+                    "frag= total must be at least 2; single-part messages must omit mid/frag entirely");
             }
             if (fragN < 1 || fragN > fragM)
             {
                 return OfferValidationResult.Fail(id,
-                    $"frag= index must satisfy 1 ≤ N ≤ M; got {fragN}/{fragM}");
+                    $"frag= index must satisfy 1 <= N <= M; got {fragN}/{fragM}");
             }
             fragment = new FragmentInfo(fragN, fragM);
         }
@@ -233,6 +236,36 @@ public static class IHaveValidator
         return OfferValidationResult.Success(new IHaveOffer(
             id, len, fmt, salt, clen, dst, ttl, headers, originator, masterId, fragment,
             streamId, streamSeq, streamGapTimeout));
+    }
+
+    /// <summary>
+    /// How many payload bytes follow a <c>msg</c> line on the wire: its
+    /// <c>clen=</c> when compressed, else its <c>len=</c>. Only these
+    /// fields are looked at, so a line refused for anything else can
+    /// still have its payload read past. False when they can't be made
+    /// out, and the reader can no longer tell where the next line starts.
+    /// </summary>
+    public static bool TryGetWireLength(string line, out string? id, out int wireLength)
+    {
+        id = null;
+        wireLength = 0;
+        var parts = line.Split(' ');
+        if (parts.Length < 2) return false;
+        id = parts[1];
+        string? len = null, fmt = null, clen = null;
+        for (var i = 2; i < parts.Length; i++)
+        {
+            var eq = parts[i].IndexOf('=');
+            if (eq <= 0) continue;
+            switch (parts[i][..eq])
+            {
+                case "len": len = parts[i][(eq + 1)..]; break;
+                case "fmt": fmt = parts[i][(eq + 1)..]; break;
+                case "clen": clen = parts[i][(eq + 1)..]; break;
+            }
+        }
+        var counted = fmt is null or "p" ? len : clen;
+        return int.TryParse(counted, NumberStyles.None, CultureInfo.InvariantCulture, out wireLength);
     }
 
     /// <summary>

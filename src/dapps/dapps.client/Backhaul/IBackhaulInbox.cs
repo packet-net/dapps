@@ -18,4 +18,12 @@ public interface IBackhaulInbox
         BackhaulMessage message,
         string sourceCallsign,
         CancellationToken ct);
+
+    /// <summary>
+    /// Whether this node already has the message with this id, salt and
+    /// length, so a session can answer an offer of it with <c>ack</c> and
+    /// keep its payload off the air. A repeat delivered anyway is dropped
+    /// by <see cref="DeliverAsync"/>; this only saves the airtime.
+    /// </summary>
+    Task<bool> HasAsync(string id, long? salt, int length, CancellationToken ct) => Task.FromResult(false);
 }

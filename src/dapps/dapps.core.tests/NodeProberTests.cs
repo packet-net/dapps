@@ -33,6 +33,21 @@ public sealed class NodeProberTests
     }
 
     [Fact]
+    public async Task ProbeAsync_TheExchangeLineAfterThePrompt_IsIgnored()
+    {
+        // A DAPPS node sends its rules straight after the prompt. A probe
+        // never starts an exchange, so it just reads past them.
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(
+            "DAPPSv1>\nexchange id=ab12cd hold=120 inline=256 z=1\npeer N0NEXT-9 source=n port=1\nend\n"));
+        var prober = MakeProber(transport);
+
+        var result = await prober.ProbeAsync("N0US", "N0THEM-9", bearerPort: 1, CancellationToken.None, fetchPeers: true);
+
+        result.Success.Should().BeTrue();
+        result.DiscoveredPeers.Should().ContainSingle().Which.Callsign.Should().Be("N0NEXT-9");
+    }
+
+    [Fact]
     public async Task ProbeAsync_NoPrompt_ReturnsFailureWithReason()
     {
         var transport = new FakeOutboundTransport("garbage no prompt"u8.ToArray());

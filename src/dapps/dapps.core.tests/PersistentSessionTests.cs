@@ -13,9 +13,9 @@ using Microsoft.Extensions.Options;
 namespace dapps.core.tests;
 
 /// <summary>
-/// Held sessions (#187 proposal 9), end to end with two nodes: ours
-/// (N0CALL) dials the far end (N0DEST) over a loopback socket, and the
-/// far end is the real <see cref="InboundConnectionHandler"/> plus its
+/// Sessions held open while they're useful, end to end with two nodes:
+/// ours (N0CALL) dials the far end (N0DEST) over a loopback socket, and
+/// the far end is the real <see cref="InboundConnectionHandler"/> plus its
 /// own forwarder. They share one SQLite file, as the other two-ended
 /// tests here do; each forwarder only sees messages that aren't
 /// addressed to its own callsign, so the queues don't overlap.
@@ -26,6 +26,7 @@ public sealed class PersistentSessionTests : IAsyncLifetime
     private const string Us = "N0CALL";
     private const string Them = "N0DEST";
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan MinQuiet = TimeSpan.FromMilliseconds(300);
 
     private string dbPath = null!;
     private Database ourDatabase = null!;
@@ -34,12 +35,18 @@ public sealed class PersistentSessionTests : IAsyncLifetime
     private TestOptionsMonitor<SystemOptions> farOptions = null!;
     private readonly RecordingInbox ourInbox = new();
     private readonly RecordingInbox farInbox = new();
-    private readonly InboundSessionDirectory farDirectory = new();
+    private readonly ForwarderWakeup farWakeup = new();
+    private readonly InboundSessionDirectory farDirectory;
     private readonly PeerSessionRegistry farRegistry = new();
     private readonly PeerSessionRegistry ourRegistry = new();
 
     /// <summary>Stops the held sessions and far-end handlers each test leaves running.</summary>
     private readonly CancellationTokenSource testLifetime = new();
+
+    public PersistentSessionTests()
+    {
+        farDirectory = new InboundSessionDirectory(farWakeup);
+    }
 
     public ValueTask InitializeAsync()
     {
@@ -81,7 +88,7 @@ public sealed class PersistentSessionTests : IAsyncLifetime
         Queue("first", $"app@{Them}");
         await forwarder.DoRun(ct).WaitAsync(Patience, ct);
         await WaitForAsync(() => farInbox.Texts.Count == 1);
-        backhaul.HeldPeers.Should().Contain(Them, "both ends allow a hold, so the link stays up");
+        backhaul.OpenPeers.Should().Contain(Them, "both ends allow a hold, so the link stays up");
 
         Queue("second", $"app@{Them}");
         await forwarder.DoRun(ct).WaitAsync(Patience, ct);
@@ -98,7 +105,7 @@ public sealed class PersistentSessionTests : IAsyncLifetime
         var (backhaul, transport, forwarder) = MakeOurEnd(ourTail: 60, farTail: 60);
         Queue("hello", $"app@{Them}");
         await forwarder.DoRun(ct).WaitAsync(Patience, ct);
-        await WaitForAsync(() => backhaul.HeldPeers.Count == 1);
+        await WaitForAsync(() => backhaul.OpenPeers.Count == 1);
 
         // The far end's reply, queued at the far end for us.
         Queue("reply", $"app@{Us}");
@@ -107,7 +114,7 @@ public sealed class PersistentSessionTests : IAsyncLifetime
 
         await WaitForAsync(() => ourInbox.Texts.Count == 1);
         ourInbox.Texts.Should().Equal("reply");
-        farDials.Count.Should().Be(0, "the far end handed it to our session and said pending; it didn't dial us");
+        farDials.Count.Should().Be(0, "the far end handed it to our session; it didn't dial us");
         transport.Connects.Should().Be(1);
         (await farDatabase.GetPendingOutboundMessages()).Should().BeEmpty();
     }
@@ -119,39 +126,58 @@ public sealed class PersistentSessionTests : IAsyncLifetime
         var (backhaul, transport, forwarder) = MakeOurEnd(ourTail: 1, farTail: 60);
         Queue("only", $"app@{Them}");
         await forwarder.DoRun(ct).WaitAsync(Patience, ct);
-        await WaitForAsync(() => backhaul.HeldPeers.Count == 1);
+        await WaitForAsync(() => backhaul.OpenPeers.Count == 1);
 
-        await WaitForAsync(() => backhaul.HeldPeers.Count == 0 && transport.FarSessionsOpen == 0);
+        await WaitForAsync(() => backhaul.OpenPeers.Count == 0 && transport.FarSessionsOpen == 0);
 
-        backhaul.HeldPeers.Should().BeEmpty("one quiet second, the lower of the two settings, has passed");
+        backhaul.OpenPeers.Should().BeEmpty("one quiet second, the lower of the two settings, has passed");
         transport.FarSessionsOpen.Should().Be(0, "our quit ended the far end's session too");
     }
 
-    [Fact]
-    public async Task TheFarEndCanDeclineToHold()
+    [Theory]
+    [InlineData(60, 0)]
+    [InlineData(0, 60)]
+    public async Task EitherEndCanDeclineToHold_AndTheSessionEndsSoonAfterItsTraffic(int ourTail, int farTail)
     {
         var ct = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken, testLifetime.Token).Token;
-        var (backhaul, transport, forwarder) = MakeOurEnd(ourTail: 60, farTail: 0);
+        var (backhaul, transport, forwarder) = MakeOurEnd(ourTail, farTail);
         Queue("only", $"app@{Them}");
 
         await forwarder.DoRun(ct).WaitAsync(Patience, ct);
-
         farInbox.Texts.Should().Equal("only");
-        backhaul.HeldPeers.Should().BeEmpty();
-        await WaitForAsync(() => transport.FarSessionsOpen == 0);
+        await WaitForAsync(() => backhaul.OpenPeers.Count == 0 && transport.FarSessionsOpen == 0);
+
+        backhaul.OpenPeers.Should().BeEmpty("a hold of 0 still waits a short quiet spell, then hangs up");
         transport.FarSessionsOpen.Should().Be(0);
+        transport.Connects.Should().Be(1);
     }
 
     [Fact]
-    public async Task WithoutAHoldSetting_TheSessionEndsAsItAlwaysDid()
+    public async Task MailTheFarEndHasForUsWhenWeCall_GoesOnOurSession()
     {
+        // Queued at the far end before we call: its forwarder couldn't
+        // reach us, and hands it over as soon as our session is established.
         var ct = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken, testLifetime.Token).Token;
-        var (backhaul, transport, forwarder) = MakeOurEnd(ourTail: 0, farTail: 60);
-        Queue("only", $"app@{Them}");
+        var (backhaul, transport, forwarder) = MakeOurEnd(ourTail: 60, farTail: 60);
+        Queue("waiting for you", $"app@{Us}");
+        var (farForwarder, farDials) = MakeFarForwarder();
+        // The far end's forwarder runs when woken, as the real one does:
+        // our session registering there wakes it.
+        _ = Task.Run(async () =>
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                if (!await farWakeup.WaitAsync(TimeSpan.FromMinutes(1), TimeProvider.System, ct)) continue;
+                await farForwarder.DoRun(ct);
+            }
+        }, ct);
 
+        Queue("hello", $"app@{Them}");
         await forwarder.DoRun(ct).WaitAsync(Patience, ct);
 
-        backhaul.HeldPeers.Should().BeEmpty();
+        await WaitForAsync(() => ourInbox.Texts.Count == 1);
+        ourInbox.Texts.Should().Equal("waiting for you");
+        farDials.Should().BeEmpty();
         transport.Connects.Should().Be(1);
     }
 
@@ -160,9 +186,11 @@ public sealed class PersistentSessionTests : IAsyncLifetime
         var transport = new LoopbackToFarEnd(this, farTail);
         var backhaul = new Dappsv1SessionBackhaul(
             transport, NullLoggerFactory.Instance,
-            opportunisticInbox: ourInbox,
-            opportunisticEnabled: () => true,
-            tailFor: (_, _) => Task.FromResult(ourTail));
+            inbox: ourInbox,
+            settingsFor: (_, _) => Task.FromResult(new ExchangeSettings(HoldSeconds: ourTail)))
+        {
+            MinQuiet = MinQuiet,
+        };
         var forwarder = new OutboundMessageManager(
             ourDatabase, NullLoggerFactory.Instance, ourOptions, [backhaul],
             new StaticRoutingAlgorithm(NullLogger<StaticRoutingAlgorithm>.Instance),
@@ -238,8 +266,8 @@ public sealed class PersistentSessionTests : IAsyncLifetime
                 await connecting;
                 var handler = new InboundConnectionHandler(
                     server.GetStream(), localCallsign, NullLoggerFactory.Instance, test.farDatabase, test.farInbox,
-                    directory: test.farDirectory,
-                    tailFor: (_, _) => Task.FromResult(farTail));
+                    settingsFor: (_, _) => Task.FromResult(new ExchangeSettings(HoldSeconds: farTail)),
+                    directory: test.farDirectory);
                 Interlocked.Increment(ref farSessionsOpen);
                 _ = Task.Run(async () =>
                 {
@@ -250,8 +278,8 @@ public sealed class PersistentSessionTests : IAsyncLifetime
                     }
                 }, stoppingToken);
                 // Our end's lease on the link, as the real transport takes
-                // one: the held link keeps it, so the forwarder must hand
-                // work to the link rather than wait for it to go.
+                // one: an open session keeps it, so the forwarder must hand
+                // work to the session rather than wait for it to go.
                 return new Connection(client, test.ourRegistry.Acquire(remoteCallsign, "outbound"));
             }
             finally
@@ -278,22 +306,6 @@ public sealed class PersistentSessionTests : IAsyncLifetime
         {
             lock (dials) dials.Add(remoteCallsign);
             return Task.FromException<IDappsConnection>(new InvalidOperationException("the far end should not dial here"));
-        }
-    }
-
-    private sealed class RecordingInbox : IBackhaulInbox
-    {
-        private readonly List<string> texts = [];
-
-        public IReadOnlyList<string> Texts
-        {
-            get { lock (texts) return [.. texts]; }
-        }
-
-        public Task DeliverAsync(BackhaulMessage message, string sourceCallsign, CancellationToken ct)
-        {
-            lock (texts) texts.Add(Encoding.UTF8.GetString(message.Payload));
-            return Task.CompletedTask;
         }
     }
 
