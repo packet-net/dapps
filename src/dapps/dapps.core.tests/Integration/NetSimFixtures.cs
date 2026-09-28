@@ -7,54 +7,53 @@ using DotNet.Testcontainers.Containers;
 namespace dapps.core.tests.Integration;
 
 /// <summary>
-/// Two linbpq nodes on a simulated radio channel: net-sim runs real
-/// modems (Dire Wolf for AFSK, pdn-soundmodem for its FM modes such as
-/// QPSK 3600), gives each an FM radio (a Tait TM8100 at 25 W by default)
-/// and puts a physical FM channel between them; each BPQ attaches to one
-/// simulated radio over KISS, as it would to a real TNC. Unlike the AXIP
-/// fixture, frames take real airtime, with TX delay, turnarounds and a
-/// shared channel where both ends can transmit at once. The radios are
-/// half duplex: one that is transmitting hears nothing, so when both
-/// transmit at once, neither hears the other.
+/// Two packet nodes on a simulated radio channel: net-sim runs real modems
+/// (Dire Wolf for AFSK, pdn-soundmodem for its FM modes such as QPSK 3600),
+/// gives each an FM radio (a Tait TM8100 at 25 W by default) and puts a
+/// physical FM channel between them; each node attaches to one simulated
+/// radio over KISS, as it would to a real TNC. Unlike AXIP or AXUDP, frames
+/// take real airtime, with TX delay, turnarounds and a shared channel where
+/// both ends can transmit at once. The radios are half duplex: one that is
+/// transmitting hears nothing, so when both transmit at once, neither hears
+/// the other.
 ///
-///     DAPPS A -AGW- BPQ-A -KISS- [net-sim: modem ~ channel ~ modem] -KISS- BPQ-B -AGW- DAPPS B
+///     DAPPS A -- node A -KISS- [net-sim: modem ~ channel ~ modem] -KISS- node B -- DAPPS B
 ///
-/// Networking follows <see cref="TwoInstanceLinbpqFixture"/>: both BPQs
-/// share net-sim's network namespace, so each dials its KISS port on
-/// 127.0.0.1, and net-sim publishes both AGW ports to the host.
-///
-/// BPQ's NET/ROM and ID broadcasts are off (QUALITY=0, IDINTERVAL=0), so
-/// what goes on air is DAPPS's own traffic, and the timings are DAPPS's.
+/// The nodes share net-sim's network namespace, so each dials its KISS port
+/// on 127.0.0.1, and net-sim publishes the ports the tests and daemons use.
+/// The nodes are BPQ (<see cref="NetSimTwoBpqFixture"/>).
 /// </summary>
-public abstract class NetSimTwoBpqFixture : IAsyncLifetime
+public abstract class NetSimTwoNodeFixture : IDappsScenarioBed, IAsyncLifetime
 {
     /// <summary>net-sim v0.4.0 (the physical FM channel) with
     /// pdn-soundmodem 0.80.0, pinned so a new build can't change results
     /// unnoticed. Refresh: pull ghcr.io/packet-net/net-sim at the release
     /// tag and take its digest.</summary>
     public const string NetSimImage = "ghcr.io/packet-net/net-sim@sha256:634f1cd0e4835330817f4b4e6d0a904123b09518226d37f6f7cb3ab8d45255f3";
-    private const string BpqImage = "m0lte/linbpq:latest";
 
     private const int InsideWebPort = 8080;
-    private const int InsideAgwPortA = 18101;
-    private const int InsideAgwPortB = 18102;
-    private const int KissPortA = 18201;
-    private const int KissPortB = 18202;
+    protected const int KissPortA = 18201;
+    protected const int KissPortB = 18202;
 
     public string Host => "127.0.0.1";
-    public int AgwPortA { get; private set; }
-    public int AgwPortB { get; private set; }
     public int NetSimWebPort { get; private set; }
     public string CallsignA => "N0AAA";
     public string CallsignB => "N0BBB";
     public string ApplCallA => "N0AAA-3";
     public string ApplCallB => "N0BBB-3";
 
-    /// <summary>AGW port index of the radio port (port 1 is Telnet).</summary>
-    public int RadioPortIndex => 1;
-
     /// <summary>What's on the channel, for reports: e.g. "QPSK 3600 (pdn-soundmodem)".</summary>
     public abstract string ChannelName { get; }
+
+    /// <summary>The modem, for report file names: e.g. "qpsk3600".</summary>
+    protected string Modem => ChannelName.Split(' ')[0].ToLowerInvariant() + ChannelName.Split(' ')[1];
+
+    public virtual string ReportTag => Modem;
+
+    public abstract string RadioSettings { get; }
+
+    public abstract NodeAttachment NodeA { get; }
+    public abstract NodeAttachment NodeB { get; }
 
     /// <summary>The net-sim port settings for both radios: TNC, modem and radio.</summary>
     protected abstract string PortYaml { get; }
@@ -72,6 +71,163 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
         double.TryParse(Environment.GetEnvironmentVariable("DAPPS_NETSIM_PATH_LOSS"), System.Globalization.CultureInfo.InvariantCulture, out var db)
             ? db
             : DefaultPathLossDb;
+
+    /// <summary>False for a fixture whose tests only run on request (the
+    /// soak), so skipped tests don't start containers.</summary>
+    protected virtual bool Wanted => true;
+
+    /// <summary>Ports inside the shared network namespace that net-sim
+    /// publishes to the host for the nodes (AGW, RHPv2, web).</summary>
+    protected abstract IReadOnlyList<int> NodePorts { get; }
+
+    /// <summary>Where one of <see cref="NodePorts"/> is on the host.</summary>
+    protected int MappedPort(int inside) => netSim!.GetMappedPublicPort(inside);
+
+    /// <summary>net-sim's container, whose network namespace the nodes join.</summary>
+    protected string NetSimId => netSim!.Id;
+
+    /// <summary>Start recording when each radio transmits.</summary>
+    public async Task<ChannelLog?> StartChannelLogAsync(CancellationToken ct) => await ChannelLog.StartAsync(Host, NetSimWebPort, ct);
+
+    public abstract Task<IAirMonitor> StartAirMonitorAsync(CancellationToken ct);
+
+    private IContainer? netSim;
+
+    public async ValueTask InitializeAsync()
+    {
+        if (!Wanted) return;
+
+        var builder = new ContainerBuilder()
+            .WithImage(NetSimImage)
+            .WithResourceMapping(Encoding.UTF8.GetBytes(NetworkYaml()), "/etc/sim/network.yaml")
+            .WithPortBinding(InsideWebPort, assignRandomHostPort: true)
+            .WithCreateParameterModifier(p => p.HostConfig.CapAdd = ["SYS_NICE"])
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(r => r
+                .ForPort(InsideWebPort)
+                .ForPath("/api/status")
+                .ForResponseMessageMatching(async m => (await m.Content.ReadAsStringAsync()).Contains("\"running\":true")),
+                o => o.WithTimeout(TimeSpan.FromMinutes(2))));
+        foreach (var port in NodePorts) builder = builder.WithPortBinding(port, assignRandomHostPort: true);
+        netSim = builder.Build();
+        await netSim.StartAsync();
+        NetSimWebPort = netSim.GetMappedPublicPort(InsideWebPort);
+
+        await StartNodesAsync();
+        await WaitUntilReadyAsync();
+    }
+
+    /// <summary>Start both nodes in net-sim's network namespace.</summary>
+    protected abstract Task StartNodesAsync();
+
+    /// <summary>Stop both nodes.</summary>
+    protected abstract Task StopNodesAsync();
+
+    /// <summary>
+    /// Restart both nodes, as after a reboot, and don't wait for them to be
+    /// heard. Call <see cref="WaitUntilReadyAsync"/> afterwards, so later
+    /// tests start warm.
+    /// </summary>
+    public virtual async Task RestartNodesColdAsync()
+    {
+        await StopNodesAsync();
+        await StartNodesAsync();
+    }
+
+    /// <summary>Wait until each node has been heard by the other.</summary>
+    public abstract Task WaitUntilReadyAsync();
+
+    /// <summary>
+    /// Take the channel down for <paramref name="outage"/>, then bring it
+    /// back: net-sim stops its router and modems, as if both radios were
+    /// switched off, so each node loses its KISS link and has to reconnect.
+    /// <paramref name="log"/>, if given, is told the channel went quiet.
+    /// </summary>
+    internal async Task ChannelOutageAsync(TimeSpan outage, CancellationToken ct, ChannelLog? log = null)
+    {
+        using var http = new HttpClient { BaseAddress = new Uri($"http://{Host}:{NetSimWebPort}/") };
+        (await http.PostAsync("api/stop", null, ct)).EnsureSuccessStatusCode();
+        log?.ChannelStopped(DateTime.UtcNow);
+        await Task.Delay(outage, ct);
+        (await http.PostAsync("api/start", null, ct)).EnsureSuccessStatusCode();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (netSim is null) return;
+        await StopNodesAsync();
+        await netSim.DisposeAsync();
+    }
+
+    private string NetworkYaml() => $"""
+        time_scale: 1
+        nodes:
+          - id: a
+            ports:
+              - id: radio
+        {Indent(PortYaml, 8)}
+                kiss_port: {KissPortA}
+          - id: b
+            ports:
+              - id: radio
+        {Indent(PortYaml, 8)}
+                kiss_port: {KissPortB}
+        links:
+          - from: a.radio
+            to: b.radio
+            path_loss_db: {PathLossDb.ToString(System.Globalization.CultureInfo.InvariantCulture)}
+          - from: b.radio
+            to: a.radio
+            path_loss_db: {PathLossDb.ToString(System.Globalization.CultureInfo.InvariantCulture)}
+
+        """;
+
+    private static string Indent(string yaml, int spaces) =>
+        string.Join('\n', yaml.Split('\n').Select(l => new string(' ', spaces) + l));
+
+    /// <summary>AFSK 1200 on Dire Wolf with the squelch open.</summary>
+    internal const string AfskPort = "tnc: direwolf\nmodem: { mode: afsk1200 }";
+
+    /// <summary>
+    /// QPSK 3600 on pdn-soundmodem. A 5 kHz deviation mode, so a wide
+    /// (25 kHz) channel, as pdn's mode table says. Squelch closed: on an
+    /// open-squelch receiver pdn's qpsk receiver loses frames (net-sim's
+    /// docs/fm-channel.md).
+    /// </summary>
+    internal const string QpskPort = "tnc: pdn\nmodem: { mode: qpsk3600 }\nradio: { channel: wide, squelch: hard }";
+}
+
+/// <summary>
+/// Two linbpq nodes on the simulated radio channel, each with its DAPPS
+/// daemon on AGW:
+///
+///     DAPPS A -AGW- BPQ-A -KISS- [net-sim: modem ~ channel ~ modem] -KISS- BPQ-B -AGW- DAPPS B
+///
+/// Networking follows <see cref="TwoInstanceLinbpqFixture"/>: both BPQs
+/// share net-sim's network namespace, so each dials its KISS port on
+/// 127.0.0.1, and net-sim publishes both AGW ports to the host.
+///
+/// BPQ's NET/ROM and ID broadcasts are off (QUALITY=0, IDINTERVAL=0), so
+/// what goes on air is DAPPS's own traffic, and the timings are DAPPS's.
+/// </summary>
+public abstract class NetSimTwoBpqFixture : NetSimTwoNodeFixture
+{
+    private const string BpqImage = "m0lte/linbpq:latest";
+
+    private const int InsideAgwPortA = 18101;
+    private const int InsideAgwPortB = 18102;
+
+    public int AgwPortA => MappedPort(InsideAgwPortA);
+    public int AgwPortB => MappedPort(InsideAgwPortB);
+
+    /// <summary>AGW port index of the radio port (port 1 is Telnet).</summary>
+    public int RadioPortIndex => 1;
+
+    public override NodeAttachment NodeA => NodeAttachment.Agw(Host, AgwPortA, RadioPortIndex);
+    public override NodeAttachment NodeB => NodeAttachment.Agw(Host, AgwPortB, RadioPortIndex);
+
+    protected override IReadOnlyList<int> NodePorts => [InsideAgwPortA, InsideAgwPortB];
+
+    public override async Task<IAirMonitor> StartAirMonitorAsync(CancellationToken ct) => await AirMonitor.StartAsync(Host, AgwPortA, AgwPortB, ct);
 
     /// <summary>BPQ's KISS port tuning for this channel.</summary>
     protected abstract BpqRadio DefaultRadio { get; }
@@ -108,10 +264,6 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
         }
     }
 
-    /// <summary>False for a fixture whose tests only run on request (the
-    /// soak), so skipped tests don't start containers.</summary>
-    protected virtual bool Wanted => true;
-
     /// <param name="AckMode">KISSOPTIONS=ACKMODE: the TNC tells BPQ when
     /// each frame has actually gone, and BPQ's FRACK (T1) runs from then
     /// instead of from when it handed the frame to the TNC.</param>
@@ -124,58 +276,22 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
     }
 
     /// <summary>The BPQ radio-port settings in use, for reports.</summary>
-    public string RadioSettings => Radio.ToString();
+    public override string RadioSettings => "BPQ " + Radio;
 
-    /// <summary>Start recording when each radio transmits.</summary>
-    internal Task<ChannelLog> StartChannelLogAsync(CancellationToken ct) => ChannelLog.StartAsync(Host, NetSimWebPort, ct);
-
-    private IContainer? netSim;
     private IContainer? bpqA;
     private IContainer? bpqB;
 
-    public async ValueTask InitializeAsync()
-    {
-        if (!Wanted) return;
-
-        netSim = new ContainerBuilder()
-            .WithImage(NetSimImage)
-            .WithResourceMapping(Encoding.UTF8.GetBytes(NetworkYaml()), "/etc/sim/network.yaml")
-            .WithPortBinding(InsideWebPort, assignRandomHostPort: true)
-            .WithPortBinding(InsideAgwPortA, assignRandomHostPort: true)
-            .WithPortBinding(InsideAgwPortB, assignRandomHostPort: true)
-            .WithCreateParameterModifier(p => p.HostConfig.CapAdd = ["SYS_NICE"])
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(r => r
-                .ForPort(InsideWebPort)
-                .ForPath("/api/status")
-                .ForResponseMessageMatching(async m => (await m.Content.ReadAsStringAsync()).Contains("\"running\":true")),
-                o => o.WithTimeout(TimeSpan.FromMinutes(2))))
-            .Build();
-        await netSim.StartAsync();
-        NetSimWebPort = netSim.GetMappedPublicPort(InsideWebPort);
-        AgwPortA = netSim.GetMappedPublicPort(InsideAgwPortA);
-        AgwPortB = netSim.GetMappedPublicPort(InsideAgwPortB);
-
-        await StartBpqsAsync();
-        await WaitUntilReadyAsync();
-    }
-
-    private async Task StartBpqsAsync()
+    protected override async Task StartNodesAsync()
     {
         bpqA = await StartBpqAsync(CallsignA, "AAA", ApplCallA, "APPLA", InsideAgwPortA, KissPortA, 18111);
         bpqB = await StartBpqAsync(CallsignB, "BBB", ApplCallB, "APPLB", InsideAgwPortB, KissPortB, 18112);
     }
 
-    /// <summary>
-    /// Restart both BPQs, as after a reboot, and don't wait for them: each
-    /// holds its first connects (about 8 s) until its KISS link to the
-    /// simulator is up. Call <see cref="WaitUntilReadyAsync"/> afterwards,
-    /// so later tests start warm.
-    /// </summary>
-    internal async Task RestartBpqsColdAsync()
+    protected override async Task StopNodesAsync()
     {
         if (bpqB is not null) await bpqB.DisposeAsync();
         if (bpqA is not null) await bpqA.DisposeAsync();
-        await StartBpqsAsync();
+        bpqA = bpqB = null;
     }
 
     /// <summary>
@@ -185,7 +301,7 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
     /// crossed-call experiments), and a test's first call goes out late
     /// enough to cross the other side's.
     /// </summary>
-    internal async Task WaitUntilReadyAsync()
+    public override async Task WaitUntilReadyAsync()
     {
         await WaitUntilHeardAsync(AgwPortA, ApplCallA, AgwPortB);
         await WaitUntilHeardAsync(AgwPortB, ApplCallB, AgwPortA);
@@ -255,60 +371,12 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
         var bpq = new ContainerBuilder()
             .WithImage(BpqImage)
             .WithResourceMapping(Encoding.UTF8.GetBytes(BpqConfig(nodeCall, nodeAlias, applCall, applAlias, agwPort, kissPort, telnetPort)), "/data/bpq32.cfg")
-            .WithCreateParameterModifier(p => p.HostConfig.NetworkMode = $"container:{netSim!.Id}")
+            .WithCreateParameterModifier(p => p.HostConfig.NetworkMode = $"container:{NetSimId}")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(agwPort))
             .Build();
         await bpq.StartAsync();
         return bpq;
     }
-
-    /// <summary>
-    /// Take the channel down for <paramref name="outage"/>, then bring it
-    /// back: net-sim stops its router and modems, as if both radios were
-    /// switched off, so each BPQ loses its KISS link and has to reconnect.
-    /// <paramref name="log"/>, if given, is told the channel went quiet.
-    /// </summary>
-    internal async Task ChannelOutageAsync(TimeSpan outage, CancellationToken ct, ChannelLog? log = null)
-    {
-        using var http = new HttpClient { BaseAddress = new Uri($"http://{Host}:{NetSimWebPort}/") };
-        (await http.PostAsync("api/stop", null, ct)).EnsureSuccessStatusCode();
-        log?.ChannelStopped(DateTime.UtcNow);
-        await Task.Delay(outage, ct);
-        (await http.PostAsync("api/start", null, ct)).EnsureSuccessStatusCode();
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (bpqB is not null) await bpqB.DisposeAsync();
-        if (bpqA is not null) await bpqA.DisposeAsync();
-        if (netSim is not null) await netSim.DisposeAsync();
-    }
-
-    private string NetworkYaml() => $"""
-        time_scale: 1
-        nodes:
-          - id: a
-            ports:
-              - id: radio
-        {Indent(PortYaml, 8)}
-                kiss_port: {KissPortA}
-          - id: b
-            ports:
-              - id: radio
-        {Indent(PortYaml, 8)}
-                kiss_port: {KissPortB}
-        links:
-          - from: a.radio
-            to: b.radio
-            path_loss_db: {PathLossDb.ToString(System.Globalization.CultureInfo.InvariantCulture)}
-          - from: b.radio
-            to: a.radio
-            path_loss_db: {PathLossDb.ToString(System.Globalization.CultureInfo.InvariantCulture)}
-
-        """;
-
-    private static string Indent(string yaml, int spaces) =>
-        string.Join('\n', yaml.Split('\n').Select(l => new string(' ', spaces) + l));
 
     private string BpqConfig(string nodeCall, string nodeAlias, string applCall, string applAlias, int agwPort, int kissPort, int telnetPort) => $"""
         SIMPLE=1
@@ -393,9 +461,6 @@ public sealed class NetSimAfsk1200Fixture : NetSimTwoBpqFixture
     // Two full I-frames in one transmission lose the second every time;
     // Dire Wolf's transmit audio goes through a pipe and all four arrive.
     protected override string PortYaml => AfskPort;
-
-    /// <summary>AFSK 1200 on Dire Wolf with the squelch open.</summary>
-    internal const string AfskPort = "tnc: direwolf\nmodem: { mode: afsk1200 }";
     protected override BpqRadio DefaultRadio => new(Speed: 1200, TxDelayMs: 150, Paclen: 120, Maxframe: 4, FrackMs: 7000, RespTimeMs: 1000, Retries: 10, Persist: 64, SlotTimeMs: 100);
 }
 
@@ -403,10 +468,7 @@ public sealed class NetSimAfsk1200Fixture : NetSimTwoBpqFixture
 public sealed class NetSimQpsk3600Fixture : NetSimTwoBpqFixture
 {
     public override string ChannelName => "QPSK 3600 (pdn-soundmodem)";
-    // A 5 kHz deviation mode, so a wide (25 kHz) channel, as pdn's mode
-    // table says. Squelch closed: on an open-squelch receiver pdn's qpsk
-    // receiver loses frames (net-sim's docs/fm-channel.md).
-    protected override string PortYaml => "tnc: pdn\nmodem: { mode: qpsk3600 }\nradio: { channel: wide, squelch: hard }";
+    protected override string PortYaml => QpskPort;
     // FRACK longer than a burst plus the answer: seven 236-byte frames
     // take about 2 s at 7200 bps. With FRACK 2000 (and RESPTIME 500) the
     // WPS scenario took 28 s and BPQ sent whole bursts twice; with 4000,
@@ -436,7 +498,7 @@ public sealed class NetSimNoisyAfsk1200Fixture : NetSimTwoBpqFixture
     // stopped transmitting needs more preamble. A full frame sent straight
     // back after hearing the other end was lost 32% of the time with
     // 150 ms and 23% with 300 ms (156.75 dB, 40 each).
-    protected override string PortYaml => NetSimAfsk1200Fixture.AfskPort;
+    protected override string PortYaml => AfskPort;
     protected override double DefaultPathLossDb => 156.5;
     protected override BpqRadio DefaultRadio => new(Speed: 1200, TxDelayMs: 300, Paclen: 120, Maxframe: 4, FrackMs: 7000, RespTimeMs: 1000, Retries: 10, Persist: 64, SlotTimeMs: 100);
     protected override bool Wanted => SoakSettings.Requested;

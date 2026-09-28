@@ -30,7 +30,7 @@ namespace dapps.core.tests.Integration;
 /// <c>WithNetworkMode("container:&lt;A's id&gt;")</c> so its loopback is
 /// A's, and its AGW port is published via A's port mappings.
 /// </summary>
-public sealed class TwoInstanceLinbpqFixture : IAsyncLifetime
+public sealed class TwoInstanceLinbpqFixture : IDappsNodePair, IAsyncLifetime
 {
     private const string Image = "m0lte/linbpq:latest";
 
@@ -53,6 +53,12 @@ public sealed class TwoInstanceLinbpqFixture : IAsyncLifetime
     /// Use this when the SUT issues a connect that needs to reach the
     /// peer instance.</summary>
     public int AxipPortIndex => 1;
+
+    public NodeAttachment NodeA => NodeAttachment.Agw(Host, AgwPortA, AxipPortIndex);
+    public NodeAttachment NodeB => NodeAttachment.Agw(Host, AgwPortB, AxipPortIndex);
+    public string ChannelName => "BPQ, AXIP";
+
+    public async Task<IAirMonitor> StartAirMonitorAsync(CancellationToken ct) => await AirMonitor.StartAsync(Host, AgwPortA, AgwPortB, ct);
 
     private IContainer? _containerA;
     private IContainer? _containerB;

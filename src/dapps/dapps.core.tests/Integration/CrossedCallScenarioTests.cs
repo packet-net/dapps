@@ -6,9 +6,10 @@ namespace dapps.core.tests.Integration;
 
 /// <summary>
 /// Both nodes have mail for each other within a second or two, so both dial:
-/// the calls cross on the air. Two real DAPPS daemons on the simulated
-/// radio channel (<see cref="NetSimTwoBpqFixture"/>), a few rounds of it,
-/// each round starting from no link. Every message must arrive exactly
+/// the calls cross on the air. Two real DAPPS daemons on a pair of nodes
+/// (<see cref="IDappsScenarioBed"/>: BPQ or pdn on the simulated radio
+/// channel, or pdn over AXUDP), a few rounds of it, each round starting
+/// from no link. Every message must arrive exactly
 /// once, promptly, with at most two dials a round between them. Writes a
 /// report with the on-air timings to scenario-reports/ beside the test
 /// build.
@@ -18,10 +19,10 @@ namespace dapps.core.tests.Integration;
 /// experiments in docs-internal/end-to-end-tests.md). And the crossing has
 /// to be spotted: no round may fall back to waiting out the prompt.
 ///
-/// A second test does one such round straight after both BPQs restart,
-/// as after a reboot, when each holds its first connects for a while.
+/// A second test does one such round straight after both nodes restart,
+/// as after a reboot, when BPQ holds its first connects for a while.
 /// </summary>
-public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IAsyncLifetime
+public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsyncLifetime
 {
     private const string App = "crossed";
     private const int Rounds = 3;
@@ -32,9 +33,9 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
     private const string Fallback = "assuming it dialled us at the same moment";
 
     private readonly List<IAsyncDisposable> running = [];
-    private AirMonitor? air;
+    private IAirMonitor? air;
     private ChannelLog? channel;
-    private bool restartedBpqs;
+    private bool restartedNodes;
 
     /// <summary>How long a round may take, first submit to last delivery.</summary>
     protected abstract TimeSpan RoundLimit { get; }
@@ -42,12 +43,20 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
     /// <summary>Most dials a round may take between the two nodes.</summary>
     protected virtual int MaxDials => 2;
 
-    /// <summary>How long the round straight after the BPQs restart may take.</summary>
+    /// <summary>How long the round straight after the nodes restart may take.</summary>
     private TimeSpan ColdLimit => RoundLimit + TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How far apart, in ms, the two nodes submit: 0.3 to 2 s on the
+    /// simulated channel (a node takes over 10 s to answer at 1200 baud),
+    /// so the calls still cross without starting in the same millisecond;
+    /// see <see cref="RoundAsync"/>.
+    /// </summary>
+    protected virtual (int From, int To) StaggerMs => (300, 2001);
 
     public async ValueTask InitializeAsync()
     {
-        air = await AirMonitor.StartAsync(fixture.Host, fixture.AgwPortA, fixture.AgwPortB, TestContext.Current.CancellationToken);
+        air = await fixture.StartAirMonitorAsync(TestContext.Current.CancellationToken);
         channel = await fixture.StartChannelLogAsync(TestContext.Current.CancellationToken);
     }
 
@@ -57,8 +66,8 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
         if (air is not null) await air.DisposeAsync();
         if (channel is not null) await channel.DisposeAsync();
         await Task.Delay(3000);
-        // Leave the BPQs warm for the next test.
-        if (restartedBpqs) await fixture.WaitUntilReadyAsync();
+        // Leave the nodes warm for the next test.
+        if (restartedNodes) await fixture.WaitUntilReadyAsync();
     }
 
     [Fact]
@@ -67,8 +76,8 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
         var ct = TestContext.Current.CancellationToken;
         // No hold, so each round starts with no link and both have to dial.
         var settings = new Dictionary<string, string> { ["DAPPS_SESSION_TAIL_SECONDS"] = "0" };
-        var a = await StartNodeAsync("crossA", fixture.ApplCallA, fixture.AgwPortA, fixture.ApplCallB, settings, ct);
-        var b = await StartNodeAsync("crossB", fixture.ApplCallB, fixture.AgwPortB, fixture.ApplCallA, settings, ct);
+        var a = await StartNodeAsync("crossA", fixture.ApplCallA, fixture.NodeA, fixture.ApplCallB, settings, ct);
+        var b = await StartNodeAsync("crossB", fixture.ApplCallB, fixture.NodeB, fixture.ApplCallA, settings, ct);
         var results = new List<RoundResult>();
         var started = DateTime.UtcNow;
 
@@ -78,18 +87,21 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
         }
 
         var duplicates = await DuplicatesAsync(a, b, ct);
-        var report = Report(results, duplicates, channel!.Summarise(started, DateTime.UtcNow),
-            $"Both nodes submit {MessagesEach} messages to each other within 0.3 to 2 s, so both dial. {Rounds} rounds, each from no link.");
+        var report = Report(results, duplicates, channel?.Summarise(started, DateTime.UtcNow),
+            $"Both nodes submit {MessagesEach} messages to each other within {StaggerMs.From / 1000.0:0.###} to {(StaggerMs.To - 1) / 1000.0:0.###} s, so both dial. {Rounds} rounds, each from no link.");
         WriteReport(report, "crossed-");
 
         results.Should().AllSatisfy(r => r.Complete.Should().BeTrue($"round {r.Round}'s messages should all arrive within {RoundLimit.TotalSeconds:F0}s\n{report}\n{Diagnostics()}"));
         duplicates.Should().Be(0, "every message should arrive exactly once\n" + report);
         results.Should().AllSatisfy(r => r.Dials.Should().BeLessThanOrEqualTo(MaxDials, $"round {r.Round}: {MaxDials} dials at most\n{report}"));
-        // A round that needed more than one call each went through BPQ's
-        // link reset, where waiting out the prompt is the way back.
-        results.Where(r => r.Dials <= 2).Should().AllSatisfy(r => r.Fallbacks.Should().Be(0, $"round {r.Round}: no session should have had to wait out the prompt\n{report}"));
-        results.Where(r => r.Dials == 2).Should().AllSatisfy(r => r.Spotted.Should().BePositive(
-            $"round {r.Round}: both nodes dialled, so one of them should have seen the calls cross or the link already up\n{report}"));
+        if (SpotsCrossings)
+        {
+            // A round that needed more than one call each went through BPQ's
+            // link reset, where waiting out the prompt is the way back.
+            results.Where(r => r.Dials <= 2).Should().AllSatisfy(r => r.Fallbacks.Should().Be(0, $"round {r.Round}: no session should have had to wait out the prompt\n{report}"));
+            results.Where(r => r.Dials == 2).Should().AllSatisfy(r => r.Spotted.Should().BePositive(
+                $"round {r.Round}: both nodes dialled, so one of them should have seen the calls cross or the link already up\n{report}"));
+        }
     }
 
     [Fact]
@@ -98,21 +110,21 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
         // As after a reboot: each BPQ holds its first connects until its
         // KISS link is up, so both calls go out late, together.
         var ct = TestContext.Current.CancellationToken;
-        restartedBpqs = true;
-        await fixture.RestartBpqsColdAsync();
-        // The monitor's sockets went with the old BPQs.
+        restartedNodes = true;
+        await fixture.RestartNodesColdAsync();
+        // The monitor's sockets went with the old nodes.
         await air!.DisposeAsync();
-        air = await AirMonitor.StartAsync(fixture.Host, fixture.AgwPortA, fixture.AgwPortB, ct);
+        air = await fixture.StartAirMonitorAsync(ct);
         var settings = new Dictionary<string, string> { ["DAPPS_SESSION_TAIL_SECONDS"] = "0" };
-        var a = await StartNodeAsync("coldA", fixture.ApplCallA, fixture.AgwPortA, fixture.ApplCallB, settings, ct);
-        var b = await StartNodeAsync("coldB", fixture.ApplCallB, fixture.AgwPortB, fixture.ApplCallA, settings, ct);
+        var a = await StartNodeAsync("coldA", fixture.ApplCallA, fixture.NodeA, fixture.ApplCallB, settings, ct);
+        var b = await StartNodeAsync("coldB", fixture.ApplCallB, fixture.NodeB, fixture.ApplCallA, settings, ct);
         var started = DateTime.UtcNow;
 
         var result = await RoundAsync(a, b, 1, ColdLimit, ct);
 
         var duplicates = await DuplicatesAsync(a, b, ct);
-        var report = Report([result], duplicates, channel!.Summarise(started, DateTime.UtcNow),
-            $"Both BPQs restarted, then both nodes submit {MessagesEach} messages to each other within 0.3 to 2 s.");
+        var report = Report([result], duplicates, channel?.Summarise(started, DateTime.UtcNow),
+            $"Both nodes restarted, then both DAPPS daemons submit {MessagesEach} messages to each other within {StaggerMs.From / 1000.0:0.###} to {(StaggerMs.To - 1) / 1000.0:0.###} s.");
         WriteReport(report, "crossed-cold-");
         WriteLogs("crossed-cold-", a, b);
 
@@ -136,7 +148,7 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
         // together collide at every repeat until they retry out; real
         // TNCs don't draw the same numbers.
         var (first, second) = Random.Shared.Next(2) == 0 ? (a, b) : (b, a);
-        var stagger = TimeSpan.FromMilliseconds(Random.Shared.Next(300, 2001));
+        var stagger = TimeSpan.FromMilliseconds(Random.Shared.Next(StaggerMs.From, StaggerMs.To));
         var firstSubmit = SubmitAsync(first, Other(first, a, b).Callsign, $"round {round} from {Side(first, a)}", ct);
         await Task.Delay(stagger, ct);
         await Task.WhenAll(firstSubmit, SubmitAsync(second, Other(second, a, b).Callsign, $"round {round} from {Side(second, a)}", ct));
@@ -160,9 +172,18 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
 
     private sealed record RoundResult(int Round, bool Complete, TimeSpan Elapsed, int Dials, int Spotted, int Fallbacks, int Connects, int Frames);
 
-    /// <summary>Calls the daemon has asked its node to make.</summary>
+    /// <summary>Calls the daemon has asked its node to make, over AGW or RHPv2.</summary>
     private static int Dials(DappsDaemon node) =>
-        System.Text.RegularExpressions.Regex.Count(node.Log, "AGW: requesting ");
+        System.Text.RegularExpressions.Regex.Count(node.Log, "AGW: requesting |RHP: open active ");
+
+    /// <summary>
+    /// Whether a node can tell its call crossed the other's: over AGW it
+    /// sees the peer's SABM on the node's monitor. RHPv2 has no monitor
+    /// for it, so there both calls just connect (the node makes one link
+    /// of them, as BPQ does), neither end sends a prompt, and each waits
+    /// 10 s for one before sending its exchange anyway.
+    /// </summary>
+    private bool SpotsCrossings => !fixture.NodeA.IsRhp;
 
     private static int Count(DappsDaemon a, DappsDaemon b, string text) =>
         System.Text.RegularExpressions.Regex.Count(a.Log + b.Log, System.Text.RegularExpressions.Regex.Escape(text));
@@ -218,11 +239,10 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
         return texts.Count - texts.Distinct().Count();
     }
 
-    private async Task<DappsDaemon> StartNodeAsync(string name, string callsign, int agwPort, string neighbour,
+    private async Task<DappsDaemon> StartNodeAsync(string name, string callsign, NodeAttachment on, string neighbour,
         IReadOnlyDictionary<string, string> settings, CancellationToken ct)
     {
-        var node = await DappsDaemon.StartAsync(name, callsign, fixture.Host, agwPort, fixture.RadioPortIndex,
-            [new(neighbour, fixture.RadioPortIndex)], settings, ct);
+        var node = await DappsDaemon.StartAsync(name, callsign, on, [new(neighbour, on.BearerPort)], settings, ct);
         running.Add(node);
         return node;
     }
@@ -236,14 +256,14 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
         air!.SentBy("A").Count(f => f.Contains($"Fm {fixture.ApplCallA} To {fixture.ApplCallB} <", StringComparison.Ordinal))
         + air.SentBy("B").Count(f => f.Contains($"Fm {fixture.ApplCallB} To {fixture.ApplCallA} <", StringComparison.Ordinal));
 
-    private string Report(List<RoundResult> results, int duplicates, ChannelLog.Summary onAir, string what)
+    private string Report(List<RoundResult> results, int duplicates, ChannelLog.Summary? onAir, string what)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"# Crossed-call scenario: {fixture.ChannelName}");
         sb.AppendLine();
         sb.AppendLine(what);
         sb.AppendLine();
-        sb.AppendLine($"BPQ radio port: {fixture.RadioSettings}");
+        sb.AppendLine($"Radio port: {fixture.RadioSettings}");
         sb.AppendLine();
         sb.AppendLine("| Round | All arrived | Time to last delivery | Dials | Crossing spotted | Waited out the prompt | SABMs on air | Frames |");
         sb.AppendLine("|---|---|---|---|---|---|---|---|");
@@ -252,7 +272,9 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
             sb.AppendLine($"| {r.Round} | {(r.Complete ? "yes" : "no")} | {r.Elapsed.TotalSeconds:F1} s | {r.Dials} | {(r.Spotted > 0 ? "yes" : "no")} | {(r.Fallbacks > 0 ? "yes" : "no")} | {r.Connects} | {r.Frames} |");
         }
         sb.AppendLine();
-        sb.AppendLine($"Duplicates: {duplicates}. Transmissions (key-ups): {onAir.Count} (A {onAir.CountBy("A")}, B {onAir.CountBy("B")}); both sides transmitting at once: {onAir.Doubles}.");
+        sb.AppendLine(onAir is null
+            ? $"Duplicates: {duplicates}."
+            : $"Duplicates: {duplicates}. Transmissions (key-ups): {onAir.Count} (A {onAir.CountBy("A")}, B {onAir.CountBy("B")}); both sides transmitting at once: {onAir.Doubles}.");
         sb.AppendLine();
         sb.AppendLine("<details><summary>What went over the air</summary>");
         sb.AppendLine();
@@ -267,8 +289,7 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
     {
         var dir = Path.Combine(AppContext.BaseDirectory, "scenario-reports");
         Directory.CreateDirectory(dir);
-        var name = prefix + fixture.ChannelName.Split(' ')[0].ToLowerInvariant() + fixture.ChannelName.Split(' ')[1] + ".md";
-        File.WriteAllText(Path.Combine(dir, name), report);
+        File.WriteAllText(Path.Combine(dir, prefix + fixture.ReportTag + ".md"), report);
         TestContext.Current.TestOutputHelper?.WriteLine(report);
     }
 
@@ -276,9 +297,8 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
     private void WriteLogs(string prefix, DappsDaemon a, DappsDaemon b)
     {
         var dir = Path.Combine(AppContext.BaseDirectory, "scenario-reports");
-        var modem = fixture.ChannelName.Split(' ')[0].ToLowerInvariant() + fixture.ChannelName.Split(' ')[1];
-        File.WriteAllText(Path.Combine(dir, $"{prefix}{modem}-a.log"), a.Log);
-        File.WriteAllText(Path.Combine(dir, $"{prefix}{modem}-b.log"), b.Log);
+        File.WriteAllText(Path.Combine(dir, $"{prefix}{fixture.ReportTag}-a.log"), a.Log);
+        File.WriteAllText(Path.Combine(dir, $"{prefix}{fixture.ReportTag}-b.log"), b.Log);
     }
 
     private string Diagnostics() => string.Join("\n", running.OfType<DappsDaemon>().Select(d => d.Tail(80)));

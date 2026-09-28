@@ -5,31 +5,34 @@ namespace dapps.core.tests.Integration;
 
 /// <summary>
 /// The DAPPSv1 exchange end to end: two real DAPPS daemons, each on its
-/// own real BPQ, linked over AXIP, driven through their app API the way an
-/// app would, with BPQ's monitor as the record of what went over the air.
+/// own real node, driven through their app API the way an app would, with
+/// the nodes' own monitors as the record of what went over the air.
 /// Nothing here pokes the forwarder by hand, so every test also relies on
 /// it sending when a message is queued.
 ///
-///     app -> DAPPS A -AGW- BPQ-A -AXIP- BPQ-B -AGW- DAPPS B -> app
+///     app -> DAPPS A -- node A -- node B -- DAPPS B -> app
+///
+/// These cases run on any pair of nodes (<see cref="IDappsNodePair"/>): BPQ
+/// over AXIP (<see cref="DappsEndToEndTests"/>) and pdn over AXUDP
+/// (<see cref="PdnEndToEndTests"/>).
 /// </summary>
-[Collection("Linbpq two-instance integration")]
-[Trait("Category", "Integration")]
-public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyncLifetime
+public abstract class DappsExchangeTests(IDappsNodePair pair) : IAsyncLifetime
 {
-    private static readonly TimeSpan Delivery = TimeSpan.FromSeconds(45);
+    protected static readonly TimeSpan Delivery = TimeSpan.FromSeconds(45);
     private readonly List<IAsyncDisposable> running = [];
-    private AirMonitor air = null!;
+    private IAirMonitor air = null!;
 
     public async ValueTask InitializeAsync()
     {
-        air = await AirMonitor.StartAsync(fixture.Host, fixture.AgwPortA, fixture.AgwPortB, TestContext.Current.CancellationToken);
+        air = await pair.StartAirMonitorAsync(TestContext.Current.CancellationToken);
     }
 
     public async ValueTask DisposeAsync()
     {
+        if (TestContext.Current.TestState is { Result: TestResult.Failed }) WriteFailureRecord();
         foreach (var r in running) await r.DisposeAsync();
         await air.DisposeAsync();
-        // Let BPQ release the AGW registrations and any link state before
+        // Let the nodes release the registrations and any link state before
         // the next test in the collection uses the same callsigns.
         await Task.Delay(3000);
     }
@@ -53,7 +56,7 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
         // The whole session: B's prompt and rules, the routes pull, A's
         // rules with the message in one frame, the ack, and once the link
         // has been quiet a while, A's quit and a clean hang-up.
-        await AirShowsAsync("A", $"Fm {fixture.ApplCallA} To {fixture.ApplCallB} <D C", ct, TimeSpan.FromSeconds(45));
+        await AirShowsAsync("A", $"Fm {pair.ApplCallA} To {pair.ApplCallB} <D C", ct, TimeSpan.FromSeconds(45));
         Connects("A").Should().Be(1, Transcript());
         AirSent("B", "DAPPSv1>").Should().Be(1, Transcript());
         AirSent("B", "exchange id=").Should().Be(1, "B's rules go once, with its prompt\n" + Transcript());
@@ -82,7 +85,7 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
         var inbox = await b.WaitForInboundAsync("chat", 5, Delivery, ct);
         inbox.Select(m => Encoding.UTF8.GetString(m.Payload)).Should().BeEquivalentTo(
             Enumerable.Range(1, 5).Select(i => $"post {i}"));
-        await AirShowsAsync("A", $"Fm {fixture.ApplCallA} To {fixture.ApplCallB} <D C", ct, TimeSpan.FromSeconds(45));
+        await AirShowsAsync("A", $"Fm {pair.ApplCallA} To {pair.ApplCallB} <D C", ct, TimeSpan.FromSeconds(45));
         Connects("A").Should().Be(1, "five queued messages share one session\n" + Transcript());
         Connects("B").Should().Be(0, Transcript());
     }
@@ -170,7 +173,7 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
         await a.SubmitAsync("chat", b.Callsign, Encoding.UTF8.GetBytes("first"), ct);
         await b.WaitForInboundAsync("chat", 1, Delivery, ct);
         await AirShowsAsync("A", "quit", ct, TimeSpan.FromSeconds(30));
-        await AirShowsAsync("A", $"Fm {fixture.ApplCallA} To {fixture.ApplCallB} <D C", ct, TimeSpan.FromSeconds(30));
+        await AirShowsAsync("A", $"Fm {pair.ApplCallA} To {pair.ApplCallB} <D C", ct, TimeSpan.FromSeconds(30));
 
         await a.SubmitAsync("chat", b.Callsign, Encoding.UTF8.GetBytes("second"), ct);
         await b.WaitForInboundAsync("chat", 2, Delivery, ct);
@@ -213,13 +216,89 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
         AirSent("A", "exchange ").Should().Be(0, "a probe only asks; it never starts an exchange\n" + Transcript());
     }
 
+    /// <summary>Connects (SABM) from one DAPPS node to the other. Two BPQs
+    /// also link up between their node callsigns for NET/ROM, which isn't
+    /// DAPPS traffic and doesn't count.</summary>
+    protected int Connects(string side) => air.CountSentBy(side, $"Fm {Call(side)} To {Call(Other(side))} <C C");
+
+    protected int HangUps(string side) => air.CountSentBy(side, $"Fm {Call(side)} To {Call(Other(side))} <D C");
+
+    private string Call(string side) => side == "A" ? pair.ApplCallA : pair.ApplCallB;
+
+    private static string Other(string side) => side == "A" ? "B" : "A";
+
+    protected int AirSent(string side, string contains) => air.CountSentBy(side, contains.Replace("\\n", "\n"));
+
+    protected async Task AirShowsAsync(string side, string contains, CancellationToken ct, TimeSpan? timeout = null)
+    {
+        if (!await air.WaitForAsync(side, contains, timeout ?? TimeSpan.FromSeconds(30), ct))
+        {
+            throw new TimeoutException($"Never heard '{contains}' from {side}.\n{Transcript()}");
+        }
+    }
+
+    /// <summary>
+    /// A failure's message carries only part of the story, so a failed test
+    /// leaves the whole air transcript and both daemons' logs in
+    /// scenario-reports/, which CI keeps.
+    /// </summary>
+    private void WriteFailureRecord()
+    {
+        var dir = Path.Combine(AppContext.BaseDirectory, "scenario-reports");
+        Directory.CreateDirectory(dir);
+        var pairName = new string([.. pair.ChannelName.ToLowerInvariant().Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-')]);
+        var file = Path.Combine(dir, $"e2e-{pairName}-{TestContext.Current.TestMethod?.MethodName}.txt");
+        File.WriteAllText(file, "--- air ---\n" + air.Transcript() + "\n\n"
+            + string.Join("\n\n", running.OfType<DappsDaemon>().Select(d => $"--- {d.Name} ({d.Callsign}) log ---\n{d.Log}")));
+    }
+
+    protected string Transcript() => "--- air ---\n" + air.Transcript() + "\n" + string.Join("\n", running.OfType<DappsDaemon>().Select(d => d.Tail(40)));
+
+    private async Task<(DappsDaemon A, DappsDaemon B)> StartPairAsync(
+        CancellationToken ct, int tail = 0, bool compression = true, bool bKnowsA = true)
+    {
+        var a = await StartNodeAsync("a", pair.ApplCallA, pair.NodeA,
+            [new(pair.ApplCallB, pair.NodeA.BearerPort)], tail, ct, compression);
+        var b = await StartNodeAsync("b", pair.ApplCallB, pair.NodeB,
+            bKnowsA ? [new(pair.ApplCallA, pair.NodeB.BearerPort)] : [], tail, ct, compression);
+        return (a, b);
+    }
+
+    private protected async Task<DappsDaemon> StartNodeAsync(
+        string name, string callsign, NodeAttachment node, DappsDaemon.Neighbour[] neighbours, int tail, CancellationToken ct,
+        bool compression = true)
+    {
+        var settings = new Dictionary<string, string>
+        {
+            ["DAPPS_SESSION_TAIL_SECONDS"] = tail.ToString(),
+            ["DAPPS_COMPRESSION_ENABLED"] = compression ? "true" : "false",
+        };
+        var daemon = await DappsDaemon.StartAsync(name, callsign, node, neighbours, settings, ct);
+        running.Add(daemon);
+        return daemon;
+    }
+}
+
+/// <summary>
+/// The exchange between two DAPPS daemons on two BPQ nodes linked over AXIP,
+/// with BPQ's AGW monitor as the record of what went over the air:
+///
+///     app -> DAPPS A -AGW- BPQ-A -AXIP- BPQ-B -AGW- DAPPS B -> app
+///
+/// Beside the shared cases, a bare AGW caller checks the server's replies
+/// one at a time, and a connect script reaches a peer through BPQ's prompt.
+/// </summary>
+[Collection("Linbpq two-instance integration")]
+[Trait("Category", "Integration")]
+public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : DappsExchangeTests(fixture)
+{
     [Fact]
     public async Task TheServer_AnswersEachCommandAsDocumented()
     {
         // A bare caller on node A, talking DAPPSv1 by hand to the real
         // daemon on B, over the air.
         var ct = TestContext.Current.CancellationToken;
-        var b = await StartNodeAsync("b", fixture.ApplCallB, fixture.AgwPortB, [new(fixture.ApplCallA, fixture.AxipPortIndex)], tail: 120, ct);
+        var b = await StartNodeAsync("b", fixture.ApplCallB, fixture.NodeB, [new(fixture.ApplCallA, fixture.AxipPortIndex)], tail: 120, ct);
         var t = TimeSpan.FromSeconds(20);
 
         await using (var caller = await RawAgwCaller.ConnectAsync(
@@ -299,8 +378,8 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
         // that doesn't speak DAPPS.
         var ct = TestContext.Current.CancellationToken;
         var script = new dapps.client.ConnectScript([new dapps.client.ConnectScriptStep("APPLB", "DAPPSv1>", 30)]);
-        var b = await StartNodeAsync("b", fixture.ApplCallB, fixture.AgwPortB, [new(fixture.ApplCallA, fixture.AxipPortIndex)], tail: 0, ct);
-        var a = await StartNodeAsync("a", fixture.ApplCallA, fixture.AgwPortA,
+        var b = await StartNodeAsync("b", fixture.ApplCallB, fixture.NodeB, [new(fixture.ApplCallA, fixture.AxipPortIndex)], tail: 0, ct);
+        var a = await StartNodeAsync("a", fixture.ApplCallA, fixture.NodeA,
             [new(fixture.CallsignB, fixture.AxipPortIndex, Script: script)], tail: 0, ct);
 
         var payload = "via the node"u8.ToArray();
@@ -320,52 +399,5 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
         var lines = new List<string>();
         while (await caller.ReadLineAsync(TimeSpan.FromSeconds(20), ct) is { } line && line != "end") lines.Add(line);
         return lines;
-    }
-
-    /// <summary>Connects (SABM) from one DAPPS node to the other. The two
-    /// BPQs also link up between their node callsigns for NET/ROM, which
-    /// isn't DAPPS traffic and doesn't count.</summary>
-    private int Connects(string side) => air.CountSentBy(side, $"Fm {Call(side)} To {Call(Other(side))} <C C");
-
-    private int HangUps(string side) => air.CountSentBy(side, $"Fm {Call(side)} To {Call(Other(side))} <D C");
-
-    private string Call(string side) => side == "A" ? fixture.ApplCallA : fixture.ApplCallB;
-
-    private static string Other(string side) => side == "A" ? "B" : "A";
-
-    private int AirSent(string side, string contains) => air.CountSentBy(side, contains.Replace("\\n", "\n"));
-
-    private async Task AirShowsAsync(string side, string contains, CancellationToken ct, TimeSpan? timeout = null)
-    {
-        if (!await air.WaitForAsync(side, contains, timeout ?? TimeSpan.FromSeconds(30), ct))
-        {
-            throw new TimeoutException($"Never heard '{contains}' from {side}.\n{Transcript()}");
-        }
-    }
-
-    private string Transcript() => "--- air ---\n" + air.Transcript() + "\n" + string.Join("\n", running.OfType<DappsDaemon>().Select(d => d.Tail(40)));
-
-    private async Task<(DappsDaemon A, DappsDaemon B)> StartPairAsync(
-        CancellationToken ct, int tail = 0, bool compression = true, bool bKnowsA = true)
-    {
-        var a = await StartNodeAsync("a", fixture.ApplCallA, fixture.AgwPortA,
-            [new(fixture.ApplCallB, fixture.AxipPortIndex)], tail, ct, compression);
-        var b = await StartNodeAsync("b", fixture.ApplCallB, fixture.AgwPortB,
-            bKnowsA ? [new(fixture.ApplCallA, fixture.AxipPortIndex)] : [], tail, ct, compression);
-        return (a, b);
-    }
-
-    private async Task<DappsDaemon> StartNodeAsync(
-        string name, string callsign, int agwPort, DappsDaemon.Neighbour[] neighbours, int tail, CancellationToken ct,
-        bool compression = true)
-    {
-        var settings = new Dictionary<string, string>
-        {
-            ["DAPPS_SESSION_TAIL_SECONDS"] = tail.ToString(),
-            ["DAPPS_COMPRESSION_ENABLED"] = compression ? "true" : "false",
-        };
-        var node = await DappsDaemon.StartAsync(name, callsign, fixture.Host, agwPort, fixture.AxipPortIndex, neighbours, settings, ct);
-        running.Add(node);
-        return node;
     }
 }

@@ -8,7 +8,7 @@ namespace dapps.core.tests.Integration;
 
 /// <summary>
 /// Kevin M0AHN's WPS replication trace from #187, replayed between two real
-/// DAPPS daemons over a simulated radio channel (<see cref="NetSimTwoBpqFixture"/>),
+/// DAPPS daemons over a simulated radio channel (<see cref="NetSimTwoNodeFixture"/>, BPQ or pdn),
 /// with the same timing: DPSTST posts four times about half a second apart,
 /// MB7NPW posts four times starting four seconds later, and each side's WPS
 /// acknowledges cumulatively a few seconds after the first post it hasn't
@@ -22,7 +22,7 @@ namespace dapps.core.tests.Integration;
 /// (net-sim runs in real time) to scenario-reports/ beside the test build,
 /// which CI keeps as an artifact.
 /// </summary>
-public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) : IAsyncLifetime
+public abstract class WpsReplicationScenarioTests(NetSimTwoNodeFixture fixture) : IAsyncLifetime
 {
     private const string App = "wps-repl";
     private static readonly TimeSpan AckDelay = TimeSpan.FromSeconds(5);
@@ -33,12 +33,12 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
     private static readonly double[] Mb7npwPosts = [4.100, 4.484, 4.888, 5.585];
 
     private readonly List<IAsyncDisposable> running = [];
-    private AirMonitor? air;
+    private IAirMonitor? air;
     private ChannelLog? channel;
 
     public async ValueTask InitializeAsync()
     {
-        air = await AirMonitor.StartAsync(fixture.Host, fixture.AgwPortA, fixture.AgwPortB, TestContext.Current.CancellationToken);
+        air = await fixture.StartAirMonitorAsync(TestContext.Current.CancellationToken);
         channel = await fixture.StartChannelLogAsync(TestContext.Current.CancellationToken);
     }
 
@@ -54,8 +54,8 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
     public async Task KevinsTrace_Replayed_EveryMessageArrivesOnce_OnFewConnections()
     {
         var ct = TestContext.Current.CancellationToken;
-        var a = await StartNodeAsync("dpststA", fixture.ApplCallA, fixture.AgwPortA, fixture.ApplCallB, ct);
-        var b = await StartNodeAsync("mb7npwB", fixture.ApplCallB, fixture.AgwPortB, fixture.ApplCallA, ct);
+        var a = await StartNodeAsync("dpststA", fixture.ApplCallA, fixture.NodeA, fixture.ApplCallB, ct);
+        var b = await StartNodeAsync("mb7npwB", fixture.ApplCallB, fixture.NodeB, fixture.ApplCallA, ct);
         var clock = new Stopwatch();
         var sideA = new WpsSide(a, b.Callsign, clock, origin: "DPSTST", author: "G5ALF", firstSeq: 21);
         var sideB = new WpsSide(b, a.Callsign, clock, origin: "MB7NPW", author: "M0AHN", firstSeq: 535);
@@ -96,7 +96,7 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
             catch (Exception e) { failure ??= e; }
         }
 
-        var report = Report(sideA, sideB, elapsed, channel!.Summarise(started, started + elapsed), channel.Timeline(started, started + elapsed));
+        var report = Report(sideA, sideB, elapsed, channel!.Summarise(started, started + elapsed), channel!.Timeline(started, started + elapsed));
         WriteReport(report);
 
         failure.Should().BeNull($"the test's own posting and inbox reading should work\n{report}\n{Diagnostics()}");
@@ -134,10 +134,9 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
         await Task.Delay(TimeSpan.FromSeconds(5), ct);
     }
 
-    private async Task<DappsDaemon> StartNodeAsync(string name, string callsign, int agwPort, string neighbour, CancellationToken ct)
+    private async Task<DappsDaemon> StartNodeAsync(string name, string callsign, NodeAttachment on, string neighbour, CancellationToken ct)
     {
-        var node = await DappsDaemon.StartAsync(name, callsign, fixture.Host, agwPort, fixture.RadioPortIndex,
-            [new(neighbour, fixture.RadioPortIndex)], settings: null, ct);
+        var node = await DappsDaemon.StartAsync(name, callsign, on, [new(neighbour, on.BearerPort)], settings: null, ct);
         running.Add(node);
         return node;
     }
@@ -161,7 +160,7 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
         sb.AppendLine("Kevin M0AHN's #187 trace replayed between two DAPPS daemons on a simulated channel.");
         sb.AppendLine("Each side acks 5 s after the first post it hasn't acked, so the number of acks depends on how fast posts arrive.");
         sb.AppendLine();
-        sb.AppendLine($"BPQ radio port: {fixture.RadioSettings}");
+        sb.AppendLine($"Radio port: {fixture.RadioSettings}");
         sb.AppendLine();
         sb.AppendLine("| | Kevin's trace, before 0.40.0 (1200 baud) | This run |");
         sb.AppendLine("|---|---|---|");
@@ -205,8 +204,7 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
     {
         var dir = Path.Combine(AppContext.BaseDirectory, "scenario-reports");
         Directory.CreateDirectory(dir);
-        var name = "wps-" + fixture.ChannelName.Split(' ')[0].ToLowerInvariant() + fixture.ChannelName.Split(' ')[1] + ".md";
-        File.WriteAllText(Path.Combine(dir, name), report);
+        File.WriteAllText(Path.Combine(dir, "wps-" + fixture.ReportTag + ".md"), report);
         TestContext.Current.TestOutputHelper?.WriteLine(report);
     }
 
