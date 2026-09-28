@@ -103,7 +103,7 @@ jobs:
   # real regression and must block it.
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60   # the simulated-radio scenarios run in real time
     steps:
       - uses: actions/checkout@v6
 
@@ -116,6 +116,8 @@ jobs:
         run: |
           docker pull m0lte/linbpq:latest
           docker pull ghcr.io/packethacking/xrouter:latest
+          # net-sim, for the simulated-radio scenarios, at the digest the tests pin.
+          docker pull "$(grep -oE 'ghcr\.io/packet-net/net-sim@sha256:[0-9a-f]{64}' src/dapps/dapps.core.tests/Integration/NetSimFixtures.cs)"
 
       - name: Restore
         run: dotnet restore src/dapps/dapps.sln
@@ -145,7 +147,7 @@ jobs:
           exit 1
 
       - name: Upload test results on failure
-        if: failure()
+        if: failure() || cancelled()   # cancelled covers hitting the time limit
         uses: actions/upload-artifact@v6
         with:
           name: test-results
