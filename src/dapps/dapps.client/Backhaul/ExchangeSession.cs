@@ -34,6 +34,15 @@ namespace dapps.client.Backhaul;
 /// where, with ours waiting, neither answers nor any other DAPPS traffic
 /// have come for the answer timeout ends the same way.
 /// </para>
+///
+/// <para>
+/// A session whose stream from the peer goes out of step (a line that
+/// isn't DAPPS, or a payload that doesn't decode or hash to its id) ends
+/// at once with a <c>quit</c>, and everything unanswered at both ends
+/// waits for the next session: at the edge of range BPQ can hand over a
+/// stale frame in place of the one the peer sent, and a new link starts
+/// in step.
+/// </para>
 /// </summary>
 public sealed class ExchangeSession
 {
@@ -80,6 +89,7 @@ public sealed class ExchangeSession
     private bool quitting;
     private bool peerQuit;
     private bool stuck;
+    private bool outOfStep;
     private bool done;
     private int noiseBytes;
     private int noiseSinceOwn;
@@ -277,20 +287,23 @@ public sealed class ExchangeSession
     /// neither way moved for the answer timeout, fails its oldest one: the
     /// neighbour gets a cooldown, and routing learns of it. Not when
     /// <paramref name="deferAll"/>: we're shutting down, or the link went
-    /// to a newer session. Work handed to the session and not started yet
-    /// is deferred too, so every message handed out gets an outcome, a
-    /// flood copy included.
+    /// to a newer session. Nor when the stream from the peer went out of
+    /// step: the link was working, and a new one clears it. Work handed to
+    /// the session and not started yet is deferred too, so every message
+    /// handed out gets an outcome, a flood copy included.
     /// </summary>
     private async Task SettleUnfinishedAsync(bool deferAll)
     {
-        var failOldest = Established && !deferAll && (stuck || dialled && !quitting && !peerQuit);
+        var failOldest = Established && !deferAll && !outOfStep && (stuck || dialled && !quitting && !peerQuit);
         foreach (var o in unanswered.ToList())
         {
             await CompleteAsync(o, failOldest
                 ? BackhaulSendResult.Fail(stuck
                     ? $"no answer from {peer} to {o.Message.Id}, and nothing else from it, in {AnswerTimeout.TotalSeconds:F0}s"
                     : $"the session with {peer} broke off before {o.Message.Id} was answered")
-                : BackhaulSendResult.Defer($"session with {peer} ended before {o.Message.Id} was answered; it stays queued"));
+                : BackhaulSendResult.Defer(outOfStep
+                    ? $"session with {peer} ended out of step before {o.Message.Id} was answered; it goes on the next one"
+                    : $"session with {peer} ended before {o.Message.Id} was answered; it stays queued"));
             failOldest = false;
         }
 
@@ -569,9 +582,9 @@ public sealed class ExchangeSession
         // BPQ has moved a link that was mid-exchange onto this session.
         // Only with a message id, though: before the exchange, a line such
         // as "no such command" is something else answering, not DAPPS.
-        if (id is not null && (Established || IsMessageId(id)) && verb is "send" or "ack" or "no" or "bad" or "error")
+        if (IsAnswer(verb) && (IsMessageId(id) || Established && IsWord(id)))
         {
-            await OnAnswerAsync(verb, id, line, ct);
+            await OnAnswerAsync(verb, id!, line, ct);
             HeardExchangeTraffic();
             return;
         }
@@ -584,7 +597,11 @@ public sealed class ExchangeSession
 
         if (Established)
         {
-            logger.LogInformation("Ignoring '{0}' from {1}", Printable(line), peer);
+            // A word we don't know may be a later version's line. Anything
+            // else, an answer without an id included, is what the peer
+            // sent arriving out of step.
+            if (IsAnswer(verb) || !CouldBeALaterLine(line)) OutOfStep($"'{Printable(line)}' isn't a DAPPS line");
+            else logger.LogInformation("Ignoring '{0}' from {1}", Printable(line), peer);
         }
         else if (!dialled)
         {
@@ -610,6 +627,38 @@ public sealed class ExchangeSession
 
     /// <summary>A message id as DAPPS writes it: 7 hex digits.</summary>
     private static bool IsMessageId(string? id) => id is { Length: 7 } && id.All(char.IsAsciiHexDigit);
+
+    private static bool IsAnswer(string verb) => verb is "send" or "ack" or "no" or "bad" or "error";
+
+    /// <summary>Something an answer can name: printable ASCII, no spaces.</summary>
+    private static bool IsWord(string? id) => !string.IsNullOrEmpty(id) && id.All(c => c is > ' ' and <= '~');
+
+    /// <summary>
+    /// A line this version doesn't know that a later one could send: a
+    /// lowercase word, and printable ASCII after it. Bytes that arrive out
+    /// of step rarely look like that: binary from a payload, or text cut
+    /// off mid-word.
+    /// </summary>
+    private static bool CouldBeALaterLine(string line) =>
+        line.Split(' ', 2)[0] is { Length: > 0 } word
+        && word.All(char.IsAsciiLetterLower)
+        && line.All(c => c is >= ' ' and <= '~');
+
+    /// <summary>
+    /// What the peer sent can't be read in step any more: <paramref name="what"/>.
+    /// At the edge of range BPQ can hand over a stale frame in place of the
+    /// one the peer sent (docs-internal/end-to-end-tests.md, "Stream
+    /// corruption"), and nothing after it can be trusted. Ends the session
+    /// at once with a <c>quit</c>, so the peer defers what it has waiting
+    /// and the link goes; the next one starts in step. Nothing of ours
+    /// counts as failed either: the link was working.
+    /// </summary>
+    private void OutOfStep(string what)
+    {
+        logger.LogWarning("Out of step with {0}: {1}. Ending the session so the next link starts afresh", peer, what);
+        outOfStep = true;
+        Say("quit\n", end: true);
+    }
 
     /// <summary>
     /// A caller hearing exchange traffic before any prompt or rules: the
@@ -951,6 +1000,12 @@ public sealed class ExchangeSession
     private async Task<bool> ReceiveOfferAsync(string line, CancellationToken ct)
     {
         var result = IHaveValidator.Validate(line);
+        if (Established && !IsWord(result.Id))
+        {
+            // Nothing we answer could name it, so it would never be answered.
+            OutOfStep($"'{Printable(line)}' has no message id");
+            return false;
+        }
         if (!result.IsValid)
         {
             logger.LogWarning("Refusing an offer from {0}: {1}", peer, result.Error);
@@ -984,8 +1039,12 @@ public sealed class ExchangeSession
         {
             // We can't tell where its payload ends, so nothing after it
             // can be read either.
-            logger.LogWarning("Can't tell how long the payload after '{0}' is; ending the session with {1}", Printable(line), peer);
-            End();
+            OutOfStep($"can't tell how long the payload after '{Printable(line)}' is");
+            return false;
+        }
+        if (Established && !IsWord(id))
+        {
+            OutOfStep($"'{Printable(line)}' has no message id");
             return false;
         }
         var wire = await ReadPayloadAsync(wireLength, ct);
@@ -1012,9 +1071,7 @@ public sealed class ExchangeSession
         var parts = line.Split(' ');
         if (parts.Length != 2 || !accepted.Remove(parts[1], out var offer))
         {
-            logger.LogWarning("'{0}' from {1} isn't for an offer we accepted, so its length is unknown; ending the session",
-                Printable(line), peer);
-            End();
+            OutOfStep($"'{Printable(line)}' isn't for an offer we accepted, so its length is unknown");
             return false;
         }
         var wire = await ReadPayloadAsync(offer.Format == "p" ? offer.Length : offer.CompressedLength!.Value, ct);
@@ -1039,6 +1096,14 @@ public sealed class ExchangeSession
         }
         catch (InvalidDataException ex)
         {
+            // In exchange mode, bytes out of step rather than a path that
+            // mangles binary: every bearer DAPPS uses is 8-bit clean. A
+            // single message pushed before any exchange still gets bad.
+            if (Established)
+            {
+                OutOfStep($"the payload of {offer.Id} does not decode ({ex.Message})");
+                return;
+            }
             logger.LogWarning("Payload for {0} from {1} does not decode: {2}", offer.Id, peer, ex.Message);
             Queue($"bad {offer.Id}\n");
             return;
@@ -1046,8 +1111,13 @@ public sealed class ExchangeSession
 
         if (DappsMessage.ComputeHash(payload, offer.Salt)[..7] != offer.Id)
         {
-            logger.LogWarning("Payload for {0} from {1} doesn't hash to its id", offer.Id, peer);
             HashMismatch?.Invoke(offer.Id);
+            if (Established)
+            {
+                OutOfStep($"the payload of {offer.Id} doesn't hash to its id");
+                return;
+            }
+            logger.LogWarning("Payload for {0} from {1} doesn't hash to its id", offer.Id, peer);
             Queue($"bad {offer.Id}\n");
             return;
         }
@@ -1095,7 +1165,9 @@ public sealed class ExchangeSession
     /// <summary>
     /// The next line, without its ending (<c>\n</c>, <c>\r</c> or both).
     /// Empty when only line endings had arrived, so the loop can go back
-    /// to waiting rather than block here; null at the end of the stream.
+    /// to waiting rather than block here; null at the end of the stream,
+    /// including when the link went partway through a line: what came of
+    /// it is only the start of something, and the hang-up is what counts.
     /// </summary>
     private async Task<string?> ReadLineAsync(CancellationToken ct)
     {
@@ -1111,7 +1183,15 @@ public sealed class ExchangeSession
                 if (!link.HasBufferedData) return "";
             }
             var n = await ReadWithTimeoutAsync(one, ct);
-            if (n == 0) return buffer.Count > 0 ? Encoding.UTF8.GetString(buffer.ToArray()) : null;
+            if (n == 0)
+            {
+                if (buffer.Count > 0)
+                {
+                    logger.LogInformation("The link to {0} went partway through a line ('{1}')",
+                        peer, Printable(Encoding.UTF8.GetString(buffer.ToArray())));
+                }
+                return null;
+            }
             if (one[0] is (byte)'\n' or (byte)'\r')
             {
                 if (buffer.Count == 0)
