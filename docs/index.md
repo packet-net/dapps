@@ -9,7 +9,7 @@
 - [**Configure**](configure.md) - every operator-tunable knob, set via environment variable or the dashboard.
 - [**Connect a node**](connect/index.md) - wire DAPPS up to your packet node. BPQ via AGW and XRouter via RHPv2 supported today; MeshCore in flight.
 - [**Run**](run.md) - what each background loop does and how to watch it.
-- [**Tune**](tune.md) - airtime budgets, probe strategies, fragment thresholds, routing algorithm.
+- [**Tune**](tune.md) - your node's radio-port settings, airtime budgets, probe strategies, fragment thresholds, routing algorithm.
 - [**Discovery & routing**](discovery-and-routing.md) - channels, beacons, probes, neighbours, route hints.
 - [**Operate**](operate.md) - dashboard, `/Health` and `/Operational`, MQTT heartbeat.
 - [**Audit log**](audit.md) - persistent record of every transmission, with the reason for it.

@@ -11,7 +11,7 @@ namespace dapps.core.tests.Integration;
 ///
 /// It uses what each receiver hears (<c>rx_decision</c>), which net-sim
 /// plays out in real time. Its transmit events follow the modem's audio
-/// output instead, and samoyed produces a burst's audio faster than real
+/// output instead, and a TNC produces a burst's audio faster than real
 /// time, so those would make every transmission look short.
 ///
 /// net-sim's stream is lossy by design (a slow reader loses events), and
@@ -122,6 +122,27 @@ internal sealed class ChannelLog : IAsyncDisposable
 
     /// <summary>Airtime, quiet gaps and overlaps for a stretch of the channel.</summary>
     public Summary Summarise(DateTime from, DateTime to) => new(Between(from, to), to - from);
+
+    /// <summary>
+    /// Every transmission in a stretch, one a line: when it started (from
+    /// <paramref name="from"/>), whose, how long, and the quiet before it,
+    /// or how far it overlapped the other side's when both were on air.
+    /// </summary>
+    public string Timeline(DateTime from, DateTime to)
+    {
+        var sb = new System.Text.StringBuilder();
+        Over? previous = null;
+        foreach (var o in Between(from, to))
+        {
+            var note = previous is null ? ""
+                : o.Start >= previous.End ? $"after {(o.Start - previous.End).TotalSeconds:F2} s quiet"
+                : o.Side != previous.Side ? $"OVERLAPS {previous.Side} by {(previous.End - o.Start).TotalSeconds:F2} s"
+                : "";
+            sb.AppendLine($"{(o.Start - from).TotalSeconds,8:F2} s  {o.Side}  {o.Length.TotalSeconds,5:F2} s  {note}");
+            if (previous is null || o.End > previous.End) previous = o;
+        }
+        return sb.ToString();
+    }
 
     public sealed class Summary(IReadOnlyList<Over> overs, TimeSpan window)
     {

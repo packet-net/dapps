@@ -660,18 +660,40 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task DoRun_AMessageHandedToAnOpenSessionTwice_IsSentOnce()
+    public async Task DoRun_AMessageWaitingInAnOpenSession_IsNotHandedToItAgain()
     {
-        // A session held open sends in the background, so a second run
-        // can hand it the same queued message again before the first
-        // copy has gone. The claim at hand-out stops a second send.
+        // A session works through what it's handed as its window allows.
+        // Handing it the same queued message on every run meant, when the
+        // session ended, one deferral per copy.
         var holding = new HoldingFakeBackhaul();
         var m = MakeManager(holding);
         InsertMessage(id: "once001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5));
 
         await m.DoRun(TestContext.Current.CancellationToken);
         await m.DoRun(TestContext.Current.CancellationToken);
-        holding.Batches.Should().HaveCount(2, "both runs found the message still queued and handed it over");
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        holding.Batches.Should().ContainSingle("the session still has it");
+        var batch = holding.Batches.Single();
+        var message = await batch.NextAsync(TestContext.Current.CancellationToken);
+        await batch.CompleteAsync(message!, BackhaulSendResult.Ok(), TimeSpan.Zero, TestContext.Current.CancellationToken);
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task DoRun_AMessageHandedToAnOpenSessionTwice_IsSentOnce()
+    {
+        // If a session never gets to a message it was handed, a later run
+        // hands it over again; the claim at hand-out still stops a second
+        // send if both copies are taken.
+        var holding = new HoldingFakeBackhaul();
+        var m = MakeManager(holding);
+        m.HandOffPatience = TimeSpan.Zero;
+        InsertMessage(id: "twice01", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5));
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+        await m.DoRun(TestContext.Current.CancellationToken);
+        holding.Batches.Should().HaveCount(2, "the first hand-off ran out of patience");
 
         var sent = new List<string>();
         foreach (var batch in holding.Batches)
@@ -683,7 +705,7 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
             }
         }
 
-        sent.Should().Equal("once001");
+        sent.Should().Equal("twice01");
         (await database.GetPendingOutboundMessages()).Should().BeEmpty();
     }
 

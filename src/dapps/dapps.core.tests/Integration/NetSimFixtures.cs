@@ -8,11 +8,14 @@ namespace dapps.core.tests.Integration;
 
 /// <summary>
 /// Two linbpq nodes on a simulated radio channel: net-sim runs real
-/// modems (samoyed for AFSK, pdn-soundmodem for its FM modes such as
-/// QPSK 3600) and an audio router between them, and each BPQ attaches to
-/// one simulated radio over KISS, as it would to a real TNC. Unlike the
-/// AXIP fixture, frames take real airtime, with TX delay, turnarounds and
-/// a shared channel where both ends can transmit at once.
+/// modems (Dire Wolf for AFSK, pdn-soundmodem for its FM modes such as
+/// QPSK 3600), gives each an FM radio (a Tait TM8100 at 25 W by default)
+/// and puts a physical FM channel between them; each BPQ attaches to one
+/// simulated radio over KISS, as it would to a real TNC. Unlike the AXIP
+/// fixture, frames take real airtime, with TX delay, turnarounds and a
+/// shared channel where both ends can transmit at once. The radios are
+/// half duplex: one that is transmitting hears nothing, so when both
+/// transmit at once, neither hears the other.
 ///
 ///     DAPPS A -AGW- BPQ-A -KISS- [net-sim: modem ~ channel ~ modem] -KISS- BPQ-B -AGW- DAPPS B
 ///
@@ -25,10 +28,11 @@ namespace dapps.core.tests.Integration;
 /// </summary>
 public abstract class NetSimTwoBpqFixture : IAsyncLifetime
 {
-    /// <summary>net-sim with pdn-soundmodem 0.80.0, pinned so a new build
-    /// can't change results unnoticed. Refresh: pull
-    /// ghcr.io/packet-net/net-sim:main and take its digest.</summary>
-    public const string NetSimImage = "ghcr.io/packet-net/net-sim@sha256:b0f78c6fd4f65c7d21e3d5f2148cb58be8951ceb386cdadc3e06e7a048444c76";
+    /// <summary>net-sim v0.4.0 (the physical FM channel) with
+    /// pdn-soundmodem 0.80.0, pinned so a new build can't change results
+    /// unnoticed. Refresh: pull ghcr.io/packet-net/net-sim at the release
+    /// tag and take its digest.</summary>
+    public const string NetSimImage = "ghcr.io/packet-net/net-sim@sha256:634f1cd0e4835330817f4b4e6d0a904123b09518226d37f6f7cb3ab8d45255f3";
     private const string BpqImage = "m0lte/linbpq:latest";
 
     private const int InsideWebPort = 8080;
@@ -52,19 +56,30 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
     /// <summary>What's on the channel, for reports: e.g. "QPSK 3600 (pdn-soundmodem)".</summary>
     public abstract string ChannelName { get; }
 
-    /// <summary>The net-sim port settings for both radios: modem, and TNC if not samoyed.</summary>
+    /// <summary>The net-sim port settings for both radios: TNC, modem and radio.</summary>
     protected abstract string PortYaml { get; }
 
-    /// <summary>Each direction's path: loss, and noise if any.</summary>
-    protected virtual string LinkYaml => "loss_db: 10";
+    /// <summary>
+    /// RF path loss each way, dB. With net-sim's default radios (25 W, a
+    /// residential site's noise) 120 is a strong local link, and 1200
+    /// baud goes from every frame to none between about 156 and 159.
+    /// </summary>
+    protected virtual double DefaultPathLossDb => 120;
+
+    /// <summary><see cref="DefaultPathLossDb"/>, or DAPPS_NETSIM_PATH_LOSS
+    /// to try another link without a rebuild.</summary>
+    public double PathLossDb =>
+        double.TryParse(Environment.GetEnvironmentVariable("DAPPS_NETSIM_PATH_LOSS"), System.Globalization.CultureInfo.InvariantCulture, out var db)
+            ? db
+            : DefaultPathLossDb;
 
     /// <summary>BPQ's KISS port tuning for this channel.</summary>
     protected abstract BpqRadio DefaultRadio { get; }
 
     /// <summary>
     /// <see cref="DefaultRadio"/> with any overrides from
-    /// DAPPS_NETSIM_RADIO, e.g. <c>PERSIST=64,SLOTTIME=100,MAXFRAME=7</c>,
-    /// for trying other tunings without a rebuild.
+    /// DAPPS_NETSIM_RADIO, e.g. <c>PERSIST=255,SLOTTIME=10,MAXFRAME=7</c>
+    /// or <c>ACKMODE=1</c>, for trying other tunings without a rebuild.
     /// </summary>
     protected BpqRadio Radio
     {
@@ -85,6 +100,7 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
                     "FRACK" => radio with { FrackMs = v },
                     "RESPTIME" => radio with { RespTimeMs = v },
                     "RETRIES" => radio with { Retries = v },
+                    "ACKMODE" => radio with { AckMode = v != 0 },
                     _ => throw new ArgumentException($"DAPPS_NETSIM_RADIO: unknown setting {kv[0]}"),
                 };
             }
@@ -96,11 +112,15 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
     /// soak), so skipped tests don't start containers.</summary>
     protected virtual bool Wanted => true;
 
+    /// <param name="AckMode">KISSOPTIONS=ACKMODE: the TNC tells BPQ when
+    /// each frame has actually gone, and BPQ's FRACK (T1) runs from then
+    /// instead of from when it handed the frame to the TNC.</param>
     public sealed record BpqRadio(
-        int Speed, int TxDelayMs, int Paclen, int Maxframe, int FrackMs, int RespTimeMs, int Retries, int Persist, int SlotTimeMs)
+        int Speed, int TxDelayMs, int Paclen, int Maxframe, int FrackMs, int RespTimeMs, int Retries, int Persist, int SlotTimeMs, bool AckMode = false)
     {
         public override string ToString() =>
-            $"TXDELAY={TxDelayMs} PERSIST={Persist} SLOTTIME={SlotTimeMs} MAXFRAME={Maxframe} PACLEN={Paclen} FRACK={FrackMs} RESPTIME={RespTimeMs} RETRIES={Retries}";
+            $"TXDELAY={TxDelayMs} PERSIST={Persist} SLOTTIME={SlotTimeMs} MAXFRAME={Maxframe} PACLEN={Paclen} FRACK={FrackMs} RESPTIME={RespTimeMs} RETRIES={Retries}"
+            + (AckMode ? " KISSOPTIONS=ACKMODE" : "");
     }
 
     /// <summary>The BPQ radio-port settings in use, for reports.</summary>
@@ -265,9 +285,6 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
     }
 
     private string NetworkYaml() => $"""
-        mixer_mode: fm_capture
-        capture_db: 6.0
-        collision_mode: silence
         time_scale: 1
         nodes:
           - id: a
@@ -283,10 +300,10 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
         links:
           - from: a.radio
             to: b.radio
-        {Indent(LinkYaml, 4)}
+            path_loss_db: {PathLossDb.ToString(System.Globalization.CultureInfo.InvariantCulture)}
           - from: b.radio
             to: a.radio
-        {Indent(LinkYaml, 4)}
+            path_loss_db: {PathLossDb.ToString(System.Globalization.CultureInfo.InvariantCulture)}
 
         """;
 
@@ -331,7 +348,7 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
          RESPTIME={Radio.RespTimeMs}
          RETRIES={Radio.Retries}
          MAXFRAME={Radio.Maxframe}
-         PACLEN={Radio.Paclen}
+         PACLEN={Radio.Paclen}{(Radio.AckMode ? "\n KISSOPTIONS=ACKMODE" : "")}
          INTERLOCK=0
          MHEARD=Y
          QUALITY=0
@@ -340,26 +357,62 @@ public abstract class NetSimTwoBpqFixture : IAsyncLifetime
         """;
 }
 
-/// <summary>AFSK 1200 on samoyed: the channel in Kevin M0AHN's analysed trace.</summary>
+/// <summary>AFSK 1200 on Dire Wolf: the channel in Kevin M0AHN's analysed trace.</summary>
 public sealed class NetSimAfsk1200Fixture : NetSimTwoBpqFixture
 {
-    public override string ChannelName => "AFSK 1200 (samoyed)";
+    public override string ChannelName => "AFSK 1200 (Dire Wolf)";
 
-    // A two-station link, so send as soon as the channel is clear:
-    // PERSIST 255 with a 10 ms slot. With a 100 ms slot the WPS scenario
-    // took about 15% longer, as the modem waits a slot before every
-    // transmission; MAXFRAME 7 and PACLEN 236 made no difference, as each
-    // message fits in one or two frames.
-    protected override string PortYaml => "modem: { mode: afsk1200 }";
-    protected override BpqRadio DefaultRadio => new(Speed: 1200, TxDelayMs: 150, Paclen: 120, Maxframe: 4, FrackMs: 3000, RespTimeMs: 1000, Retries: 10, Persist: 255, SlotTimeMs: 10);
+    // PERSIST 64 with a 100 ms slot, as on a shared channel, though only
+    // two stations use this one. With PERSIST 255 two nodes that start at
+    // the same moment (both dialling, as the crossed-call scenario makes
+    // them) collide, and BPQ then retries both SABMs a FRACK apart, in
+    // step, until they retry out: 1 to 4 dials a round and up to 90 s.
+    // With 64 and 100 most rounds took 1 or 2 dials and 9 to 29 s, on
+    // both modems (see CrossedCallScenarioTests for the rest). It costs
+    // the WPS scenario about 5 s at 1200 baud.
+    //
+    // FRACK longer than a burst plus the answer, as docs/tune.md says:
+    // four full frames take about 4 s at 1200 baud, and BPQ times FRACK
+    // from when it hands a burst to the TNC. With FRACK 3000 the WPS
+    // scenario took 52 to 65 s, as BPQ polled into the far end's answer
+    // and lost both; with 7000 (BPQ's default), 38 to 39 s (both with
+    // PERSIST 255). A longer RESPTIME saved the far end's RR in the middle
+    // of each burst, but BPQ also waits RESPTIME, at least 3 s, before
+    // each REJ, which costs on a marginal link.
+    //
+    // Squelch open (the radio's default here), as 1200 baud packet
+    // stations usually run: the TNC's own carrier detect decides when the
+    // channel is busy. Dire Wolf's looks for AFSK, not audio, so the hiss
+    // between transmissions doesn't hold it off: on an idle open-squelch
+    // channel a frame starts 21 ms after it reaches the TNC, every time.
+    // A squelch would also shut out a weak station the TNC can still copy.
+    //
+    // Dire Wolf rather than samoyed: on this image samoyed's transmit
+    // audio reaches the simulator over UDP faster than it is read, and
+    // everything after the first 2 s or so of a transmission is dropped.
+    // Two full I-frames in one transmission lose the second every time;
+    // Dire Wolf's transmit audio goes through a pipe and all four arrive.
+    protected override string PortYaml => AfskPort;
+
+    /// <summary>AFSK 1200 on Dire Wolf with the squelch open.</summary>
+    internal const string AfskPort = "tnc: direwolf\nmodem: { mode: afsk1200 }";
+    protected override BpqRadio DefaultRadio => new(Speed: 1200, TxDelayMs: 150, Paclen: 120, Maxframe: 4, FrackMs: 7000, RespTimeMs: 1000, Retries: 10, Persist: 64, SlotTimeMs: 100);
 }
 
 /// <summary>QPSK 3600 on pdn-soundmodem: 7200 bps in one FM channel, Kevin's "3K6" link.</summary>
 public sealed class NetSimQpsk3600Fixture : NetSimTwoBpqFixture
 {
     public override string ChannelName => "QPSK 3600 (pdn-soundmodem)";
-    protected override string PortYaml => "tnc: pdn\nmodem: { mode: qpsk3600 }";
-    protected override BpqRadio DefaultRadio => new(Speed: 7200, TxDelayMs: 150, Paclen: 236, Maxframe: 7, FrackMs: 2000, RespTimeMs: 500, Retries: 10, Persist: 255, SlotTimeMs: 10);
+    // A 5 kHz deviation mode, so a wide (25 kHz) channel, as pdn's mode
+    // table says. Squelch closed: on an open-squelch receiver pdn's qpsk
+    // receiver loses frames (net-sim's docs/fm-channel.md).
+    protected override string PortYaml => "tnc: pdn\nmodem: { mode: qpsk3600 }\nradio: { channel: wide, squelch: hard }";
+    // FRACK longer than a burst plus the answer: seven 236-byte frames
+    // take about 2 s at 7200 bps. With FRACK 2000 (and RESPTIME 500) the
+    // WPS scenario took 28 s and BPQ sent whole bursts twice; with 4000,
+    // 19 to 25 s. PERSIST and SLOTTIME as at 1200 baud, for the same
+    // reason.
+    protected override BpqRadio DefaultRadio => new(Speed: 7200, TxDelayMs: 150, Paclen: 236, Maxframe: 7, FrackMs: 4000, RespTimeMs: 1000, Retries: 10, Persist: 64, SlotTimeMs: 100);
 }
 
 /// <summary>
@@ -369,14 +422,23 @@ public sealed class NetSimQpsk3600Fixture : NetSimTwoBpqFixture
 /// </summary>
 public sealed class NetSimNoisyAfsk1200Fixture : NetSimTwoBpqFixture
 {
-    public override string ChannelName => "AFSK 1200 (samoyed), noisy";
+    public override string ChannelName => "AFSK 1200 (Dire Wolf), noisy";
 
-    // Traffic starts at both ends independently here, so the usual
-    // shared-channel PERSIST 64 and 100 ms slot rather than the
-    // send-at-once tuning above.
-    protected override string PortYaml => "modem: { mode: afsk1200 }";
-    protected override string LinkYaml => "loss_db: 20\nnoise_db: 22";
-    protected override BpqRadio DefaultRadio => new(Speed: 1200, TxDelayMs: 150, Paclen: 120, Maxframe: 4, FrackMs: 3000, RespTimeMs: 1000, Retries: 10, Persist: 64, SlotTimeMs: 100);
+    // 156.5 dB each way, just above the FM threshold, with the squelch
+    // open (a hard squelch would never open for a signal this weak).
+    // Measured over KISS between two Dire Wolfs on this image, 100 of
+    // each: 13% of 136-byte frames lost (a full I-frame at PACLEN 120) and
+    // 1% of 22-byte ones (an RR is 15). 156.75 dB lost 18% and 1%; with 40
+    // of each, 156 dB lost 5% and none, 157 dB 40% and none: the edge is
+    // that steep. At 156.75 dB BPQ's links broke every minute or two.
+    //
+    // TXDELAY 300 rather than 150: at the edge a receiver that has just
+    // stopped transmitting needs more preamble. A full frame sent straight
+    // back after hearing the other end was lost 32% of the time with
+    // 150 ms and 23% with 300 ms (156.75 dB, 40 each).
+    protected override string PortYaml => NetSimAfsk1200Fixture.AfskPort;
+    protected override double DefaultPathLossDb => 156.5;
+    protected override BpqRadio DefaultRadio => new(Speed: 1200, TxDelayMs: 300, Paclen: 120, Maxframe: 4, FrackMs: 7000, RespTimeMs: 1000, Retries: 10, Persist: 64, SlotTimeMs: 100);
     protected override bool Wanted => SoakSettings.Requested;
 }
 

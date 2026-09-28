@@ -117,6 +117,7 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
         var report = Report(seed, traffic, elapsed, channel!.Summarise(started, started + elapsed));
         await File.WriteAllTextAsync(Path.Combine(reports, "soak.md"), report, ct);
         await File.WriteAllTextAsync(Path.Combine(reports, "soak-air.txt"), air!.Transcript(), ct);
+        await File.WriteAllTextAsync(Path.Combine(reports, "soak-channel.txt"), channel!.Timeline(started, started + elapsed), ct);
         foreach (var d in running) await File.WriteAllTextAsync(Path.Combine(reports, $"soak-{d.Name}.log"), d.Log, ct);
         TestContext.Current.TestOutputHelper?.WriteLine(report);
 

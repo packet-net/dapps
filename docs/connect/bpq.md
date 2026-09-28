@@ -31,6 +31,8 @@ The division of labour is worth spelling out, because it trips people up: an inb
 
 You can also enable AXIP / AXUDP / serial ports as you would for any application - DAPPS doesn't care which physical link AGW is fronting, as long as BPQ delivers sessions over the AGW socket.
 
+On a radio port, check its `FRACK` against [Tune](../tune.md#your-nodes-radio-port): it makes more difference to how fast mail moves than anything in DAPPS.
+
 ## Step 2: confirm AGW is reachable from where DAPPS will run
 
 ```bash
