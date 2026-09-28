@@ -205,7 +205,7 @@ public sealed class DappsExplorationTools(
             .OrderBy(c => c.Confidence switch { "high" => 0, "medium" => 1, _ => 2 })
             .ToList();
         var best = ordered.First();
-        sb.Append($"{ordered.Count} candidate(s); best is {best.Source} → {best.NextHop} ({best.Confidence} confidence). ");
+        sb.Append($"{ordered.Count} candidate(s); best is {best.Source} -> {best.NextHop} ({best.Confidence} confidence). ");
         sb.Append(best.RecommendedAction);
 
         return new RouteOpinion(

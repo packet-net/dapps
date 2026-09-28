@@ -79,16 +79,26 @@ public sealed class NodePoller(
                 TimeProvider = timeProvider,
                 MinQuiet = MinQuiet,
                 PromptConsumed = connectScript is not null,
+                CrossedCall = connection.CrossedCall,
                 RouteGossip = routeGossip,
                 Opened = s => openSessions?.Register(remoteCallsign, s),
             };
             try
             {
-                await session.RunAsync(ct);
+                // A newer session with the peer connecting here retires this one.
+                using var running = CancellationTokenSource.CreateLinkedTokenSource(ct, connection.Retired);
+                await session.RunAsync(running.Token);
             }
             finally
             {
                 openSessions?.Unregister(remoteCallsign, session);
+            }
+            if (connection.Retired.IsCancellationRequested)
+            {
+                // The link is a newer session's; this poll's work goes on there.
+                logger.LogInformation("Poll of {0} gave way to a newer session with it", remoteCallsign);
+                await connection.AbandonAsync();
+                return new PollResult(remoteCallsign, true, session.Delivered, "", at);
             }
             if (!session.Established)
             {

@@ -18,33 +18,39 @@ namespace dapps.core.Services;
 /// destination back-to-back with no gap of its own, so this supplies
 /// one.
 ///
+/// Each release adds up to <paramref name="spread"/> more at random, so
+/// two nodes whose link failed together don't redial each other at the
+/// same moment and cross again.
+///
 /// Time comes from the injected <see cref="TimeProvider"/> so tests
 /// drive it with a fake clock rather than sleeping. Keys are opaque
 /// strings; <see cref="BearerSwitchingOutboundTransport"/> builds them
 /// from (bearer, local, remote, port).
 /// </summary>
-public sealed class LinkSettleGate(TimeProvider timeProvider, TimeSpan settleDelay)
+public sealed class LinkSettleGate(TimeProvider timeProvider, TimeSpan settleDelay, TimeSpan spread = default, Random? random = null)
 {
     private readonly Lock gate = new();
-    private readonly Dictionary<string, DateTimeOffset> releasedAt = new();
+    private readonly Random random = random ?? Random.Shared;
+
+    /// <summary>When each recently released key may be dialled again.</summary>
+    private readonly Dictionary<string, DateTimeOffset> readyAt = new();
 
     public TimeSpan SettleDelay { get; } = settleDelay;
 
     /// <summary>Number of keys currently remembered; exposed for tests.</summary>
     internal int TrackedKeys
     {
-        get { lock (gate) return releasedAt.Count; }
+        get { lock (gate) return readyAt.Count; }
     }
 
     /// <summary>How much longer a connect to <paramref name="key"/> has
     /// to wait right now. Zero when nothing is pending.</summary>
     public TimeSpan PendingWait(string key)
     {
-        if (SettleDelay <= TimeSpan.Zero) return TimeSpan.Zero;
         lock (gate)
         {
-            if (!releasedAt.TryGetValue(key, out var last)) return TimeSpan.Zero;
-            var wait = SettleDelay - (timeProvider.GetUtcNow() - last);
+            if (!readyAt.TryGetValue(key, out var ready)) return TimeSpan.Zero;
+            var wait = ready - timeProvider.GetUtcNow();
             return wait > TimeSpan.Zero ? wait : TimeSpan.Zero;
         }
     }
@@ -68,14 +74,15 @@ public sealed class LinkSettleGate(TimeProvider timeProvider, TimeSpan settleDel
     /// number of destinations dialled within one settle window.</summary>
     public void RecordRelease(string key)
     {
-        if (SettleDelay <= TimeSpan.Zero) return;
+        if (SettleDelay <= TimeSpan.Zero && spread <= TimeSpan.Zero) return;
         var now = timeProvider.GetUtcNow();
         lock (gate)
         {
-            releasedAt[key] = now;
-            foreach (var stale in releasedAt.Where(kv => now - kv.Value >= SettleDelay).Select(kv => kv.Key).ToList())
+            var extra = spread > TimeSpan.Zero ? spread * random.NextDouble() : TimeSpan.Zero;
+            readyAt[key] = now + SettleDelay + extra;
+            foreach (var stale in readyAt.Where(kv => kv.Value <= now).Select(kv => kv.Key).ToList())
             {
-                releasedAt.Remove(stale);
+                readyAt.Remove(stale);
             }
         }
     }

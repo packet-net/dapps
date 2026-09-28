@@ -25,7 +25,7 @@ public sealed class OutboundDestinationBackoffTests
     public void RecordFailure_PutsTheDestinationInCooldown()
     {
         var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-01T00:00:00Z"));
-        var backoff = new OutboundDestinationBackoff(clock);
+        var backoff = new OutboundDestinationBackoff(clock, spread: 0);
 
         var nextRetryAtUtc = backoff.RecordFailure("N0DEST");
 
@@ -38,7 +38,7 @@ public sealed class OutboundDestinationBackoffTests
     public void IsInCooldown_AfterTheDelayElapses_ReturnsFalse()
     {
         var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-01T00:00:00Z"));
-        var backoff = new OutboundDestinationBackoff(clock);
+        var backoff = new OutboundDestinationBackoff(clock, spread: 0);
         backoff.RecordFailure("N0DEST");
 
         clock.Advance(TimeSpan.FromSeconds(11));
@@ -51,7 +51,7 @@ public sealed class OutboundDestinationBackoffTests
     public void RecordFailure_Repeatedly_EscalatesJustForThatDestination()
     {
         var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-01T00:00:00Z"));
-        var backoff = new OutboundDestinationBackoff(clock);
+        var backoff = new OutboundDestinationBackoff(clock, spread: 0);
         var now = clock.GetUtcNow();
 
         backoff.RecordFailure("N0DEST").Should().Be(now + TimeSpan.FromSeconds(10));
@@ -91,7 +91,7 @@ public sealed class OutboundDestinationBackoffTests
     public void RecordFailure_AfterSuccess_RestartsAtTheFastEndOfTheRamp()
     {
         var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-01T00:00:00Z"));
-        var backoff = new OutboundDestinationBackoff(clock);
+        var backoff = new OutboundDestinationBackoff(clock, spread: 0);
         backoff.RecordFailure("N0DEST");
         backoff.RecordFailure("N0DEST");
         backoff.RecordFailure("N0DEST");
@@ -110,5 +110,17 @@ public sealed class OutboundDestinationBackoffTests
         backoff.RecordFailure("n0dest-1");
 
         backoff.IsInCooldown("N0DEST-1", out _).Should().BeTrue("callsigns are conventionally upper-case but shouldn't require exact casing to match");
+    }
+
+    [Fact]
+    public void ByDefault_CooldownsAreSpreadAtRandom_SoTwoNodesDontRetryTogether()
+    {
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-01T00:00:00Z"));
+        var retries = Enumerable.Range(0, 20)
+            .Select(_ => new OutboundDestinationBackoff(clock).RecordFailure("N0DEST") - clock.GetUtcNow())
+            .ToList();
+
+        retries.Should().AllSatisfy(d => d.Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(10)).And.BeLessThan(TimeSpan.FromSeconds(15)));
+        retries.Distinct().Count().Should().BeGreaterThan(15);
     }
 }

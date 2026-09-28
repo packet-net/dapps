@@ -78,7 +78,7 @@ public sealed class DatabaseRoutingContext(
         await database.UpsertDiscoveredPathAsync(destinationBaseCallsign, intermediates, DateTime.UtcNow);
         if (significant)
         {
-            var summary = intermediates.Count == 0 ? "(direct)" : string.Join("→", intermediates);
+            var summary = intermediates.Count == 0 ? "(direct)" : string.Join("->", intermediates);
             metrics?.RecordRouteLearned(destinationBaseCallsign, summary);
         }
     }

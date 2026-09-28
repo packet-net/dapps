@@ -256,7 +256,7 @@ public static class DbStartup
             existing.Value = envValue;
             db.Update(existing);
             logger?.LogInformation(
-                "SystemOption {Key} applied from environment ({EnvVar}) — this value is deployment-managed; " +
+                "SystemOption {Key} applied from environment ({EnvVar}); this value is deployment-managed; " +
                 "dashboard edits will be overridden while the variable remains set",
                 key, envKey);
         }

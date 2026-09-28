@@ -398,7 +398,7 @@ public sealed class Rhpv2InboundService(
                 if (taken.Count > 0)
                 {
                     logger.LogInformation(
-                        "RHP inbound: derived callsign {winner} — {taken} was taken on the node",
+                        "RHP inbound: derived callsign {winner}: {taken} was taken on the node",
                         candidate, string.Join(", ", taken.Select(t => $"-{t.Split('-')[^1]}")));
                     // Reload so every consumer (outbound forwarder,
                     // beacons, UI) sees the confirmed identity. The
@@ -418,7 +418,7 @@ public sealed class Rhpv2InboundService(
         // DAPPS_CALLSIGN, or the next daemon restart re-derives and
         // probes again.
         logger.LogError(
-            "RHP inbound: no free SSID for the derived callsign {call} — every candidate ({candidates}) is taken " +
+            "RHP inbound: no free SSID for the derived callsign {call}: every candidate ({candidates}) is taken " +
             "on the node. Reverting to setup-required mode; configure a callsign via the dashboard or DAPPS_CALLSIGN.",
             opts.Callsign, string.Join(", ", candidates));
         DbStartup.AbandonDerivedCallsign();

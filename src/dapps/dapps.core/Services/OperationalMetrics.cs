@@ -72,7 +72,7 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
         n.LastError = null;
         _lastForwardSuccessAt = now;
         Interlocked.Increment(ref n._successCount);
-        Push("forward.ok", $"{id} → {callsign} ({bytes} B)");
+        Push("forward.ok", $"{id} -> {callsign} ({bytes} B)");
     }
 
     public void RecordForwardFailure(string id, string callsign, int bytes, string? error)
@@ -83,7 +83,7 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
         n.LastFailureAt = timeProvider.GetUtcNow().UtcDateTime;
         n.LastError = error;
         Interlocked.Increment(ref n._failureCount);
-        Push("forward.fail", $"{id} → {callsign} ({bytes} B): {error}");
+        Push("forward.fail", $"{id} -> {callsign} ({bytes} B): {error}");
     }
 
     public void RecordTtlExpired(string id, string destination)

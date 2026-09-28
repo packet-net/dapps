@@ -76,6 +76,9 @@ public sealed class ExchangeSession
     private bool peerQuit;
     private bool done;
     private int noiseBytes;
+    private int noiseSinceOwn;
+    private bool heardDapps;
+    private DateTimeOffset ownSentAt;
     private DateTimeOffset started;
     private DateTimeOffset lastHeard;
     private DateTimeOffset lastTraffic;
@@ -137,6 +140,14 @@ public sealed class ExchangeSession
 
     /// <summary>For a caller: a connect script already read the prompt.</summary>
     public bool PromptConsumed { get; init; }
+
+    /// <summary>
+    /// For a caller: completes if the transport saw the peer's own call to
+    /// us cross ours (<see cref="Transport.IDappsConnection.CrossedCall"/>).
+    /// Neither end is answering then, so the caller sends its exchange at
+    /// once instead of waiting out <see cref="PromptWait"/>.
+    /// </summary>
+    public Task? CrossedCall { get; init; }
 
     /// <summary>For a caller: pull the peer's routes before the exchange
     /// when the gossip gate says so.</summary>
@@ -240,13 +251,15 @@ public sealed class ExchangeSession
     /// back to the queue, except that a session we dialled which ended
     /// without a <c>quit</c> (the peer hung up, the link failed or went
     /// silent, the stream went out of step) fails its oldest one: the
-    /// neighbour gets a cooldown, and routing learns of it. Work handed to
-    /// the session and not started yet is deferred too, so every message
-    /// handed out gets an outcome, a flood copy included.
+    /// neighbour gets a cooldown, and routing learns of it. Not when
+    /// <paramref name="deferAll"/>: we're shutting down, or the link went
+    /// to a newer session. Work handed to the session and not started yet
+    /// is deferred too, so every message handed out gets an outcome, a
+    /// flood copy included.
     /// </summary>
-    private async Task SettleUnfinishedAsync(bool shuttingDown)
+    private async Task SettleUnfinishedAsync(bool deferAll)
     {
-        var failOldest = dialled && Established && !quitting && !peerQuit && !shuttingDown;
+        var failOldest = dialled && Established && !quitting && !peerQuit && !deferAll;
         foreach (var o in unanswered.ToList())
         {
             await CompleteAsync(o, failOldest
@@ -324,6 +337,32 @@ public sealed class ExchangeSession
         if (unheard.Count > 0) return true;
         if (!dialled) return false;
 
+        if (!ownSent && !awaitingRoutes && CrossedCall is { IsCompleted: true })
+        {
+            logger.LogInformation("Our call to {0} crossed its call to us, so no prompt is coming; sending our exchange now", peer);
+            SendOwnExchange();
+            return true;
+        }
+
+        if (ownSent && !Established && noiseSinceOwn > 0 && !heardDapps && now - ownSentAt >= PromptWait)
+        {
+            // Our rules went, and what came back wasn't DAPPS: a node's
+            // command prompt, where BPQ leaves a link it has reset. (A
+            // peer that sends us DAPPS traffic is a DAPPS node, whatever
+            // else we heard: the tail of a message cut off when its node
+            // moved the link, say. Its rules follow when it sees ours.)
+            // Two known costs, both one cooldown at worst: a cut-off tail
+            // with nothing DAPPS after it yet counts as other text, so a
+            // peer whose rules take over 10 s to come back (a busy 1200
+            // baud channel) is hung up on; and the 10 s run from when our
+            // exchange was queued, not from when it went on air.
+            logger.LogWarning("No exchange from {0} {1:F0}s after ours, only other text: whatever answered isn't a DAPPS session",
+                peer, PromptWait.TotalSeconds);
+            Failure = $"no exchange from {peer}, only other text";
+            End();
+            return true;
+        }
+
         if (!ownSent && !awaitingRoutes && now - started >= PromptWait)
         {
             if (noiseBytes > 0)
@@ -361,6 +400,7 @@ public sealed class ExchangeSession
         foreach (var o in unanswered) next = Min(next, o.SentAt + AnswerTimeout);
         if (!dialled) return next;
         if (!ownSent && !awaitingRoutes) next = Min(next, started + PromptWait);
+        if (ownSent && !Established && noiseSinceOwn > 0 && !heardDapps) next = Min(next, ownSentAt + PromptWait);
         if (Established)
         {
             next = Min(next, started + MaxLength);
@@ -385,6 +425,7 @@ public sealed class ExchangeSession
             data = link.WaitForDataAsync(waiting.Token).AsTask();
             var waits = new List<Task> { data, Task.Delay(delay, TimeProvider, waiting.Token) };
             if (CanSend) waits.Add(work.Reader.WaitToReadAsync(waiting.Token).AsTask());
+            if (dialled && !ownSent && !awaitingRoutes && CrossedCall is { IsCompleted: false } crossed) waits.Add(crossed);
             await Task.WhenAny(waits);
             await waiting.CancelAsync();
         }
@@ -452,13 +493,13 @@ public sealed class ExchangeSession
                 await OnExchangeAsync(line);
                 return;
             case "msg":
-                await ReceiveMessageAsync(line, ct);
+                if (await ReceiveMessageAsync(line, ct)) HeardExchangeTraffic();
                 return;
             case "ihave":
-                await ReceiveOfferAsync(line, ct);
+                if (await ReceiveOfferAsync(line, ct)) HeardExchangeTraffic();
                 return;
             case "data":
-                await ReceiveDataAsync(line, ct);
+                if (await ReceiveDataAsync(line, ct)) HeardExchangeTraffic();
                 return;
         }
 
@@ -470,9 +511,14 @@ public sealed class ExchangeSession
             return;
         }
 
-        if ((Established || dialled) && id is not null && verb is "send" or "ack" or "no" or "bad" or "error")
+        // Answers are taken before the exchange too: they arrive then when
+        // BPQ has moved a link that was mid-exchange onto this session.
+        // Only with a message id, though: before the exchange, a line such
+        // as "no such command" is something else answering, not DAPPS.
+        if (id is not null && (Established || IsMessageId(id)) && verb is "send" or "ack" or "no" or "bad" or "error")
         {
             await OnAnswerAsync(verb, id, line, ct);
+            HeardExchangeTraffic();
             return;
         }
 
@@ -502,10 +548,31 @@ public sealed class ExchangeSession
         {
             // A caller hearing something other than DAPPS: a node banner.
             noiseBytes += line.Length;
+            if (ownSent) noiseSinceOwn += line.Length;
         }
     }
 
     private static bool IsQuit(string line) => QuitCommands.Contains(line.Trim().ToLowerInvariant());
+
+    /// <summary>A message id as DAPPS writes it: 7 hex digits.</summary>
+    private static bool IsMessageId(string? id) => id is { Length: 7 } && id.All(char.IsAsciiHexDigit);
+
+    /// <summary>
+    /// A caller hearing exchange traffic before any prompt or rules: the
+    /// peer is mid-exchange with the session this link had before (BPQ
+    /// moved the link to ours). No prompt is coming, so our rules go now,
+    /// and their new tag has the peer send its rules and anything
+    /// unanswered again. Only for lines that are clearly DAPPS (a valid
+    /// header, or an answer with a message id), so that whatever else
+    /// answers a call still fails for want of a prompt.
+    /// </summary>
+    private void HeardExchangeTraffic()
+    {
+        heardDapps = true;
+        if (!dialled || ownSent || awaitingRoutes || done) return;
+        logger.LogInformation("{0} is mid-exchange with an earlier session on this link; sending our exchange now", peer);
+        SendOwnExchange();
+    }
 
     private void Say(string text, bool end)
     {
@@ -572,6 +639,7 @@ public sealed class ExchangeSession
     {
         Queue(OwnRules.ToLine());
         ownSent = true;
+        ownSentAt = Now;
         if (PeerRules is not null) Establish();
     }
 
@@ -824,20 +892,21 @@ public sealed class ExchangeSession
 
     // ---- Receiving ----
 
-    private async Task ReceiveOfferAsync(string line, CancellationToken ct)
+    /// <summary>Answers an <c>ihave</c>. True if it was a valid one.</summary>
+    private async Task<bool> ReceiveOfferAsync(string line, CancellationToken ct)
     {
         var result = IHaveValidator.Validate(line);
         if (!result.IsValid)
         {
             logger.LogWarning("Refusing an offer from {0}: {1}", peer, result.Error);
             Queue($"error {result.Id ?? "??"}\n");
-            return;
+            return false;
         }
         var offer = result.Offer!;
         if (WontTake(offer) is { } why)
         {
             Queue($"no {offer.Id} {why}\n");
-            return;
+            return true;
         }
         if (await inbox!.HasAsync(offer.Id, offer.Salt, offer.Length, ct))
         {
@@ -845,14 +914,16 @@ public sealed class ExchangeSession
             // say so now, and the payload doesn't go over the air again.
             logger.LogInformation("Offered {0}, which we already have; answering ack", offer.Id);
             Queue($"ack {offer.Id}\n");
-            return;
+            return true;
         }
         logger.LogInformation("Accepting offer {0} (len={1}, fmt={2}, dst={3})", offer.Id, offer.Length, offer.Format, offer.Destination);
         accepted[offer.Id] = offer;
         Queue($"send {offer.Id}\n");
+        return true;
     }
 
-    private async Task ReceiveMessageAsync(string line, CancellationToken ct)
+    /// <summary>Reads and answers a <c>msg</c>. True if its header was valid.</summary>
+    private async Task<bool> ReceiveMessageAsync(string line, CancellationToken ct)
     {
         if (!IHaveValidator.TryGetWireLength(line, out var id, out var wireLength) || wireLength > MaxWireBytes)
         {
@@ -860,7 +931,7 @@ public sealed class ExchangeSession
             // can be read either.
             logger.LogWarning("Can't tell how long the payload after '{0}' is; ending the session with {1}", Printable(line), peer);
             End();
-            return;
+            return false;
         }
         var wire = await ReadPayloadAsync(wireLength, ct);
         var result = IHaveValidator.Validate(line);
@@ -868,18 +939,20 @@ public sealed class ExchangeSession
         {
             logger.LogWarning("Refusing a message from {0}: {1}", peer, result.Error);
             Queue($"error {id}\n");
-            return;
+            return false;
         }
         var offer = result.Offer!;
         if (WontTake(offer) is { } why)
         {
             Queue($"no {offer.Id} {why}\n");
-            return;
+            return true;
         }
         await AcceptPayloadAsync(offer, wire, ct);
+        return true;
     }
 
-    private async Task ReceiveDataAsync(string line, CancellationToken ct)
+    /// <summary>Reads and answers a <c>data</c>. True if it was for an offer we accepted.</summary>
+    private async Task<bool> ReceiveDataAsync(string line, CancellationToken ct)
     {
         var parts = line.Split(' ');
         if (parts.Length != 2 || !accepted.Remove(parts[1], out var offer))
@@ -887,10 +960,11 @@ public sealed class ExchangeSession
             logger.LogWarning("'{0}' from {1} isn't for an offer we accepted, so its length is unknown; ending the session",
                 Printable(line), peer);
             End();
-            return;
+            return false;
         }
         var wire = await ReadPayloadAsync(offer.Format == "p" ? offer.Length : offer.CompressedLength!.Value, ct);
         await AcceptPayloadAsync(offer, wire, ct);
+        return true;
     }
 
     /// <summary>Why we won't take a message, or null when we will.</summary>

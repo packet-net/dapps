@@ -176,7 +176,7 @@ public sealed class OutboundForwarderServiceTests : IAsyncLifetime
     public async Task ADestinationComingOutOfCooldown_WakesTheForwarder()
     {
         var time = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(DateTimeOffset.UtcNow);
-        var backoff = new OutboundDestinationBackoff(time);
+        var backoff = new OutboundDestinationBackoff(time, spread: 0);
         backoff.RecordFailure("G0DEST-1");   // first failure: 10 s cooldown
         var sp = new ServiceCollection().AddSingleton(outbound).AddSingleton(new ForwarderWakeup()).AddSingleton(backoff)
             .BuildServiceProvider();

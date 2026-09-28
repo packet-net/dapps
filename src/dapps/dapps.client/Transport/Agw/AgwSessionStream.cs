@@ -8,18 +8,24 @@ namespace dapps.client.Transport.Agw;
 ///   - ReadAsync pulls 'D' frames from the wire and returns their payloads
 ///     to the caller, buffering any leftover when the caller's buffer is
 ///     smaller than the frame.
-/// A 'd' (lowercase, remote-disconnected) frame is treated as EOF.
+/// A 'd' (lowercase, remote-disconnected) frame is treated as EOF. Any
+/// other frame (monitoring, if it was turned on) goes to
+/// <paramref name="onOther"/>, if given.
 /// </summary>
 internal sealed class AgwSessionStream(
     AgwFrameTransport framing,
     byte port,
     string callfrom,
     string callto,
-    ILogger logger) : Stream
+    ILogger logger,
+    Action<AgwFrame>? onOther = null) : Stream
 {
     private byte[] readBuffer = [];
     private int readPos;
-    private bool disconnected;
+    private volatile bool disconnected;
+
+    /// <summary>The node has told us the link is gone: a 'd' came.</summary>
+    public bool RemoteDisconnected => disconnected;
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
     {
@@ -36,10 +42,10 @@ internal sealed class AgwSessionStream(
                     break;
                 case 'd':
                     disconnected = true;
-                    logger.LogInformation("AGW: remote disconnected ({0}↔{1})", frame.CallFrom, frame.CallTo);
+                    logger.LogInformation("AGW: remote disconnected ({0}<->{1})", frame.CallFrom, frame.CallTo);
                     return 0;
                 default:
-                    logger.LogDebug("AGW: ignoring frame kind '{0}' on session ({1}↔{2})", frame.Kind, callfrom, callto);
+                    onOther?.Invoke(frame);
                     break;
             }
         }

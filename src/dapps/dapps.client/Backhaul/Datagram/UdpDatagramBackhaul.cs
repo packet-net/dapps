@@ -78,7 +78,7 @@ public sealed class UdpDatagramBackhaul : IDappsBackhaul, IDisposable
             var fragments = Packetiser.Split(message.Id, encoded, _mtu);
 
             _logger.LogInformation(
-                "UDP backhaul: sending {0} ({1} bytes encoded → {2} fragment(s) @ mtu={3}) to {4}",
+                "UDP backhaul: sending {0} ({1} bytes encoded -> {2} fragment(s) @ mtu={3}) to {4}",
                 message.Id, encoded.Length, fragments.Count, _mtu, endpoint);
 
             foreach (var fragment in fragments)

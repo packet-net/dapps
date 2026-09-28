@@ -19,9 +19,14 @@ namespace dapps.client.Backhaul;
 ///
 /// Crossed calls: when two neighbours dial each other at once, each
 /// node's BPQ can attach its link to its own outbound session, so
-/// neither hears a prompt. The session copes by itself: after a few
-/// seconds of silence each caller sends its <c>exchange</c> anyway, and
-/// the two sessions carry on as if one had answered.
+/// neither hears a prompt. The session copes by itself: each caller
+/// sends its <c>exchange</c> as soon as the transport says the calls
+/// crossed, or after a few seconds of silence, and the two sessions
+/// carry on as if one had answered.
+///
+/// Moved links: a newer session with the peer at this node takes the
+/// link (<see cref="IDappsConnection.Retired"/>); ours stops and defers
+/// what it had.
 /// </summary>
 public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
 {
@@ -199,6 +204,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                 MinQuiet = MinQuiet,
                 MaxLength = MaxHold,
                 PromptConsumed = route.ConnectScript is not null,
+                CrossedCall = connection.CrossedCall,
                 RouteGossip = routeGossip,
                 Opened = s => OnOpened(route, s),
             };
@@ -244,8 +250,9 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         {
             // The session ended before our first message went. If it never
             // got going, that's the neighbour failing; otherwise it just
-            // ended, and the message waits for the next one.
-            await batch.CompleteAsync(first, session.Established
+            // ended, or gave way to a newer session with the peer, and the
+            // message waits for the next one.
+            await batch.CompleteAsync(first, session.Established || connection.Retired.IsCancellationRequested
                 ? BackhaulSendResult.Defer($"session with {route.Callsign} ended; {first.Id} stays queued")
                 : BackhaulSendResult.Fail(session.Failure ?? $"no session with {route.Callsign}"), sw.Elapsed, ct);
         }
@@ -273,11 +280,19 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         sessionOpened?.Invoke();
     }
 
+    /// <summary>
+    /// Runs the session until it ends, or until a newer session with the
+    /// same peer connects at this node and the link goes to that one
+    /// (<see cref="IDappsConnection.Retired"/>): then it stops at once,
+    /// what it had is deferred, and the connection is dropped without a
+    /// disconnect.
+    /// </summary>
     private async Task RunAsync(ExchangeSession session, BackhaulRoute route, IDappsConnection connection, PumpedReadStream stream, CancellationToken ct)
     {
         try
         {
-            await session.RunAsync(ct);
+            using var running = CancellationTokenSource.CreateLinkedTokenSource(ct, connection.Retired);
+            await session.RunAsync(running.Token);
         }
         finally
         {
@@ -285,17 +300,30 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             {
                 open.TryRemove(kv);
             }
-            await CloseAsync(connection, stream);
-            if (session.Established)
+            var retired = connection.Retired.IsCancellationRequested;
+            await CloseAsync(connection, stream, abandon: retired);
+            if (retired)
+            {
+                logger.LogInformation("Session with {0} retired: a newer session with it has the link", route.Callsign);
+            }
+            else if (session.Established)
             {
                 logger.LogInformation("Session with {0} closed", route.Callsign);
             }
         }
     }
 
-    private static async Task CloseAsync(IDappsConnection connection, PumpedReadStream stream)
+    private static async Task CloseAsync(IDappsConnection connection, PumpedReadStream stream, bool abandon = false)
     {
-        try { await connection.DisposeAsync(); } catch (Exception) { /* already gone */ }
+        try
+        {
+            if (abandon) await connection.AbandonAsync();
+            else await connection.DisposeAsync();
+        }
+        catch (Exception)
+        {
+            // Already gone.
+        }
         stream.Dispose();
     }
 
@@ -333,9 +361,17 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         private int outstanding;
         private bool ranDry;
         private bool released;
-        private long lastProgressTicks;
+        private volatile bool firstHandedOut;
+        private long lastProgressTicks = clock.GetUtcNow().UtcTicks;
 
-        public bool FirstHandedOut { get; private set; }
+        /// <summary>
+        /// The first message has gone to the session. Set, and
+        /// <see cref="Started"/> completed, only once that hand-out is in
+        /// <see cref="LastProgress"/>: the wait for answers measures its
+        /// patience from there, and reading it any earlier once made it
+        /// look 60 s gone and give up at once.
+        /// </summary>
+        public bool FirstHandedOut => firstHandedOut;
         public Task Done => done.Task;
         public Task Started => started.Task;
 
@@ -348,17 +384,8 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             try
             {
                 if (released) return null;
-                BackhaulMessage? next;
-                if (!FirstHandedOut)
-                {
-                    FirstHandedOut = true;
-                    next = first;
-                    started.TrySetResult();
-                }
-                else
-                {
-                    next = await inner.NextAsync(ct);
-                }
+                var handingOutFirst = !firstHandedOut;
+                var next = handingOutFirst ? first : await inner.NextAsync(ct);
                 if (next is null)
                 {
                     ranDry = true;
@@ -368,6 +395,11 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                 {
                     outstanding++;
                     Progress();
+                }
+                if (handingOutFirst)
+                {
+                    firstHandedOut = true;
+                    started.TrySetResult();
                 }
                 return next;
             }

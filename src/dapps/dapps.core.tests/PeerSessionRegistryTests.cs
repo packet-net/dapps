@@ -118,4 +118,76 @@ public sealed class PeerSessionRegistryTests
 
         await registry.WaitUntilIdleAsync("G5ALF-3", ct).WaitAsync(TimeSpan.FromSeconds(5), ct);
     }
+
+    // One session per peer and port: when two end up open with the same
+    // peer on the same AGW port, the link is the newest one's, and the
+    // older ones are retired.
+
+    [Fact]
+    public void ANewlyConnectedSession_RetiresTheOlderOne_ButNotItself()
+    {
+        var registry = new PeerSessionRegistry();
+        using var older = registry.Acquire("M0AHN-3", "outbound", linkPort: 0);
+        using var newer = registry.Acquire("M0AHN-3", "inbound", linkPort: 0);
+
+        older.Retired.IsCancellationRequested.Should().BeTrue();
+        newer.Retired.IsCancellationRequested.Should().BeFalse();
+        registry.IsActive("M0AHN-3", out _).Should().BeTrue("a retired session still holds the peer until it has gone");
+    }
+
+    [Fact]
+    public void ADialStillConnecting_IsNotRetired_AndRetiresTheOthersOnceItConnects()
+    {
+        // The crossing at one node: our dial is on its way when the peer's
+        // call arrives, then BPQ confirms ours and moves the link to it.
+        var registry = new PeerSessionRegistry();
+        var dialling = registry.TryAcquire("M0AHN-3", "outbound", out _, linkPort: 0)!;
+        using var inbound = registry.Acquire("M0AHN-3", "inbound", linkPort: 0);
+        dialling.Retired.IsCancellationRequested.Should().BeFalse("it isn't connected yet");
+
+        registry.Connected(dialling).Should().BeTrue("it took the link from another session");
+
+        inbound.Retired.IsCancellationRequested.Should().BeTrue();
+        dialling.Retired.IsCancellationRequested.Should().BeFalse();
+        dialling.Dispose();
+    }
+
+    [Fact]
+    public void RetiringAPeer_LeavesOtherPeersAlone()
+    {
+        var registry = new PeerSessionRegistry();
+        using var other = registry.Acquire("G5ALF-3", "inbound", linkPort: 0);
+        using var older = registry.Acquire("M0AHN-3", "inbound", linkPort: 0);
+        using var newer = registry.Acquire("M0AHN-3", "inbound", linkPort: 0);
+
+        other.Retired.IsCancellationRequested.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ASessionWithThePeerOnAnotherPort_IsAnotherLink_AndIsLeftAlone()
+    {
+        // A peer reachable over RF on one port and AXIP on another.
+        var registry = new PeerSessionRegistry();
+        using var rf = registry.Acquire("M0AHN-3", "inbound", linkPort: 0);
+        var axip = registry.TryAcquire("M0AHN-3", "outbound", out _, linkPort: 2);
+        axip.Should().BeNull("dialling a peer with a session open is still held back, whatever the port");
+
+        using var axipInbound = registry.Acquire("M0AHN-3", "inbound", linkPort: 2);
+
+        rf.Retired.IsCancellationRequested.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ALeaseWithNoPort_NeverRetiresAnything_AndIsNeverRetired()
+    {
+        // RHPv2: not measured, so it takes no part.
+        var registry = new PeerSessionRegistry();
+        using var rhp = registry.Acquire("M0AHN-3", "inbound");
+        using var agw = registry.Acquire("M0AHN-3", "inbound", linkPort: 0);
+        using var rhpAgain = registry.Acquire("M0AHN-3", "inbound");
+
+        rhp.Retired.IsCancellationRequested.Should().BeFalse();
+        rhp.Retired.CanBeCanceled.Should().BeFalse();
+        agw.Retired.IsCancellationRequested.Should().BeFalse();
+    }
 }

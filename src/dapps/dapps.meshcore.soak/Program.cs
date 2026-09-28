@@ -68,7 +68,7 @@ double dropPct = a.GetDouble("drop-pct", 0);
 Func<BackhaulMessage, bool>? drop = dropPct > 0 ? (_ => Random.Shared.NextDouble() * 100 < dropPct) : null;
 
 // Passive discovery (#27): count the peers we learn about purely from hearing
-// their traffic — the same signal MeshCoreBearer feeds to Database.UpsertDiscoveredPeer
+// their traffic, the same signal MeshCoreBearer feeds to Database.UpsertDiscoveredPeer
 // in the integrated host. Each node should discover the other with no config.
 var discovery = new DiscoveryRecorder(self, log);
 var inbound = new MeshCoreInbound(
@@ -188,7 +188,7 @@ sealed class DiscoveryRecorder(string self, ILogger log)
         lock (_l)
             return _heard.Count == 0
                 ? "no peers discovered"
-                : string.Join(", ", _heard.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}×{kv.Value}"));
+                : string.Join(", ", _heard.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}x{kv.Value}"));
     }
 }
 

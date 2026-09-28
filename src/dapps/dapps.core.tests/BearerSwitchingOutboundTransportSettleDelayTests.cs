@@ -205,7 +205,7 @@ public sealed class BearerSwitchingOutboundTransportSettleDelayTests
             AgwPort = host.Port,
         });
         return new BearerSwitchingOutboundTransport(
-            options, NullLoggerFactory.Instance, AlwaysOpenTxGate.Instance, clock, settleDelay, peers);
+            options, NullLoggerFactory.Instance, AlwaysOpenTxGate.Instance, clock, settleDelay, peers, linkSettleSpread: TimeSpan.Zero);
     }
 
     /// <summary>Plays the local node for one outbound connect: ack the

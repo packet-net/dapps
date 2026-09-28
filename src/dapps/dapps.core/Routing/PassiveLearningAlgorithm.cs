@@ -57,14 +57,14 @@ public sealed class PassiveLearningAlgorithm(
         if (nextHop is null)
         {
             logger.LogInformation(
-                "Learned route for {0} → {1} discarded: next-hop neighbour no longer exists",
+                "Learned route for {0} -> {1} discarded: next-hop neighbour no longer exists",
                 destBaseCall, learned.NextHopCallsign);
             await ctx.RecordLearnedRouteFailureAsync(destBaseCall, invalidationThreshold: 1, ct);
             return new RouteDecision.Unreachable();
         }
 
         logger.LogInformation(
-            "Routing {0} for {1} via learned route → {2} (last seen {3:o}, failures={4})",
+            "Routing {0} for {1} via learned route -> {2} (last seen {3:o}, failures={4})",
             message.Id, message.Destination, nextHop.Callsign, learned.LastSeenAt, learned.ConsecutiveFailures);
 
         return new RouteDecision.NextHop(RouteBuilder.FromNeighbour(nextHop, ctx.DefaultBearerPort));
@@ -133,7 +133,7 @@ public sealed class PassiveLearningAlgorithm(
             if (newCount < 0)
             {
                 logger.LogInformation(
-                    "Learned route for {0} → {1} invalidated after {2} consecutive failures",
+                    "Learned route for {0} -> {1} invalidated after {2} consecutive failures",
                     destBaseCall, learned.NextHopCallsign, InvalidationThreshold);
             }
         }
