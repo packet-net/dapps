@@ -31,8 +31,8 @@ namespace dapps.client.Backhaul;
 /// oldest unanswered message fails instead, so the neighbour gets a
 /// cooldown and routing hears about it rather than the forwarder dialling
 /// straight back into a link that can't carry it. A session at either end
-/// that gets no answer to anything of ours for the answer timeout ends
-/// the same way.
+/// where, with ours waiting, neither answers nor any other DAPPS traffic
+/// have come for the answer timeout ends the same way.
 /// </para>
 /// </summary>
 public sealed class ExchangeSession
@@ -88,7 +88,7 @@ public sealed class ExchangeSession
     private DateTimeOffset started;
     private DateTimeOffset lastHeard;
     private DateTimeOffset lastTraffic;
-    private DateTimeOffset lastAnswered;
+    private DateTimeOffset lastProgress;
     private DateTimeOffset quitDeadline;
 
     /// <param name="stream">The connected link. Wrapped in a
@@ -273,8 +273,8 @@ public sealed class ExchangeSession
     /// What's still ours when the session ends. Unanswered messages go
     /// back to the queue, except that a session we dialled which ended
     /// without a <c>quit</c> (the peer hung up, the link failed or went
-    /// silent, the stream went out of step), or either end's session that
-    /// got no answers for the answer timeout, fails its oldest one: the
+    /// silent, the stream went out of step), or either end's session where
+    /// neither way moved for the answer timeout, fails its oldest one: the
     /// neighbour gets a cooldown, and routing learns of it. Not when
     /// <paramref name="deferAll"/>: we're shutting down, or the link went
     /// to a newer session. Work handed to the session and not started yet
@@ -288,7 +288,7 @@ public sealed class ExchangeSession
         {
             await CompleteAsync(o, failOldest
                 ? BackhaulSendResult.Fail(stuck
-                    ? $"no answer from {peer} to {o.Message.Id}, or anything else, in {AnswerTimeout.TotalSeconds:F0}s"
+                    ? $"no answer from {peer} to {o.Message.Id}, and nothing else from it, in {AnswerTimeout.TotalSeconds:F0}s"
                     : $"the session with {peer} broke off before {o.Message.Id} was answered")
                 : BackhaulSendResult.Defer($"session with {peer} ended before {o.Message.Id} was answered; it stays queued"));
             failOldest = false;
@@ -331,17 +331,18 @@ public sealed class ExchangeSession
 
     private bool CanSend => Established && !quitting && unanswered.Count < Window;
 
-    /// <summary>How long one of ours waits for its answer before we give
-    /// up on it: a peer that answers other messages but never this one
-    /// would otherwise keep the session, and the forwarder, waiting. The
-    /// inactivity timeout, whatever the hold. It runs from when the message
-    /// went or from the peer's last answer to anything of ours, whichever
-    /// is later: on a slow link a full window can take longer than this to
-    /// go on air, and while answers keep coming the link is working.</summary>
+    /// <summary>
+    /// How long the session waits, with something of ours unanswered, for
+    /// the link to make progress before it gives up on the link: the
+    /// inactivity timeout, whatever the hold. Progress is an answer to
+    /// anything of ours, or any DAPPS traffic from the peer. Near the edge
+    /// of range at 1200 baud the peer's answers can queue behind its own
+    /// mail for longer than this, while both directions are still moving.
+    /// </summary>
     private TimeSpan AnswerTimeout => InactivityTimeout;
 
-    /// <summary>When <paramref name="o"/> gives up waiting for its answer.</summary>
-    private DateTimeOffset AnswerDeadline(Outgoing o) => (o.SentAt > lastAnswered ? o.SentAt : lastAnswered) + AnswerTimeout;
+    /// <summary>When <paramref name="o"/> stops waiting for the link to move.</summary>
+    private DateTimeOffset AnswerDeadline(Outgoing o) => (o.SentAt > lastProgress ? o.SentAt : lastProgress) + AnswerTimeout;
 
     /// <summary>Acts on whichever timer has run out. True when it did something.</summary>
     private async Task<bool> CheckTimersAsync()
@@ -353,24 +354,24 @@ public sealed class ExchangeSession
             End();
             return true;
         }
+        if (Established && unanswered.Any(o => now >= AnswerDeadline(o)))
+        {
+            // Neither way has moved for that long: nothing of ours answered
+            // and no DAPPS traffic from the peer, with ours waiting. At the
+            // edge of range BPQ can resend the same frames for as long as
+            // the link stays up, and nothing gets through. A new link starts
+            // afresh. As for a break, the oldest counts as failed, so the
+            // neighbour gets a cooldown, and the rest go on the next session.
+            logger.LogWarning("Nothing answered by {0}, and nothing else from it, for {1:F0}s; ending the session",
+                peer, AnswerTimeout.TotalSeconds);
+            stuck = true;
+            End();
+            return true;
+        }
         if (now - lastHeard >= Inactivity)
         {
             logger.LogInformation("Nothing from {0} for {1:F0}s; closing the session", peer, Inactivity.TotalSeconds);
             Failure ??= Established ? null : $"no data from {peer} within {Inactivity.TotalSeconds:F0}s";
-            End();
-            return true;
-        }
-        if (unanswered.Any(o => now >= AnswerDeadline(o)))
-        {
-            // Nothing of ours answered for that long, though the link
-            // isn't silent: the peer can't read us (the stream is out of
-            // step), or the link can't carry our frames (at the edge of
-            // range BPQ can resend the same frame for as long as the link
-            // stays up). A new link starts both afresh. As for a break, the
-            // oldest counts as failed, so the neighbour gets a cooldown,
-            // and the rest go on the next session.
-            logger.LogWarning("Nothing answered by {0} for {1:F0}s; ending the session", peer, AnswerTimeout.TotalSeconds);
-            stuck = true;
             End();
             return true;
         }
@@ -540,15 +541,19 @@ public sealed class ExchangeSession
         {
             case ExchangeRules.Verb:
                 await OnExchangeAsync(line);
+                lastProgress = Now;
                 return;
             case "msg":
                 if (await ReceiveMessageAsync(line, ct)) HeardExchangeTraffic();
+                lastProgress = Now;
                 return;
             case "ihave":
                 if (await ReceiveOfferAsync(line, ct)) HeardExchangeTraffic();
+                lastProgress = Now;
                 return;
             case "data":
                 if (await ReceiveDataAsync(line, ct)) HeardExchangeTraffic();
+                lastProgress = Now;
                 return;
         }
 
@@ -870,7 +875,7 @@ public sealed class ExchangeSession
             logger.LogInformation("'{0}' from {1} for nothing of ours in flight; ignored", Printable(line), peer);
             return;
         }
-        lastAnswered = Now;
+        lastProgress = Now;
 
         switch (verb)
         {

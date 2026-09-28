@@ -773,31 +773,80 @@ public sealed class ExchangeSessionTests : IDisposable
     }
 
     [Fact]
-    public async Task ASessionWhoseMessagesGetNoAnswers_Ends_FailingTheOldestAndDeferringTheRest()
+    public async Task ALinkThatMovesNeitherWay_Ends_FailingTheOldestAndDeferringTheRest()
     {
-        // The link carries bytes but none of ours get answered: the peer's
-        // reader is out of step, or the link keeps losing our frames. At
-        // either end, a new link starts afresh; one failure, one cooldown.
-        var inbox = new RecordingInbox();
-        var (session, peer, run) = await CalleeAsync(inbox: inbox, inactivity: TimeSpan.FromSeconds(1));
+        // Ours went, and then nothing: no answers and no traffic of the
+        // peer's own. At the edge of range BPQ can resend the same frames
+        // for as long as the link stays up. At either end, a new link
+        // starts afresh; one failure, one cooldown.
+        var (session, peer, run) = await CalleeAsync(inactivity: TimeSpan.FromSeconds(1));
         await peer.WriteLineAsync(Rules(), Ct);
         var ours = Enumerable.Range(1, 3).Select(i => Message($"unanswered {i}", $"app@{Them}", i)).ToArray();
         var batch = new RecordingBatch(ours);
         session.TryTake(batch);
         foreach (var _ in ours) await peer.ReadWithPayloadAsync(Ct);
 
-        // The peer keeps talking (its own mail), so the link isn't silent.
-        for (var i = 0; i < 3 && !run.IsCompleted; i++)
-        {
-            try { await peer.SendMessageAsync(Message($"theirs {i}", $"app@{Us}", 10 + i), Ct); }
-            catch (IOException) { break; }  // it has already hung up
-            await Task.Delay(400, Ct);
-        }
-
         await batch.WaitForOutcomesAsync(3, Ct);
         await run.WaitAsync(Patience, Ct);
         batch.Outcomes.Single(o => o.Id == ours[0].Id).Result.Error.Should().Contain("no answer");
         batch.Outcomes.Where(o => o.Id != ours[0].Id).Should().AllSatisfy(o => o.Result.Deferred.Should().BeTrue());
+    }
+
+    [Fact]
+    public async Task APeerStillSendingItsOwnMail_KeepsTheSession_ThoughOursWaitLongerThanTheTimeout()
+    {
+        // Near the edge at 1200 baud the peer's answers queue behind its
+        // own mail for minutes, while both ways are moving.
+        var inbox = new RecordingInbox();
+        var ours = Message("waiting behind the peer's mail", $"app@{Them}", 1);
+        var batch = new RecordingBatch(ours);
+        var (session, peer, run, _) = await CallerAsync(new ExchangeSettings(HoldSeconds: 60), inbox, inactivity: TimeSpan.FromSeconds(1));
+        session.TryTake(batch);
+        await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
+        await peer.ReadLineAsync(Ct);
+        await peer.ReadWithPayloadAsync(Ct);
+
+        for (var i = 0; i < 6; i++)
+        {
+            await peer.SendMessageAsync(Message($"theirs {i}", $"app@{Us}", 10 + i), Ct);
+            await Task.Delay(400, Ct);
+        }
+        run.IsCompleted.Should().BeFalse("its mail kept arriving for 2.4 s, more than twice the timeout");
+
+        await peer.WriteLineAsync($"ack {ours.Id}", Ct);
+        await batch.WaitForOutcomesAsync(1, Ct);
+        batch.Outcomes.Single().Result.Accepted.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task APeerTricklingALongMessage_ThenAnsweringOurs_KeepsTheSession()
+    {
+        // One long message of the peer's takes longer than the timeout to
+        // arrive; our answer comes after it.
+        var inbox = new RecordingInbox();
+        var ours = Message("answered after the long one", $"app@{Them}", 1);
+        var batch = new RecordingBatch(ours);
+        var (session, peer, run, _) = await CallerAsync(new ExchangeSettings(HoldSeconds: 60), inbox, inactivity: TimeSpan.FromSeconds(1));
+        session.TryTake(batch);
+        await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
+        await peer.ReadLineAsync(Ct);
+        await peer.ReadWithPayloadAsync(Ct);
+
+        var longer = Message(new string('l', 1200), $"app@{Us}", 2);
+        var bytes = (byte[])[.. Encoding.UTF8.GetBytes(Line("msg", longer)), .. longer.Payload];
+        for (var offset = 0; offset < bytes.Length; offset += 100)
+        {
+            await peer.WriteAsync(bytes[offset..Math.Min(bytes.Length, offset + 100)], Ct);
+            await Task.Delay(200, Ct);   // 2.6 s in all
+        }
+        (await peer.ReadLineAsync(Ct)).Should().Be($"ack {longer.Id}");
+        await Task.Delay(300, Ct);
+        run.IsCompleted.Should().BeFalse();
+
+        await peer.WriteLineAsync($"ack {ours.Id}", Ct);
+        await batch.WaitForOutcomesAsync(1, Ct);
+        batch.Outcomes.Single().Result.Accepted.Should().BeTrue();
+        inbox.Texts.Should().Equal(new string('l', 1200));
     }
 
     [Fact]

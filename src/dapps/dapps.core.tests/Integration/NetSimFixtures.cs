@@ -367,18 +367,18 @@ public sealed class NetSimAfsk1200Fixture : NetSimTwoBpqFixture
     // the same moment (both dialling, as the crossed-call scenario makes
     // them) collide, and BPQ then retries both SABMs a FRACK apart, in
     // step, until they retry out: 1 to 4 dials a round and up to 90 s.
-    // With 64 and 100, 15 of 16 rounds took 1 or 2 dials and 9 to 29 s,
-    // on both modems. It costs the WPS scenario about 5 s at 1200 baud (44
-    // to 46 s against 38 to 39).
+    // With 64 and 100 most rounds took 1 or 2 dials and 9 to 29 s, on
+    // both modems (see CrossedCallScenarioTests for the rest). It costs
+    // the WPS scenario about 5 s at 1200 baud.
     //
     // FRACK longer than a burst plus the answer, as docs/tune.md says:
     // four full frames take about 4 s at 1200 baud, and BPQ times FRACK
     // from when it hands a burst to the TNC. With FRACK 3000 the WPS
     // scenario took 52 to 65 s, as BPQ polled into the far end's answer
-    // and lost both; with 7000 (BPQ's default), 38 to 39 s (PERSIST 255).
-    // RESPTIME 5000 instead of 1000 saved the far end's RR in the middle
-    // of each burst (37 to 38 s), but BPQ also waits RESPTIME, at least
-    // 3 s, before each REJ, which costs on a marginal link.
+    // and lost both; with 7000 (BPQ's default), 38 to 39 s (both with
+    // PERSIST 255). A longer RESPTIME saved the far end's RR in the middle
+    // of each burst, but BPQ also waits RESPTIME, at least 3 s, before
+    // each REJ, which costs on a marginal link.
     //
     // Squelch open (the radio's default here), as 1200 baud packet
     // stations usually run: the TNC's own carrier detect decides when the

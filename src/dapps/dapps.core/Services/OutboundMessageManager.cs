@@ -58,6 +58,19 @@ public class OutboundMessageManager(
     /// </summary>
     private readonly ConcurrentDictionary<string, byte> inFlight = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// Messages handed to an open session in a batch it hasn't taken them
+    /// from yet, with when. A session works through what it's handed as
+    /// its window allows, so without this every run (every 30 s at least)
+    /// handed it the same queued messages again, and when it ended each
+    /// was deferred once per copy.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, DateTime> handedToSession = new(StringComparer.Ordinal);
+
+    /// <summary>How long a hand-off holds a message back from later runs,
+    /// in case the session never gets to it.</summary>
+    internal TimeSpan HandOffPatience { get; set; } = TimeSpan.FromMinutes(10);
+
     /// <summary>Outcomes arrive from background sessions as well as from
     /// the run itself; routing and metrics see them one at a time.</summary>
     private readonly SemaphoreSlim outcomeGate = new(1, 1);
@@ -119,6 +132,7 @@ public class OutboundMessageManager(
         // deleted, sent another way) are no longer wanted.
         var queuedKeys = messages.Select(RefusalKey).ToHashSet(StringComparer.Ordinal);
         foreach (var key in refusals.Keys.Where(k => !queuedKeys.Contains(k)).ToList()) refusals.TryRemove(key, out _);
+        foreach (var id in handedToSession.Keys.Where(id => !seen.Contains(id)).ToList()) handedToSession.TryRemove(id, out _);
 
         // Messages for the same next hop go out together on one session
         // rather than one session each. The work runs in queue order: a
@@ -130,8 +144,13 @@ public class OutboundMessageManager(
 
         foreach (var message in messages)
         {
-            // Already going out on a session.
+            // Already going out on a session, or waiting in one's queue.
             if (inFlight.ContainsKey(message.Id)) continue;
+            if (handedToSession.TryGetValue(message.Id, out var handedAt))
+            {
+                if (DateTime.UtcNow - handedAt < HandOffPatience) continue;
+                handedToSession.TryRemove(message.Id, out _);
+            }
 
             var residualTtl = TtlMath.Residual(message.Ttl, message.CreatedAt, DateTime.UtcNow);
             if (residualTtl is <= 0)
@@ -254,6 +273,7 @@ public class OutboundMessageManager(
         // once, in the background: one we dialled, or one it dialled.
         // It's a live link, so this goes ahead even in a cooldown.
         batch.Detached = true;
+        batch.MarkHandedOff();
         if (backhaul.TryHandToOpenSession(route, batch))
         {
             logger.LogInformation("Handed {0} message(s) for {1} to the session we have open with it", batch.Count, route.Callsign);
@@ -264,6 +284,7 @@ public class OutboundMessageManager(
             logger.LogInformation("Handed {0} message(s) for {1} to the session open with it", batch.Count, route.Callsign);
             return;
         }
+        batch.UnmarkHandedOff();
         batch.Detached = false;
 
         if (batch.HandOffOnly)
@@ -457,12 +478,28 @@ public class OutboundMessageManager(
 
         public void Add(DbMessage row, IReadOnlyList<string>? sourceRoute) => queued.Enqueue((row, sourceRoute));
 
+        /// <summary>About to be handed to an open session: later runs leave
+        /// these messages alone until the session takes them.</summary>
+        public void MarkHandedOff()
+        {
+            var now = DateTime.UtcNow;
+            foreach (var (row, _) in queued) owner.handedToSession[row.Id] = now;
+        }
+
+        /// <summary>The hand-off didn't happen.</summary>
+        public void UnmarkHandedOff()
+        {
+            foreach (var (row, _) in queued) owner.handedToSession.TryRemove(row.Id, out _);
+        }
+
         public async ValueTask<BackhaulMessage?> NextAsync(CancellationToken ct)
         {
             while (true)
             {
                 if (queued.Count == 0 && !Detached) await PickUpNewlyQueuedAsync(ct);
                 if (!queued.TryDequeue(out var next)) return null;
+                // The session has it now: claimed below, or passed over.
+                if (Detached) owner.handedToSession.TryRemove(next.Row.Id, out _);
 
                 var residualTtl = TtlMath.Residual(next.Row.Ttl, next.Row.CreatedAt, DateTime.UtcNow);
                 if (residualTtl is <= 0)

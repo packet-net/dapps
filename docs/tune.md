@@ -8,18 +8,18 @@ On a radio link, how quickly mail moves depends more on your packet node's radio
 
 | BPQ setting | AFSK 1200 | QPSK 3600 (pdn-soundmodem) | Why |
 |---|---|---|---|
-| `FRACK` | 7000 | 4000 | Longer than your longest burst plus the answer. BPQ starts this timer when it hands a burst to the TNC, not when the burst has gone, so if it's too short BPQ polls the far end while it is still answering, and both are lost. |
+| `FRACK` | 7000 | 4000 | Longer than your longest burst plus the answer (below). BPQ starts this timer when it hands a burst to the TNC, not when the burst has gone, so if it's too short BPQ polls the far end while it is still answering, and both are lost. |
 | `RESPTIME` | 1000 | 1000 | BPQ's default. BPQ asks for an answer at the end of every burst anyway. A longer one saves the odd RR on a clean link, but BPQ also waits this long (3 s at least) before asking for a lost frame again. |
 | `MAXFRAME` | 4 | 7 | Frames per burst. |
 | `PACLEN` | 120 | 236 | Bytes per frame. On a marginal link, shorter frames are lost less often. |
-| `PERSIST`, `SLOTTIME` | 64, 100 | 64, 100 | The usual values, even on a link only your two nodes use. With 255, two nodes that both have mail dial at the same moment, their calls collide, and BPQ retries both in step until they give up: a minute or more. With 64 and 100 they sorted themselves out in 10 to 30 s, nearly every time. |
-| `TXDELAY` | As short as your radios allow; 300 or more on a weak link | As short as your radios allow | Every transmission pays it. At the edge of range, a radio that has just stopped transmitting misses the start of what comes straight back: a frame sent straight after hearing the other end was lost 32% of the time, against 8% after a quiet spell, even with 300 ms. With 150 ms it was worse. |
+| `PERSIST`, `SLOTTIME` | 64, 100 | 64, 100 | The usual values, even on a link only your two nodes use. With 255, two nodes whose calls start together collide, and BPQ repeats both a `FRACK` apart, still together, until they give up. |
+| `TXDELAY` | As short as your radios allow; 300 or more on a weak link | As short as your radios allow | Every transmission pays it. Near the edge of range, a radio that has just stopped transmitting misses the start of what comes straight back: in our tests a third of those frames were lost with 150 ms, and a quarter with 300 ms. |
 
-With `FRACK` 3000 at 1200 baud, Kevin's WPS replication took 52 to 65 s; with 7000, 38 to 39 s, with no collisions at all (44 to 46 s with `PERSIST` 64).
+With these settings, a test exchange of 8 posts and their acks between two nodes took 42 to 46 s at 1200 baud and 22 to 27 s at QPSK 3600, on one connection.
 
-The rule behind `FRACK`: a burst of `MAXFRAME` frames of `PACLEN` bytes takes about `MAXFRAME x (PACLEN + 20) x 8 / bit rate` seconds on air. At 1200 baud, 4 frames of 120 bytes take about 4 s; at 7200 bps (QPSK 3600), 7 frames of 236 bytes about 2 s. Set `FRACK` 3 s or so above that, and raise it if you raise `MAXFRAME` or `PACLEN`.
+The rule behind `FRACK`: a burst of `MAXFRAME` frames of `PACLEN` bytes takes about `MAXFRAME x (PACLEN + 20) x 8 / bit rate` seconds on air. At 1200 baud, 4 frames of 120 bytes take about 4 s; at 7200 bps (QPSK 3600), 7 frames of 236 bytes about 2 s. Set `FRACK` 2 to 3 s above that, and raise it if you raise `MAXFRAME` or `PACLEN`.
 
-If your TNC supports it, `KISSOPTIONS=ACKMODE` has the TNC tell BPQ when each frame has actually gone, so `FRACK` runs from then. pdn-soundmodem supports it (Dire Wolf 1.6 doesn't); with `FRACK` set as above it made no difference.
+If your TNC supports it, `KISSOPTIONS=ACKMODE` has the TNC tell BPQ when each frame has actually gone, so `FRACK` runs from then. pdn-soundmodem supports it; Dire Wolf doesn't. With `FRACK` set as above it made no difference.
 
 ## Airtime budget
 

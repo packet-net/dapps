@@ -5,7 +5,7 @@ using AwesomeAssertions;
 namespace dapps.core.tests.Integration;
 
 /// <summary>
-/// Both nodes have mail for each other at the same moment, so both dial:
+/// Both nodes have mail for each other within a second or two, so both dial:
 /// the calls cross on the air. Two real DAPPS daemons on the simulated
 /// radio channel (<see cref="NetSimTwoBpqFixture"/>), a few rounds of it,
 /// each round starting from no link. Every message must arrive exactly
@@ -39,8 +39,7 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
     /// <summary>How long a round may take, first submit to last delivery.</summary>
     protected abstract TimeSpan RoundLimit { get; }
 
-    /// <summary>Most dials a round may take between the two nodes: one each,
-    /// unless the channel can lose both calls outright.</summary>
+    /// <summary>Most dials a round may take between the two nodes.</summary>
     protected virtual int MaxDials => 2;
 
     /// <summary>How long the round straight after the BPQs restart may take.</summary>
@@ -80,13 +79,15 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
 
         var duplicates = await DuplicatesAsync(a, b, ct);
         var report = Report(results, duplicates, channel!.Summarise(started, DateTime.UtcNow),
-            $"Both nodes submit {MessagesEach} messages to each other at the same moment, so both dial. {Rounds} rounds, each from no link.");
+            $"Both nodes submit {MessagesEach} messages to each other within 0.3 to 2 s, so both dial. {Rounds} rounds, each from no link.");
         WriteReport(report, "crossed-");
 
         results.Should().AllSatisfy(r => r.Complete.Should().BeTrue($"round {r.Round}'s messages should all arrive within {RoundLimit.TotalSeconds:F0}s\n{report}\n{Diagnostics()}"));
         duplicates.Should().Be(0, "every message should arrive exactly once\n" + report);
         results.Should().AllSatisfy(r => r.Dials.Should().BeLessThanOrEqualTo(MaxDials, $"round {r.Round}: {MaxDials} dials at most\n{report}"));
-        results.Should().AllSatisfy(r => r.Fallbacks.Should().Be(0, $"round {r.Round}: no session should have had to wait out the prompt\n{report}"));
+        // A round that needed more than one call each went through BPQ's
+        // link reset, where waiting out the prompt is the way back.
+        results.Where(r => r.Dials <= 2).Should().AllSatisfy(r => r.Fallbacks.Should().Be(0, $"round {r.Round}: no session should have had to wait out the prompt\n{report}"));
         results.Where(r => r.Dials == 2).Should().AllSatisfy(r => r.Spotted.Should().BePositive(
             $"round {r.Round}: both nodes dialled, so one of them should have seen the calls cross or the link already up\n{report}"));
     }
@@ -111,7 +112,7 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
 
         var duplicates = await DuplicatesAsync(a, b, ct);
         var report = Report([result], duplicates, channel!.Summarise(started, DateTime.UtcNow),
-            $"Both BPQs restarted, then both nodes submit {MessagesEach} messages to each other at the same moment.");
+            $"Both BPQs restarted, then both nodes submit {MessagesEach} messages to each other within 0.3 to 2 s.");
         WriteReport(report, "crossed-cold-");
         WriteLogs("crossed-cold-", a, b);
 
@@ -119,7 +120,7 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
         duplicates.Should().Be(0, "every message should arrive exactly once\n" + report);
     }
 
-    /// <summary>Both nodes submit at once; wait for delivery, then for the link to go.</summary>
+    /// <summary>Both nodes submit, 0.3 to 2 s apart; wait for delivery, then for the link to go.</summary>
     private async Task<RoundResult> RoundAsync(DappsDaemon a, DappsDaemon b, int round, TimeSpan limit, CancellationToken ct)
     {
         var connectsBefore = Connects();
@@ -128,9 +129,17 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
         var fallbacksBefore = Count(a, b, Fallback);
         var framesBefore = Frames();
         var clock = Stopwatch.StartNew();
-        await Task.WhenAll(
-            SubmitAsync(a, b.Callsign, $"round {round} from A", ct),
-            SubmitAsync(b, a.Callsign, $"round {round} from B", ct));
+        // One node a random 0.3 to 2 s after the other: still a crossed
+        // call (a node takes over 10 s to answer at 1200 baud), but not
+        // the same millisecond. Two simulated Dire Wolfs never seed the
+        // random numbers that pick their transmit slots, so calls made
+        // together collide at every repeat until they retry out; real
+        // TNCs don't draw the same numbers.
+        var (first, second) = Random.Shared.Next(2) == 0 ? (a, b) : (b, a);
+        var stagger = TimeSpan.FromMilliseconds(Random.Shared.Next(300, 2001));
+        var firstSubmit = SubmitAsync(first, Other(first, a, b).Callsign, $"round {round} from {Side(first, a)}", ct);
+        await Task.Delay(stagger, ct);
+        await Task.WhenAll(firstSubmit, SubmitAsync(second, Other(second, a, b).Callsign, $"round {round} from {Side(second, a)}", ct));
 
         var arrived = await Task.WhenAll(
             WaitForRoundAsync(b, round, "from A", limit, ct),
@@ -144,6 +153,10 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
             Count(a, b, Spotted) + Count(a, b, LinkWasUp) - spottedBefore, Count(a, b, Fallback) - fallbacksBefore,
             Connects() - connectsBefore, Frames() - framesBefore);
     }
+
+    private static DappsDaemon Other(DappsDaemon node, DappsDaemon a, DappsDaemon b) => ReferenceEquals(node, a) ? b : a;
+
+    private static string Side(DappsDaemon node, DappsDaemon a) => ReferenceEquals(node, a) ? "A" : "B";
 
     private sealed record RoundResult(int Round, bool Complete, TimeSpan Elapsed, int Dials, int Spotted, int Fallbacks, int Connects, int Frames);
 
@@ -275,12 +288,14 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
 [Trait("Category", "Integration")]
 public sealed class CrossedCallScenarioAfsk1200Tests(NetSimAfsk1200Fixture fixture) : CrossedCallScenarioTests(fixture)
 {
-    // Usually 1 or 2 dials and 14 to 29 s (7 rounds of 8 on net-sim v0.4.0).
-    // But the radios are half duplex, and two calls made at the same
-    // instant can be lost together every time BPQ repeats them, until both
-    // retry out (70 s at FRACK 7000); each node then dials once more.
-    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(150);
-    protected override int MaxDials => 4;
+    // Usually 1 or 2 dials and 14 to 19 s. But at 1200 baud the second
+    // node's call can land just as the first node's connects, over a link
+    // the first node has already heard on: BPQ resets it, and recovering
+    // takes a cooldown, a prompt wait, the 30 s silent-peer wait and a
+    // second crossing: 5 dials and about 70 s (2 rounds of 8 on net-sim
+    // v0.4.0; never at QPSK 3600, where the prompt arrives sooner).
+    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(100);
+    protected override int MaxDials => 6;
 }
 
 [Collection("net-sim QPSK 3600")]
