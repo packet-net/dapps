@@ -194,6 +194,54 @@ public sealed class Rhpv2OutboundTransportTests
     }
 
     [Fact]
+    public async Task Stream_Read_KeepsDataTheNodeSendsStraightBehindTheOpenReply()
+    {
+        // pdn answers an open only once the far end's UA is in, so a quick
+        // peer's prompt can follow the reply in the same read. RhpClient
+        // raises that recv before the code after OpenAsync runs; the
+        // transport must already be listening, or the prompt is lost.
+        var ct = TestContext.Current.CancellationToken;
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        _ = Task.Run(async () =>
+        {
+            using var tcp = await listener.AcceptTcpClientAsync(ct);
+            var s = tcp.GetStream();
+            while (await RhpFraming.ReadFrameAsync(s, ct) is { } frame)
+            {
+                var reply = new MemoryStream();
+                switch (RhpJson.Deserialize(frame))
+                {
+                    case OpenMessage open:
+                        RhpFraming.WriteFrame(reply, RhpJson.Serialize(new OpenReplyMessage { Id = open.Id, Handle = 101, ErrText = "Ok" }));
+                        RhpFraming.WriteFrame(reply, RhpJson.Serialize(new RecvMessage { Handle = 101, Data = RhpDataEncoding.ToWireString("DAPPSv1>\n"u8) }));
+                        break;
+                    case CloseMessage close:
+                        RhpFraming.WriteFrame(reply, RhpJson.Serialize(new CloseReplyMessage { Id = close.Id, Handle = close.Handle, ErrText = "Ok" }));
+                        break;
+                }
+                await s.WriteAsync(reply.ToArray(), ct);
+            }
+        }, ct);
+
+        try
+        {
+            var transport = new Rhpv2OutboundTransport(
+                "127.0.0.1", ((System.Net.IPEndPoint)listener.LocalEndpoint).Port,
+                NullLogger<Rhpv2OutboundTransport>.Instance);
+            await using var conn = await transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct);
+
+            var buf = new byte[64];
+            var n = await conn.Stream.ReadAsync(buf.AsMemory(), ct).AsTask().WaitAsync(TimeSpan.FromSeconds(2), ct);
+            Encoding.UTF8.GetString(buf, 0, n).Should().Be("DAPPSv1>\n");
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Fact]
     public async Task Stream_IgnoresRecvForOtherHandles()
     {
         await using var server = new MockRhpServer();
