@@ -40,6 +40,8 @@ Each test starts its own daemons, so the class takes a few minutes. CI runs them
 
 `RelayIntegrationTests` puts a third BPQ in the chain (`ThreeInstanceLinbpqFixture`): A and C have no link at all, only B in the middle. One test gives A a manual route hint to C via B (docs/discovery-and-routing.md's "Route hints"); the other gives A no route at all, so the default passive-flood algorithm's cold-start fallback has to flood to B, which floods on to C in turn. Both check the message arrives at C exactly once, and that B never treats a relayed message as its own.
 
+`DaemonKilledMidTransferTests` kills (SIGKILL, not a clean stop) the receiving daemon while an 80 KB message is still arriving in pieces, restarts it on the same database, and checks the message still arrives exactly once - what the received-message ledger (#195) promises. The soak (below) only ever restarts a daemon cleanly.
+
 ## On a simulated radio channel
 
 The tests above use AXIP, so frames cost no airtime. `NetSimTwoBpqFixture` puts the two BPQs on a simulated radio channel instead: [net-sim](https://github.com/packet-net/net-sim) runs real modems, gives each an FM radio (a Tait TM8100 at 25 W by default) and puts a physical FM channel between them (its `docs/fm-channel.md`). Each BPQ attaches to one simulated radio over KISS, as it would to a real TNC.
@@ -118,7 +120,6 @@ Phase 3 of `docs-internal/exchange-plan.md`, on net-sim v0.4.0; the numbers are 
 - XRouter and the RHPv2 bearer: covered by the pdn fixtures (separate work).
 - The MQTT app interface.
 - The UDP and MeshCore bearers, which use the binary datagram codec rather than DAPPSv1 sessions.
-- A daemon killed mid-transfer: the soak only restarts one cleanly.
 
 ## The linbpq image
 
