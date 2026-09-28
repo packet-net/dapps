@@ -39,6 +39,10 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
     /// <summary>How long a round may take, first submit to last delivery.</summary>
     protected abstract TimeSpan RoundLimit { get; }
 
+    /// <summary>Most dials a round may take between the two nodes: one each,
+    /// unless the channel can lose both calls outright.</summary>
+    protected virtual int MaxDials => 2;
+
     /// <summary>How long the round straight after the BPQs restart may take.</summary>
     private TimeSpan ColdLimit => RoundLimit + TimeSpan.FromSeconds(30);
 
@@ -81,7 +85,7 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
 
         results.Should().AllSatisfy(r => r.Complete.Should().BeTrue($"round {r.Round}'s messages should all arrive within {RoundLimit.TotalSeconds:F0}s\n{report}\n{Diagnostics()}"));
         duplicates.Should().Be(0, "every message should arrive exactly once\n" + report);
-        results.Should().AllSatisfy(r => r.Dials.Should().BeLessThanOrEqualTo(2, $"round {r.Round}: two dials at most, one from each node\n{report}"));
+        results.Should().AllSatisfy(r => r.Dials.Should().BeLessThanOrEqualTo(MaxDials, $"round {r.Round}: {MaxDials} dials at most\n{report}"));
         results.Should().AllSatisfy(r => r.Fallbacks.Should().Be(0, $"round {r.Round}: no session should have had to wait out the prompt\n{report}"));
         results.Where(r => r.Dials == 2).Should().AllSatisfy(r => r.Spotted.Should().BePositive(
             $"round {r.Round}: both nodes dialled, so one of them should have seen the calls cross or the link already up\n{report}"));
@@ -271,12 +275,17 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
 [Trait("Category", "Integration")]
 public sealed class CrossedCallScenarioAfsk1200Tests(NetSimAfsk1200Fixture fixture) : CrossedCallScenarioTests(fixture)
 {
-    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(90);
+    // Usually 1 or 2 dials and 14 to 29 s (7 rounds of 8 on net-sim v0.4.0).
+    // But the radios are half duplex, and two calls made at the same
+    // instant can be lost together every time BPQ repeats them, until both
+    // retry out (70 s at FRACK 7000); each node then dials once more.
+    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(150);
+    protected override int MaxDials => 4;
 }
 
 [Collection("net-sim QPSK 3600")]
 [Trait("Category", "Integration")]
 public sealed class CrossedCallScenarioQpsk3600Tests(NetSimQpsk3600Fixture fixture) : CrossedCallScenarioTests(fixture)
 {
-    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(60);
+    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(30);
 }

@@ -96,7 +96,7 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
             catch (Exception e) { failure ??= e; }
         }
 
-        var report = Report(sideA, sideB, elapsed, channel!.Summarise(started, started + elapsed));
+        var report = Report(sideA, sideB, elapsed, channel!.Summarise(started, started + elapsed), channel.Timeline(started, started + elapsed));
         WriteReport(report);
 
         failure.Should().BeNull($"the test's own posting and inbox reading should work\n{report}\n{Diagnostics()}");
@@ -104,11 +104,21 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
         sideB.Complete.Should().BeTrue($"{report}\n{Diagnostics()}");
         (sideA.Duplicates + sideB.Duplicates).Should().Be(0, "every message should arrive exactly once\n" + report);
         (Connects("A") + Connects("B")).Should().BeLessThanOrEqualTo(2,
-            "Kevin's trace took six connections; batching and the held link should need one, two at most\n" + report);
+            "Kevin's trace took six connections; the exchange needs one, two if a SABM or UA is lost\n" + report);
         var messages = sideA.PostsReceived + sideB.PostsReceived + sideA.AcksReceived + sideB.AcksReceived;
-        (Frames("A") + Frames("B")).Should().BeLessThanOrEqualTo(11 * messages,
-            "Kevin's trace took about 14 frames a message; a clean run takes about 9\n" + report);
+        (Frames("A") + Frames("B")).Should().BeLessThanOrEqualTo(FramesPerMessage * messages,
+            $"Kevin's trace took about 14 frames a message; the exchange takes {FramesPerMessage - 2} or fewer here\n" + report);
+        elapsed.Should().BeLessThanOrEqualTo(TimeLimit,
+            $"Kevin's trace took 77 s at 1200 baud; the exchange takes about {TimeLimit.TotalSeconds / 2:F0} s here\n" + report);
     }
+
+    /// <summary>Most frames a message may take, with room for a slow
+    /// runner (about two more than the exchange takes on this channel).</summary>
+    protected abstract int FramesPerMessage { get; }
+
+    /// <summary>Longest the exchange may take, first post to last ack:
+    /// about twice what it takes on this channel.</summary>
+    protected abstract TimeSpan TimeLimit { get; }
 
     /// <summary>Wait (up to a minute) until neither daemon has anything left to send, then a few seconds more.</summary>
     private static async Task SettleAsync(DappsDaemon[] nodes, CancellationToken ct)
@@ -141,7 +151,7 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
     private int Frames(string side, string kind = "") =>
         air!.SentBy(side).Count(f => f.Contains($"Fm {Call(side)} To {Call(side == "A" ? "B" : "A")} <{kind}", StringComparison.Ordinal));
 
-    private string Report(WpsSide a, WpsSide b, TimeSpan elapsed, ChannelLog.Summary onAir)
+    private string Report(WpsSide a, WpsSide b, TimeSpan elapsed, ChannelLog.Summary onAir, string timeline)
     {
         var latencies = a.Latencies.Concat(b.Latencies).Order().ToList();
         var gaps = onAir.Gaps(within: TimeSpan.FromSeconds(3));
@@ -172,6 +182,13 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
         sb.AppendLine();
         sb.AppendLine("```");
         sb.AppendLine(Printable(air!.Transcript()));
+        sb.AppendLine("```");
+        sb.AppendLine("</details>");
+        sb.AppendLine();
+        sb.AppendLine("<details><summary>Every transmission, from the first post</summary>");
+        sb.AppendLine();
+        sb.AppendLine("```");
+        sb.Append(timeline);
         sb.AppendLine("```");
         sb.AppendLine("</details>");
         return sb.ToString();
@@ -293,8 +310,16 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
 
 [Collection("net-sim AFSK 1200")]
 [Trait("Category", "Integration")]
-public sealed class WpsReplicationScenarioAfsk1200Tests(NetSimAfsk1200Fixture fixture) : WpsReplicationScenarioTests(fixture);
+public sealed class WpsReplicationScenarioAfsk1200Tests(NetSimAfsk1200Fixture fixture) : WpsReplicationScenarioTests(fixture)
+{
+    protected override int FramesPerMessage => 7;
+    protected override TimeSpan TimeLimit => TimeSpan.FromSeconds(75);
+}
 
 [Collection("net-sim QPSK 3600")]
 [Trait("Category", "Integration")]
-public sealed class WpsReplicationScenarioQpsk3600Tests(NetSimQpsk3600Fixture fixture) : WpsReplicationScenarioTests(fixture);
+public sealed class WpsReplicationScenarioQpsk3600Tests(NetSimQpsk3600Fixture fixture) : WpsReplicationScenarioTests(fixture)
+{
+    protected override int FramesPerMessage => 6;
+    protected override TimeSpan TimeLimit => TimeSpan.FromSeconds(45);
+}

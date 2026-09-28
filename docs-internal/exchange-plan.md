@@ -86,4 +86,50 @@ Observed (phase 2, `BpqCrossedCallExperiments`, details in `docs-internal/end-to
 
 - [x] 1. Exchange protocol: a shared exchange engine (both ends), session start and handshake rules, the receiver's rules and `no`, window, ending, peer restart; replace `rev`, `tail`, `pending` and the held session's poll; `NodePoller` via exchange; forwarder hands work to open sessions of either direction; Refused result. Spec rewritten in `docs/implement.md`. Unit tests, and the end-to-end tests (`DappsEndToEndTests`) moved from rev/pending/tail to exchange. PR: #196 (in review)
 - [x] 2. Crossed calls: AGW one-session-per-peer, confirmed by experiment; random spread on retry and redial timing, so two nodes that fail together can't keep dialling each other in lockstep (the 12-minute soak on #195 did exactly that for 13 minutes after a daemon restart: both had mail, dialled within 2 s, crossed, then retried on the same fixed 10/10/10/30/30 s schedule, 27 connections); a net-sim scenario that forces a crossed call, and the soak's restart recovering in seconds. PR: #197 (in review)
-- [ ] 3. Measure on a realistic channel: move the net-sim pin to v0.4.0 (physical FM channel, half-duplex radios; links take `path_loss_db`, about 120 for a clean link and about 157 for the noisy soak; qpsk3600 on `radio: { channel: wide, squelch: hard }`), then re-measure both the old protocol (#195's build) and the exchange on it: WPS scenario on AFSK 1200 and QPSK 3600, the crossed-call scenario, and the soak. Tune what the physical channel shows (the v0.3 soak had 36 moments of both ends transmitting at once, and one reply waited 13 s for the channel). Tighten the scenarios' ceilings to what the new protocol does. Report against Kevin's baseline. PR:
+- [x] 3. Measure on a realistic channel: move the net-sim pin to v0.4.0 (physical FM channel, half-duplex radios; links take `path_loss_db`, about 120 for a clean link and about 157 for the noisy soak; qpsk3600 on `radio: { channel: wide, squelch: hard }`), then re-measure both the old protocol (#195's build) and the exchange on it: WPS scenario on AFSK 1200 and QPSK 3600, the crossed-call scenario, and the soak. Tune what the physical channel shows (the v0.3 soak had 36 moments of both ends transmitting at once, and one reply waited 13 s for the channel). Tighten the scenarios' ceilings to what the new protocol does. Report against Kevin's baseline. PR:
+
+## Results (phase 3, net-sim v0.4.0)
+
+Measured on net-sim v0.4.0 (physical FM channel, half-duplex radios, Dire Wolf for AFSK 1200, pdn-soundmodem 0.80.0 for QPSK 3600), medians with ranges. The old protocol is #195's build; "phase 2" is #197's; "phase 3" is this branch with the BPQ settings in `docs/tune.md`. Old and phase 2 ran on the translated fixture as it first stood (FRACK 3000, RESPTIME 1000 at 1200 baud; 2000 and 500 at QPSK 3600; PERSIST 255). Details and the channel findings are in `docs-internal/end-to-end-tests.md`.
+
+Kevin's WPS replication, three runs each unless it says otherwise:
+
+| | Kevin's trace (on air, before 0.40.0) | Old protocol | Exchange, phase 2 | Exchange, phase 3 |
+|---|---|---|---|---|
+| AFSK 1200: first post to last ack | 77 s | 94 s (90-95) | 55 s (52-65) | 39 s (38-39); 44-46 s with PERSIST 64 (3 runs) |
+| AFSK 1200: connections | 6 | 2 (1-2) | 2 (1-2) | 1 |
+| AFSK 1200: frames | about 150 | 164 (158-171) | 79 (74-81) | 63 (61-65) |
+| AFSK 1200: transmissions | | 139 (134-139) | 41 (40-49) | 25 (25-30) |
+| AFSK 1200: both ends on air at once | | 0 (0-1) | 5 (5-8) | 0 |
+| AFSK 1200: post delivered, median | | 32 s (31-37) | 22 s (21-31) | 18 s (16-21) |
+| QPSK 3600: first post to last ack | | 76 s (73-79) | 26 s (22-28) | 25 s (19-25); 22-27 s with PERSIST 64 (3 runs) |
+| QPSK 3600: frames | | 149 (139-151) | 61 (49-64) | 36 (35-37) |
+| QPSK 3600: transmissions | | 124 (120-130) | 19 (18-20) | 20 (16-24) |
+| QPSK 3600: post delivered, median | | 28 s (27-28) | 10 s (10-17) | 11 s (9-12) |
+
+The soak: 12 minutes of random traffic both ways (about 63 messages, 6 of them 2 to 5 KB), a 1-minute channel outage and a daemon restart, on a marginal link: 156.5 dB, where 13% of full-length frames and 1% of short ones are lost (100 of each, over KISS). BPQ as `docs/tune.md` says for a weak link: TXDELAY 300, FRACK 7000, RESPTIME 1000, PERSIST 64, SLOTTIME 100.
+
+| | Old protocol (2 runs) | Exchange, phase 2 (1 run) | Exchange, phase 3 (4 runs) |
+|---|---|---|---|
+| Delivered | all, both runs | 18 of 62 | all in 3 runs; 60 of 62 in one |
+| Short messages, median delivery | 402 s, 383 s | 27 s (of the 18) | 213 s, 421 s, 702 s, 484 s |
+| Long messages, median delivery | 996 s, 862 s | none arrived | 1163 s, 1288 s, 1084 s, 1001 s |
+| Total, including the drain | 30.8, 28.5 min | 32.7 min (gave up) | 31.6, 32.6 (gave up), 29.3, 30.3 min |
+| Connections | 4, 4 | 26 | 18, 18, 14, 15 |
+| Transmissions | 861, 806 | 283 | 565, 696, 634, 620 |
+
+Three earlier soaks of the phase 3 code, before the 30-second silent-peer rule: 62 of 62 in 18.9 min (short median 212 s), 64 of 64 in 17.1 min (145 s), and 21 of 64, in the redial loop that rule now stops.
+
+What these show:
+
+- **On a working link the exchange does what it was built for.** Kevin's exchange at 1200 baud takes half the time of the old protocol, a fifth of the transmissions and one connection; at QPSK 3600, a third of the time and a sixth of the transmissions. Most of the gain from phase 2 to phase 3 is BPQ's FRACK (`docs/tune.md`), not DAPPS.
+- **At the edge of range it is roughly level with the old protocol, not better.** The old protocol delivered everything in both soaks; the exchange did in five of its seven phase 3 soaks, was two messages short at the drain limit in one, and fell into the redial loop in one before the fix. Its time goes where BPQ's links break or stop moving data: a link that stays up while nothing gets through is ended by the answer rule after 3 minutes, and a broken one costs a cooldown. The old protocol, which moves one small thing at a time and keeps one link for the whole soak, is less exposed to both.
+- **The phase 2 latency question.** Phase 1's soak on v0.3 had a median of 24 s and phase 2's 57 s, one run each. On v0.4.0 the retry spread costs little: in the phase 3 soaks each node spent between 25 s and 4 minutes of the half hour with its neighbour in cooldown, and redialled 0.3 to 15 s after most breaks. What cost the phase 2 code was elsewhere. Its answer timeout failed every unanswered message separately after 3 minutes, however many answers were still coming, and each failure stepped the neighbour's cooldown up (33 failures and about 17 minutes of cooldown at each end in one soak at 156.75 dB). And its redial loop (18 of 62). Phase 3 counts the answer timeout from the peer's last answer, ends a session that gets no answers at all for that long (failing only the oldest message, for one cooldown), and hangs up a call that hears nothing for 30 s after its `exchange`. Fail-oldest on a break was kept: it cost one cooldown step per break.
+
+Open:
+
+- **Links that stop moving data at the edge.** At 156.5 dB BPQ sometimes resends the same frames for minutes on a link that stays up (the first frame after a change of direction is lost 32% of the time even with 300 ms of TX delay, and BPQ resends everything from a lost frame). DAPPS ends such a session after 3 minutes without an answer. Whether BPQ could recover sooner, or DAPPS could tell sooner, isn't known.
+- **Crossed calls at 1200 baud on a half-duplex channel.** In 1 of 8 rounds with PERSIST 64 both nodes' first calls were lost at every repeat until both retried out (70 s); the scenario allows 4 dials and 150 s at AFSK 1200 for it.
+- **Stream corruption** seen twice at 156.75 dB inside one AX.25 connection (probably a stale resent frame accepted after the sequence numbers wrapped); the hash check caught the payload.
+- **pdn-soundmodem with PERSIST 128 and SLOTTIME 50** moved nothing at all in one crossed-call run (every SABM retried out); not investigated, and not a setting the fixtures use.
+- **samoyed on v0.4.0** drops everything after about the first 2 s of a transmission; the AFSK fixtures use Dire Wolf. To report to net-sim.

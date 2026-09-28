@@ -2,6 +2,25 @@
 
 Out of the box, DAPPS picks defaults that are safe on a low-traffic VHF FM port. If you're running on something faster (full-time IP backbone, fast Ethernet between two co-located nodes) you can probably leave most knobs alone. If you're on something slower, smaller, or shared with other operators (1200-baud VHF in a busy area, HF NVIS, satellite), the knobs in this section let you back off.
 
+## Your node's radio port
+
+On a radio link, how quickly mail moves depends more on your packet node's radio-port settings than on anything in DAPPS. These are the BPQ settings that matter, measured with two DAPPS nodes on a simulated 2 m FM channel ([net-sim](https://github.com/packet-net/net-sim)):
+
+| BPQ setting | AFSK 1200 | QPSK 3600 (pdn-soundmodem) | Why |
+|---|---|---|---|
+| `FRACK` | 7000 | 4000 | Longer than your longest burst plus the answer. BPQ starts this timer when it hands a burst to the TNC, not when the burst has gone, so if it's too short BPQ polls the far end while it is still answering, and both are lost. |
+| `RESPTIME` | 1000 | 1000 | BPQ's default. BPQ asks for an answer at the end of every burst anyway. A longer one saves the odd RR on a clean link, but BPQ also waits this long (3 s at least) before asking for a lost frame again. |
+| `MAXFRAME` | 4 | 7 | Frames per burst. |
+| `PACLEN` | 120 | 236 | Bytes per frame. On a marginal link, shorter frames are lost less often. |
+| `PERSIST`, `SLOTTIME` | 64, 100 | 64, 100 | The usual values, even on a link only your two nodes use. With 255, two nodes that both have mail dial at the same moment, their calls collide, and BPQ retries both in step until they give up: a minute or more. With 64 and 100 they sorted themselves out in 10 to 30 s, nearly every time. |
+| `TXDELAY` | As short as your radios allow; 300 or more on a weak link | As short as your radios allow | Every transmission pays it. At the edge of range, a radio that has just stopped transmitting misses the start of what comes straight back: a frame sent straight after hearing the other end was lost 32% of the time, against 8% after a quiet spell, even with 300 ms. With 150 ms it was worse. |
+
+With `FRACK` 3000 at 1200 baud, Kevin's WPS replication took 52 to 65 s; with 7000, 38 to 39 s, with no collisions at all (44 to 46 s with `PERSIST` 64).
+
+The rule behind `FRACK`: a burst of `MAXFRAME` frames of `PACLEN` bytes takes about `MAXFRAME x (PACLEN + 20) x 8 / bit rate` seconds on air. At 1200 baud, 4 frames of 120 bytes take about 4 s; at 7200 bps (QPSK 3600), 7 frames of 236 bytes about 2 s. Set `FRACK` 3 s or so above that, and raise it if you raise `MAXFRAME` or `PACLEN`.
+
+If your TNC supports it, `KISSOPTIONS=ACKMODE` has the TNC tell BPQ when each frame has actually gone, so `FRACK` runs from then. pdn-soundmodem supports it (Dire Wolf 1.6 doesn't); with `FRACK` set as above it made no difference.
+
 ## Airtime budget
 
 The single biggest knob. By default DAPPS imposes **no cap** on discovery transmissions - beacons go out on their per-channel cadence, probes fire on their interval, solicit replies happen whenever a solicit arrives. If you turn discovery features on without thinking about airtime, this can be a lot.
@@ -23,7 +42,7 @@ Probing is **off by default**. Once you enable it (`DAPPS_PROBING_ENABLED=true`)
 | Strategy        | When it fires                                                                                                                                                                              |
 |-----------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `FixedInterval` | Every `DAPPS_PROBE_INTERVAL_HOURS` hours. The simplest. Same cadence regardless of context.                                                                                                |
-| `Overnight`     | Once per local-time day inside the `[probe-overnight-start-hour, probe-overnight-end-hour)` window. Default 02:00–06:00. Wraps midnight if `end < start`. Good for shared bands where you want to be quiet during peak hours. |
+| `Overnight`     | Once per local-time day inside the `[probe-overnight-start-hour, probe-overnight-end-hour)` window. Default 02:00 to 06:00. Wraps midnight if `end < start`. Good for shared bands where you want to be quiet during peak hours. |
 | `WhenQuiet`     | Fixed cadence, but defers each tick if the forwarder has seen activity in the last `probe-quiet-window-seconds` (default 5 minutes). Good for nodes where probe traffic shouldn't compete with real traffic. |
 
 Switch strategy via `DAPPS_PROBE_STRATEGY=Overnight` (case-insensitive) or the `/Config` form.
@@ -54,7 +73,7 @@ Every session with a neighbour carries traffic both ways, whoever dialled, so ma
 
 ## Heartbeat cadence
 
-`DAPPS_HEARTBEAT_INTERVAL_SECONDS` (≥ 10 s, default 60 s) controls how often the heartbeat is published to MQTT. On a quiet node, 60 s is fine. If you're scraping the heartbeat into a high-resolution monitoring system, drop to 10–30 s; if you're storage-constrained on the MQTT broker side and only want trends, raise to 300 s.
+`DAPPS_HEARTBEAT_INTERVAL_SECONDS` (≥ 10 s, default 60 s) controls how often the heartbeat is published to MQTT. On a quiet node, 60 s is fine. If you're scraping the heartbeat into a high-resolution monitoring system, drop to 10 to 30 s; if you're storage-constrained on the MQTT broker side and only want trends, raise to 300 s.
 
 The MQTT message is **retained** so a late subscriber gets the most recent snapshot immediately - cadence is about freshness for active subscribers, not "did I miss it."
 

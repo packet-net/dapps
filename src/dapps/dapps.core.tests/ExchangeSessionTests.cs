@@ -52,12 +52,13 @@ public sealed class ExchangeSessionTests : IDisposable
 
     /// <summary>A session that answered: the peer plays the caller.</summary>
     private async Task<(ExchangeSession Session, LinePeer Peer, Task Run)> CalleeAsync(
-        ExchangeSettings? settings = null, IBackhaulInbox? inbox = null)
+        ExchangeSettings? settings = null, IBackhaulInbox? inbox = null, TimeSpan? inactivity = null)
     {
         var (ours, theirs) = await LoopbackPairAsync(Ct);
         var session = new ExchangeSession(ours, Them, dialled: false, settings ?? new ExchangeSettings(), inbox ?? new RecordingInbox(), NullLoggerFactory.Instance)
         {
             MinQuiet = Short,
+            InactivityTimeout = inactivity ?? TimeSpan.FromMinutes(3),
         };
         var peer = new LinePeer(theirs);
         var run = session.RunAsync(Ct);
@@ -188,6 +189,35 @@ public sealed class ExchangeSessionTests : IDisposable
 
         session.Failure.Should().Contain("no DAPPSv1> prompt");
         wire.Writes.Should().NotContain(w => w.StartsWith("exchange ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ACallerWhoseRulesGetNothingAtAllBack_HangsUpAfterThreePromptWaits()
+    {
+        // No prompt, so it sent its rules, as for a crossed call; but
+        // nothing came back at all: the call landed on a link the far node
+        // had reset, where nothing will ever answer.
+        var (session, peer, run, _) = await CallerAsync();
+        (await peer.ReadLineAsync(Ct, TimeSpan.FromSeconds(5))).Should().StartWith("exchange ", "no prompt came, so it sent its rules anyway");
+
+        await run.WaitAsync(TimeSpan.FromSeconds(5), Ct);
+
+        session.Failure.Should().Contain("nothing from");
+        session.Established.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ACrossedCaller_WhosePeersRulesComeWithinThreePromptWaits_CarriesOn()
+    {
+        var (session, peer, run, _) = await CallerAsync();
+        (await peer.ReadLineAsync(Ct, TimeSpan.FromSeconds(5))).Should().StartWith("exchange ");
+
+        await Task.Delay(500, Ct);   // more than one prompt wait (300 ms), less than three
+        await peer.WriteLineAsync(Rules(), Ct);
+
+        while (!session.Established && !run.IsCompleted) await Task.Delay(20, Ct);
+        session.Established.Should().BeTrue();
+        run.IsCompleted.Should().BeFalse();
     }
 
     [Fact]
@@ -718,9 +748,10 @@ public sealed class ExchangeSessionTests : IDisposable
     }
 
     [Fact]
-    public async Task AMessageThatNeverGetsAnAnswer_FailsAfterTheAnswerTimeout_WhileTheSessionGoesOn()
+    public async Task AMessageThatNeverGetsAnAnswer_FailsAfterTheAnswerTimeout_AndTheSessionEnds()
     {
-        // e.g. the peer couldn't read its id and said `error ??`.
+        // e.g. the peer couldn't read its id and said `error ??`, and has
+        // answered nothing since.
         var unanswerable = Message("never answered", $"app@{Them}", 1);
         var answered = Message("answered", $"app@{Them}", 2);
         var batch = new RecordingBatch(unanswerable, answered);
@@ -733,12 +764,64 @@ public sealed class ExchangeSessionTests : IDisposable
         await peer.WriteLineAsync($"error ??\nack {answered.Id}", Ct);
 
         await batch.WaitForOutcomesAsync(2, Ct);
+        await run.WaitAsync(Patience, Ct);
 
         var failed = batch.Outcomes.Single(o => o.Id == unanswerable.Id).Result;
         failed.Accepted.Should().BeFalse();
         failed.Deferred.Should().BeFalse();
         failed.Error.Should().Contain("no answer");
-        run.IsCompleted.Should().BeFalse("the session itself is fine");
+    }
+
+    [Fact]
+    public async Task ASessionWhoseMessagesGetNoAnswers_Ends_FailingTheOldestAndDeferringTheRest()
+    {
+        // The link carries bytes but none of ours get answered: the peer's
+        // reader is out of step, or the link keeps losing our frames. At
+        // either end, a new link starts afresh; one failure, one cooldown.
+        var inbox = new RecordingInbox();
+        var (session, peer, run) = await CalleeAsync(inbox: inbox, inactivity: TimeSpan.FromSeconds(1));
+        await peer.WriteLineAsync(Rules(), Ct);
+        var ours = Enumerable.Range(1, 3).Select(i => Message($"unanswered {i}", $"app@{Them}", i)).ToArray();
+        var batch = new RecordingBatch(ours);
+        session.TryTake(batch);
+        foreach (var _ in ours) await peer.ReadWithPayloadAsync(Ct);
+
+        // The peer keeps talking (its own mail), so the link isn't silent.
+        for (var i = 0; i < 3 && !run.IsCompleted; i++)
+        {
+            try { await peer.SendMessageAsync(Message($"theirs {i}", $"app@{Us}", 10 + i), Ct); }
+            catch (IOException) { break; }  // it has already hung up
+            await Task.Delay(400, Ct);
+        }
+
+        await batch.WaitForOutcomesAsync(3, Ct);
+        await run.WaitAsync(Patience, Ct);
+        batch.Outcomes.Single(o => o.Id == ours[0].Id).Result.Error.Should().Contain("no answer");
+        batch.Outcomes.Where(o => o.Id != ours[0].Id).Should().AllSatisfy(o => o.Result.Deferred.Should().BeTrue());
+    }
+
+    [Fact]
+    public async Task OnASlowLink_MessagesStillBeingAnswered_DontTimeOut()
+    {
+        // A full window can take longer than the answer timeout to go on
+        // air at 1200 baud. While answers keep coming, the link is working.
+        var messages = Enumerable.Range(1, 3).Select(i => Message($"slow {i}", $"app@{Them}", i)).ToArray();
+        var batch = new RecordingBatch(messages);
+        var (session, peer, _, _) = await CallerAsync(new ExchangeSettings(HoldSeconds: 60), inactivity: TimeSpan.FromSeconds(2));
+        session.TryTake(batch);
+        await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
+        await peer.ReadLineAsync(Ct);
+        foreach (var _ in messages) await peer.ReadWithPayloadAsync(Ct);
+
+        // Answered 1.2 s apart: the last comes 3.6 s after all three went.
+        foreach (var m in messages)
+        {
+            await Task.Delay(1200, Ct);
+            await peer.WriteLineAsync($"ack {m.Id}", Ct);
+        }
+
+        await batch.WaitForOutcomesAsync(3, Ct);
+        batch.Outcomes.Should().AllSatisfy(o => o.Result.Accepted.Should().BeTrue());
     }
 
     [Fact]
