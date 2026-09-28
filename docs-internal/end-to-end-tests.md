@@ -44,6 +44,8 @@ Each test starts its own daemons, so the class takes a few minutes. CI runs them
 
 `MqttAppInterfaceIntegrationTests` drives the app interface over MQTT instead of the REST app API: one node publishes to `dapps/out/chat/<callsign>`, the message crosses the air the usual way, the other node's subscriber on `dapps/in/chat` gets it (with `dapps-id`/`dapps-source` user properties), and acking on `dapps/ack/chat` clears it from the unacknowledged list. `MqttBrokerRoundTripTests` already covers each topic against the broker and database directly, with no daemon process, no bearer and no peer; this proves the same broker, wired into a real running dapps.core process, actually gets an app's message to another node and back.
 
+`UdpBearerIntegrationTests` puts a neighbour's `UdpEndpoint` between two daemons instead of an AGW bearer port - the fire-and-forget datagram bearer Plan A0.4 stands in for MeshCore with. The two BPQs stay up only so each daemon has a node to be "reachable" on at startup; the test checks BPQ's monitor never sees a session between the two application callsigns at all, proving the message went by plain UDP.
+
 ## On a simulated radio channel
 
 The tests above use AXIP, so frames cost no airtime. `NetSimTwoBpqFixture` puts the two BPQs on a simulated radio channel instead: [net-sim](https://github.com/packet-net/net-sim) runs real modems, gives each an FM radio (a Tait TM8100 at 25 W by default) and puts a physical FM channel between them (its `docs/fm-channel.md`). Each BPQ attaches to one simulated radio over KISS, as it would to a real TNC.
@@ -120,7 +122,7 @@ Phase 3 of `docs-internal/exchange-plan.md`, on net-sim v0.4.0; the numbers are 
 
 - The link reset with DAPPS at both ends (one node's call goes over a link the other has already heard from): the experiment shows what BPQ does and the unit tests cover each side's part, but no scenario forces the timing. The cold-start round can hit it.
 - XRouter and the RHPv2 bearer: covered by the pdn fixtures (separate work).
-- The UDP and MeshCore bearers, which use the binary datagram codec rather than DAPPSv1 sessions.
+- The MeshCore bearer, which needs hardware.
 
 ## The linbpq image
 
