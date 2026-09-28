@@ -17,9 +17,9 @@ namespace dapps.core.tests;
 ///
 /// That dialled-down budget is a process-wide static, so this class
 /// must not run alongside tests that genuinely wait on a protocol read
-/// (<see cref="CrossedConnectTests"/> waits out a silence longer than
-/// 100 ms on purpose). Sharing the SQLite collection is the simplest
-/// way to keep them apart; nothing here touches the database.
+/// through <see cref="DappsProtocolClient"/> (probes, say). Sharing the
+/// SQLite collection is the simplest way to keep them apart; nothing
+/// here touches the database.
 /// </summary>
 [Collection(SqliteOverridePathCollection.Name)]
 public sealed class DappsProtocolClientTimeoutTests : IDisposable

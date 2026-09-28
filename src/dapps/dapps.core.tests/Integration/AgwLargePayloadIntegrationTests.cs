@@ -15,8 +15,8 @@ namespace dapps.core.tests.Integration;
 /// BPQ silently drops an AGW 'D' frame carrying more than 256 bytes, so a
 /// payload written in one go never arrived and the far end sat waiting for
 /// it. Each size here crosses BPQ-A, AXIP and BPQ-B to DAPPS's real inbound
-/// service, on one session; the far end then drains a large message back
-/// to us with <c>rev</c>, which exercises the inbound side's writes.
+/// service, on one session; the far end then sends a large message back
+/// to us on the same session, which exercises the inbound side's writes.
 /// </summary>
 [Collection("Linbpq two-instance integration")]
 [Trait("Category", "Integration")]
@@ -26,6 +26,7 @@ public sealed class AgwLargePayloadIntegrationTests(TwoInstanceLinbpqFixture fix
     private Database database = null!;
     private RecordingInbox farInbox = null!;
     private AgwInboundService service = null!;
+    private readonly SessionDirectory farSessions = new();
 
     public async ValueTask InitializeAsync()
     {
@@ -33,7 +34,6 @@ public sealed class AgwLargePayloadIntegrationTests(TwoInstanceLinbpqFixture fix
         DbInfo.OverridePath = dbPath;
         using (var c = DbInfo.GetConnection())
         {
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
         }
@@ -48,7 +48,8 @@ public sealed class AgwLargePayloadIntegrationTests(TwoInstanceLinbpqFixture fix
         farInbox = new RecordingInbox();
         service = new AgwInboundService(
             receiverOptions, database, farInbox,
-            NullLoggerFactory.Instance, NullLogger<AgwInboundService>.Instance);
+            NullLoggerFactory.Instance, NullLogger<AgwInboundService>.Instance,
+            openSessions: farSessions);
         await service.StartAsync(CancellationToken.None);
         await Task.Delay(500);
     }
@@ -69,18 +70,11 @@ public sealed class AgwLargePayloadIntegrationTests(TwoInstanceLinbpqFixture fix
         using var ctSource = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var ct = ctSource.Token;
 
-        // Mail the far end holds for us, drained back with rev on the same
-        // session: its writes go through the inbound service's stream.
+        // Mail the far end has for us, handed to our session there the way
+        // its forwarder would: its writes go through the inbound service's
+        // stream.
         var back = Payload(1000, 'r');
-        var backId = DappsMessage.ComputeHash(back, 7L)[..7];
-        using (var c = DbInfo.GetConnection())
-        {
-            c.Insert(new DbMessage
-            {
-                Id = backId, Payload = back, Salt = 7L, Destination = $"app@{fixture.CallsignA}",
-                SourceCallsign = fixture.ApplCallB, AdditionalProperties = "{}", CreatedAt = DateTime.UtcNow,
-            });
-        }
+        var reply = new ListBatch(new BackhaulMessage(DappsMessage.ComputeHash(back, 7L)[..7], $"app@{fixture.CallsignA}", 7L, 600, back));
 
         // Around the old limit (256 including the `data` line) and well past it.
         var sizes = new[] { 100, 240, 250, 300, 1000, 3000 };
@@ -93,10 +87,12 @@ public sealed class AgwLargePayloadIntegrationTests(TwoInstanceLinbpqFixture fix
         var ourInbox = new RecordingInbox();
         var bearer = new Dappsv1SessionBackhaul(
             new AgwOutboundTransport(fixture.Host, fixture.AgwPortA, NullLoggerFactory.Instance),
-            NullLoggerFactory.Instance, opportunisticInbox: ourInbox, opportunisticEnabled: () => true);
+            NullLoggerFactory.Instance, inbox: ourInbox);
         var batch = new ListBatch(messages);
 
         await bearer.SendBatchAsync(new BackhaulRoute(fixture.ApplCallB, BearerPort: fixture.AxipPortIndex), fixture.ApplCallA, batch, ct);
+        while (!farSessions.TryHand(fixture.ApplCallA, reply)) await Task.Delay(50, ct);
+        while (ourInbox.Payloads.Count == 0) await Task.Delay(50, ct);
 
         batch.Outcomes.Select(o => (o.Id, o.Result.Accepted)).Should().Equal(messages.Select(m => (m.Id, true)),
             $"every size should be acked; failures: {string.Join("; ", batch.Outcomes.Where(o => !o.Result.Accepted).Select(o => $"{o.Id}: {o.Result.Error}"))}");
@@ -105,7 +101,7 @@ public sealed class AgwLargePayloadIntegrationTests(TwoInstanceLinbpqFixture fix
         {
             farInbox.Payloads[i].Should().Equal(messages[i].Payload, $"the {sizes[i]}-byte payload arrives intact");
         }
-        ourInbox.Payloads.Should().ContainSingle().Which.Should().Equal(back, "the far end's 1000-byte reply comes back intact by rev");
+        ourInbox.Payloads.Should().ContainSingle().Which.Should().Equal(back, "the far end's 1000-byte reply comes back intact");
     }
 
     private static byte[] Payload(int size, char seed) =>

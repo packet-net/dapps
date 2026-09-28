@@ -96,7 +96,6 @@ public sealed class AgwDisconnectPortQuirkTests(TwoInstanceLinbpqFixture fixture
         DbInfo.OverridePath = dbPath;
         using (var c = DbInfo.GetConnection())
         {
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
         }
@@ -132,7 +131,7 @@ public sealed class AgwDisconnectPortQuirkTests(TwoInstanceLinbpqFixture fixture
                 new AgwFrame(SessionPort, 'C', 0, fixture.ApplCallA, fixture.ApplCallB, []), ct);
             await ReadUntil(sideA, 'C', ct);
             var prompt = await ReadUntil(sideA, 'D', ct);
-            Encoding.UTF8.GetString(prompt.Payload).Should().Be("DAPPSv1>\n");
+            Encoding.UTF8.GetString(prompt.Payload).Should().StartWith("DAPPSv1>\nexchange id=");
 
             // dapps's keepalive goes out; BPQ-B's last frame from dapps is now a 'G' on port 0.
             clock.Advance(AgwInboundService.KeepaliveInterval);
@@ -155,7 +154,7 @@ public sealed class AgwDisconnectPortQuirkTests(TwoInstanceLinbpqFixture fixture
                 new AgwFrame(SessionPort, 'C', 0, fixture.ApplCallA, fixture.ApplCallB, []), ct);
             await ReadUntil(sideA, 'C', ct);
             var prompt2 = await ReadUntil(sideA, 'D', ct);
-            Encoding.UTF8.GetString(prompt2.Payload).Should().Be("DAPPSv1>\n",
+            Encoding.UTF8.GetString(prompt2.Payload).Should().StartWith("DAPPSv1>\nexchange id=",
                 "the previous session was closed cleanly, so the redial is a fresh session");
             logs.Warnings.Should().BeEmpty("nothing went stale, so nothing had to be retired");
 

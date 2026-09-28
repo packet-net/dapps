@@ -78,7 +78,7 @@ Terms used throughout this manual.
 
 **probe** - A connected-mode session opened to a peer to confirm reachability. Three flavours: direct, transitive (via the peer's `peers` response), and node-prompt-discovered (via the BPQ node prompt for peers that aren't directly DAPPS).
 
-**`rev`** - A DAPPSv1 command meaning "send me anything you're holding for me." Used by both opportunistic and scheduled polling.
+**`exchange`** - The DAPPSv1 line with which each end of a session between DAPPS nodes says what it takes from the other. Once both have been sent, either side sends its traffic whenever it has some, so every session carries messages both ways.
 
 **REST** - DAPPS's HTTP-based app interface, alongside MQTT. Same submit shape; different protocol.
 

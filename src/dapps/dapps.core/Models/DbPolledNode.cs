@@ -24,8 +24,8 @@ public sealed class DbPolledNode
     public DateTime? LastPolledAt { get; set; }
 
     /// <summary>UTC timestamp of the most recent successful poll
-    /// (rev exchange completed cleanly, regardless of how many
-    /// messages were drained). Null = never reached.</summary>
+    /// (the session got as far as the exchange, regardless of how many
+    /// messages came). Null = never reached.</summary>
     public DateTime? LastSuccessAt { get; set; }
 
     /// <summary>Last error string, populated on a failed poll.

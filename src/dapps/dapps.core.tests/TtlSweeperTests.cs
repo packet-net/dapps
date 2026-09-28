@@ -26,7 +26,6 @@ public sealed class TtlSweeperTests : IAsyncLifetime
 
         using (var c = DbInfo.GetConnection())
         {
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();
@@ -100,26 +99,6 @@ public sealed class TtlSweeperTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task DeleteExpired_RemovesExpiredOffers()
-    {
-        using var c = DbInfo.GetConnection();
-        c.Insert(new DbOffer
-        {
-            Id = "offerex",
-            Length = 10,
-            Format = "p",
-            Destination = "x@y",
-            Ttl = 30,
-            CreatedAt = DateTime.UtcNow.AddSeconds(-90),
-        });
-
-        var deleted = await database.DeleteExpired(DateTime.UtcNow);
-
-        deleted.Should().Be(1);
-        c.Find<DbOffer>("offerex").Should().BeNull();
-    }
-
-    [Fact]
     public async Task DeleteExpired_HandlesMixedRows()
     {
         using var c = DbInfo.GetConnection();
@@ -137,22 +116,12 @@ public sealed class TtlSweeperTests : IAsyncLifetime
             Ttl = 30,
             CreatedAt = DateTime.UtcNow.AddSeconds(-60),
         });
-        c.Insert(new DbOffer
-        {
-            Id = "drop2",
-            Length = 1,
-            Format = "p",
-            Destination = "x@y",
-            Ttl = 1,
-            CreatedAt = DateTime.UtcNow.AddSeconds(-60),
-        });
 
         var deleted = await database.DeleteExpired(DateTime.UtcNow);
 
-        deleted.Should().Be(2);
+        deleted.Should().Be(1);
         c.Find<DbMessage>("keep1").Should().NotBeNull();
         c.Find<DbMessage>("drop1").Should().BeNull();
-        c.Find<DbOffer>("drop2").Should().BeNull();
     }
 
     private sealed class TestOptionsMonitor<T>(T value) : IOptionsMonitor<T>

@@ -34,8 +34,9 @@ public sealed class DbTransmission
     /// <summary>What kind of transmission. Constrained set so the
     /// dashboard can colour-code and the MCP / REST filter can be
     /// tight. Values: <c>beacon</c>, <c>solicit</c>, <c>solicit-reply</c>,
-    /// <c>probe</c>, <c>forward</c>, <c>poll</c>, <c>rev-drain</c>,
-    /// <c>ack</c>, <c>nak</c>, <c>heartbeat</c>.</summary>
+    /// <c>probe</c>, <c>probe-nodeprompt</c>, <c>forward</c>,
+    /// <c>forward-flood</c>, <c>poll</c>, <c>ack</c>, <c>nak</c>,
+    /// <c>heartbeat</c>.</summary>
     [Indexed]
     public string Kind { get; init; } = "";
 
@@ -58,7 +59,7 @@ public sealed class DbTransmission
     public string TargetCallsign { get; init; } = "";
 
     /// <summary>The DAPPS message id when this transmission relates to
-    /// a specific message (forward, ack, nak, rev-drain). Empty
+    /// a specific message (forward, ack, nak). Empty
     /// otherwise. Lets an operator follow a single message id across
     /// multiple transmission events.</summary>
     [Indexed]
@@ -85,7 +86,6 @@ public sealed class DbTransmission
     /// <summary>Free-form reason for the transmission. The "why".
     /// Examples: <c>scheduled beacon emit</c>,
     /// <c>operator-triggered probe</c>,
-    /// <c>opportunistic poll on push session</c>,
     /// <c>scheduled poll sweep</c>,
     /// <c>solicit reply to G7XYZ</c>,
     /// <c>forwarder tick: route via M0LTE-1</c>.

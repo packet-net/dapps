@@ -6,31 +6,35 @@ The reference implementation in this repo is the canonical source of truth. Wher
 
 The page is in two parts:
 
-- [**Bare essentials**](#bare-essentials) - the smallest set of behaviours that lets two implementations exchange a message and not deadlock. If you implement only this, you get a node that pushes messages, accepts inbound messages, and is invisible to discovery / routing optimisations.
-- [**Full interoperability**](#full-interoperability) - feature by feature, what to add to that minimum to be fully indistinguishable from the reference daemon: end-to-end source tracking, multi-part fragmentation, opt-in ordering, polling, peer exchange, route gossip, discovery beacons, and the datagram codec.
+- [**Bare essentials**](#bare-essentials) - the smallest set of behaviours that lets two implementations exchange a message and not deadlock. If you implement only this, you get a node that sends messages, takes messages, and is invisible to discovery / routing optimisations.
+- [**Full interoperability**](#full-interoperability) - feature by feature, what to add to that minimum to be fully indistinguishable from the reference daemon: the full exchange between DAPPS nodes, end-to-end source tracking, multi-part fragmentation, opt-in ordering, peer exchange, route gossip, discovery beacons, and the datagram codec.
 
 ## Bare essentials
 
-Three flows make a functional node: open a session, push a message, accept a message. Everything else is optimisation.
+Three flows make a functional node: open a session, send a message, take a message. Everything else is optimisation.
 
-### Session prompt
+### Session start
 
-Once a transport-level connection (an AGW C-frame, an RHPv2 connect, a TCP socket) lands at your DAPPS implementation, you write the prompt:
+Once a transport-level connection (an AGW C-frame, an RHPv2 connect, a TCP socket) lands at your DAPPS implementation, you write the prompt and, straight after it, your rules:
 
 ```
 DAPPSv1>\n
+exchange id=4f2a9c hold=0 inline=0\n
 ```
 
-That's the literal ASCII string `DAPPSv1>` followed by a single line feed (0x0A). The connecting peer scans the inbound byte stream until it sees `DAPPSv1>` followed by *any* line terminator (`\n`, `\r`, or `\r\n`). All three are accepted because BPQ's Telnet bridge rewrites LF→CR in the apps-to-user direction; strict `\n`-only matching would hang on every BPQ-bridged connect ([DappsProtocolClient.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs#L39-L72)).
+The prompt is the literal ASCII string `DAPPSv1>` followed by a single line feed (0x0A). The connecting peer scans the inbound byte stream until it sees `DAPPSv1>` followed by *any* line terminator (`\n`, `\r`, or `\r\n`). All three are accepted because BPQ's Telnet bridge rewrites LF→CR in the apps-to-user direction; strict `\n`-only matching would hang on every BPQ-bridged connect.
 
-After the prompt, the connecting peer sends one of the verbs below. After every command finishes, the server may re-emit the prompt and loop, or close the connection. Inactivity timeout is **3 minutes** per read on both sides, matching the AX.25 T3 default ([InboundConnectionHandler.cs:36](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/InboundConnectionHandler.cs#L36)). A peer that goes silent past that gets disconnected; a peer that you can't read from past that should be abandoned with a `TimeoutException`.
+The `exchange` line tells another DAPPS node what you take from it; [the exchange](#the-exchange) has the details. `id=` is any short random tag. The line above is the smallest useful one: no hold, and every message offered to you with `ihave` before its payload is sent. A DAPPS node that dials you won't send you anything until it has this line, so don't leave it out.
 
-### Push a message: `ihave` / `send` / `data` / `ack`
+After that the connecting peer sends commands, below, or if it's a DAPPS node its own `exchange` line. Inactivity timeout is **3 minutes** per read on both sides, matching the AX.25 T3 default. A peer that goes silent past that gets disconnected; a peer that you can't read from past that should be abandoned.
 
-Four lines and a payload. Sender writes `ihave`, receiver replies `send`, sender writes `data` plus the bytes, receiver replies `ack`.
+### Send a message: `ihave` / `send` / `data` / `ack`
+
+The simple way to send to a DAPPS node, one message at a time. Four lines and a payload: sender writes `ihave`, receiver replies `send`, sender writes `data` plus the bytes, receiver replies `ack`.
 
 ```
 S: DAPPSv1>\n
+S: exchange id=4f2a9c hold=120 inline=256 z=1\n
 C: ihave 7e1f3a2 len=5 fmt=p s=1714982400000 dst=mail@G0RCV\n
 S: send 7e1f3a2\n
 C: data 7e1f3a2\nhello
@@ -39,7 +43,7 @@ S: ack 7e1f3a2\n
 
 (Lines marked `S:` are server-to-client; `C:` is client-to-server. Newlines shown as `\n`; the payload after `data 7e1f3a2\n` is the raw 5 bytes `hello`, no terminator.)
 
-A session can carry several messages. The reference daemon sends everything it has queued for a neighbour in one session, one `ihave` exchange after another, so after an `ack` a receiver should go back to reading commands rather than hang up.
+A sender that only sends this way can ignore the `exchange` line after the prompt. A session can carry several messages, one after another; after an `ack` the receiver goes back to reading commands.
 
 Anatomy of the `ihave` line:
 
@@ -55,7 +59,7 @@ Anatomy of the `ihave` line:
 
 Plus the optional features documented under [Full interoperability](#full-interoperability) (`ttl`, `src`, `mid`, `frag`, `sid`, `sn`, `gt`).
 
-Reserved key names are validated by [IHaveValidator.cs:57](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/IHaveValidator.cs#L57). Any other `key=value` token is treated as an opaque application header and preserved through to the receiving app.
+Reserved key names are validated by [IHaveValidator.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/IHaveValidator.cs). Any other `key=value` token is treated as an opaque application header and preserved through to the receiving app.
 
 Receiver replies are one of:
 
@@ -63,22 +67,22 @@ Receiver replies are one of:
 |---|---|---|
 | `send <id>\n` | "Yes, send the payload" | Successful parse + accept |
 | `ack <id>\n` | "Already got it" | An offer for a message you already have (same id, `s=` and `len`): the sender counts it delivered and doesn't send the payload |
-| `error\n` or `error <id>\n` | "Reject the offer" | Malformed `ihave` (missing `len`/`dst`, a `fmt` you can't decode, broken `chk`, etc.) |
+| `no <id> [reason]\n` | "Won't take it" | Bigger than your `max=`, or refused for a reason of your own. The sender doesn't offer it to you again |
+| `error <id>\n` or `error ??\n` | "Reject the offer" | Malformed `ihave` (missing `len`/`dst`, a `fmt` you can't decode, broken `chk`, etc.) |
 | `bad <id>\n` | "Payload arrived but was no good" | Sent only after `data`: a compressed payload that doesn't decode to `len` bytes, or `SHA1(salt_le ++ payload)[:7] ≠ id` |
 | `ack <id>\n` | "Got it, hash matches" | After `data` succeeds |
-| `eh?\n` | "Unrecognised command" | Verb wasn't `ihave`/`data`/`peers`/`rev`/`routes`/`tail`/`quit`/`help` |
+| `eh?\n` | "Unrecognised command" | Before an exchange, a verb that isn't `ihave`/`data`/`msg`/`exchange`/`peers`/`routes`/`quit`/`help`. The session then ends |
 
-### Accept a message
+### Take a message
 
 Implement the receiver mirror:
 
-1. After writing `DAPPSv1>\n`, read a line.
-2. If it starts with `ihave `, parse it. If it's a message you already have, write `ack <id>\n` and go back to reading commands. If valid, write `send <id>\n` and persist the offer's metadata. If invalid, write `error <id>\n` (or `error\n` if the id couldn't be plucked out) and go back to reading commands: a sender whose compressed offer you refused offers the same message again plain.
-3. Read the next line. It must be `data <id>\n` matching the id you just `send`'d. Otherwise, close.
-4. Read exactly `len` bytes from the stream (no framing - just `len` raw bytes), or `clen` bytes for a compressed format, and decompress those to `len` bytes (`len` is always the *uncompressed* length, `clen` the on-wire byte count).
-5. Compute `SHA1(salt_le_8_bytes ++ payload)[:7]`. If it matches `<id>`, write `ack <id>\n`. Otherwise, write `bad <id>\n`.
+1. After writing the prompt and your `exchange` line, read a line.
+2. If it starts with `ihave `, parse it. If it's a message you already have, write `ack <id>\n` and go back to reading. If valid, write `send <id>\n` and remember the offer for this session. If invalid, write `error <id>\n` (or `error ??\n` if the id couldn't be plucked out) and go back to reading: a sender whose compressed offer you refused offers the same message again plain.
+3. When `data <id>\n` arrives for an offer you accepted, read exactly `len` bytes from the stream (no framing - just `len` raw bytes), or `clen` bytes for a compressed format, and decompress those to `len` bytes (`len` is always the *uncompressed* length, `clen` the on-wire byte count). A `data` line for an offer you didn't accept can't be read past: close the session.
+4. Compute `SHA1(salt_le_8_bytes ++ payload)[:7]`. If it matches `<id>`, write `ack <id>\n`. Otherwise, write `bad <id>\n`.
 
-The receiver MAY then loop and emit `DAPPSv1>\n` again to await another command on the same session, or close.
+When a DAPPS node dials *you* to hand over traffic, it waits for your prompt and `exchange` line, sends its own `exchange` line, and then offers each message with `ihave` (with `inline=0` it never sends one unasked). Take its `exchange` line quietly: you've already sent yours. Answer `quit` with `bye` and hang up. That's all a minimal node needs to receive from the reference daemon.
 
 ### Never deliver a message twice
 
@@ -86,7 +90,7 @@ A sender offers a message again whenever it didn't see your `ack`: it restarted 
 
 - Identify a message by its id together with its salt (`s=`) and `len`. The id alone is 28 bits of hash, and a node remembering weeks of traffic would sometimes mistake a new message for an old one and drop it. A message without `s=` can't be told apart from a later one with the same content, so don't remember it; senders SHOULD always include `s=`.
 - Remember it until it would have expired anyway: its `ttl=` at receipt, plus some slack. The reference daemon adds an hour, and remembers for at most 30 days (`DAPPS_RECEIVED_MEMORY_SECONDS`), which is also how long it keeps a message with no `ttl=`. Forgetting early can only cost a repeat, never a message.
-- Answer an `ihave` for one with `ack <id>`, so the payload doesn't cross the air again. If one arrives anyway (sent before you'd finished storing the first), `ack` it and discard it.
+- Answer an `ihave` for one with `ack <id>`, so the payload doesn't cross the air again. If one arrives anyway (as a `msg`, or sent before you'd finished storing the first), `ack` it and discard it.
 - Never let the memory lose a message. Record the message as "being stored" before storing it, and mark it stored once you have; a record left "being stored" (the node died in between) doesn't count, so the sender's retry is taken. If storing fails, drop the record. And if a second copy arrives while the first is still being stored, wait for the first: if it was stored the second is a repeat, if not the second gets its turn. A crash can then cost a repeat, never a loss.
 - A repeat of a message for another node, arriving from a different neighbour from the first copy, usually means a routing loop: the message was passed on and came back. It is still dropped, but it's worth logging.
 
@@ -116,22 +120,89 @@ chk_value = crc16_ccitt_false( bytes_of_line_up_to_and_excluding_" chk=" )
 
 CRC-16/CCITT-FALSE: polynomial 0x1021, initial value 0xFFFF, no reflection, no final XOR. Rendered as 4 lowercase hex digits ([Crc16CcittFalse.cs:21](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/Crc16CcittFalse.cs#L21)). The covered region is "everything before the literal ` chk=`": including `ihave`, the id, every other KV, and the spaces between them, but not the trailing ` chk=NNNN` itself.
 
-Validation is positional too: `chk` MUST be the last KV. The validator rejects any line where `chk=` appears earlier or where `chk=NNNN` isn't followed by end-of-line ([IHaveValidator.cs:208-228](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/IHaveValidator.cs#L208-L228)). This makes the covered range computable from a single string scan, not from a re-serialisation of the parsed KVs.
+Validation is positional too: `chk` MUST be the last KV. The validator rejects any line where `chk=` appears earlier or where `chk=NNNN` isn't followed by end-of-line ([IHaveValidator.ValidateChecksum](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/IHaveValidator.cs)). This makes the covered range computable from a single string scan, not from a re-serialisation of the parsed KVs.
 
 ### That's the bare essentials
 
 A node that does only:
 
-- Sessions: `DAPPSv1>` + 3-minute inactivity timeout + line-based commands.
-- Push: `ihave` (with required fields and `chk`) + `send` reply + `data` + `ack`.
-- Accept: the mirror above, with hash validation.
+- Sessions: `DAPPSv1>` and an `exchange` line with `inline=0`, a 3-minute inactivity timeout, line-based commands.
+- Send: `ihave` (with required fields and `chk`) + `send` reply + `data` + `ack`.
+- Take: the mirror above, with hash validation, and a caller's `exchange` and `quit` answered.
 - Hash: SHA1 + 7-char prefix as specified.
 
-…interoperates with the reference daemon for one-shot message delivery in both directions. It won't show up in peer-discovery responses, won't accept polling, won't be reached by relays, and won't see fragmented or ordered streams. But messages flow.
+…interoperates with the reference daemon for message delivery in both directions. It won't show up in peer-discovery responses, won't be reached by relays, and won't see fragmented or ordered streams. But messages flow.
 
 ## Full interoperability
 
 The features below are individually optional. The reference daemon implements all of them; pick the ones your scope needs. Each one is wire-additive: a daemon that doesn't understand `src=` will just ignore it, and the message still delivers.
+
+### The exchange {#the-exchange}
+
+This is how DAPPS nodes talk to each other. Every time a station transmits, it says everything it has to say, in both directions, and the session is the same at both ends, so who dialled stops mattering. On a packet link each transmission costs a fixed TX delay and preamble, and BPQ answers every burst with an RR, so fewer, fuller transmissions are what make a link fast.
+
+**Session start.** A node never sends message contents to a peer before it has that peer's rules.
+
+1. The answering node sends `DAPPSv1>\n` and straight after it its own `exchange` line.
+2. Every node sends its own `exchange` line once per session: the answering node right after the prompt; the node that dialled as soon as it sees the prompt or the peer's `exchange`, or after 10 seconds with neither. That last case is a crossed call: both nodes dialled each other at once and neither was handed an incoming connect, so neither sends a prompt. After 10 seconds of silence both send their `exchange` and carry on as normal. (After a connect script, the script has read the prompt.)
+3. When it wants the peer's routes, the node that dialled asks with `routes` before sending its `exchange`, so the answer can't get mixed up with traffic.
+4. Once a node has sent its `exchange` and received the peer's, either side sends whatever it has, whenever it has it, following the other's rules. A `DAPPSv1>` line from then on is ignored.
+5. Session tags. Each session picks a random tag and sends it as `id=` in its `exchange`. If the peer sends an `exchange` with a tag you haven't seen in this session, its end of the link is a new session (its node moved the link to a newer session): send your `exchange` again, with your same tag, and send again everything of yours it hasn't answered. The peer's duplicate memory makes that safe. An `exchange` repeating a tag you've seen is just the peer's rules again: take them and send nothing.
+
+**The rules.** `exchange` carries the sending node's rules for what it takes:
+
+| Key | Meaning | Left out |
+|---|---|---|
+| `id=<tag>` | The session tag (rule 5) | an empty tag |
+| `hold=<s>` | Seconds of quiet to keep the link up for. The session holds for the lower of the two | 0 |
+| `inline=<bytes>` | Largest payload, as it goes on air, it takes unasked as `msg`. Bigger ones are offered with `ihave` first. The reference daemon says 256 | 0: offer everything first |
+| `max=<bytes>` | Largest message (`len`) it takes at all. Bigger ones are neither sent nor offered to it | no limit |
+| `z=<list>` | Compression dictionaries it holds, e.g. `z=1` | plain only |
+
+Unknown keys are ignored. `inline` binds the sender: a receiver takes a `msg` over its own limit that arrives anyway, since its payload has already crossed the air. A node can still refuse any message with `no`: an offer before its payload goes on air, or a small unasked one after it arrives (not stored or passed on). A node that wants to judge every message before any payload is sent says `inline=0`.
+
+**Lines.** Either side, any time, once both `exchange` lines have crossed. Header fields are exactly the `ihave` fields above.
+
+| Line | Meaning | Answer |
+|---|---|---|
+| `msg <id> <fields>\n` then the payload (`clen` bytes if compressed, else `len`) | A message with its payload | `ack`, `bad`, `no`, or `error` |
+| `ihave <id> <fields>\n` | Offer without payload | `send`, `ack` (already have it), `no`, or `error` |
+| `send <id>\n` | Send your offer's payload | `data <id>\n` then the payload |
+| `data <id>\n` then the payload | Payload of an offer we asked for | `ack` or `bad` |
+| `ack <id>\n` | Got it, or already had it: delivered | none |
+| `bad <id>\n` | Payload didn't decode or hash-check | the sender may send it once more plain |
+| `error <id>\n` | Header refused (malformed, unknown `fmt`) | the sender may send it once more plain; if that fails too, it fails for this session |
+| `no <id> [reason]\n` | Won't take it. Not stored or passed on | none; the sender doesn't offer it on this link again |
+| `quit\n` | Ending | `bye\n`, then hang up |
+
+- A `msg` or `data` whose length can't be made out (no `len`, or `clen` missing for a compressed format, or a `data` for an offer you didn't accept) leaves the stream out of step: close the session. The reference daemon does the same for a payload said to be over 16 MB, rather than wait for it. If the lengths parse but anything else is refused, read past the payload, then answer.
+- Window: at most 8 messages sent and not yet answered, in each direction.
+- Order: each side sends in its queue order and handles what arrives in order. Ordered streams (`sid`/`sn`) are put in order at the destination.
+- Writes: write whatever is ready as soon as it is ready. Everything answered from one burst goes in one write, and so in one frame where it fits.
+- Duplicate memory ([above](#never-deliver-a-message-twice)): an `ihave` for a message you have is answered `ack`; a `msg` for one is `ack`ed and dropped. Messages without `s=` aren't remembered, so they're always taken.
+
+**Ending.** The session stays up while anything moves. The node that dialled sends `quit` once there has been no traffic either way for the agreed hold (at least 10 seconds, so the answering node's first traffic, which can follow its `exchange` by a moment, isn't cut off), nothing is unanswered either way, and it has nothing more to send. In a crossed call either may; that's harmless. The reference daemon also ends a session after 30 minutes however busy, and the next message dials afresh. With no bytes at all from the peer for 3 minutes, or the hold plus 30 seconds if that's longer, give up on the link.
+
+A message still unanswered when a session ends stays queued and goes on the next one. The reference daemon adds two limits of its own: it gives up on a message that has gone unanswered for as long as the inactivity timeout, and when a session it dialled breaks off without a `quit` (the link failed, or the peer hung up) it counts the oldest unanswered message as failed, so it waits a while before dialling that neighbour again rather than straight away.
+
+A normal call, with the answering node's traffic going the other way on the same link:
+
+```
+S: DAPPSv1>\n
+S: exchange id=b71e02 hold=120 inline=256 z=1\n
+C: exchange id=3c90aa hold=60 inline=256 z=1\n
+C: msg 7e1f3a2 len=5 fmt=p dst=mail@G0RCV s=1714982400000\nhello
+S: ack 7e1f3a2\n
+S: msg 9aa1234 len=11 fmt=p dst=mail@G0CALLER s=1714982399000\nhello there
+C: ack 9aa1234\n
+   (a quiet minute: the lower of the two holds)
+C: quit\n
+S: bye\n
+```
+
+The two `C:` lines of the caller's first turn go in one write, as do the answering node's `ack` and `msg`. Reference: [ExchangeSession.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/Backhaul/ExchangeSession.cs), used at both ends.
+
+The reference daemon's own settings for a neighbour are `DAPPS_SESSION_TAIL_SECONDS` (the hold, default 120, 0 = don't hold, at most 600) and `DAPPS_MAX_MESSAGE_BYTES` (the `max`, default no limit); both are in [Configure](configure.md). A mail-only station that rarely sends can have the reference daemon call its neighbours on a schedule (`DAPPS_SCHEDULED_POLL_ENABLED`): that's an ordinary session with nothing of its own to send.
 
 ### End-to-end source tracking (`src=`)
 
@@ -145,7 +216,7 @@ ihave 7e1f3a2 len=5 fmt=p s=1714982400000 src=G0ORIG dst=mail@G0RCV chk=a31f
 
 Why have it: without `src=`, a receiver three hops down can't tell whether a message originated at G0FIRST or just transited through G0FIRST. With `src=`, the receiver's app sees the originator (exposed as the `dapps-origin` MQTT user property) and can route replies back to the right source. Forwarders that don't propagate it omit `src=`; receivers treat absent `src=` as "originator unknown".
 
-Reference: [DappsProtocolClient.cs:122-128](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs#L122-L128), [IHaveValidator.cs:144-152](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/IHaveValidator.cs#L144-L152).
+Reference: [OfferLine.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/OfferLine.cs) (writing it), [IHaveValidator.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/IHaveValidator.cs) (reading it).
 
 ### Multi-part fragmentation (`mid=` + `frag=`)
 
@@ -159,7 +230,7 @@ ihave 33eeefe len=512  fmt=p s=1714982400003 mid=4cf02b1 frag=3/3 dst=mail@G0RCV
 
 - `mid=<7hex>` is a master id - opaque grouping key, same hex format as a regular id.
 - `frag=N/M` where N is the 1-based index, M is the total. M ≥ 2 (single-fragment messages omit `mid`/`frag` entirely). N ∈ [1, M].
-- `mid` and `frag` MUST both be present or both absent. A partial set is rejected as malformed ([IHaveValidator.cs:160-165](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/IHaveValidator.cs#L160-L165)).
+- `mid` and `frag` MUST both be present or both absent. A partial set is rejected as malformed ([IHaveValidator.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/IHaveValidator.cs)).
 - Each fragment has its own id (hash of its own chunk + its own salt). Intermediate hops forward fragments as opaque messages.
 - Only the final destination groups by `mid`, holds fragments in a reassembly buffer, and delivers the assembled payload to the app once all M arrive.
 
@@ -167,7 +238,7 @@ Why two-id'd: each fragment is independently content-addressed so it can be dedu
 
 Reassembly buffer entries time out after `FragmentReassemblyTimeoutSeconds` (default 7 days) - long because HF / mesh propagation gaps legitimately last days, and we'd rather hold the partial bytes than throw away most of a near-complete message.
 
-Reference: [DappsProtocolClient.cs:131-134](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs#L131-L134), [IHaveValidator.cs:154-196](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/IHaveValidator.cs#L154-L196), [DatabaseAndMqttInbox.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/DatabaseAndMqttInbox.cs) (reassembly).
+Reference: [OfferLine.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/OfferLine.cs), [IHaveValidator.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/IHaveValidator.cs), [DatabaseAndMqttInbox.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/DatabaseAndMqttInbox.cs) (reassembly).
 
 ### Opt-in ordering (`sid=`, `sn=`, `gt=`)
 
@@ -188,7 +259,7 @@ Why opt-in: ordering trades latency for predictability. One missing message stal
 
 Receivers that don't understand `sid`/`sn`/`gt` ignore the keys and deliver each message immediately - the stream survives the per-pair conversation between aware nodes.
 
-Reference: [DappsProtocolClient.cs:138-152](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs#L138-L152), [IHaveValidator.cs:198-227](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/IHaveValidator.cs#L198-L227), full design in [reference.md "Message ordering"](app-developers/reference.md#message-ordering-opt-in).
+Reference: [OfferLine.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/OfferLine.cs), [IHaveValidator.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/IHaveValidator.cs), full design in [reference.md "Message ordering"](app-developers/reference.md#message-ordering-opt-in).
 
 ### Compression (`fmt=z1`) {#compression}
 
@@ -207,7 +278,7 @@ The dictionary is a fixed file shipped with DAPPS ([payload-v1.dict](https://git
 
 The reference daemon compresses only when that saves at least 32 bytes, counting the `clen=` field, so short messages stay readable on a monitor. It's on by default; `DAPPS_COMPRESSION_ENABLED` and a per-neighbour setting turn it off. Receivers always accept it.
 
-New dictionaries get new versions (`z2` and so on), and a shipped version never changes. A receiver that doesn't hold the version it's offered replies `error <id>` (or `no <id>` during a `rev` drain), and the sender offers the same message again with `fmt=p` on the same session. The same happens after a `bad` for a compressed payload, which usually means something on the path isn't passing binary data through. Either way the rest of that session goes plain.
+New dictionaries get new versions (`z2` and so on), and a shipped version never changes. Each node lists the versions it holds in its `exchange` line (`z=1`), and a sender only compresses with one the peer lists. A receiver that's sent a version it doesn't hold replies `error <id>`, and the sender sends the same message again with `fmt=p` on the same session. The same happens after a `bad` for a compressed payload, which usually means something on the path isn't passing binary data through. Either way the rest of that session goes plain.
 
 ### TTL (`ttl=`)
 
@@ -261,36 +332,9 @@ Unknown lines between `peer` and `end` are silently skipped on both sides - lets
 
 Implementations that don't care about transitive discovery can skip both sides: ignore the `peers` command (return `eh?` if it surfaces) and never call it. Discovery still works via beacons, just slower-to-converge.
 
-Reference: [InboundConnectionHandler.cs:229-260](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/InboundConnectionHandler.cs#L229-L260), [DappsProtocolClient.cs:201-244](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs#L201-L244).
+`peers` is a command for before any exchange; the reference daemon's prober reads the prompt, skips the `exchange` line, asks, and hangs up.
 
-### `rev` reverse forwarding
-
-Polling. The connecting peer asks the server "got mail for me?"; the server pushes any queued messages whose final destination matches the caller's callsign, then re-emits the prompt to signal "drained". On a [held session](#held-sessions) it also pushes whatever it has queued to send via the caller.
-
-```
-C: rev\n
-S: ihave 9aa1234 len=128 fmt=p s=1714982399000 dst=mail@G0CALLER chk=...\n
-C: send 9aa1234\n
-S: data 9aa1234\n[128 bytes]
-C: ack 9aa1234\n
-S: ihave bbb5678 len=64 fmt=p s=1714982399500 dst=alerts@G0CALLER chk=...\n
-C: send bbb5678\n
-S: data bbb5678\n[64 bytes]
-C: ack bbb5678\n
-S: DAPPSv1>\n
-```
-
-Note the role flip: during a `rev` drain, the *server* is the message sender and the *client* is the receiver. The same `ihave`/`send`/`data`/`ack` exchange runs in reverse.
-
-Selective form: `rev <id1> <id2> ...\n` drains only the listed ids. Bare `rev\n` drains everything matching the caller's base callsign.
-
-The `DAPPSv1>\n` re-prompt is the "drained" marker - distinct from another `ihave` line because it has a `>` and no spaces. The connecting peer reads lines until it sees the prompt, then either issues another command or closes.
-
-Why `rev` exists: a node behind asymmetric connectivity (RF-only inbound, can't initiate sessions to the wider network) can call out, push its outbound, and pull its inbound on the same session. The reference daemon also runs `rev` opportunistically once it has pushed what it had queued - the connection is open and the acks just landed; might as well drain. If more mail for that neighbour was queued meanwhile, it pushes that too and sends `rev` again before hanging up, so `rev` is always the last exchange of the session.
-
-A receiver that doesn't implement `rev` should respond `eh?\n` to the command. Senders should treat `eh?` as "this peer doesn't poll" and stop trying.
-
-Reference: [InboundConnectionHandler.cs:275-343](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/InboundConnectionHandler.cs#L275-L343), [DappsProtocolClient.cs:283-369](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs#L283-L369).
+Reference: [InboundConnectionHandler.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/InboundConnectionHandler.cs), [DappsProtocolClient.RequestPeersAsync](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs).
 
 ### `routes` exchange
 
@@ -302,7 +346,7 @@ S: route G7VVK hops=2 ageSeconds=900\n
 S: end\n
 ```
 
-The connecting peer asks "what destinations can you reach?"; the server emits one `route` line per known-good destination, then `end\n`.
+The connecting peer asks "what destinations can you reach?"; the server emits one `route` line per known-good destination, then `end\n`. A DAPPS node that dials asks before it sends its `exchange` line, when it hasn't asked that neighbour for a while (`DAPPS_ROUTE_GOSSIP_STALENESS_HOURS`).
 
 Per-line format:
 
@@ -318,28 +362,9 @@ Receivers import each row as a learned route via the responding peer, marked as 
 
 The reference daemon's emitter filters: only routes whose failure counter is zero, and only routes the daemon itself has actually used (not just heard about). Manual neighbours are always advertised; traffic-learned routes are advertised only when proven; gossip-imported routes are never advertised (don't re-export hearsay).
 
-Implementations that don't care about route gossip should respond `eh?\n` to the command. Senders treat `eh?` as "this peer doesn't gossip" and stop trying.
+Implementations that don't care about route gossip should respond `eh?\n` to the command. Senders treat `eh?` as "this peer doesn't gossip" and don't ask again for a while.
 
-Reference: [InboundConnectionHandler.HandleRoutes](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/InboundConnectionHandler.cs), [DappsProtocolClient.RequestRoutesAsync](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs).
-
-### Held sessions (`tail`, `pending`) {#held-sessions}
-
-After a session has moved messages, the caller can ask to keep it open, so that the next message in either direction goes straight away instead of waiting for a new connection:
-
-```
-C: tail 120\n
-S: tail 120\n
-```
-
-The number is how long the link may sit quiet, in seconds. The server answers with what it will allow, the lower of that and its own setting for the caller, or `tail 0` for no. Once agreed:
-
-- The caller keeps the link up and sends new traffic on it as it's queued. It says `quit` when the link has been quiet for the agreed time.
-- The server waits for the caller's next command for the agreed time plus a margin (30 s in the reference daemon), or its usual 3 minutes if that's longer.
-- When the server has something for the caller, it writes `pending\n`, unprompted, while it's idle between commands. The caller answers with `rev` and the usual drain follows. What the server drains then includes traffic it's relaying through the caller, not only mail addressed to it.
-
-Because `pending` is unprompted, it can cross with a command from the caller and arrive where the caller expects a reply. A caller skips a `pending` line wherever it reads one, remembers it, and sends `rev` when it's next free.
-
-The reference daemon asks for a hold after every session that pushed something and ended cleanly. It holds for `DAPPS_SESSION_TAIL_SECONDS` (default 120, 0 = off, at most 600), which can be set per neighbour. An idle AX.25 link costs next to nothing on air, just the link-layer keepalive every few minutes.
+Reference: [InboundConnectionHandler.RoutesAsync](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.core/Services/InboundConnectionHandler.cs), [DappsProtocolClient.RequestRoutesAsync](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/DappsProtocolClient.cs).
 
 ### Quit / help
 
@@ -351,7 +376,7 @@ C: help\n      (or info; case-insensitive)
 S: This is DAPPS. See https://github.com/packet-net/dapps/blob/master/README.md for details.\n
 ```
 
-Help text is human-only; programs shouldn't parse it. Both commands loop the prompt afterwards (except `quit`, which closes).
+Help text is human-only; programs shouldn't parse it. After `help` the server goes back to reading commands; after `quit` it closes.
 
 ### Datagram bearer (binary codec)
 
@@ -468,8 +493,8 @@ An implementation can skip beacons entirely and rely on configured neighbours. I
 
 If you've implemented the bare essentials and want to verify against the reference daemon, the smallest useful smoke test:
 
-1. **Connect outbound to the reference daemon, push a message.** Reference accepts on `DAPPSv1>` prompt; you write `ihave …`, expect `send <id>`, write `data … hello`, expect `ack <id>`. Inspect the daemon's `/Recent` page or its MQTT topic to confirm receipt.
-2. **Receive inbound from the reference daemon.** Configure the reference daemon to forward to your callsign; queue a message; expect a session in, the same four-line exchange in reverse, and your `ack` to clear the daemon's queue.
+1. **Connect outbound to the reference daemon, push a message.** Read the `DAPPSv1>` prompt and the `exchange` line after it; you write `ihave …`, expect `send <id>`, write `data … hello`, expect `ack <id>`. Inspect the daemon's `/Recent` page or its MQTT topic to confirm receipt.
+2. **Receive inbound from the reference daemon.** Configure the reference daemon to forward to your callsign; queue a message; expect a session in, the daemon's `exchange` after yours, then an `ihave` (or with `inline=` above zero a `msg`), and your `ack` to clear the daemon's queue. Then its `quit`.
 3. **Round-trip with `chk`.** Include `chk=NNNN` on outbound; verify the reference daemon validates it (deliberately corrupt one byte and watch the reference reject with `error <id>`).
 4. **Round-trip with `ttl`.** Include `ttl=600`; inspect the daemon's stored row to confirm it persisted, then forward via the daemon to a third node and watch the residual decrement.
 5. **Reject malformed offers.** Send `ihave x len=oops fmt=p dst=mail@G0X` (bad len) and verify your implementation responds `error x` not `send x`.

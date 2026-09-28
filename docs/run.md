@@ -14,7 +14,7 @@ A running DAPPS node has several independent loops, each with a clear job:
 | **Probe scheduler**        | Every probe interval (24 h default), gated by strategy | Walk the probed-nodes table; for each row not opted out, open a connected-mode probe session. Records success/failure. Off by default. |
 | **Beaconer**               | Per-channel cadence                                    | For each enabled discovery channel, transmit a beacon advertising our callsign + bearer hints + cost.        |
 | **Solicitor**              | Per-channel scheduled or operator-triggered            | Transmit a solicit on a channel; collect replies for `solicit-window-seconds`.                              |
-| **Reverse-poll sweeper**   | Every poll interval (6 h default), if enabled          | For each known forward target, request anything they hold for us via `rev`. Off by default.                |
+| **Poll sweeper**           | Every poll interval (6 h default), if enabled          | Call each neighbour so it can send anything it holds for us. Off by default.                                 |
 | **Heartbeat publisher**    | Every 60 s (configurable, ≥ 10 s)                      | Publish an operational snapshot to MQTT topic `dapps/metrics/heartbeat`. On by default.                      |
 | **Update checker**         | Every 1 h                                              | Poll GitHub Releases. Surface "v0.X.Y available" on the dashboard / heartbeat / `/Operational`.              |
 

@@ -7,12 +7,13 @@ namespace dapps.core.Services;
 /// Plan F3b - connected-mode scheduled poll. When
 /// <see cref="SystemOptions.ScheduledPollEnabled"/> is true, runs a
 /// slow sweep of every AGW-reachable manual <see cref="DbNeighbour"/>
-/// row, opens a session, sends <c>rev</c>, drains the remote's
-/// queued mail via the regular inbox path, and disconnects. Off by
-/// default - opportunistic poll on every push (F3a) covers the
-/// majority of cases for free; this service is for nodes that don't
-/// push often (read-only consumers, scheduled HF stations) and
-/// would otherwise let mail rot at their forwarding partners.
+/// row: calls it, takes whatever it sends through the regular inbox
+/// path, and hangs up when the link goes quiet (<see cref="NodePoller"/>).
+/// Off by default - every session carries traffic both ways, so mail
+/// usually rides a call made for other traffic; this service is for
+/// nodes that don't send often (read-only consumers, scheduled HF
+/// stations) and would otherwise let mail rot at their forwarding
+/// partners.
 ///
 /// Sweeps live in <see cref="DbPolledNode"/> for dashboard surface.
 /// On-demand polls (<c>POST /Polls/run/{callsign}</c>) bypass the
@@ -155,8 +156,8 @@ public sealed class PollSchedulerService(
     /// <summary>
     /// Eligible polling targets: AGW-reachable manual neighbours,
     /// minus any flagged opt-out in <see cref="DbPolledNode"/>. UDP-
-    /// only neighbours are excluded - the rev session protocol is
-    /// AGW-only by design (decision in plan F3).
+    /// only neighbours are excluded - UDP has no session to poll over,
+    /// and every datagram goes out as soon as it's queued.
     /// </summary>
     public async Task<IReadOnlyList<PollTarget>> EnumerateTargetsAsync()
     {

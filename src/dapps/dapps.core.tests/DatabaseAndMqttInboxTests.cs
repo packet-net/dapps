@@ -42,7 +42,6 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
 
         using (var c = DbInfo.GetConnection())
         {
-            c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();
@@ -267,6 +266,7 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
         var offer = $"ihave {id} len={payload.Length} fmt=p s=11 dst=myapp@N0CALL\n";
 
         (await reader.ReadLineAsync(ct)).Should().Be("DAPPSv1>");
+        (await reader.ReadLineAsync(ct)).Should().StartWith("exchange ");
         await link.WriteAsync(Encoding.ASCII.GetBytes(offer), ct);
         (await reader.ReadLineAsync(ct)).Should().Be($"send {id}");
         await link.WriteAsync((byte[])[.. Encoding.ASCII.GetBytes($"data {id}\n"), .. payload], ct);
@@ -274,6 +274,10 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
 
         await link.WriteAsync(Encoding.ASCII.GetBytes(offer), ct);
         (await reader.ReadLineAsync(ct)).Should().Be($"ack {id}", "we have it, so its payload needn't come again");
+
+        // In an exchange, the same message sent unasked is acked and dropped.
+        await link.WriteAsync((byte[])[.. Encoding.ASCII.GetBytes($"exchange id=xyz003 hold=0 inline=256\nmsg {id} len={payload.Length} fmt=p s=11 dst=myapp@N0CALL\n"), .. payload], ct);
+        (await reader.ReadLineAsync(ct)).Should().Be($"ack {id}");
         (await database.GetUnacknowledgedLocalMessagesForApp("myapp")).Should().ContainSingle();
     }
 

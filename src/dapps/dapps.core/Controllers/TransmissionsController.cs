@@ -21,8 +21,8 @@ public sealed class TransmissionsController(TransmissionAuditService audit) : Co
     /// <summary>
     /// Recent transmissions, newest first. Optional filters:
     /// <c>kind</c> (one of beacon / solicit / solicit-reply / probe /
-    /// probe-nodeprompt / forward / forward-flood / poll / rev-drain /
-    /// ack / nak / heartbeat) - may repeat to OR multiple kinds;
+    /// probe-nodeprompt / forward / forward-flood / poll / ack / nak /
+    /// heartbeat) - may repeat to OR multiple kinds;
     /// <c>target</c> for a specific callsign; <c>onlyFailures</c>
     /// to surface error rows.
     /// </summary>

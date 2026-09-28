@@ -9,11 +9,12 @@ namespace dapps.core.tests;
 
 /// <summary>
 /// Unit tests for the AGW-stream backhaul implementation. The
-/// end-to-end <c>TtlForwardingIntegrationTests</c> exercises this
-/// against a real BPQ over AXIP-UDP, but those need Docker. These
-/// drive the protocol state machine directly with a fake transport
-/// that hands back canned receiver bytes - fast, hermetic, covers
-/// each rejection path explicitly.
+/// end-to-end <c>DappsEndToEndTests</c> exercise this against real BPQ
+/// over AXIP-UDP, but those need Docker. These drive the session
+/// directly with a fake transport that hands back canned receiver bytes
+/// - fast, hermetic, covers each rejection path explicitly. The canned
+/// answers are all there from the start; the session reads a line at a
+/// time and sends as soon as it can, so they land on what it sent.
 /// </summary>
 public sealed class Dappsv1SessionBackhaulTests
 {
@@ -48,11 +49,13 @@ public sealed class Dappsv1SessionBackhaulTests
         await Task.CompletedTask;
     }
 
+    /// <summary>What the answering node says first: the prompt and its rules.</summary>
+    private const string Hello = "DAPPSv1>\nexchange id=far001 hold=0 inline=256 z=1\n";
+
     [Fact]
-    public async Task SendAsync_HappyPath_ReturnsOkAndWritesIhaveLine()
+    public async Task SendAsync_HappyPath_ReturnsOkAndWritesTheMessageAfterOurRules()
     {
-        var transport = new FakeOutboundTransport(
-            cannedReceiverBytes: Encoding.UTF8.GetBytes("DAPPSv1>\nsend mid0001\nack mid0001\n"));
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(Hello + "ack mid0001\n"));
         var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
 
         var result = await sb.SendAsync(
@@ -63,7 +66,8 @@ public sealed class Dappsv1SessionBackhaulTests
 
         result.Accepted.Should().BeTrue();
         var written = Encoding.UTF8.GetString(transport.WriteCapture);
-        written.Should().Contain("ihave mid0001");
+        written.Should().StartWith("exchange id=");
+        written.Should().Contain("msg mid0001 ");
         written.Should().Contain("ttl=60");
         written.Should().Contain("dst=app@N0DEST");
     }
@@ -82,42 +86,25 @@ public sealed class Dappsv1SessionBackhaulTests
             CancellationToken.None);
 
         result.Accepted.Should().BeFalse();
+        result.Deferred.Should().BeFalse();
         result.Error.Should().Contain("DAPPSv1>");
     }
 
     [Fact]
-    public async Task SendAsync_OfferRejected_ReturnsFail()
+    public async Task SendAsync_ANodeBannerAndNoPrompt_FailsWhenTheWaitRunsOut_WithoutSendingOurRules()
     {
-        var transport = new FakeOutboundTransport(
-            cannedReceiverBytes: Encoding.UTF8.GetBytes("DAPPSv1>\nerror mid0003\n"));
-        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
+        // Something that isn't DAPPS answered (a node's welcome text):
+        // unlike a crossed call, the link isn't silent.
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes("Welcome to BPQ Node PEWSEY\rType ? for help.\r"), endOfStream: false);
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance) { PromptWait = TimeSpan.FromMilliseconds(200) };
 
         var result = await sb.SendAsync(
-            new BackhaulMessage("mid0003", "app@N0DEST", null, null, "x"u8.ToArray()),
-            new BackhaulRoute("N0DEST"),
-            "N0SRC",
-            CancellationToken.None);
+            new BackhaulMessage("mid0002", "app@N0DEST", null, null, "x"u8.ToArray()),
+            new BackhaulRoute("N0DEST"), "N0SRC", TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         result.Accepted.Should().BeFalse();
-        result.Error.Should().Contain("offer rejected");
-    }
-
-    [Fact]
-    public async Task SendAsync_PayloadNAKed_ReturnsFail()
-    {
-        // Receiver accepts the offer but bad-frames the payload (hash mismatch).
-        var transport = new FakeOutboundTransport(
-            cannedReceiverBytes: Encoding.UTF8.GetBytes("DAPPSv1>\nsend mid0004\nbad mid0004\n"));
-        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
-
-        var result = await sb.SendAsync(
-            new BackhaulMessage("mid0004", "app@N0DEST", null, null, "x"u8.ToArray()),
-            new BackhaulRoute("N0DEST"),
-            "N0SRC",
-            CancellationToken.None);
-
-        result.Accepted.Should().BeFalse();
-        result.Error.Should().Contain("payload");
+        result.Error.Should().Contain("DAPPSv1>");
+        Encoding.UTF8.GetString(transport.WriteCapture).Should().BeEmpty();
     }
 
     [Fact]
@@ -162,7 +149,7 @@ public sealed class Dappsv1SessionBackhaulTests
     public async Task SendBatchAsync_ThreeMessages_OneConnectionAndEachOneAcked()
     {
         var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(
-            "DAPPSv1>\nsend msg0001\nack msg0001\nsend msg0002\nack msg0002\nsend msg0003\nack msg0003\n"));
+            Hello + "ack msg0001\nack msg0002\nack msg0003\n"));
         var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
         var batch = new ListBatch(Msg("msg0001"), Msg("msg0002"), Msg("msg0003"));
 
@@ -172,22 +159,25 @@ public sealed class Dappsv1SessionBackhaulTests
         batch.Outcomes.Select(o => (o.Id, o.Result.Accepted)).Should().Equal(
             ("msg0001", true), ("msg0002", true), ("msg0003", true));
         var written = Encoding.UTF8.GetString(transport.WriteCapture);
-        written.Should().Contain("ihave msg0001").And.Contain("ihave msg0002").And.Contain("ihave msg0003");
+        written.Should().Contain("msg msg0001").And.Contain("msg msg0002").And.Contain("msg msg0003");
     }
 
     [Fact]
-    public async Task SendBatchAsync_SecondOfferRefused_StopsThere_AndTheThirdIsNeverHandedOut()
+    public async Task SendBatchAsync_OneMessageFailing_DoesNotStopTheOthers()
     {
+        // Answers are per message, so the session stays in step after one
+        // is turned down: unlike the old one-at-a-time exchange, it goes on.
         var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(
-            "DAPPSv1>\nsend msg0001\nack msg0001\nerror msg0002\n"));
+            Hello + "ack msg0001\nerror msg0002\nerror msg0002\nack msg0003\n"));
         var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
         var batch = new ListBatch(Msg("msg0001"), Msg("msg0002"), Msg("msg0003"));
 
         await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, TestContext.Current.CancellationToken);
 
-        batch.Outcomes.Select(o => (o.Id, o.Result.Accepted)).Should().Equal(("msg0001", true), ("msg0002", false));
+        batch.Outcomes.Select(o => (o.Id, o.Result.Accepted)).Should().Equal(("msg0001", true), ("msg0002", false), ("msg0003", true));
         batch.Outcomes[1].Result.Error.Should().Contain("offer rejected");
-        batch.Remaining.Should().Be(1, "the message after a refusal stays queued, untouched");
+        System.Text.RegularExpressions.Regex.Count(Encoding.UTF8.GetString(transport.WriteCapture), "msg msg0002 ")
+            .Should().Be(2, "one more go after the first error, then it fails for this session");
     }
 
     [Fact]
@@ -229,42 +219,26 @@ public sealed class Dappsv1SessionBackhaulTests
     }
 
     [Fact]
-    public async Task SendBatchAsync_RevGoesOnceAfterAllThePushes()
+    public async Task SendBatchAsync_ThePeerHangsUpWithMessagesUnanswered_TheOldestFails_TheRestAreDeferred()
     {
-        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(
-            "DAPPSv1>\nsend msg0001\nack msg0001\nsend msg0002\nack msg0002\nDAPPSv1>\n"));
-        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, new NullInbox(), () => true);
-
-        await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC",
-            new ListBatch(Msg("msg0001"), Msg("msg0002")), TestContext.Current.CancellationToken);
-
-        var written = Encoding.UTF8.GetString(transport.WriteCapture);
-        // Payloads carry no newline, so "rev" follows the last one on
-        // the same line: count the command, not lines.
-        System.Text.RegularExpressions.Regex.Count(written, "rev\n").Should().Be(1);
-        written.IndexOf("rev\n", StringComparison.Ordinal).Should().BeGreaterThan(written.IndexOf("data msg0002", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task SendBatchAsync_PeerHangsUpAfterTheFirstMessage_TheNextIsDeferredNotFailed()
-    {
-        // A peer that closes after an exchange ends the session; the
-        // neighbour isn't failing, so no cooldown for the next message.
-        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes("DAPPSv1>\nsend msg0001\nack msg0001\n"));
+        // A session that breaks off without a quit is a failure of the
+        // link or the neighbour: one message fails, so the neighbour gets
+        // a cooldown instead of an immediate redial; the others just wait.
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(Hello + "ack msg0001\n"));
         var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
-        var batch = new ListBatch(Msg("msg0001"), Msg("msg0002"));
+        var batch = new ListBatch(Msg("msg0001"), Msg("msg0002"), Msg("msg0003"));
 
         await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, TestContext.Current.CancellationToken);
 
         batch.Outcomes.Select(o => (o.Id, o.Result.Accepted, o.Result.Deferred)).Should().Equal(
-            ("msg0001", true, false), ("msg0002", false, true));
+            ("msg0001", true, false), ("msg0002", false, false), ("msg0003", false, true));
     }
 
     [Fact]
-    public async Task SendBatchAsync_TheFirstMessageOnASilentPeer_StillFails()
+    public async Task SendBatchAsync_APeerThatHangsUpBeforeItsRules_FailsTheFirstMessage()
     {
-        // Nothing has been exchanged yet, so a peer that goes away is a
-        // failed send, as it always was.
+        // Nothing has been exchanged, so a peer that goes away is a failed
+        // send, as it always was.
         var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes("DAPPSv1>\n"));
         var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
         var batch = new ListBatch(Msg("msg0001"));
@@ -273,30 +247,61 @@ public sealed class Dappsv1SessionBackhaulTests
 
         batch.Outcomes.Single().Result.Deferred.Should().BeFalse();
         batch.Outcomes.Single().Result.Accepted.Should().BeFalse();
+        batch.Outcomes.Single().Result.Error.Should().Contain("hung up");
     }
 
     [Fact]
-    public async Task SendBatchAsync_LinkEndsDuringRev_DoesNotAskForMore()
+    public async Task SendBatchAsync_OnceTheBatchHasRunDry_ItIsNeverAskedAgain()
     {
-        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes("DAPPSv1>\nsend msg0001\nack msg0001\n"));
-        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, new NullInbox(), () => true);
+        // The forwarder's run moves on once its batch is done; traffic
+        // queued after that reaches the session by hand-off, not by the
+        // session going back to a batch the run has finished with.
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(Hello + "ack msg0001\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, inbox: new NullInbox());
         var batch = new ListBatch(Msg("msg0001")) { SecondWave = [Msg("late001")] };
 
         await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, TestContext.Current.CancellationToken);
 
         batch.Outcomes.Select(o => o.Id).Should().Equal("msg0001");
-        batch.SecondWave.Should().ContainSingle("a message queued meanwhile waits for the next session, not a dead link");
+        batch.SecondWave.Should().ContainSingle();
     }
 
     [Fact]
-    public async Task APeerWithoutTheDictionary_RefusesTheCompressedOffer_AndGetsItPlainOnTheSameSession()
+    public async Task SendBatchAsync_ASessionThatAnswersNothing_DoesNotHoldTheForwarderPastItsPatience()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (ours, theirs) = await ExchangeTestKit.LoopbackPairAsync(ct);
+        var peer = new LinePeer(theirs);
+        var sb = new Dappsv1SessionBackhaul(new OneStreamTransport(ours), NullLoggerFactory.Instance)
+        {
+            BatchPatience = TimeSpan.FromMilliseconds(300),
+        };
+        var message = ExchangeTestKit.Message("slow to answer", "app@N0DEST");
+        var batch = new RecordingBatch(message);
+
+        var send = sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, ct);
+        await peer.WriteLineAsync("DAPPSv1>\nexchange id=far001 hold=60 inline=256", ct);
+        await peer.ReadLineAsync(ct);
+        await peer.ReadWithPayloadAsync(ct);
+
+        await send.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        batch.Outcomes.Should().BeEmpty("the answer hasn't come yet");
+
+        // It still counts when it does.
+        await peer.WriteLineAsync($"ack {message.Id}", ct);
+        await batch.WaitForOutcomesAsync(1, ct);
+        batch.Outcomes.Single().Result.Accepted.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task APeerWithoutTheDictionary_RefusesTheCompressedMessage_AndGetsItPlainOnTheSameSession()
     {
         var payload = Encoding.UTF8.GetBytes(
             """{"v":1,"o":"MB7NPW","s":66,"e":1,"ts":1790410266123,"a":"p.i","data":{"t":"cp","cid":1,"fc":"M0AHN","ts":1790410266050,"p":"Evening all, is anyone on the WPS channel tonight?","dts":1790410266123}}""");
         var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(
-            "DAPPSv1>\nerror wps0001\nsend wps0001\nack wps0001\n"));
-        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, null, null,
-            compressTo: (_, _) => Task.FromResult(true));
+            Hello + "error wps0001\nack wps0001\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, inbox: null,
+            settingsFor: (_, _) => Task.FromResult(new ExchangeSettings(Compress: true)));
 
         var result = await sb.SendAsync(
             new BackhaulMessage("wps0001", "app@N0DEST", Salt: 1L, Ttl: 60, Payload: payload),
@@ -315,9 +320,9 @@ public sealed class Dappsv1SessionBackhaulTests
     {
         // e.g. a hop on a connect-script path that mangles binary bytes.
         var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(
-            "DAPPSv1>\nsend wps0001\nbad wps0001\nsend wps0001\nack wps0001\n"));
-        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, null, null,
-            compressTo: (_, _) => Task.FromResult(true));
+            Hello + "bad wps0001\nack wps0001\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, inbox: null,
+            settingsFor: (_, _) => Task.FromResult(new ExchangeSettings(Compress: true)));
 
         var result = await sb.SendAsync(WpsMsg("wps0001"), new BackhaulRoute("N0DEST"), "N0SRC", TestContext.Current.CancellationToken);
 
@@ -329,42 +334,47 @@ public sealed class Dappsv1SessionBackhaulTests
     [Fact]
     public async Task OnceThePeerRefusesCompression_TheRestOfTheSessionGoesPlain()
     {
+        // All three go compressed in the first write; once the first is
+        // refused, whatever goes again goes plain.
         var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(
-            "DAPPSv1>\nerror wps0001\nsend wps0001\nack wps0001\nsend wps0002\nack wps0002\n"));
-        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, null, null,
-            compressTo: (_, _) => Task.FromResult(true));
-        var batch = new ListBatch(WpsMsg("wps0001"), WpsMsg("wps0002"));
+            Hello + "error wps0001\nerror wps0002\nack wps0001\nack wps0002\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, inbox: null,
+            settingsFor: (_, _) => Task.FromResult(new ExchangeSettings(Compress: true)));
+        var batch = new ListBatch(WpsMsg("wps0001"), WpsMsg("wps0002"), WpsMsg("wps0003"));
 
         await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, TestContext.Current.CancellationToken);
 
-        batch.Outcomes.Should().AllSatisfy(o => o.Result.Accepted.Should().BeTrue());
-        System.Text.RegularExpressions.Regex.Count(Encoding.Latin1.GetString(transport.WriteCapture), " fmt=z1 ")
-            .Should().Be(1, "the second message doesn't pay for the same refusal again");
+        batch.Outcomes.Where(o => o.Id != "wps0003").Should().AllSatisfy(o => o.Result.Accepted.Should().BeTrue());
+        var written = Encoding.Latin1.GetString(transport.WriteCapture);
+        System.Text.RegularExpressions.Regex.Count(written, "msg wps0002 len=[0-9]+ fmt=z1").Should().Be(1);
+        System.Text.RegularExpressions.Regex.Count(written, "msg wps0002 len=[0-9]+ fmt=p").Should().Be(1,
+            "its second go is plain, like the rest of the session");
     }
 
     private static BackhaulMessage WpsMsg(string id) => new(id, "app@N0DEST", Salt: 1L, Ttl: 60, Payload: Encoding.UTF8.GetBytes(
         """{"v":1,"o":"MB7NPW","s":66,"e":1,"ts":1790410266123,"a":"p.i","data":{"t":"cp","cid":1,"fc":"M0AHN","ts":1790410266050,"p":"Evening all, is anyone on the WPS channel tonight?","dts":1790410266123}}"""));
 
     [Fact]
-    public async Task AHeldLinkWhoseReadFails_Closes_RatherThanSpinning()
+    public async Task AnOpenLinkWhoseReadFails_Closes_RatherThanSpinning()
     {
-        // The peer agrees a hold, then the link read fails (the AGW socket
-        // to the node dropping, say). The held session must end, not loop.
+        // The session is established and held, then the link read fails
+        // (the AGW socket to the node dropping, say). It must end, not loop.
         var transport = new FailingAfterScriptTransport(Encoding.UTF8.GetBytes(
-            "DAPPSv1>\nsend msg0001\nack msg0001\nDAPPSv1>\ntail 60\n"));
-        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, new NullInbox(), () => true,
-            tailFor: (_, _) => Task.FromResult(60));
+            "DAPPSv1>\nexchange id=far001 hold=60 inline=256\nack msg0001\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance, inbox: new NullInbox(),
+            settingsFor: (_, _) => Task.FromResult(new ExchangeSettings(HoldSeconds: 60)));
 
         await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", new ListBatch(Msg("msg0001")), TestContext.Current.CancellationToken);
+        sb.OpenPeers.Should().Contain("N0DEST", "both ends hold, so the link stays up");
         transport.ReleaseFailure();
 
         var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (sb.HeldPeers.Count > 0 && DateTime.UtcNow < deadline)
+        while (sb.OpenPeers.Count > 0 && DateTime.UtcNow < deadline)
         {
             await Task.Delay(20, TestContext.Current.CancellationToken);
         }
-        sb.HeldPeers.Should().BeEmpty();
-        transport.Disposed.Should().BeTrue("the held session hung up");
+        sb.OpenPeers.Should().BeEmpty();
+        transport.Disposed.Should().BeTrue("the session hung up");
     }
 
     /// <summary>Replies from a script, then fails the next read once
@@ -456,7 +466,10 @@ public sealed class Dappsv1SessionBackhaulTests
     private static Dappsv1SessionBackhaul MakeBackhaul(byte[] cannedReceiverBytes)
         => new(new FakeOutboundTransport(cannedReceiverBytes), NullLoggerFactory.Instance);
 
-    private sealed class FakeOutboundTransport(byte[] cannedReceiverBytes) : IDappsOutboundTransport
+    /// <summary>Replies with canned bytes. At the end of them the link
+    /// closes, or with <paramref name="endOfStream"/> false stays open
+    /// and silent.</summary>
+    private sealed class FakeOutboundTransport(byte[] cannedReceiverBytes, bool endOfStream = true) : IDappsOutboundTransport
     {
         public byte[] WriteCapture => _stream?.WriteCapture.ToArray() ?? [];
         public int Connects { get; private set; }
@@ -466,7 +479,7 @@ public sealed class Dappsv1SessionBackhaulTests
         public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken)
         {
             Connects++;
-            _stream = new CapturingStream(cannedReceiverBytes);
+            _stream = new CapturingStream(cannedReceiverBytes, endOfStream);
             return Task.FromResult<IDappsConnection>(new FakeConnection(_stream));
         }
 
@@ -480,14 +493,20 @@ public sealed class Dappsv1SessionBackhaulTests
             }
         }
 
-        private sealed class CapturingStream(byte[] preloaded) : Stream
+        private sealed class CapturingStream(byte[] preloaded, bool endOfStream) : Stream
         {
             private readonly MemoryStream _read = new(preloaded);
             public MemoryStream WriteCapture { get; } = new();
 
             public override int Read(byte[] buffer, int offset, int count) => _read.Read(buffer, offset, count);
-            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) => _read.ReadAsync(buffer, offset, count, ct);
-            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) => _read.ReadAsync(buffer, ct);
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) => ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+            {
+                var n = await _read.ReadAsync(buffer, ct);
+                if (n > 0 || endOfStream) return n;
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                return 0;
+            }
             public override void Write(byte[] buffer, int offset, int count) => WriteCapture.Write(buffer, offset, count);
             public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct)
             {

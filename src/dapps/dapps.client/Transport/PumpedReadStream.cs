@@ -10,9 +10,9 @@ namespace dapps.client.Transport;
 /// cancelled at any time without losing anything, where cancelling a
 /// read on the inner stream could drop half a line.
 ///
-/// That is what a held session needs (#187 proposal 9): while the link
-/// is idle it waits for whichever comes first of the peer's
-/// <c>pending</c>, new work from the forwarder, or the end of the tail.
+/// That is what an exchange session needs: while the link is idle it
+/// waits for whichever comes first of the peer's next line, new work
+/// from the forwarder, or the end of the hold.
 ///
 /// Writes, flushes and disposal of the inner stream belong to its
 /// owner; this only takes over reading.
@@ -67,6 +67,13 @@ public sealed class PumpedReadStream : Stream
         if (offset < current.Length) return true;
         return await chunks.Reader.WaitToReadAsync(ct);
     }
+
+    /// <summary>
+    /// True when bytes have already arrived and not been read yet, so a
+    /// read now won't wait. A session uses it to take in everything the
+    /// peer sent in one go before it answers.
+    /// </summary>
+    public bool HasBufferedData => offset < current.Length || chunks.Reader.TryPeek(out _);
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
     {

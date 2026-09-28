@@ -26,6 +26,11 @@ public sealed class DatabaseAndMqttInbox(
     TimeProvider timeProvider,
     ILogger<DatabaseAndMqttInbox> logger) : IBackhaulInbox
 {
+    /// <summary>Only a stored message counts, and never one without a
+    /// salt: those aren't remembered.</summary>
+    public async Task<bool> HasAsync(string id, long? salt, int length, CancellationToken ct) =>
+        salt is { } s && await database.HasReceivedAsync(DbReceived.MakeKey(id, s, length));
+
     public async Task DeliverAsync(
         BackhaulMessage message,
         string sourceCallsign,

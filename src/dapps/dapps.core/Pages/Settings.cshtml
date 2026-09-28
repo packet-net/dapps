@@ -155,14 +155,13 @@
     </div>
 
     <div class="panel">
-        <h3>Polling</h3>
-        <p class="panel-sub">F3 mail-pull. Opportunistic = drain on every push session; scheduled = walk neighbours on a cadence.</p>
+        <h3>Links and polling</h3>
+        <p class="panel-sub">Sessions with neighbours carry traffic both ways. Scheduled polls call each neighbour on a cadence to collect mail it holds for us.</p>
         <div class="field-grid">
-            <label class="field-checkbox"><input name="OpportunisticPollEnabled" type="checkbox" @(Model.Options.OpportunisticPollEnabled ? "checked" : "") />
-                <span>Drain peers' mail at the end of every push session (F3a)</span></label>
             <label class="field-checkbox"><input name="CompressionEnabled" type="checkbox" @(Model.Options.CompressionEnabled ? "checked" : "") />
                 <span>Compress payloads to neighbours when it saves bytes</span></label>
             <div class="field"><label>Keep links open after traffic (seconds, 0 = off)</label><input name="SessionTailSeconds" type="number" min="0" max="600" value="@Model.Options.SessionTailSeconds" required /></div>
+            <div class="field"><label>Largest message to take from a neighbour (bytes, 0 = no limit)</label><input name="MaxMessageBytes" type="number" min="0" value="@Model.Options.MaxMessageBytes" required /></div>
             <label class="field-checkbox"><input name="ScheduledPollEnabled" type="checkbox" @(Model.Options.ScheduledPollEnabled ? "checked" : "") />
                 <span>Schedule periodic mail polls (F3b)</span></label>
             <div class="field"><label>Poll interval (hours)</label><input name="PollIntervalHours" type="number" min="1" max="168" value="@Model.Options.PollIntervalHours" required /></div>
@@ -249,9 +248,9 @@ async function dappsSaveConfig(ev) {
         ProbeOvernightStartHour: parseInt(f.ProbeOvernightStartHour.value, 10),
         ProbeOvernightEndHour: parseInt(f.ProbeOvernightEndHour.value, 10),
         ProbeQuietWindowSeconds: parseInt(f.ProbeQuietWindowSeconds.value, 10),
-        OpportunisticPollEnabled: f.OpportunisticPollEnabled.checked,
         CompressionEnabled: f.CompressionEnabled.checked,
         SessionTailSeconds: parseInt(f.SessionTailSeconds.value, 10),
+        MaxMessageBytes: parseInt(f.MaxMessageBytes.value, 10),
         ScheduledPollEnabled: f.ScheduledPollEnabled.checked,
         PollIntervalHours: parseInt(f.PollIntervalHours.value, 10),
         DiscoveryAirtimeBudgetSecondsPerHour: parseInt(f.DiscoveryAirtimeBudgetSecondsPerHour.value, 10),

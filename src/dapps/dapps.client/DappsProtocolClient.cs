@@ -5,12 +5,14 @@ using Microsoft.Extensions.Logging;
 namespace dapps.client;
 
 /// <summary>
-/// Speaks the DAPPSv1 protocol over a duplex byte stream - agnostic of how
-/// that stream is plumbed. Pair with any <see cref="Transport.IDappsOutboundTransport"/>.
+/// The command-and-response side of DAPPSv1 over a duplex byte stream,
+/// agnostic of how that stream is plumbed: read the prompt, ask for
+/// <c>peers</c> or <c>routes</c>, push one message with <c>ihave</c> /
+/// <c>data</c>, say <c>quit</c>. Probes and simple senders use it. Traffic
+/// between DAPPS nodes goes by <see cref="Backhaul.ExchangeSession"/>.
 ///
-/// Today this is the sender side only: read the initial prompt, offer a
-/// message, send its payload. Receiver-side (`ihave` parsing, `chk`
-/// validation) lives in dapps.core's IHaveValidator.
+/// The answering node sends its <c>exchange</c> line straight after the
+/// prompt; the replies read here skip it.
 /// </summary>
 public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
 {
@@ -126,87 +128,6 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
     }
 
     /// <summary>
-    /// The peer answered the offer with <c>ack</c>: it already has the
-    /// message (we restarted, or lost its ack last time), so it's
-    /// delivered and the payload stays off the air.
-    /// </summary>
-    private PushOutcome AlreadyThere(Backhaul.BackhaulMessage message)
-    {
-        logger.LogInformation("Peer already has {0}; counting it delivered", message.Id);
-        return PushOutcome.Accepted;
-    }
-
-    /// <summary>How <see cref="PushAsync"/> went.</summary>
-    public enum PushOutcome
-    {
-        /// <summary>The peer acked the payload, or answered the offer
-        /// with <c>ack</c> because it already had the message.</summary>
-        Accepted,
-        /// <summary>The peer answered the offer with something other than <c>send</c>.</summary>
-        OfferRefused,
-        /// <summary>The peer took the offer but answered the payload with something other than <c>ack</c>.</summary>
-        PayloadRefused,
-        /// <summary>The link ended before the peer answered: it hung up,
-        /// or the connection dropped.</summary>
-        PeerClosed,
-    }
-
-    /// <summary>Set by <see cref="ReadLineAsync"/>: the last line read
-    /// came back empty because the stream ended.</summary>
-    private bool lastReplyWasEof;
-
-    /// <summary>
-    /// True once the last <see cref="PollAsync"/> saw the server's
-    /// <c>DAPPSv1&gt;</c> "drained" marker, so the session is still in
-    /// step and can carry more. False when the poll ended any other way
-    /// (the link closed, or an exchange went wrong).
-    /// </summary>
-    public bool LastPollDrained { get; private set; }
-
-    /// <summary>
-    /// Set when the peer has sent <c>pending</c>: it has mail for us and
-    /// is waiting for a <c>rev</c>. A peer holding a session open sends
-    /// it unprompted when it's idle, so it can turn up in place of any
-    /// reply; the reads here skip it and record it. The caller clears it
-    /// when it acts on it.
-    /// </summary>
-    public bool PeerHasPending { get; set; }
-
-    /// <summary>
-    /// Ask the peer to hold this session open until it has been idle for
-    /// <paramref name="seconds"/>. Returns the hold it agreed to, which
-    /// may be shorter, or 0 if it won't hold; null if the reply made no
-    /// sense.
-    /// </summary>
-    public async Task<int?> RequestTailAsync(int seconds, CancellationToken ct)
-    {
-        await stream.WriteAsync(Encoding.UTF8.GetBytes($"tail {seconds}\n"), ct);
-        await stream.FlushAsync(ct);
-        var reply = await ReadReplyAsync(ct);
-        var parts = reply.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 2 && parts[0] == "tail"
-            && int.TryParse(parts[1], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var agreed))
-        {
-            return agreed;
-        }
-        logger.LogWarning("Expected 'tail <seconds>', got '{0}'", reply);
-        return null;
-    }
-
-    /// <summary>
-    /// Read what an idle peer has just sent on a held session. True for
-    /// <c>pending</c>; false when the link ended or the peer said
-    /// something a held session doesn't expect, either of which ends it.
-    /// </summary>
-    public async Task<bool> ReadPendingNoticeAsync(CancellationToken ct)
-    {
-        var line = await ReadLineAsync(ct);
-        if (line == "pending") return true;
-        if (line.Length > 0) logger.LogWarning("Held session: expected 'pending', got '{0}'", line);
-        return false;
-    }
-
-    /// <summary>
     /// Tell the peer we're done with the session, and wait for its
     /// <c>bye</c> (or the link closing), so the <c>quit</c> is known to
     /// have gone before the caller hangs up.
@@ -222,74 +143,9 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         }
     }
 
-    /// <summary>Set once the peer has refused a compressed payload on
-    /// this session, so the rest of the session goes plain rather than
-    /// paying for the same refusal on every message.</summary>
-    private bool peerRefusedCompression;
-
-    /// <summary>
-    /// The whole push exchange for one message: offer it, send the
-    /// payload, read the ack. With <paramref name="compress"/>, the
-    /// payload goes as zstd with the shared dictionary when that saves
-    /// enough to be worth it (<see cref="PayloadCompression.TryCompress"/>).
-    /// If the peer refuses the compressed offer (it doesn't hold this
-    /// dictionary version yet) or can't decode what arrived (a hop on
-    /// the path that isn't byte-transparent), the same message is
-    /// offered plain straight away on the same session, and the rest
-    /// of the session goes plain.
-    /// </summary>
-    public async Task<PushOutcome> PushAsync(Backhaul.BackhaulMessage message, bool compress, CancellationToken ct)
-    {
-        var compressed = compress && !peerRefusedCompression ? PayloadCompression.TryCompress(message.Payload) : null;
-        if (compressed is { } wire)
-        {
-            var reply = await OfferCoreAsync(message, wire.Format, wire.Bytes.Length, ct);
-            if (reply == $"ack {message.Id}") return AlreadyThere(message);
-            if (reply == $"send {message.Id}")
-            {
-                logger.LogInformation("Sending {0} as fmt={1}: {2} bytes compressed to {3}",
-                    message.Id, wire.Format, message.Payload.Length, wire.Bytes.Length);
-                var sent = await SendPayloadAsync(message.Id, wire.Bytes, ct);
-                if (sent != PushOutcome.PayloadRefused) return sent;
-                logger.LogWarning(
-                    "Peer couldn't decode {0} as fmt={1}; sending it plain. If this keeps happening, something on the path "
-                    + "isn't passing binary data through, and compression should be turned off for this neighbour.",
-                    message.Id, wire.Format);
-            }
-            else
-            {
-                if (lastReplyWasEof) return PushOutcome.PeerClosed;
-                logger.LogInformation("Peer answered '{0}' to {1} as fmt={2}; offering it plain", reply, message.Id, wire.Format);
-            }
-            peerRefusedCompression = true;
-        }
-
-        var plainReply = await OfferCoreAsync(message, "p", compressedLength: null, ct);
-        if (plainReply == $"ack {message.Id}") return AlreadyThere(message);
-        if (plainReply != $"send {message.Id}")
-        {
-            if (lastReplyWasEof) return PushOutcome.PeerClosed;
-            logger.LogError("Expected 'send {0}', got '{1}'", message.Id, plainReply);
-            return PushOutcome.OfferRefused;
-        }
-        return await SendPayloadAsync(message.Id, message.Payload, ct);
-    }
-
-    private async Task<PushOutcome> SendPayloadAsync(string id, byte[] wire, CancellationToken ct) =>
-        await SendMessageAsync(id, wire, ct) ? PushOutcome.Accepted
-            : lastReplyWasEof ? PushOutcome.PeerClosed
-            : PushOutcome.PayloadRefused;
-
-    private Task<string> OfferCoreAsync(Backhaul.BackhaulMessage message, string format, int? compressedLength, CancellationToken ct) =>
-        OfferCoreAsync(
-            message.Id, message.Salt, format, compressedLength, message.Destination, message.Payload.Length, ct,
-            message.Ttl, message.Originator, message.MasterId, message.FragmentIndex, message.FragmentTotal,
-            message.StreamId, message.StreamSeq, message.StreamGapTimeoutSeconds);
-
     /// <summary>
     /// Sends a plain (<c>fmt=p</c>) `ihave` line and waits for
-    /// `send &lt;id&gt;`. Returns true on acceptance. To send a payload
-    /// compressed, use <see cref="PushAsync"/>.
+    /// `send &lt;id&gt;`. Returns true on acceptance.
     /// </summary>
     public async Task<bool> OfferMessageAsync(
         string id,
@@ -309,7 +165,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
     {
         if (format != DappsMessage.MessageFormat.Plain)
         {
-            throw new NotImplementedException("Compressed offers go through PushAsync");
+            throw new NotImplementedException("Only plain offers are sent this way");
         }
 
         var line = await OfferCoreAsync(id, salt, "p", null, destination, length, ct, ttl, originator,
@@ -341,71 +197,11 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         uint? streamSeq,
         uint? streamGapTimeoutSeconds)
     {
-        // F2 multi-part: mid= and frag=N/M either both present or both
-        // absent. Belt-and-braces - the receiver's parser also enforces
-        // this - but catching it sender-side prevents a malformed line
-        // from reaching the wire in the first place.
-        var hasFragHeaders = !string.IsNullOrEmpty(masterId)
-            && fragmentIndex.HasValue && fragmentTotal.HasValue;
-        if (!hasFragHeaders
-            && (!string.IsNullOrEmpty(masterId) || fragmentIndex.HasValue || fragmentTotal.HasValue))
-        {
-            throw new ArgumentException(
-                "masterId, fragmentIndex, fragmentTotal must all be set together (multi-part) or all be null");
-        }
-
-        var sb = new StringBuilder($"ihave {id} len={length} fmt={format}");
-        if (compressedLength.HasValue)
-        {
-            sb.Append($" clen={compressedLength.Value}");
-        }
-        sb.Append($" dst={destination}");
-        if (salt.HasValue)
-        {
-            sb.Append($" s={salt}");
-        }
-        if (ttl.HasValue)
-        {
-            sb.Append($" ttl={ttl.Value}");
-        }
-        // F1 end-to-end source tracking. Emitted only when set - pre-F1
-        // local submissions (or relayed messages with no upstream src=)
-        // omit it so the receiver knows the originator is unknown.
-        if (!string.IsNullOrEmpty(originator))
-        {
-            sb.Append($" src={originator}");
-        }
-        // F2 multi-part headers. Receiver groups fragments by mid=.
-        // A pre-F2 receiver sees these as unknown KVs and (per spec)
-        // ignores them - but with no reassembly it'll just deliver each
-        // fragment to the app individually. F2 receivers route to the
-        // reassembly buffer.
-        if (hasFragHeaders)
-        {
-            sb.Append($" mid={masterId} frag={fragmentIndex}/{fragmentTotal}");
-        }
-        // Opt-in ordering keys. All three travel together; the receiver's
-        // IHaveValidator rejects a partial set. Belt-and-braces sender-
-        // side: catch the malformed envelope before it reaches the wire.
-        var hasStream = !string.IsNullOrEmpty(streamId)
-            && streamSeq.HasValue && streamGapTimeoutSeconds.HasValue;
-        if (!hasStream
-            && (!string.IsNullOrEmpty(streamId) || streamSeq.HasValue || streamGapTimeoutSeconds.HasValue))
-        {
-            throw new ArgumentException(
-                "streamId, streamSeq, streamGapTimeoutSeconds must all be set together (opt-in ordering) or all be null");
-        }
-        if (hasStream)
-        {
-            sb.Append($" sid={streamId} sn={streamSeq} gt={streamGapTimeoutSeconds}");
-        }
-        sb.Append('\n');
-
-        await stream.WriteAsync(Encoding.UTF8.GetBytes(sb.ToString()), ct);
+        var line = OfferLine.Build("ihave", id, salt, format, compressedLength, destination, length, ttl, originator,
+            masterId, fragmentIndex, fragmentTotal, streamId, streamSeq, streamGapTimeoutSeconds);
+        await stream.WriteAsync(Encoding.UTF8.GetBytes(line), ct);
         await stream.FlushAsync(ct);
-
-        var line = await ReadReplyAsync(ct);
-        return line;
+        return await ReadReplyAsync(ct);
     }
 
     /// <summary>
@@ -538,223 +334,22 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
             }
             if (string.Equals(line, "end", StringComparison.OrdinalIgnoreCase)) break;
 
-            var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length < 2 || !string.Equals(parts[0], "route", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-            var dest = parts[1];
-            int? hops = null;
-            int? ageSeconds = null;
-            for (var i = 2; i < parts.Length; i++)
-            {
-                var kv = parts[i];
-                var eq = kv.IndexOf('=');
-                if (eq <= 0) continue;
-                var key = kv[..eq];
-                var value = kv[(eq + 1)..];
-                if (string.Equals(key, "hops", StringComparison.OrdinalIgnoreCase)
-                    && int.TryParse(value, out var h)) hops = h;
-                else if (string.Equals(key, "ageSeconds", StringComparison.OrdinalIgnoreCase)
-                    && int.TryParse(value, out var a)) ageSeconds = a;
-            }
-            results.Add(new GossipedRoute(dest, hops, ageSeconds));
+            if (ParseRouteLine(line) is { } route) results.Add(route);
         }
         return results;
     }
 
-    /// <summary>One message yielded by the rev drain. Captures the
-    /// fields a caller's <see cref="Backhaul.IBackhaulInbox"/>
-    /// would need to deliver as if the message had arrived via push.
-    /// Plan F3.</summary>
-    public sealed record PolledMessage(
-        string Id,
-        string Destination,
-        long? Salt,
-        int? Ttl,
-        byte[] Payload,
-        string? Originator,
-        string? MasterId,
-        int? FragmentIndex,
-        int? FragmentTotal,
-        string? StreamId,
-        uint? StreamSeq,
-        uint? StreamGapTimeoutSeconds);
-
-    /// <summary>
-    /// Plan F3 - reverse forwarding from the client side. Send
-    /// <c>rev</c> (or <c>rev id1 id2 …</c> for selective drain) and
-    /// then yield each message the server pushes back via the
-    /// <c>ihave</c>/<c>data</c>/<c>ack</c> exchange. Returns when the
-    /// server signals "drained" by re-emitting the <c>DAPPSv1&gt;</c>
-    /// prompt.
-    ///
-    /// The hash of each fragment's payload is verified against its
-    /// <c>id</c> + <c>s=</c> salt before yielding, matching what the
-    /// regular receive path does. Bad-hash messages are NAK'd back to
-    /// the server with <c>bad &lt;id&gt;</c> and not yielded.
-    /// </summary>
-    public async IAsyncEnumerable<PolledMessage> PollAsync(
-        IReadOnlyList<string>? requestedIds,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    /// <summary>One row of a <c>routes</c> answer, or null for any other
+    /// line.</summary>
+    public static GossipedRoute? ParseRouteLine(string line)
     {
-        LastPollDrained = false;
-        PeerHasPending = false;   // this rev collects whatever it was about
-        var cmd = (requestedIds is { Count: > 0 })
-            ? "rev " + string.Join(' ', requestedIds) + "\n"
-            : "rev\n";
-        await stream.WriteAsync(Encoding.UTF8.GetBytes(cmd), ct);
-        await stream.FlushAsync(ct);
-
-        while (true)
+        var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !string.Equals(parts[0], "route", StringComparison.OrdinalIgnoreCase))
         {
-            var line = await ReadReplyAsync(ct);
-            if (line.Length == 0)
-            {
-                // EOF mid-poll; treat as drained. Anything we already
-                // yielded the caller has consumed.
-                yield break;
-            }
-            // Server's "drained" marker. Distinct from `ihave` because
-            // the prompt has a `>` and no spaces.
-            if (line == "DAPPSv1>")
-            {
-                LastPollDrained = true;
-                yield break;
-            }
-
-            if (!line.StartsWith("ihave ", StringComparison.Ordinal))
-            {
-                // Unexpected line shape; ignore (forward-compat) and
-                // keep reading.
-                continue;
-            }
-
-            var (offerOk, parsed) = TryParseOffer(line);
-            if (!offerOk || parsed is null)
-            {
-                // Malformed offer - NAK with the id we could pluck out
-                // (or ?? as a placeholder) and move on.
-                var fallbackId = parsed?.Id ?? "??";
-                await stream.WriteAsync(Encoding.UTF8.GetBytes($"no {fallbackId}\n"), ct);
-                await stream.FlushAsync(ct);
-                continue;
-            }
-            if (!PayloadCompression.CanDecode(parsed.Format) || (parsed.Format != "p" && parsed.CompressedLength is null))
-            {
-                // A format we can't read, such as a newer dictionary
-                // than this build holds. Saying no makes the server
-                // offer it again plain.
-                logger.LogInformation("rev poll: can't decode fmt={0} for {1}; declining so it comes plain", parsed.Format, parsed.Id);
-                await stream.WriteAsync(Encoding.UTF8.GetBytes($"no {parsed.Id}\n"), ct);
-                await stream.FlushAsync(ct);
-                continue;
-            }
-
-            // Always accept - the client asked for this; "no" is
-            // reserved for when the receiver has a strong reason to
-            // decline (none today).
-            await stream.WriteAsync(Encoding.UTF8.GetBytes($"send {parsed.Id}\n"), ct);
-            await stream.FlushAsync(ct);
-
-            // Server responds with `data <id>\n` followed by raw bytes.
-            var dataHeader = await ReadReplyAsync(ct);
-            if (dataHeader != $"data {parsed.Id}")
-            {
-                logger.LogWarning("rev poll: expected 'data {0}', got '{1}' - bailing", parsed.Id, dataHeader);
-                yield break;
-            }
-            var wire = new byte[parsed.Format == "p" ? parsed.Length : parsed.CompressedLength!.Value];
-            await ReadExactlyAsync(wire, ct);
-            byte[] payload;
-            try
-            {
-                payload = PayloadCompression.Decode(parsed.Format, wire, parsed.Length);
-            }
-            catch (InvalidDataException ex)
-            {
-                logger.LogWarning("rev poll: {0}; NAKing {1}", ex.Message, parsed.Id);
-                await stream.WriteAsync(Encoding.UTF8.GetBytes($"bad {parsed.Id}\n"), ct);
-                await stream.FlushAsync(ct);
-                continue;
-            }
-
-            // Hash check before yielding - same contract as the
-            // regular receiver. Bad payloads get NAK'd; the server
-            // can choose to retry or move on.
-            var computed = DappsMessage.ComputeHash(payload, parsed.Salt)[..7];
-            if (computed != parsed.Id)
-            {
-                logger.LogWarning("rev poll: hash mismatch on {0}; NAKing", parsed.Id);
-                await stream.WriteAsync(Encoding.UTF8.GetBytes($"bad {parsed.Id}\n"), ct);
-                await stream.FlushAsync(ct);
-                continue;
-            }
-
-            await stream.WriteAsync(Encoding.UTF8.GetBytes($"ack {parsed.Id}\n"), ct);
-            await stream.FlushAsync(ct);
-
-            yield return new PolledMessage(
-                Id: parsed.Id,
-                Destination: parsed.Destination,
-                Salt: parsed.Salt,
-                Ttl: parsed.Ttl,
-                Payload: payload,
-                Originator: parsed.Originator,
-                MasterId: parsed.MasterId,
-                FragmentIndex: parsed.FragmentIndex,
-                FragmentTotal: parsed.FragmentTotal,
-                StreamId: parsed.StreamId,
-                StreamSeq: parsed.StreamSeq,
-                StreamGapTimeoutSeconds: parsed.StreamGapTimeoutSeconds);
+            return null;
         }
-    }
-
-    /// <summary>
-    /// Read exactly <paramref name="buffer"/> bytes from the stream,
-    /// using the per-read inactivity timeout that
-    /// <see cref="ReadWithTimeoutAsync"/> applies. Loops until full
-    /// or surfaces a <see cref="TimeoutException"/> from a stalled peer.
-    /// </summary>
-    private async Task ReadExactlyAsync(byte[] buffer, CancellationToken ct)
-    {
-        var off = 0;
-        while (off < buffer.Length)
-        {
-            var n = await ReadWithTimeoutAsync(buffer.AsMemory(off), ct);
-            if (n == 0)
-            {
-                throw new IOException(
-                    $"rev poll: stream ended after {off} of {buffer.Length} payload bytes");
-            }
-            off += n;
-        }
-    }
-
-    /// <summary>Pure parser for the small subset of <c>ihave</c> the
-    /// client poll loop needs. Avoids pulling the dapps.core
-    /// IHaveValidator dependency into dapps.client. Returns
-    /// (true, parsed) on success or (false, partial) when the
-    /// minimum fields aren't present.</summary>
-    private static (bool Ok, ParsedOffer? Offer) TryParseOffer(string line)
-    {
-        // line: "ihave <id> len=N fmt=<p|d|zN> [clen=…] dst=… [s=…] [ttl=…] [src=…] [mid=… frag=N/M] [sid=… sn=… gt=…] …"
-        var parts = line.Split(' ');
-        if (parts.Length < 4 || parts[0] != "ihave") return (false, null);
-        var id = parts[1];
-        string? destination = null;
-        int? len = null;
-        var format = "p";
-        int? clen = null;
-        long? salt = null;
-        int? ttl = null;
-        string? originator = null;
-        string? masterId = null;
-        int? fragIndex = null;
-        int? fragTotal = null;
-        string? streamId = null;
-        uint? streamSeq = null;
-        uint? streamGapTimeout = null;
+        int? hops = null;
+        int? ageSeconds = null;
         for (var i = 2; i < parts.Length; i++)
         {
             var kv = parts[i];
@@ -762,53 +357,26 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
             if (eq <= 0) continue;
             var key = kv[..eq];
             var value = kv[(eq + 1)..];
-            switch (key)
-            {
-                case "len": if (int.TryParse(value, out var l) && l >= 0) len = l; break;
-                case "fmt": format = value; break;
-                case "clen": if (int.TryParse(value, out var cl) && cl >= 0) clen = cl; break;
-                case "dst": destination = value; break;
-                case "s": if (long.TryParse(value, out var s)) salt = s; break;
-                case "ttl": if (int.TryParse(value, out var t)) ttl = t; break;
-                case "src": originator = value; break;
-                case "mid": masterId = value; break;
-                case "frag":
-                    var slash = value.IndexOf('/');
-                    if (slash > 0 && slash < value.Length - 1
-                        && int.TryParse(value.AsSpan(0, slash), out var fn)
-                        && int.TryParse(value.AsSpan(slash + 1), out var fm)
-                        && fn >= 1 && fm >= 2 && fn <= fm)
-                    {
-                        fragIndex = fn; fragTotal = fm;
-                    }
-                    break;
-                case "sid": streamId = value; break;
-                case "sn": if (uint.TryParse(value, out var snv)) streamSeq = snv; break;
-                case "gt": if (uint.TryParse(value, out var gtv)) streamGapTimeout = gtv; break;
-            }
+            if (string.Equals(key, "hops", StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(value, out var h)) hops = h;
+            else if (string.Equals(key, "ageSeconds", StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(value, out var a)) ageSeconds = a;
         }
-        if (destination is null || len is null) return (false, new ParsedOffer(id, "", 0, null, null, null, null, null, null, null, null, null, "p", null));
-        return (true, new ParsedOffer(id, destination, len.Value, salt, ttl, originator, masterId, fragIndex, fragTotal, streamId, streamSeq, streamGapTimeout, format, clen));
+        return new GossipedRoute(parts[1], hops, ageSeconds);
     }
-
-    private sealed record ParsedOffer(
-        string Id, string Destination, int Length, long? Salt, int? Ttl,
-        string? Originator, string? MasterId, int? FragmentIndex, int? FragmentTotal,
-        string? StreamId, uint? StreamSeq, uint? StreamGapTimeoutSeconds,
-        string Format, int? CompressedLength);
 
     /// <summary>
     /// <see cref="ReadLineAsync"/> for a reply to one of our commands:
-    /// skips any <c>pending</c> notices, recording them in
-    /// <see cref="PeerHasPending"/>.
+    /// skips the <c>exchange</c> line the answering node sends after its
+    /// prompt, which says what it takes from another DAPPS node and isn't
+    /// a reply to anything.
     /// </summary>
     private async Task<string> ReadReplyAsync(CancellationToken ct)
     {
         while (true)
         {
             var line = await ReadLineAsync(ct);
-            if (line != "pending") return line;
-            PeerHasPending = true;
+            if (!line.StartsWith(Backhaul.ExchangeRules.Verb + " ", StringComparison.Ordinal)) return line;
         }
     }
 
@@ -829,15 +397,10 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         var buffer = new List<byte>();
         var oneByte = new byte[1];
         var sawContent = false;
-        lastReplyWasEof = false;
         while (true)
         {
             var n = await ReadWithTimeoutAsync(oneByte, ct);
-            if (n == 0)
-            {
-                lastReplyWasEof = buffer.Count == 0;
-                break;
-            }
+            if (n == 0) break;
             if (oneByte[0] == (byte)'\n' || oneByte[0] == (byte)'\r')
             {
                 if (!sawContent) continue;   // skip leading terminator(s)

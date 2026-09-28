@@ -4,7 +4,7 @@ using AwesomeAssertions;
 namespace dapps.core.tests.Integration;
 
 /// <summary>
-/// The DAPPSv1 protocol end to end: two real DAPPS daemons, each on its
+/// The DAPPSv1 exchange end to end: two real DAPPS daemons, each on its
 /// own real BPQ, linked over AXIP, driven through their app API the way an
 /// app would, with BPQ's monitor as the record of what went over the air.
 /// Nothing here pokes the forwarder by hand, so every test also relies on
@@ -50,17 +50,22 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
         got.OriginatorCallsign.Should().Be(a.Callsign, "src= carries the originator end to end");
         got.Ttl.Should().BeInRange(500, 600, "the ttl counts down from what the app asked for");
 
-        // The rest of the session: routes pulled, the peer polled with
-        // rev, then a clean hang-up.
-        await AirShowsAsync("A", $"Fm {fixture.ApplCallA} To {fixture.ApplCallB} <D C", ct);
+        // The whole session: B's prompt and rules, the routes pull, A's
+        // rules with the message in one frame, the ack, and once the link
+        // has been quiet a while, A's quit and a clean hang-up.
+        await AirShowsAsync("A", $"Fm {fixture.ApplCallA} To {fixture.ApplCallB} <D C", ct, TimeSpan.FromSeconds(45));
         Connects("A").Should().Be(1, Transcript());
-        AirSent("A", $"ihave {id} ").Should().Be(1, Transcript());
-        AirSent("B", $"send {id}").Should().Be(1, Transcript());
-        AirSent("A", $"data {id}").Should().Be(1, Transcript());
-        AirSent("B", $"ack {id}").Should().Be(1, Transcript());
-        AirSent("A", "\nroutes").Should().BeGreaterThan(0, Transcript());
+        AirSent("B", "DAPPSv1>").Should().Be(1, Transcript());
+        AirSent("B", "exchange id=").Should().Be(1, "B's rules go once, with its prompt\n" + Transcript());
+        AirSent("A", "\nroutes").Should().Be(1, Transcript());
         AirSent("B", "route ").Should().BeGreaterThan(0, Transcript());
-        AirSent("A", "\nrev").Should().BeGreaterThan(0, Transcript());
+        AirSent("A", "exchange id=").Should().Be(1, Transcript());
+        air.SentBy("A").Should().ContainSingle(f => f.Contains("exchange id=") && f.Contains($"msg {id} "),
+            "the rules and the message share a frame\n" + Transcript());
+        AirSent("B", $"ack {id}").Should().Be(1, Transcript());
+        AirSent("A", "ihave ").Should().Be(0, "a message this small goes unasked\n" + Transcript());
+        AirSent("A", "\nquit").Should().Be(1, Transcript());
+        AirSent("B", "bye").Should().Be(1, Transcript());
     }
 
     [Fact]
@@ -77,16 +82,16 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
         var inbox = await b.WaitForInboundAsync("chat", 5, Delivery, ct);
         inbox.Select(m => Encoding.UTF8.GetString(m.Payload)).Should().BeEquivalentTo(
             Enumerable.Range(1, 5).Select(i => $"post {i}"));
-        await AirShowsAsync("A", $"Fm {fixture.ApplCallA} To {fixture.ApplCallB} <D C", ct);
+        await AirShowsAsync("A", $"Fm {fixture.ApplCallA} To {fixture.ApplCallB} <D C", ct, TimeSpan.FromSeconds(45));
         Connects("A").Should().Be(1, "five queued messages share one session\n" + Transcript());
         Connects("B").Should().Be(0, Transcript());
     }
 
     [Fact]
-    public async Task MailTheOtherNodeCantDeliver_ComesBackByRev()
+    public async Task MailTheOtherNodeCantDeliver_ComesBackOnTheCallersSession()
     {
         // B has no route to A, so its mail for A waits in its queue until
-        // A connects for its own reasons and asks with rev.
+        // A calls for its own reasons; then it goes on A's session.
         var ct = TestContext.Current.CancellationToken;
         var (a, b) = await StartPairAsync(ct, tail: 0, bKnowsA: false);
         var reply = Encoding.UTF8.GetBytes("waiting for you to call");
@@ -96,7 +101,7 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
 
         (await a.WaitForInboundAsync("chat", 1, Delivery, ct)).Single().Payload.Should().Equal(reply);
         (await b.WaitForInboundAsync("chat", 1, Delivery, ct)).Should().ContainSingle();
-        AirSent("A", "\nrev").Should().BeGreaterThan(0, Transcript());
+        AirSent("B", "msg ").Should().BeGreaterThan(0, Transcript());
         Connects("B").Should().Be(0, "B never dialled; its mail went back on A's session\n" + Transcript());
     }
 
@@ -114,7 +119,7 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
         var mail = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Range(0, 120).Select(i =>
             $"Line {i}: the weekly packet net is on Wednesday at 20:00 local, all welcome. 73\n")));
         // Noise: doesn't compress, so it goes plain and binary, several
-        // AGW frames long.
+        // AGW frames long, offered first because it's over B's inline limit.
         var noise = new byte[1500];
         new Random(7).NextBytes(noise);
 
@@ -125,26 +130,26 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
         (await b.WaitForInboundAsync("wps", 1, Delivery, ct)).Single().Payload.Should().Equal(post);
         (await b.WaitForInboundAsync("mail", 1, Delivery, ct)).Single().Payload.Should().Equal(mail);
         (await b.WaitForInboundAsync("bin", 1, Delivery, ct)).Single().Payload.Should().Equal(noise);
-        AirSent("A", "fmt=z1").Should().BeGreaterThanOrEqualTo(3, "the post and both parts of the mail go compressed\n" + Transcript());
+        // Several messages share a frame now, and BPQ's monitor shows only
+        // part of a long one, so the daemons' logs are the record here.
+        System.Text.RegularExpressions.Regex.Count(a.Log, " as fmt=z1: ").Should().BeGreaterThanOrEqualTo(3,
+            "the post and both parts of the mail go compressed\n" + a.Tail());
         var parts = (mail.Length + 4095) / 4096;
-        for (var part = 1; part <= parts; part++)
-        {
-            AirSent("A", $"frag={part}/{parts}").Should().Be(1, Transcript());
-        }
+        b.Log.Should().Contain($"({parts} fragments, {mail.Length} bytes)", "the parts are put back together at B\n" + b.Tail());
+        b.Log.Should().Contain("Accepting offer ", "the noise is too big to send unasked, so it's offered first\n" + b.Tail());
     }
 
     [Fact]
-    public async Task AHeldLink_CarriesTrafficBothWays_OnOneConnection()
+    public async Task AnOpenLink_CarriesTrafficBothWays_OnOneConnection()
     {
         var ct = TestContext.Current.CancellationToken;
         var (a, b) = await StartPairAsync(ct, tail: 60);
 
         await a.SubmitAsync("chat", b.Callsign, Encoding.UTF8.GetBytes("first"), ct);
         await b.WaitForInboundAsync("chat", 1, Delivery, ct);
-        await AirShowsAsync("B", "tail 60", ct);
 
-        // The reply goes the other way over the same link: B says pending,
-        // A collects it with rev.
+        // The reply goes the other way over the same link, the moment
+        // it's queued: B sends it on A's session.
         await b.SubmitAsync("chat", a.Callsign, Encoding.UTF8.GetBytes("reply"), ct);
         (await a.WaitForInboundAsync("chat", 1, Delivery, ct)).Single().Payload.Should().Equal(Encoding.UTF8.GetBytes("reply"));
 
@@ -153,12 +158,11 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
 
         Connects("A").Should().Be(1, "all three went on the link A opened\n" + Transcript());
         Connects("B").Should().Be(0, Transcript());
-        AirSent("B", "pending").Should().BeGreaterThan(0, Transcript());
         HangUps("A").Should().Be(0, "the link is still held\n" + Transcript());
     }
 
     [Fact]
-    public async Task AQuietHeldLink_IsClosed_AndTheNextMessageDialsAfresh()
+    public async Task AQuietLink_IsClosed_AndTheNextMessageDialsAfresh()
     {
         var ct = TestContext.Current.CancellationToken;
         var (a, b) = await StartPairAsync(ct, tail: 5);
@@ -186,7 +190,7 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
 
         var inbox = await b.WaitForInboundAsync("chat", 3, Delivery, ct);
         inbox.Select(m => Encoding.UTF8.GetString(m.Payload)).Should().BeEquivalentTo(["part 1", "part 2", "part 3"]);
-        AirSent("A", "sid=conv1 sn=").Should().Be(3, Transcript());
+        AirSent("A", "sid=conv1 sn=").Should().BeGreaterThan(0, Transcript());
     }
 
     [Fact]
@@ -206,6 +210,7 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
         }
         AirSent("A", "\npeers").Should().Be(1, body + "\n" + Transcript());
         AirSent("B", $"peer {a.Callsign}").Should().Be(1, "B lists A as a neighbour\n" + Transcript());
+        AirSent("A", "exchange ").Should().Be(0, "a probe only asks; it never starts an exchange\n" + Transcript());
     }
 
     [Fact]
@@ -215,63 +220,75 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
         // daemon on B, over the air.
         var ct = TestContext.Current.CancellationToken;
         var b = await StartNodeAsync("b", fixture.ApplCallB, fixture.AgwPortB, [new(fixture.ApplCallA, fixture.AxipPortIndex)], tail: 120, ct);
-        await using var caller = await RawAgwCaller.ConnectAsync(
-            fixture.Host, fixture.AgwPortA, fixture.ApplCallA, fixture.ApplCallB, fixture.AxipPortIndex, ct);
         var t = TimeSpan.FromSeconds(20);
 
-        (await caller.ReadLineAsync(t, ct)).Should().Be("DAPPSv1>");
+        await using (var caller = await RawAgwCaller.ConnectAsync(
+            fixture.Host, fixture.AgwPortA, fixture.ApplCallA, fixture.ApplCallB, fixture.AxipPortIndex, ct))
+        {
+            (await caller.ReadLineAsync(t, ct)).Should().Be("DAPPSv1>");
+            var rules = dapps.client.Backhaul.ExchangeRules.Parse((await caller.ReadLineAsync(t, ct))!);
+            rules.HoldSeconds.Should().Be(120);
+            rules.Inline.Should().Be(256);
+            rules.Dictionaries.Should().Contain(1);
 
-        await caller.SendAsync("help\n", ct);
-        (await caller.ReadLineAsync(t, ct)).Should().StartWith("This is DAPPS");
+            await caller.SendAsync("help\n", ct);
+            (await caller.ReadLineAsync(t, ct)).Should().StartWith("This is DAPPS");
 
-        await caller.SendAsync($"ihave oops len=nope dst=chat@{b.Callsign}\n", ct);
-        (await caller.ReadLineAsync(t, ct)).Should().Be("error oops");
+            await caller.SendAsync($"ihave oops len=nope dst=chat@{b.Callsign}\n", ct);
+            (await caller.ReadLineAsync(t, ct)).Should().Be("error oops");
 
-        var hello = "hello"u8.ToArray();
-        var helloId = dapps.client.DappsMessage.ComputeHash(hello, 5L)[..7];
-        await caller.SendAsync($"ihave {helloId} len=5 fmt=p s=5 dst=chat@{b.Callsign}\n", ct);
-        (await caller.ReadLineAsync(t, ct)).Should().Be($"send {helloId}");
-        await caller.SendAsync([.. Encoding.ASCII.GetBytes($"data {helloId}\n"), .. hello], ct);
-        (await caller.ReadLineAsync(t, ct)).Should().Be($"ack {helloId}");
-        (await b.WaitForInboundAsync("chat", 1, Delivery, ct)).Single().Payload.Should().Equal(hello);
+            // One message the simple way: offer, send, data, ack.
+            var hello = "hello"u8.ToArray();
+            var helloId = dapps.client.DappsMessage.ComputeHash(hello, 5L)[..7];
+            await caller.SendAsync($"ihave {helloId} len=5 fmt=p s=5 dst=chat@{b.Callsign}\n", ct);
+            (await caller.ReadLineAsync(t, ct)).Should().Be($"send {helloId}");
+            await caller.SendAsync([.. Encoding.ASCII.GetBytes($"data {helloId}\n"), .. hello], ct);
+            (await caller.ReadLineAsync(t, ct)).Should().Be($"ack {helloId}");
+            (await b.WaitForInboundAsync("chat", 1, Delivery, ct)).Single().Payload.Should().Equal(hello);
 
-        var world = "world"u8.ToArray();
-        var worldId = dapps.client.DappsMessage.ComputeHash(world, 6L)[..7];
-        await caller.SendAsync($"ihave {worldId} len=5 fmt=p s=6 dst=chat@{b.Callsign}\n", ct);
-        (await caller.ReadLineAsync(t, ct)).Should().Be($"send {worldId}");
-        await caller.SendAsync([.. Encoding.ASCII.GetBytes($"data {worldId}\n"), .. "wurld"u8.ToArray()], ct);
-        (await caller.ReadLineAsync(t, ct)).Should().Be($"bad {worldId}", "the payload doesn't hash to its id");
+            var world = "world"u8.ToArray();
+            var worldId = dapps.client.DappsMessage.ComputeHash(world, 6L)[..7];
+            await caller.SendAsync($"ihave {worldId} len=5 fmt=p s=6 dst=chat@{b.Callsign}\n", ct);
+            (await caller.ReadLineAsync(t, ct)).Should().Be($"send {worldId}");
+            await caller.SendAsync([.. Encoding.ASCII.GetBytes($"data {worldId}\n"), .. "wurld"u8.ToArray()], ct);
+            (await caller.ReadLineAsync(t, ct)).Should().Be($"bad {worldId}", "the payload doesn't hash to its id");
 
-        await caller.SendAsync("peers\n", ct);
-        (await ReadUntilEndAsync(caller, ct)).Should().Contain($"peer {fixture.ApplCallA} source=n port={fixture.AxipPortIndex}");
+            await caller.SendAsync("peers\n", ct);
+            (await ReadUntilEndAsync(caller, ct)).Should().Contain($"peer {fixture.ApplCallA} source=n port={fixture.AxipPortIndex}");
 
-        await caller.SendAsync("routes\n", ct);
-        (await ReadUntilEndAsync(caller, ct)).Should().Contain($"route {fixture.CallsignA} hops=1");
+            await caller.SendAsync("routes\n", ct);
+            (await ReadUntilEndAsync(caller, ct)).Should().Contain($"route {fixture.CallsignA} hops=1");
 
-        await caller.SendAsync("tail 30\n", ct);
-        (await caller.ReadLineAsync(t, ct)).Should().Be("tail 30", "the lower of our 30 and B's 120");
+            // Our rules: from now on either side sends as it likes. B
+            // already sent its own, so it doesn't answer with another.
+            var again = "again"u8.ToArray();
+            var againId = dapps.client.DappsMessage.ComputeHash(again, 7L)[..7];
+            await caller.SendAsync([.. Encoding.ASCII.GetBytes($"exchange id=raw001 hold=30 inline=256\nmsg {againId} len=5 fmt=p s=7 dst=chat@{b.Callsign}\n"), .. again], ct);
+            (await caller.ReadLineAsync(t, ct)).Should().Be($"ack {againId}");
 
-        await caller.SendAsync("rev\n", ct);
-        (await caller.ReadLineAsync(t, ct)).Should().Be("DAPPSv1>", "nothing queued for us yet");
+            // Mail for us turns up at B while the link is open: B sends it
+            // on this session, unasked, as it's small.
+            var reply = "reply"u8.ToArray();
+            await b.SubmitAsync("chat", fixture.ApplCallA, reply, ct);
+            var line = await caller.ReadLineAsync(t, ct);
+            line.Should().StartWith("msg ").And.Contain(" len=5 fmt=p ");
+            (await caller.ReadBytesAsync(reply.Length, t, ct)).Should().Equal(reply);
+            await caller.SendAsync($"ack {line!.Split(' ')[1]}\n", ct);
 
-        // Mail for us turns up at B while we're connected and idle: B can't
-        // dial us over our open session, so it says pending.
-        var reply = "reply"u8.ToArray();
-        await b.SubmitAsync("chat", fixture.ApplCallA, reply, ct);
-        (await caller.ReadLineAsync(t, ct)).Should().Be("pending");
-        await caller.SendAsync("rev\n", ct);
-        var offer = await caller.ReadLineAsync(t, ct);
-        offer.Should().StartWith("ihave ");
-        var replyId = offer!.Split(' ')[1];
-        await caller.SendAsync($"send {replyId}\n", ct);
-        (await caller.ReadLineAsync(t, ct)).Should().Be($"data {replyId}");
-        (await caller.ReadBytesAsync(reply.Length, t, ct)).Should().Equal(reply);
-        await caller.SendAsync($"ack {replyId}\n", ct);
-        (await caller.ReadLineAsync(t, ct)).Should().Be("DAPPSv1>");
+            await caller.SendAsync("quit\n", ct);
+            (await caller.ReadLineAsync(t, ct)).Should().Be("bye");
+            (await caller.ReadLineAsync(t, ct)).Should().BeNull("B hangs up after bye");
+        }
 
-        await caller.SendAsync("bogus\n", ct);
-        (await caller.ReadLineAsync(t, ct)).Should().Be("eh?");
-        (await caller.ReadLineAsync(t, ct)).Should().BeNull("an unknown command ends the session");
+        // Before an exchange, an unknown command is answered and ends the session.
+        await Task.Delay(2000, ct);
+        await using var second = await RawAgwCaller.ConnectAsync(
+            fixture.Host, fixture.AgwPortA, fixture.ApplCallA, fixture.ApplCallB, fixture.AxipPortIndex, ct);
+        (await second.ReadLineAsync(t, ct)).Should().Be("DAPPSv1>");
+        (await second.ReadLineAsync(t, ct)).Should().StartWith("exchange ");
+        await second.SendAsync("bogus\n", ct);
+        (await second.ReadLineAsync(t, ct)).Should().Be("eh?");
+        (await second.ReadLineAsync(t, ct)).Should().BeNull("an unknown command ends the session");
     }
 
     [Fact]
@@ -346,7 +363,6 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : IAsyn
         {
             ["DAPPS_SESSION_TAIL_SECONDS"] = tail.ToString(),
             ["DAPPS_COMPRESSION_ENABLED"] = compression ? "true" : "false",
-            ["DAPPS_OPPORTUNISTIC_POLL_ENABLED"] = "true",
         };
         var node = await DappsDaemon.StartAsync(name, callsign, fixture.Host, agwPort, fixture.AxipPortIndex, neighbours, settings, ct);
         running.Add(node);

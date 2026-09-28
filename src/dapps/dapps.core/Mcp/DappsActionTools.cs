@@ -63,10 +63,10 @@ public sealed class DappsActionTools(
 
     [McpServerTool(Name = "run_poll")]
     [Description(
-        "Poll a single callsign now (F3b - the rev-poll path that drains a peer's queued mail for us). " +
-        "AGW-only by design; UDP peers can't be polled. Looks up the peer's bearer port the same way as " +
-        "run_probe. Mostly useful when an operator suspects a peer has mail queued for us that hasn't been " +
-        "drained by F3a opportunistic poll-on-push.")]
+        "Poll a single callsign now (F3b - call the peer so it can send the mail it holds for us). " +
+        "AGW/RHP only; UDP peers can't be polled. Looks up the peer's bearer port the same way as " +
+        "run_probe. Mostly useful when an operator suspects a peer has mail queued for us and no session " +
+        "between the two has come up since.")]
     public async Task<DbPolledNode> RunPollAsync(
         [Description("Target DAPPS callsign, case-insensitive (e.g. 'M0LTE-9').")] string callsign,
         CancellationToken ct)
@@ -88,7 +88,7 @@ public sealed class DappsActionTools(
     [McpServerTool(Name = "run_poll_sweep")]
     [Description(
         "Run a full F3b poll sweep across every AGW-reachable manual neighbour. UDP-only neighbours are " +
-        "excluded (rev-poll is AGW-only). Opt-out flags are honoured.")]
+        "excluded (there's no session to poll over). Opt-out flags are honoured.")]
     public async Task<string> RunPollSweepAsync(CancellationToken ct)
     {
         await pollScheduler.SweepAsync(options.CurrentValue, ct);

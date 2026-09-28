@@ -21,7 +21,7 @@ public sealed class DappsAuditTools(TransmissionAuditService audit)
     [Description(
         "Tail of the transmissions audit log, newest first. Each row records: when, kind " +
         "(beacon / solicit / solicit-reply / probe / probe-nodeprompt / forward / forward-flood / " +
-        "poll / rev-drain / ack / nak / heartbeat), bearer (agw / udp / mqtt), channel-key, target " +
+        "poll / ack / nak / heartbeat), bearer (agw / udp / mqtt), channel-key, target " +
         "callsign (for directed sends), message id (when forwarding a specific message), bytes, " +
         "duration in ms, success bool, reason ('why' string, e.g. 'scheduled probe sweep' / " +
         "'operator-triggered probe (MCP)'), and an error tag on failure. Use this to trace what the " +

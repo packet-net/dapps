@@ -287,43 +287,24 @@ builder.Services.AddSingleton<MeshCoreBearer>();
 builder.Services.AddSingleton<IDappsBackhaul>(sp => sp.GetRequiredService<MeshCoreBearer>());
 builder.Services.AddHostedService<MeshCoreBearerService>();
 builder.Services.AddSingleton<CompressionPolicy>();
-// #187 proposal 9: how long to hold sessions open after their traffic,
-// and the open inbound sessions the forwarder can hand traffic to.
+// Our settings for a session with each neighbour (hold, compression, the
+// largest message we take), and the established sessions neighbours have
+// open with us, which the forwarder hands traffic to.
 builder.Services.AddSingleton<SessionTailPolicy>();
-builder.Services.AddSingleton<InboundSessionDirectory>();
+builder.Services.AddSingleton<ExchangePolicy>();
+builder.Services.AddSingleton<SessionDirectory>();
 builder.Services.AddSingleton<IDappsBackhaul>(sp => new Dappsv1SessionBackhaul(
     sp.GetRequiredService<IDappsOutboundTransport>(),
     sp.GetRequiredService<ILoggerFactory>(),
-    // Opportunistic poll: hand the backhaul the inbox so it can
-    // deliver any messages the remote has queued for us, plus a
-    // live read of the operator toggle (re-checked per push so a
-    // /Config flip takes effect on the next session).
-    opportunisticInbox: sp.GetRequiredService<IBackhaulInbox>(),
-    opportunisticEnabled: () => sp.GetRequiredService<IOptionsMonitor<SystemOptions>>().CurrentValue.OpportunisticPollEnabled,
-    // Route gossip: piggyback `routes` pulls from neighbours when
-    // the per-(local, remote) staleness gate allows. Bounded airtime,
-    // no scheduled transmission.
+    // What the neighbour sends us on a session we dialled.
+    inbox: sp.GetRequiredService<IBackhaulInbox>(),
+    // Route gossip: pull `routes` before the exchange when the
+    // per-(local, remote) staleness gate allows. Bounded airtime, no
+    // scheduled transmission.
     routeGossip: sp.GetRequiredService<IRouteGossipPort>(),
-    // #178 crossed connects: both neighbours dialled at once, both
-    // links came up, neither side got a prompt. The lower callsign
-    // sends it and serves the peer's session on the link it has, with
-    // the same handler the inbound bearers use.
-    serveOnGlare: (stream, peer, ct) => new InboundConnectionHandler(
-        stream, sourceCallsign: peer,
-        sp.GetRequiredService<ILoggerFactory>(),
-        sp.GetRequiredService<Database>(),
-        sp.GetRequiredService<IBackhaulInbox>(),
-        sp.GetRequiredService<OperationalMetrics>(),
-        sp.GetRequiredService<CompressionPolicy>().ShouldCompressToAsync,
-        sp.GetRequiredService<InboundSessionDirectory>(),
-        // No hold: this session runs inside the forwarder's run, and
-        // holding it would stall every other neighbour for the hold.
-        tailFor: null).Handle(ct),
-    // Payload compression, per the operator's setting for each neighbour.
-    compressTo: sp.GetRequiredService<CompressionPolicy>().ShouldCompressToAsync,
-    // Hold sessions open after their traffic, per the operator's
-    // setting for each neighbour.
-    tailFor: sp.GetRequiredService<SessionTailPolicy>().TailSecondsForAsync));
+    settingsFor: sp.GetRequiredService<ExchangePolicy>().ForPeerAsync,
+    // An established session takes anything else queued for its peer.
+    sessionOpened: sp.GetRequiredService<ForwarderWakeup>().Wake));
 builder.Services.AddSingleton<DatabaseAndMqttInbox>();
 builder.Services.AddSingleton<IBackhaulInbox>(sp => sp.GetRequiredService<DatabaseAndMqttInbox>());
 builder.Services.AddHostedService<UdpDatagramListener>();
@@ -335,8 +316,8 @@ builder.Services.AddSingleton<NodeProber>();
 builder.Services.AddSingleton<ProbeSchedulerService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProbeSchedulerService>());
 
-// F3b - scheduled poll. NodePoller is stateless, opens a session,
-// drains via rev. The scheduler walks neighbours when
+// F3b - scheduled poll. NodePoller is stateless, opens a session and
+// takes whatever the neighbour has for us. The scheduler walks neighbours when
 // SystemOptions.ScheduledPollEnabled is true (off by default).
 builder.Services.AddSingleton<NodePoller>();
 builder.Services.AddSingleton<PollSchedulerService>();

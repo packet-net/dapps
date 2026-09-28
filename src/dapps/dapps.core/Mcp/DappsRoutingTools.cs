@@ -53,8 +53,8 @@ public sealed class DappsRoutingTools(Database database)
     [Description(
         "Per-callsign F3b scheduled-poll state. One row per callsign the daemon has polled (or been asked to). " +
         "LastPolledAt, LastSuccessAt, LastError, ConsecutiveFailures, MessagesDrained (cumulative count drained " +
-        "from this peer), OptOut flag. Polls only fire when SystemOptions.ScheduledPollEnabled is true; F3a " +
-        "opportunistic polls on every push happen regardless.")]
+        "from this peer), OptOut flag. Polls only fire when SystemOptions.ScheduledPollEnabled is true; mail " +
+        "also comes back on every session dialled for other traffic, regardless.")]
     public async Task<IReadOnlyList<DbPolledNode>> ListPolledNodesAsync()
         => await database.GetPolledNodes();
 }

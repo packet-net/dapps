@@ -1,5 +1,5 @@
 using AwesomeAssertions;
-using dapps.core.Services;
+using dapps.client;
 
 namespace dapps.core.tests;
 
@@ -69,7 +69,7 @@ public sealed class F2WireFormatTests
         var result = IHaveValidator.Validate(
             "ihave abc1234 len=11 fmt=p dst=app@N0CALL mid=def5678 frag=1/1");
         result.IsValid.Should().BeFalse();
-        result.Error.Should().Contain("total must be ≥ 2");
+        result.Error.Should().Contain("total must be at least 2");
     }
 
     [Fact]
@@ -78,7 +78,7 @@ public sealed class F2WireFormatTests
         var result = IHaveValidator.Validate(
             "ihave abc1234 len=11 fmt=p dst=app@N0CALL mid=def5678 frag=4/3");
         result.IsValid.Should().BeFalse();
-        result.Error.Should().Contain("1 ≤ N ≤ M");
+        result.Error.Should().Contain("1 <= N <= M");
     }
 
     [Fact]
@@ -87,7 +87,7 @@ public sealed class F2WireFormatTests
         var result = IHaveValidator.Validate(
             "ihave abc1234 len=11 fmt=p dst=app@N0CALL mid=def5678 frag=0/3");
         result.IsValid.Should().BeFalse();
-        result.Error.Should().Contain("1 ≤ N ≤ M");
+        result.Error.Should().Contain("1 <= N <= M");
     }
 
     [Fact]

@@ -231,7 +231,8 @@ Then a back-and-forth of one-line commands and responses:
 | `peers`                                         | either           | "Tell me your known peers."                         |
 | `peer <callsign> source=<n\|d> [port=<byte>]`   | reply            | One per known peer.                                 |
 | `end`                                           | reply            | End of `peers` response.                            |
-| `rev <id>[,<id>...]`                            | either           | "Send me anything you're holding for these callsigns." |
+| `exchange id=<tag> hold=<s> inline=<bytes> [max=<bytes>] [z=<list>]` | both | "This is what I take from you." Between DAPPS nodes, after this either side sends whenever it has something. |
+| `msg <id> <headers>` then the payload           | either           | A small message with its payload, sent without asking first. |
 
 Headers on `ihave` are forward-compatible - receivers ignore unknown ones. New optional fields (e.g. `src=` for source tracking, `mid=` + `frag=N/M` for multi-part, `sid=`/`sn=`/`gt=` for opt-in ordering) ride the existing `DAPPSv1>` prompt. Breaking changes bump the prompt to `DAPPSv2>`.
 

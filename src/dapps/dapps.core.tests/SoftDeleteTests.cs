@@ -23,7 +23,6 @@ public sealed class SoftDeleteTests : IAsyncLifetime
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();
-            c.CreateTable<DbOffer>();
         }
 
         var opts = new OptMon(new SystemOptions { Callsign = "N0CALL" });

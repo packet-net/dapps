@@ -25,15 +25,15 @@ Each test starts its own daemons, so the class takes a few minutes. CI runs them
 
 | Test | Checks |
 |---|---|
-| A message goes from one app to the other | `ihave`/`send`/`data`/`ack` on air, `src=`, TTL counting down, the `routes` pull and `rev` at the end of the session, a clean hang-up |
+| A message goes from one app to the other | B's prompt and `exchange`, the `routes` pull, A's `exchange` and `msg` in one frame, the `ack`, `src=`, TTL counting down, `quit`/`bye` and a clean hang-up |
 | A burst goes on one connection | Five queued messages, one connect |
-| Mail the other node can't deliver comes back by `rev` | A node with no route to its peer hands its mail over on the peer's session |
-| Payloads | A WPS post compressed with the dictionary (`fmt=z1`), a 9.6 KB message split into three compressed parts and reassembled, and 1.5 KB of random binary |
-| A held link | Traffic both ways on one connection, `pending` from the far end |
-| A quiet held link | `quit` and hang-up when the hold runs out, then a fresh connect |
+| Mail the other node can't deliver comes back on the caller's session | A node with no route to its peer hands its mail to the peer's session when it calls |
+| Payloads | A WPS post compressed with the dictionary (`fmt=z1`), a 9.6 KB message split into three compressed parts and reassembled, and 1.5 KB of random binary offered with `ihave` |
+| An open link | Traffic both ways on one connection, the reply sent by the node that answered |
+| A quiet link | `quit` and hang-up once the hold runs out, then a fresh connect |
 | An ordered stream | `sid=`/`sn=` on air, all parts delivered |
-| A probe | The `peers` exchange |
-| The server's replies | Prompt, `help`, `error`, `send`/`ack`, `bad`, `peers`, `routes`, `tail`, `rev`, `pending` mid-session, and `eh?` then hang-up |
+| A probe | The `peers` exchange, and no `exchange` from the prober |
+| The server's replies | Prompt and `exchange`, `help`, `error`, `send`/`ack`, `bad`, `peers`, `routes`, the caller's `exchange` and `msg`, mail sent unasked mid-session, `quit`/`bye`, and `eh?` then hang-up |
 | A connect script | Reaching a peer through its node's prompt |
 
 `AgwLargePayloadIntegrationTests` covers payloads around BPQ's 256-byte AGW data limit, which these tests found.

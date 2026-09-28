@@ -65,15 +65,15 @@ The admin password (for the dashboard cookie) is set on `/Setup` first-run flow,
 | Node-prompt application command | `DAPPS_NODE_PROMPT_APPLICATION_COMMAND` | `DAPPS`         | The application name typed at the BPQ node prompt to enter the DAPPS slot. Override if your `APPLICATION` line uses a different name. |
 | Discovery airtime budget (s/hr) | `DAPPS_DISCOVERY_AIRTIME_BUDGET_SECONDS_PER_HOUR` | `0` | Trailing-hour cap on discovery transmissions (beacons + solicits + probes). `0` disables the cap. |
 
-### Polling
+### Links and polling
 
 | Name                       | Env var                          | Default | What it does                                                  |
 |----------------------------|----------------------------------|---------|---------------------------------------------------------------|
-| Scheduled poll enabled     | `DAPPS_SCHEDULED_POLL_ENABLED`   | `false` | Periodic reverse-poll of every known forward target.          |
+| Scheduled poll enabled     | `DAPPS_SCHEDULED_POLL_ENABLED`   | `false` | Periodically calls every neighbour so it can send what it holds for us. |
 | Poll interval (hours)      | `DAPPS_POLL_INTERVAL_HOURS`      | `6`     | Sweep cadence when scheduled polling is on.                   |
-| Opportunistic poll enabled | `DAPPS_OPPORTUNISTIC_POLL_ENABLED` | `true`  | Drains a peer's queued mail at the end of every push session. |
 | Compression enabled        | `DAPPS_COMPRESSION_ENABLED`      | `true`  | Sends message payloads to neighbours zstd-compressed when that saves at least 32 bytes. Can be overridden per neighbour on the Topology page. |
-| Session tail (s)           | `DAPPS_SESSION_TAIL_SECONDS`     | `120`   | After a session that moved messages, keeps the link to that neighbour open until it has been idle this long, so follow-up messages go without a new connection. 0 = off; at most 600. Can be overridden per neighbour on the Topology page. |
+| Session tail (s)           | `DAPPS_SESSION_TAIL_SECONDS`     | `120`   | Keeps a link to a neighbour open until it has been idle this long, so follow-up messages in either direction go without a new connection. The link is held for the lower of both ends' values. 0 = off; at most 600. Can be overridden per neighbour on the Topology page. |
+| Largest message (bytes)    | `DAPPS_MAX_MESSAGE_BYTES`        | `0`     | The largest message this node takes from a neighbour. Neighbours don't send bigger ones. `0` = no limit. |
 
 ### Multi-part messages
 

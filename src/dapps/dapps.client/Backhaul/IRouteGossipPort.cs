@@ -4,10 +4,9 @@ namespace dapps.client.Backhaul;
 /// Plumbing seam for the bearer-level session code (in dapps.client)
 /// to ask the daemon (in dapps.core) "should I pull <c>routes</c> from
 /// this neighbour right now?" and "here are the routes the neighbour
-/// returned, please persist." Same shape as the opportunistic-poll
-/// callbacks already on <see cref="Dappsv1SessionBackhaul"/> - keeps
-/// dapps.client free of database concerns while still letting the
-/// session backhaul piggyback gossip on otherwise-open sessions.
+/// returned, please persist." Keeps dapps.client free of database
+/// concerns while still letting a session (<see cref="ExchangeSession"/>)
+/// piggyback gossip on a call made for other work.
 ///
 /// Implementations live in dapps.core; the gate consults the
 /// <c>routegossipstate</c> table and the import upserts into
