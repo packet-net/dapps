@@ -44,6 +44,7 @@ public sealed class MeshCoreSourceRoutedForwardingTests : IAsyncLifetime
         {
             c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
+            c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();
             c.CreateTable<DbAppToken>();
             c.CreateTable<DbNeighbour>();

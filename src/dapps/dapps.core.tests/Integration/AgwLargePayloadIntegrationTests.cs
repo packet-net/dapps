@@ -35,6 +35,7 @@ public sealed class AgwLargePayloadIntegrationTests(TwoInstanceLinbpqFixture fix
         {
             c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
+            c.CreateTable<DbReceived>();
         }
 
         var receiverOptions = new TestOptionsMonitor<SystemOptions>(new SystemOptions

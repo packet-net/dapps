@@ -61,6 +61,7 @@ public sealed class DappsConfigTools(SystemOptionsStore optionsStore)
         }
         if (update.FragmentThresholdBytes.HasValue) current.FragmentThresholdBytes = Math.Max(0, update.FragmentThresholdBytes.Value);
         if (update.FragmentReassemblyTimeoutSeconds.HasValue) current.FragmentReassemblyTimeoutSeconds = ClampPositive(update.FragmentReassemblyTimeoutSeconds.Value);
+        if (update.ReceivedMemorySeconds.HasValue) current.ReceivedMemorySeconds = ClampPositive(update.ReceivedMemorySeconds.Value);
         if (update.AuthRequired.HasValue) current.AuthRequired = update.AuthRequired.Value;
         if (update.UpdateCheckEnabled.HasValue) current.UpdateCheckEnabled = update.UpdateCheckEnabled.Value;
         if (update.DefaultBearerPort.HasValue) current.DefaultBearerPort = Math.Max(0, update.DefaultBearerPort.Value);
@@ -116,6 +117,8 @@ public sealed record ConfigUpdate(
     int? FragmentThresholdBytes = null,
     [property: Description("F2 - drop incomplete reassembly buffer rows older than this many seconds. Default 7 days.")]
     int? FragmentReassemblyTimeoutSeconds = null,
+    [property: Description("Longest, in seconds, a received message is remembered so a repeat isn't delivered or forwarded again: one with a TTL until that runs out plus an hour, capped at this; one with no TTL for this long. Default 30 days.")]
+    int? ReceivedMemorySeconds = null,
     [property: Description("A4 - when true, MQTT/REST app-interface clients must present a per-app token.")]
     bool? AuthRequired = null,
     [property: Description("C5.1 - when true, periodically check GitHub Releases and surface available updates on the dashboard.")]

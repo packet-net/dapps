@@ -21,6 +21,7 @@ public sealed class SoftDeleteTests : IAsyncLifetime
         using (var c = DbInfo.GetConnection())
         {
             c.CreateTable<DbMessage>();
+            c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();
             c.CreateTable<DbOffer>();
         }

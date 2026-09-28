@@ -90,6 +90,7 @@ public sealed class SystemOptionsStore : IOptionsMonitor<SystemOptions>
         await Upsert(connection, existing, nameof(options.ProbeIntervalHours), options.ProbeIntervalHours.ToString());
         await Upsert(connection, existing, nameof(options.FragmentThresholdBytes), options.FragmentThresholdBytes.ToString());
         await Upsert(connection, existing, nameof(options.FragmentReassemblyTimeoutSeconds), options.FragmentReassemblyTimeoutSeconds.ToString());
+        await Upsert(connection, existing, nameof(options.ReceivedMemorySeconds), options.ReceivedMemorySeconds.ToString());
         await Upsert(connection, existing, nameof(options.OpportunisticPollEnabled), options.OpportunisticPollEnabled.ToString());
         await Upsert(connection, existing, nameof(options.CompressionEnabled), options.CompressionEnabled.ToString());
         await Upsert(connection, existing, nameof(options.SessionTailSeconds), options.SessionTailSeconds.ToString());
@@ -172,6 +173,7 @@ public sealed class SystemOptionsStore : IOptionsMonitor<SystemOptions>
             ProbeIntervalHours = TryGetInt(r, nameof(SystemOptions.ProbeIntervalHours), 24, min: 1),
             FragmentThresholdBytes = TryGetInt(r, nameof(SystemOptions.FragmentThresholdBytes), 4096, min: 0),
             FragmentReassemblyTimeoutSeconds = TryGetInt(r, nameof(SystemOptions.FragmentReassemblyTimeoutSeconds), 7 * 24 * 3600, min: 1),
+            ReceivedMemorySeconds = TryGetInt(r, nameof(SystemOptions.ReceivedMemorySeconds), 30 * 24 * 3600, min: 1),
             OpportunisticPollEnabled = TryGetBool(r, nameof(SystemOptions.OpportunisticPollEnabled), true),
             CompressionEnabled = TryGetBool(r, nameof(SystemOptions.CompressionEnabled), true),
             SessionTailSeconds = Math.Clamp(TryGetInt(r, nameof(SystemOptions.SessionTailSeconds), 120), 0, 600),

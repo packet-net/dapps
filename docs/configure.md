@@ -81,6 +81,7 @@ The admin password (for the dashboard cookie) is set on `/Setup` first-run flow,
 |-----------------------------------|------------------------------------------|-------------|-----------------------------------------------------------------------------------------|
 | Fragment threshold (bytes)        | `DAPPS_FRAGMENT_THRESHOLD_BYTES`         | `4096`      | Payloads strictly larger than this get split into N fragments at submit. `0` disables.  |
 | Fragment reassembly timeout (s)   | `DAPPS_FRAGMENT_REASSEMBLY_TIMEOUT_SECONDS` | `604800` (7 d) | Drop incomplete reassembly buffers older than this.                                  |
+| Received-message memory (s)       | `DAPPS_RECEIVED_MEMORY_SECONDS`             | `2592000` (30 d) | Longest a received message is remembered, so a repeat isn't delivered or passed on twice: a message with a TTL is remembered until that runs out plus an hour, capped at this; one with no TTL for this long. |
 
 ### Route gossip
 

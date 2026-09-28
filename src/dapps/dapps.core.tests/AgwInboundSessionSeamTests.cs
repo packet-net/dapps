@@ -55,6 +55,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         {
             c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
+            c.CreateTable<DbReceived>();
         }
         return ValueTask.CompletedTask;
     }

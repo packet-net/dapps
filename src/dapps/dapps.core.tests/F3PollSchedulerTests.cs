@@ -33,6 +33,7 @@ public sealed class F3PollSchedulerTests : IAsyncLifetime
             c.CreateTable<DbPolledNode>();
             c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
+            c.CreateTable<DbReceived>();
         }
         database = new Database(NullLogger<Database>.Instance,
             new TestOptionsMonitor<SystemOptions>(new SystemOptions { Callsign = "N0US", DefaultBearerPort = 0 }));

@@ -125,10 +125,22 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         return PromptOutcome.NotSeen;
     }
 
+    /// <summary>
+    /// The peer answered the offer with <c>ack</c>: it already has the
+    /// message (we restarted, or lost its ack last time), so it's
+    /// delivered and the payload stays off the air.
+    /// </summary>
+    private PushOutcome AlreadyThere(Backhaul.BackhaulMessage message)
+    {
+        logger.LogInformation("Peer already has {0}; counting it delivered", message.Id);
+        return PushOutcome.Accepted;
+    }
+
     /// <summary>How <see cref="PushAsync"/> went.</summary>
     public enum PushOutcome
     {
-        /// <summary>The peer acked the payload.</summary>
+        /// <summary>The peer acked the payload, or answered the offer
+        /// with <c>ack</c> because it already had the message.</summary>
         Accepted,
         /// <summary>The peer answered the offer with something other than <c>send</c>.</summary>
         OfferRefused,
@@ -232,6 +244,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         if (compressed is { } wire)
         {
             var reply = await OfferCoreAsync(message, wire.Format, wire.Bytes.Length, ct);
+            if (reply == $"ack {message.Id}") return AlreadyThere(message);
             if (reply == $"send {message.Id}")
             {
                 logger.LogInformation("Sending {0} as fmt={1}: {2} bytes compressed to {3}",
@@ -252,6 +265,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
         }
 
         var plainReply = await OfferCoreAsync(message, "p", compressedLength: null, ct);
+        if (plainReply == $"ack {message.Id}") return AlreadyThere(message);
         if (plainReply != $"send {message.Id}")
         {
             if (lastReplyWasEof) return PushOutcome.PeerClosed;

@@ -98,6 +98,7 @@ public sealed class AgwDisconnectPortQuirkTests(TwoInstanceLinbpqFixture fixture
         {
             c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
+            c.CreateTable<DbReceived>();
         }
 
         // dapps on B, with the keepalive under test control.

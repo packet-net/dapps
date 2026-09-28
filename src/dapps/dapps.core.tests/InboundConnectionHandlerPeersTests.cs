@@ -35,6 +35,7 @@ public sealed class InboundConnectionHandlerPeersTests : IAsyncLifetime
             c.CreateTable<DbDiscoveredPeer>();
             c.CreateTable<DbOffer>();
             c.CreateTable<DbMessage>();
+            c.CreateTable<DbReceived>();
         }
 
         database = new Database(NullLogger<Database>.Instance,
