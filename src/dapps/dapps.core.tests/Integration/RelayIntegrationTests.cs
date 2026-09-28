@@ -66,9 +66,21 @@ public sealed class RelayIntegrationTests(ThreeInstanceLinbpqFixture fixture) : 
         (await b.InboundAsync("relay", ct)).Should().BeEmpty(Transcript(a, b, c));
         (await a.InboundAsync("relay", ct)).Should().BeEmpty(Transcript(a, b, c));
 
-        // Give a second copy every chance to turn up before declaring
-        // "exactly once".
-        await Task.Delay(5000, ct);
+        // This has to prove the route hint itself was the thing that got
+        // the message to B - the flood test below shows flooding alone
+        // delivers A->C on this same topology, so without this check a
+        // broken hint would still pass here.
+        a.Log.Should().NotContain("initiating bounded flood",
+            "A has a route hint to C via B, so it must not fall back to flooding\n" + a.Tail());
+        a.Log.Should().Contain("via route-hint next-hop",
+            "the route-hint path must actually be the one taken\n" + a.Tail());
+
+        // Wait for A to consider the message delivered, then give a
+        // second copy every chance to turn up before declaring "exactly
+        // once" - a fixed sleep here could be outlasted by a retry
+        // backoff on a slow runner.
+        await WaitForDrainAsync(a, ct, TimeSpan.FromSeconds(30));
+        await Task.Delay(2000, ct);
         (await c.InboundAsync("relay", ct)).Should().ContainSingle(Transcript(a, b, c));
     }
 
@@ -99,8 +111,22 @@ public sealed class RelayIntegrationTests(ThreeInstanceLinbpqFixture fixture) : 
         a.Log.Should().Contain("initiating bounded flood", "A has no route to C at all, so it must fall back to flooding\n" + a.Tail());
         (await b.InboundAsync("relay", ct)).Should().BeEmpty(Transcript(a, b, c));
 
-        await Task.Delay(5000, ct);
+        await WaitForDrainAsync(a, ct, TimeSpan.FromSeconds(30));
+        await Task.Delay(2000, ct);
         (await c.InboundAsync("relay", ct)).Should().ContainSingle(Transcript(a, b, c));
+    }
+
+    /// <summary>Wait until <paramref name="sender"/> considers its queue
+    /// drained, so "give a duplicate a chance to turn up" doesn't rely on
+    /// a fixed sleep that a retry backoff could outlast.</summary>
+    private static async Task WaitForDrainAsync(DappsDaemon sender, CancellationToken ct, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (await sender.PendingOutboundAsync(ct) == 0) return;
+            await Task.Delay(200, ct);
+        }
     }
 
     private string Transcript(DappsDaemon a, DappsDaemon b, DappsDaemon c) =>

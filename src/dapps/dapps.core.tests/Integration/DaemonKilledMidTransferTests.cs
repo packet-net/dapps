@@ -71,11 +71,29 @@ public sealed class DaemonKilledMidTransferTests(TwoInstanceLinbpqFixture fixtur
         got[0].Id.Should().Be(id);
         got[0].Payload.Should().Equal(payload, "the message must survive the crash byte for byte");
 
-        // Give a duplicate every chance to turn up before declaring
-        // "exactly once".
-        await Task.Delay(10000, ct);
+        // Wait for A to actually stop retrying (its own pending-outbound
+        // count reaching 0, meaning it got the ack), then give a
+        // duplicate every chance to turn up before declaring "exactly
+        // once" - a fixed sleep here could be outlasted by a retry
+        // backoff on a slow runner.
+        await WaitForDrainAsync(a, ct, TimeSpan.FromSeconds(60));
+        await Task.Delay(2000, ct);
         (await b.InboundAsync(App, ct)).Should().ContainSingle(
             "the received-message ledger must stop a retried copy being delivered twice\n" + Transcript(a, b));
+    }
+
+    /// <summary>Wait until <paramref name="sender"/> considers its queue
+    /// drained (it got the ack), so "give a duplicate a chance to turn
+    /// up" doesn't rely on a fixed sleep that a retry backoff could
+    /// outlast.</summary>
+    private static async Task WaitForDrainAsync(DappsDaemon sender, CancellationToken ct, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (await sender.PendingOutboundAsync(ct) == 0) return;
+            await Task.Delay(200, ct);
+        }
     }
 
     private string Transcript(DappsDaemon a, DappsDaemon b) =>
