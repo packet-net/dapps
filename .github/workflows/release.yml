@@ -100,15 +100,14 @@ jobs:
 
   # The release gate. Same suite and same retry rationale as ci.yml: a single known-flaky
   # test must not be able to strand a tagged release, but three consecutive failures are a
-  # real regression and must block it. The one exception is the simulated-radio scenarios
-  # on net-sim: they run in CI on every PR, but on a runner they fail often for reasons
-  # outside DAPPS (linbpq sometimes exits just after it starts, #201), and blocked 0.42.0
-  # six attempts running. Put them back here once #201 is fixed. The same scenarios on
-  # pdn nodes (WpsReplicationScenarioPdn*, CrossedCallScenarioPdn*) fall under the same
-  # patterns: they're as sensitive to a busy runner, and new.
+  # real regression and must block it. That includes the simulated-radio scenarios on
+  # net-sim, BPQ and pdn: linbpq sometimes exits just after it starts (#201), and their
+  # fixtures now recreate the containers once when it does, rather than failing the lot.
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 75   # three attempts, each with the pdn tests over AXUDP
+    # As ci.yml: the scenarios run in real time, about 30 minutes an attempt with the pdn
+    # tests, so 110 leaves room for the pulls, the build and all three attempts.
+    timeout-minutes: 110
     steps:
       - uses: actions/checkout@v6
 
@@ -141,12 +140,7 @@ jobs:
           attempts=3
           for i in $(seq 1 "$attempts"); do
             echo "::group::Test attempt $i/$attempts"
-            if dotnet test "$proj" --no-build --configuration Release -- --output detailed \
-                --filter-not-class 'dapps.core.tests.Integration.WpsReplicationScenario*' \
-                --filter-not-class 'dapps.core.tests.Integration.CrossedCallScenario*' \
-                --filter-not-class 'dapps.core.tests.Integration.BpqCrossedCallExperiments*' \
-                --filter-not-class 'dapps.core.tests.Integration.NetSimSoakTests' \
-                --filter-not-class 'dapps.core.tests.Integration.NetSimPdnSoakTests'; then
+            if dotnet test "$proj" --no-build --configuration Release -- --output detailed; then
               echo "::endgroup::"
               echo "Tests passed on attempt $i/$attempts."
               exit 0
