@@ -2,6 +2,7 @@ using System.Text;
 using AwesomeAssertions;
 using dapps.client;
 using dapps.client.Backhaul;
+using dapps.client.Compression;
 using Microsoft.Extensions.Logging.Abstractions;
 using static dapps.core.tests.ExchangeTestKit;
 
@@ -35,7 +36,7 @@ public sealed class ExchangeSessionTests : IDisposable
     /// <summary>A session that dialled: the peer plays the answering node.</summary>
     private async Task<(ExchangeSession Session, LinePeer Peer, Task Run, WriteRecordingStream Wire)> CallerAsync(
         ExchangeSettings? settings = null, IBackhaulInbox? inbox = null, Action<ExchangeSession>? opened = null,
-        TimeSpan? maxLength = null, TimeSpan? inactivity = null)
+        TimeSpan? maxLength = null, TimeSpan? inactivity = null, OutOfStepMemory? memory = null)
     {
         var (ours, theirs) = await LoopbackPairAsync(Ct);
         var wire = new WriteRecordingStream(ours);
@@ -46,19 +47,21 @@ public sealed class ExchangeSessionTests : IDisposable
             MaxLength = maxLength ?? TimeSpan.FromMinutes(30),
             InactivityTimeout = inactivity ?? TimeSpan.FromMinutes(3),
             Opened = opened,
+            OutOfStepHistory = memory ?? new OutOfStepMemory(),
         };
         return (session, new LinePeer(theirs), session.RunAsync(Ct), wire);
     }
 
     /// <summary>A session that answered: the peer plays the caller.</summary>
     private async Task<(ExchangeSession Session, LinePeer Peer, Task Run)> CalleeAsync(
-        ExchangeSettings? settings = null, IBackhaulInbox? inbox = null, TimeSpan? inactivity = null)
+        ExchangeSettings? settings = null, IBackhaulInbox? inbox = null, TimeSpan? inactivity = null, OutOfStepMemory? memory = null)
     {
         var (ours, theirs) = await LoopbackPairAsync(Ct);
         var session = new ExchangeSession(ours, Them, dialled: false, settings ?? new ExchangeSettings(), inbox ?? new RecordingInbox(), NullLoggerFactory.Instance)
         {
             MinQuiet = Short,
             InactivityTimeout = inactivity ?? TimeSpan.FromMinutes(3),
+            OutOfStepHistory = memory ?? new OutOfStepMemory(),
         };
         var peer = new LinePeer(theirs);
         var run = session.RunAsync(Ct);
@@ -987,18 +990,127 @@ public sealed class ExchangeSessionTests : IDisposable
         inbox.Sources.Should().AllBe(Them);
     }
 
+    // ---- Out of step (#207) ----
+
     [Fact]
-    public async Task APayloadThatDoesntHashToItsId_IsAnsweredBad()
+    public async Task APayloadThatDoesntHashToItsId_EndsTheSessionWithAQuit()
     {
+        // At the edge of range BPQ can hand over a stale frame in place of
+        // the one sent: nothing after it can be trusted, so the session
+        // ends and the next link starts in step, rather than answering bad.
         var inbox = new RecordingInbox();
-        var (session, peer, _) = await CalleeAsync(inbox: inbox);
+        var hashMismatches = new List<string>();
+        var (ours, theirs) = await LoopbackPairAsync(Ct);
+        var session = new ExchangeSession(ours, Them, dialled: false, new ExchangeSettings(), inbox, NullLoggerFactory.Instance)
+        {
+            HashMismatch = hashMismatches.Add,
+            OutOfStepHistory = new OutOfStepMemory(),
+        };
+        var run = session.RunAsync(Ct);
+        var peer = new LinePeer(theirs);
+        await peer.ReadLineAsync(Ct);
+        await peer.ReadLineAsync(Ct);
         var m = Message("hello", $"app@{Us}");
         await peer.WriteLineAsync(Rules(), Ct);
 
         await peer.WriteAsync([.. Encoding.UTF8.GetBytes(Line("msg", m)), .. "hellO"u8.ToArray()], Ct);
 
-        (await peer.ReadLineAsync(Ct)).Should().Be($"bad {m.Id}");
+        (await peer.ReadLineAsync(Ct)).Should().Be("quit");
+        await run.WaitAsync(Patience, Ct);
         inbox.Messages.Should().BeEmpty();
+        hashMismatches.Should().Equal(m.Id);
+    }
+
+    [Fact]
+    public async Task ACompressedPayloadThatDoesntDecode_EndsTheSessionWithAQuit()
+    {
+        var inbox = new RecordingInbox();
+        var (session, peer, run) = await CalleeAsync(inbox: inbox);
+        await peer.WriteLineAsync(Rules(), Ct);
+        var payload = Encoding.UTF8.GetBytes(WpsPost);
+        var id = DappsMessage.ComputeHash(payload, 1L)[..7];
+
+        await peer.WriteAsync([.. Encoding.UTF8.GetBytes($"msg {id} len={payload.Length} fmt=z1 clen=12 s=1 dst=app@{Us}\n"), .. "not zstd at!"u8.ToArray()], Ct);
+
+        (await peer.ReadLineAsync(Ct)).Should().Be("quit");
+        await run.WaitAsync(Patience, Ct);
+        inbox.Messages.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task BeforeTheExchange_APayloadThatDoesntHashToItsId_IsStillAnsweredBad()
+    {
+        // A simple sender pushing one message the old way expects bad.
+        var inbox = new RecordingInbox();
+        var (session, peer, run) = await CalleeAsync(inbox: inbox);
+        var m = Message("hello", $"app@{Us}");
+
+        await peer.WriteLineAsync(Line("ihave", m), Ct);
+        (await peer.ReadLineAsync(Ct)).Should().Be($"send {m.Id}");
+        await peer.WriteAsync([.. Encoding.UTF8.GetBytes($"data {m.Id}\n"), .. "hellO"u8.ToArray()], Ct);
+
+        (await peer.ReadLineAsync(Ct)).Should().Be($"bad {m.Id}");
+        run.IsCompleted.Should().BeFalse();
+        inbox.Messages.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AGarbledLine_EndsASessionWeDialled_WithAQuit_AndFailsNothing()
+    {
+        // The line seen at 156.75 dB: the start of an ihave replaced by the
+        // tail of a stale frame. The link was working, so what we had in
+        // flight waits for the next session without a cooldown.
+        var first = Message("first", $"app@{Them}", 1);
+        var second = Message("second", $"app@{Them}", 2);
+        var batch = new RecordingBatch(first, second);
+        var (session, peer, run, _) = await CallerAsync();
+        session.TryTake(batch);
+        await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
+        await peer.ReadLineAsync(Ct);
+        await peer.ReadWithPayloadAsync(Ct);
+        await peer.ReadWithPayloadAsync(Ct);
+
+        await peer.WriteLineAsync($"ack {first.Id}", Ct);
+        await peer.WriteLineAsync("0AAAe 3b1f348 len=3113 fmt=z1 clen=721 dst=soak@N0CALL s=1790533250012 ttl=3267 src=N0DEST", Ct);
+
+        (await peer.ReadLineAsync(Ct)).Should().Be("quit");
+        await run.WaitAsync(Patience, Ct);
+        batch.Outcomes.Select(o => (o.Id, o.Result.Accepted, o.Result.Deferred)).Should().Equal(
+            (first.Id, true, false), (second.Id, false, true));
+        batch.Outcomes[1].Result.Error.Should().Contain("out of step");
+    }
+
+    [Theory]
+    [InlineData("ack 48\u00b54464")]
+    [InlineData("no \u0001")]
+    [InlineData("send")]
+    [InlineData("\u0012\u00b5/\u00fd binary")]
+    [InlineData("SEND 1234567")]
+    public async Task InExchangeMode_ALineThatIsntDapps_EndsTheSession(string line)
+    {
+        var (session, peer, run) = await CalleeAsync();
+        await peer.WriteLineAsync(Rules(), Ct);
+
+        await peer.WriteLineAsync(line, Ct);
+
+        (await peer.ReadLineAsync(Ct)).Should().Be("quit");
+        await run.WaitAsync(Patience, Ct);
+    }
+
+    [Theory]
+    [InlineData("ihave")]
+    [InlineData("ihave \u00b5b1f348 len=5 fmt=p dst=app@N0CALL")]
+    [InlineData("msg 3b\u00011f348 len=5 fmt=p dst=app@N0CALL")]
+    public async Task InExchangeMode_AnOfferOrMessageWithoutAMessageId_EndsTheSession(string line)
+    {
+        // Nothing we could answer would name it, so it would wait for ever.
+        var (session, peer, run) = await CalleeAsync();
+        await peer.WriteLineAsync(Rules(), Ct);
+
+        await peer.WriteLineAsync(line, Ct);
+
+        (await peer.ReadLineAsync(Ct)).Should().Be("quit");
+        await run.WaitAsync(Patience, Ct);
     }
 
     [Fact]
@@ -1009,8 +1121,384 @@ public sealed class ExchangeSessionTests : IDisposable
 
         await peer.WriteLineAsync("msg abc1234 fmt=p dst=app@N0CALL", Ct);
 
+        (await peer.ReadLineAsync(Ct)).Should().Be("quit");
         await run.WaitAsync(Patience, Ct);
         session.Established.Should().BeTrue("it ended because nothing after that line can be read in step");
+    }
+
+    [Fact]
+    public async Task ALineCutOffByTheLinkGoing_IsTheLinkGoing_NotAGarbledLine()
+    {
+        // What a hang-up leaves of a line is only its start; a session we
+        // dialled that breaks off still fails its oldest, as for any break.
+        var m = Message("in flight", $"app@{Them}");
+        var batch = new RecordingBatch(m);
+        var (session, peer, run, _) = await CallerAsync();
+        session.TryTake(batch);
+        await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
+        await peer.ReadLineAsync(Ct);
+        await peer.ReadWithPayloadAsync(Ct);
+
+        await peer.WriteAsync([0xb5, (byte)'s'], Ct);
+        peer.Close();
+        await run.WaitAsync(Patience, Ct);
+
+        batch.Outcomes.Single().Result.Error.Should().Contain("broke off");
+    }
+
+    [Fact]
+    public async Task TwoSessions_APayloadDamagedOnTheWay_EndsTheSessionAtBothEnds_AndGoesAgainNextTime()
+    {
+        // Our own sender at the other end: it hears the quit, defers what
+        // it had without a cooldown, and the next session delivers it.
+        var m = Message("across a bad patch", $"app@{Us}");
+        var batch = new RecordingBatch(m);
+        var inbox = new RecordingInbox();
+        var memory = new OutOfStepMemory();
+
+        var (a1, b1) = await LoopbackPairAsync(Ct);
+        var sender = new ExchangeSession(new DamageFirstPayload(a1), Us, dialled: true, new ExchangeSettings(), new RecordingInbox(), NullLoggerFactory.Instance)
+        {
+            PromptWait = Short,
+            MinQuiet = Short,
+            OutOfStepHistory = new OutOfStepMemory(),
+        };
+        var receiver = new ExchangeSession(b1, Them, dialled: false, new ExchangeSettings(), inbox, NullLoggerFactory.Instance) { MinQuiet = Short, OutOfStepHistory = memory };
+        sender.TryTake(batch);
+        await Task.WhenAll(sender.RunAsync(Ct), receiver.RunAsync(Ct)).WaitAsync(Patience, Ct);
+
+        batch.Outcomes.Single().Result.Deferred.Should().BeTrue("the receiver ended the session with a quit");
+        inbox.Messages.Should().BeEmpty();
+
+        var again = new RecordingBatch(m);
+        var (a2, b2) = await LoopbackPairAsync(Ct);
+        var sender2 = new ExchangeSession(a2, Us, dialled: true, new ExchangeSettings(), new RecordingInbox(), NullLoggerFactory.Instance)
+        {
+            PromptWait = Short,
+            MinQuiet = Short,
+            OutOfStepHistory = new OutOfStepMemory(),
+        };
+        var receiver2 = new ExchangeSession(b2, Them, dialled: false, new ExchangeSettings(), inbox, NullLoggerFactory.Instance) { MinQuiet = Short, OutOfStepHistory = memory };
+        sender2.TryTake(again);
+        await Task.WhenAll(sender2.RunAsync(Ct), receiver2.RunAsync(Ct)).WaitAsync(Patience, Ct);
+
+        again.Outcomes.Single().Result.Accepted.Should().BeTrue();
+        inbox.Texts.Should().Equal("across a bad patch");
+    }
+
+    // ---- Out of step, when it keeps happening ----
+
+    [Fact]
+    public async Task TheSameMessageDamagedAgain_IsAnsweredBad_AndTheSessionCarriesOn()
+    {
+        // A stale frame doesn't hit one message twice: the second time it's
+        // the message or the path, and the stream is still in step.
+        var memory = new OutOfStepMemory();
+        var m = Message("hello", $"app@{Us}");
+        var good = Message("still fine", $"app@{Us}", 2);
+        byte[] damaged = [.. Encoding.UTF8.GetBytes(Line("msg", m)), .. "hellO"u8.ToArray()];
+
+        var (_, first, firstRun) = await CalleeAsync(memory: memory);
+        await first.WriteLineAsync(Rules(), Ct);
+        await first.WriteAsync(damaged, Ct);
+        (await first.ReadLineAsync(Ct)).Should().Be("quit");
+        await firstRun.WaitAsync(Patience, Ct);
+
+        var inbox = new RecordingInbox();
+        var (_, second, secondRun) = await CalleeAsync(inbox: inbox, memory: memory);
+        await second.WriteLineAsync(Rules(), Ct);
+        await second.WriteAsync(damaged, Ct);
+        (await second.ReadLineAsync(Ct)).Should().Be($"bad {m.Id}");
+        await second.SendMessageAsync(good, Ct);
+        (await second.ReadLineAsync(Ct)).Should().Be($"ack {good.Id}");
+        secondRun.IsCompleted.Should().BeFalse();
+        inbox.Texts.Should().Equal("still fine");
+    }
+
+    [Fact]
+    public async Task AMessageWhoseIdDoesntHashFromItsPayload_FailsWithACooldown_OnTheSecondSession()
+    {
+        // Such a message can sit in a queue (a datagram stored as it came).
+        // Without the bound it went first on every session, ended each out
+        // of step with no cooldown, and held up the link until it expired.
+        var liar = new BackhaulMessage("abc1234", $"app@{Us}", 1L, 600, Encoding.UTF8.GetBytes("not what the id says"));
+        var memory = new OutOfStepMemory();
+
+        var first = new RecordingBatch(liar);
+        await RunPairAsync(first, memory, inbox: new RecordingInbox());
+        first.Outcomes.Single().Result.Deferred.Should().BeTrue("the first time, it could have been a stale frame");
+
+        var second = new RecordingBatch(liar);
+        await RunPairAsync(second, memory, inbox: new RecordingInbox());
+        var result = second.Outcomes.Single().Result;
+        result.Accepted.Should().BeFalse();
+        result.Deferred.Should().BeFalse("answered bad, sent once more plain, bad again: failed, with a cooldown");
+        result.Error.Should().Contain("payload rejected");
+    }
+
+    [Fact]
+    public async Task APathThatTurnsLineFeedsIntoCarriageReturns_GetsItThroughPlain_OnTheSecondSession()
+    {
+        // BPQ's Telnet bridge rewrites LF to CR: DAPPS lines still read, but
+        // a compressed payload with an LF byte in it arrives damaged.
+        var text = Enumerable.Range(0, 500)
+            .Select(i => WpsPost.Replace("tonight", "tonight " + Convert.ToHexString(System.Security.Cryptography.SHA1.HashData(BitConverter.GetBytes(i)))))
+            .First(t => PayloadCompression.TryCompress(Encoding.UTF8.GetBytes(t)) is { } z && z.Bytes.Contains((byte)'\n'));
+        var post = Message(text, $"app@{Us}");
+        var memory = new OutOfStepMemory();
+        var inbox = new RecordingInbox();
+
+        var first = new RecordingBatch(post);
+        await RunPairAsync(first, memory, inbox, compress: true, senderStream: s => new LineFeedsToCarriageReturns(s));
+        first.Outcomes.Single().Result.Deferred.Should().BeTrue();
+        inbox.Messages.Should().BeEmpty();
+
+        var second = new RecordingBatch(post);
+        await RunPairAsync(second, memory, inbox, compress: true, senderStream: s => new LineFeedsToCarriageReturns(s));
+        second.Outcomes.Single().Result.Accepted.Should().BeTrue("bad the second time, then sent plain, which has no LF");
+        inbox.Texts.Should().Equal(text);
+    }
+
+    [Fact]
+    public async Task NodeTextAfterTheExchange_TheSecondSessionInARow_FailsTheOldest()
+    {
+        // Another node answering on the link each time, once the far end
+        // has gone: without a strike it would be redialled for ever.
+        var memory = new OutOfStepMemory();
+        var outcomes = new List<BackhaulSendResult>();
+        for (var i = 0; i < 2; i++)
+        {
+            var m = Message($"try {i}", $"app@{Them}", i + 1);
+            var batch = new RecordingBatch(m);
+            var (session, peer, run, _) = await CallerAsync(memory: memory);
+            session.TryTake(batch);
+            await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
+            await peer.ReadLineAsync(Ct);
+            await peer.ReadWithPayloadAsync(Ct);
+
+            await peer.WriteLineAsync("Returned to node N0XYZ", Ct);
+
+            if (i == 0) (await peer.ReadLineAsync(Ct)).Should().Be("quit");
+            await run.WaitAsync(Patience, Ct);
+            if (i == 1) await ExpectNothingSaidAsync(peer);
+            outcomes.Add(batch.Outcomes.Single().Result);
+        }
+
+        outcomes[0].Deferred.Should().BeTrue("once could be a stale frame");
+        outcomes[1].Deferred.Should().BeFalse();
+        outcomes[1].Error.Should().Contain("out of step 2 times in a row");
+    }
+
+    [Fact]
+    public async Task ARepeatSeenOnlyByTheReceiver_HangsUpWithoutAQuit_SoTheSenderThatDialledGetsACooldown()
+    {
+        // A path that adds a byte: the second time, the receiver answers bad
+        // (the same message damaged again), then reads the leftover byte and
+        // the next message's header as one line, and goes out of step. A quit
+        // would have the sender defer both, with no cooldown, for ever.
+        var m = Message("no line feeds, and ends with a bang!", $"app@{Us}", 1);
+        var next = Message("the one after", $"app@{Us}", 2);
+        var memory = new OutOfStepMemory();
+
+        var first = new RecordingBatch(m, next);
+        await RunPairAsync(first, memory, new RecordingInbox(), senderStream: s => new AddsAByte(s));
+        first.Outcomes.Should().OnlyContain(o => o.Result.Deferred, "the first time, the receiver said quit");
+
+        var second = new RecordingBatch(m, next);
+        await RunPairAsync(second, memory, new RecordingInbox(), senderStream: s => new AddsAByte(s));
+        var result = second.Outcomes.Single(o => o.Id == m.Id).Result;
+        result.Deferred.Should().BeFalse("the receiver hung up without a quit, a break for the node that dialled");
+        result.Error.Should().Contain("broke off");
+        second.Outcomes.Single(o => o.Id == next.Id).Result.Deferred.Should().BeTrue();
+        memory.InARow(Them).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task TheSecondOutOfStepEndingInARow_HangsUpWithoutAQuit()
+    {
+        var memory = new OutOfStepMemory();
+        memory.EndedOutOfStep(Them);
+        var (session, peer, run) = await CalleeAsync(memory: memory);
+        await peer.WriteLineAsync(Rules(), Ct);
+
+        await peer.WriteLineAsync("Returned to node N0XYZ", Ct);
+
+        await run.WaitAsync(Patience, Ct);
+        await ExpectNothingSaidAsync(peer);
+        memory.InARow(Them).Should().Be(2);
+    }
+
+    /// <summary>The session has ended without a word: no quit. (Its
+    /// transport then drops the link.)</summary>
+    private async Task ExpectNothingSaidAsync(LinePeer peer)
+    {
+        string? line = null;
+        try
+        {
+            line = await peer.TryReadLineAsync(Short, Ct);
+        }
+        catch (EndOfStreamException)
+        {
+            // The link went: nothing was said either.
+        }
+        line.Should().BeNull("it hangs up without a quit");
+    }
+
+    [Fact]
+    public async Task ASessionInStepInBetween_StartsTheCountAgain()
+    {
+        var memory = new OutOfStepMemory();
+        memory.EndedOutOfStep(Them).Should().Be(1);
+
+        var (session, peer, run, _) = await CallerAsync(memory: memory);
+        await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules(hold: 0) + "\n"), Ct);
+        await peer.ReadLineAsync(Ct);
+        (await peer.ReadLineAsync(Ct)).Should().Be("quit", "nothing to send, so it ends on quiet");
+        await peer.WriteLineAsync("bye", Ct);
+        await run.WaitAsync(Patience, Ct);
+
+        memory.EndedOutOfStep(Them).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task AHeaderAndPayloadSplitAcrossManyWrites_IsReadInStep()
+    {
+        // As a long message arrives over several of the peer's transmissions.
+        var inbox = new RecordingInbox();
+        var (session, peer, run) = await CalleeAsync(inbox: inbox);
+        await peer.WriteLineAsync(Rules(), Ct);
+        var m = Message(new string('s', 180) + "end", $"app@{Us}");
+        byte[] wire = [.. Encoding.UTF8.GetBytes(Line("msg", m)), .. m.Payload];
+
+        foreach (var piece in wire.Chunk(17))
+        {
+            await peer.WriteAsync(piece, Ct);
+            await Task.Delay(5, Ct);
+        }
+
+        (await peer.ReadLineAsync(Ct)).Should().Be($"ack {m.Id}");
+        run.IsCompleted.Should().BeFalse();
+        inbox.Texts.Should().Equal(new string('s', 180) + "end");
+    }
+
+    [Fact]
+    public async Task InExchangeMode_AnInvalidOfferWithAnId_IsAnsweredError_AndTheSessionCarriesOn()
+    {
+        // Its id names it, so the answer can: the stream is still in step.
+        var inbox = new RecordingInbox();
+        var (session, peer, run) = await CalleeAsync(inbox: inbox);
+        await peer.WriteLineAsync(Rules(), Ct);
+        var m = Message("after it", $"app@{Us}");
+
+        await peer.WriteLineAsync($"ihave abc1234 len=oops dst=app@{Us}", Ct);
+        (await peer.ReadLineAsync(Ct)).Should().Be("error abc1234");
+        await peer.SendMessageAsync(m, Ct);
+
+        (await peer.ReadLineAsync(Ct)).Should().Be($"ack {m.Id}");
+        run.IsCompleted.Should().BeFalse();
+    }
+
+    /// <summary>Our own sender and receiver on one link, until it ends.</summary>
+    private async Task RunPairAsync(RecordingBatch batch, OutOfStepMemory receiverMemory, RecordingInbox inbox,
+        bool compress = false, Func<Stream, Stream>? senderStream = null)
+    {
+        var (a, b) = await LoopbackPairAsync(Ct);
+        var sender = new ExchangeSession(senderStream?.Invoke(a) ?? a, Us, dialled: true, new ExchangeSettings(Compress: compress), new RecordingInbox(), NullLoggerFactory.Instance)
+        {
+            PromptWait = Short,
+            MinQuiet = Short,
+            OutOfStepHistory = new OutOfStepMemory(),
+        };
+        var receiver = new ExchangeSession(b, Them, dialled: false, new ExchangeSettings(), inbox, NullLoggerFactory.Instance)
+        {
+            MinQuiet = Short,
+            OutOfStepHistory = receiverMemory,
+        };
+        sender.TryTake(batch);
+        // Each end's transport drops the link once its session ends.
+        async Task RunThenCloseAsync(ExchangeSession session, Stream stream)
+        {
+            try
+            {
+                await session.RunAsync(Ct);
+            }
+            finally
+            {
+                await stream.DisposeAsync();
+            }
+        }
+        await Task.WhenAll(RunThenCloseAsync(sender, a), RunThenCloseAsync(receiver, b)).WaitAsync(Patience, Ct);
+    }
+
+    /// <summary>A path that turns every LF into CR on the way, as BPQ's Telnet bridge does.</summary>
+    private sealed class LineFeedsToCarriageReturns(Stream inner) : PassThrough(inner)
+    {
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
+        {
+            var copy = buffer.ToArray();
+            for (var i = 0; i < copy.Length; i++) if (copy[i] == (byte)'\n') copy[i] = (byte)'\r';
+            return Inner.WriteAsync(copy, ct);
+        }
+    }
+
+    /// <summary>A path that adds a byte: one at the start of the first
+    /// payload in each write that carries a <c>msg</c>.</summary>
+    private sealed class AddsAByte(Stream inner) : PassThrough(inner)
+    {
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
+        {
+            var bytes = buffer.ToArray();
+            var msg = Encoding.Latin1.GetString(bytes).IndexOf("msg ", StringComparison.Ordinal);
+            if (msg < 0) return Inner.WriteAsync(buffer, ct);
+            var payload = Array.IndexOf(bytes, (byte)'\n', msg) + 1;
+            return Inner.WriteAsync((byte[])[.. bytes[..payload], (byte)'#', .. bytes[payload..]], ct);
+        }
+    }
+
+    /// <summary>Flips the last byte of the first write that carries a
+    /// <c>msg</c>: its payload, as a stale frame in its place would.</summary>
+    private sealed class DamageFirstPayload(Stream inner) : PassThrough(inner)
+    {
+        private bool damaged;
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
+        {
+            if (!damaged && Encoding.UTF8.GetString(buffer.Span).Contains("msg ", StringComparison.Ordinal))
+            {
+                damaged = true;
+                var copy = buffer.ToArray();
+                copy[^1] ^= 0x20;
+                return Inner.WriteAsync(copy, ct);
+            }
+            return Inner.WriteAsync(buffer, ct);
+        }
+    }
+
+    /// <summary>A stream that passes everything through; writes can be changed on the way.</summary>
+    private abstract class PassThrough(Stream inner) : Stream
+    {
+        protected Stream Inner { get; } = inner;
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) => Inner.ReadAsync(buffer, ct);
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) => Inner.ReadAsync(buffer, offset, count, ct);
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct) =>
+            WriteAsync(new ReadOnlyMemory<byte>(buffer, offset, count), ct).AsTask();
+        public override int Read(byte[] buffer, int offset, int count) => Inner.Read(buffer, offset, count);
+        public override void Write(byte[] buffer, int offset, int count) => WriteAsync(buffer, offset, count).GetAwaiter().GetResult();
+        public override Task FlushAsync(CancellationToken ct) => Inner.FlushAsync(ct);
+        public override void Flush() => Inner.Flush();
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) Inner.Dispose();
+            base.Dispose(disposing);
+        }
+        public override bool CanRead => true;
+        public override bool CanWrite => true;
+        public override bool CanSeek => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
     }
 
     [Fact]

@@ -81,6 +81,12 @@ There is a narrower variant neither check can see coming: both nodes dial within
 
 Two near misses are handled too. If the other node's call arrives just as yours goes out, DAPPS holds back its prompt until its own call connects (`holding the prompt until it connects`), and the two calls then share the link. And if one of your calls is cut off before the exchange, most likely by the other node calling at the same moment, DAPPS leaves that neighbour for 50 to 75 seconds (`not dialling it again for at least 50s`) so the other node's call can finish first. Without that pause, two nodes at the edge of range could keep cutting each other off for minutes.
 
+### "Out of step with <peer>" on a weak link (BPQ AGW)
+
+Your log shows `Out of step with <peer>: ... Ending the session so the next link starts afresh`. After a run of lost and resent frames, BPQ can occasionally hand DAPPS an old copy of a frame in place of the new one, so what arrives no longer makes sense: a message that fails its check, or a line that isn't DAPPS. DAPPS never delivers a damaged message. It ends the session, and whatever was on its way goes again on the next one. If the same message arrives damaged twice, or two sessions in a row end this way, DAPPS treats it as a fault on the link and waits a while before trying again.
+
+Now and then on a marginal link, that's expected. If you see it often, the link is too weak for your settings: see [Your node's radio port](tune.md#your-nodes-radio-port).
+
 ### Inbound sessions never arrive (XRouter RHPv2)
 
 A remote node can `c <your-callsign>` and lands at the XRouter node prompt, but not at the `DAPPSv1>` prompt. Check:
