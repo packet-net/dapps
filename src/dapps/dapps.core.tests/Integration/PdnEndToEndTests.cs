@@ -30,6 +30,7 @@ public sealed class PdnCrossedCallAxudpTests(TwoPdnFixture fixture) : CrossedCal
 {
     protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(30);
     protected override (int From, int To) StaggerMs => (0, 51);
+    protected override bool SpotsCrossings => true;
 }
 
 /// <summary>

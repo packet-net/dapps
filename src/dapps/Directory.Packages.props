@@ -63,9 +63,10 @@
     <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="1.2.0" />
 
     <!-- RHPv2 (Remote Host Protocol v2) client, used as DAPPS's bearer
-         when the local packet node is XRouter. Multi-targets net8.0 +
-         net10.0; we pull the net10.0 build. -->
-    <PackageVersion Include="RhpV2.Client" Version="0.2.2" />
+         when the local packet node is XRouter or pdn. Multi-targets net8.0 +
+         net10.0; we pull the net10.0 build. 0.4.0 for OpenWithReplyAsync,
+         which reads pdn's "crossed" key on an open reply. -->
+    <PackageVersion Include="RhpV2.Client" Version="0.4.0" />
 
     <!-- MeshCore bearer (Phase H1, #154): serial link to a MeshCore
          Companion radio, plus zstd dictionary compression of the

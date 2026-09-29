@@ -25,11 +25,12 @@ namespace dapps.core.tests.Integration;
 /// </summary>
 public sealed class LinbpqIntegrationFixture : IAsyncLifetime
 {
-    /// <summary>m0lte/linbpq at 6.0.25.41 (built 29 September 2026 from
-    /// M0LTE/linbpq 391f7b6), pinned so a new build can't change results
-    /// unnoticed; every BPQ fixture uses it. Refresh: pull the image at the
-    /// version tag and take its digest.</summary>
-    public const string Image = "m0lte/linbpq@sha256:53ecd2af432dd0dd434df22363c574270bb95c18c58d4ec248cbef38e1c56974";
+    /// <summary>m0lte/linbpq at master-edcc798 (6.0.25.41 with the fix for
+    /// its KISS-over-TCP start-up crash, M0LTE/linbpq#71; built 29 September
+    /// 2026), pinned so a new build can't change results unnoticed; every
+    /// BPQ fixture uses it. Refresh: pull the image at its tag and take its
+    /// digest.</summary>
+    public const string Image = "m0lte/linbpq@sha256:6db237b9466320830ce74151d7737f6851d4fe5c2c0162136dd9f5da9dff1588";
     private const int InsideAgwPort = 8000;
     private const int InsideTelnetPort = 8010;
 
