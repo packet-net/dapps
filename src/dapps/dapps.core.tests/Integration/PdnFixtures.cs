@@ -19,23 +19,16 @@ namespace dapps.core.tests.Integration;
 /// </summary>
 internal static class PdnNode
 {
-    /// <summary>ghcr.io/packet-net/packet.net at node-v0.55.2, pinned so a new
+    /// <summary>ghcr.io/packet-net/packet.net at node-v0.56.0, pinned so a new
     /// build can't change results unnoticed. Refresh: pull the image at the
     /// release tag and take its digest.</summary>
-    public const string Image = "ghcr.io/packet-net/packet.net@sha256:e2a0024c49be6b289df3fce5b9f97daaf3b3dc8e4c16dfaca4281780a3fd08af";
+    public const string Image = "ghcr.io/packet-net/packet.net@sha256:24144431b317c9c0ccc7471887ffbdd6aa97926f69a203a9414c220bb912c7e8";
 
     /// <summary>
     /// The node's seed config. <paramref name="portYaml"/> is one entry of
     /// <c>ports:</c>. RHPv2 binds 0.0.0.0, as it must in a container for
     /// the daemon outside to reach it; pdn's own default is loopback.
     /// </summary>
-    /// <remarks>
-    /// The one port's id is <see cref="PortId"/>, "1": DAPPS asks RHPv2 for
-    /// a port by number, 1 for the first, as XRouter numbers them, and pdn
-    /// since node-v0.36.2 only takes a port's id (packet.net#841). Naming the
-    /// port "1" works either way. A workaround: remove it once packet.net#841
-    /// is fixed.
-    /// </remarks>
     public static string Config(string callsign, string alias, string portYaml, int httpPort, int rhpPort) => $"""
         schemaVersion: 2
         identity:
@@ -59,10 +52,9 @@ internal static class PdnNode
 
         """;
 
-    /// <summary>The id every test node's one port has; see <see cref="Config"/>.
-    /// Workaround for packet.net#841: remove once it is fixed, and give the
-    /// ports ordinary names.</summary>
-    public const string PortId = "1";
+    /// <summary>A node's first port as RHPv2 numbers it, counted from 1 in
+    /// config order: how DAPPS asks for it, as XRouter numbers ports.</summary>
+    private const string FirstPort = "1";
 
     private static string Indent(string yaml, int spaces) =>
         string.Join('\n', yaml.TrimEnd().Split('\n').Select(l => new string(' ', spaces) + l));
@@ -135,10 +127,10 @@ internal static class PdnNode
                 {
                     await using var rhp = await RhpClient.ConnectAsync(host, fromRhpPort, cts.Token);
                     var handle = await rhp.SocketAsync(RhpV2.Client.Protocol.ProtocolFamily.Ax25, SocketMode.Dgram, cts.Token);
-                    await rhp.BindAsync(handle, fromCall, PortId, cts.Token);
+                    await rhp.BindAsync(handle, fromCall, FirstPort, cts.Token);
                     while (true)
                     {
-                        await rhp.SendToAsync(handle, "ready", port: PortId, local: fromCall, remote: "READY", ct: cts.Token);
+                        await rhp.SendToAsync(handle, "ready", port: FirstPort, local: fromCall, remote: "READY", ct: cts.Token);
                         if (await heard.WaitForAsync("A", $"Fm {fromCall} To READY", TimeSpan.FromSeconds(3), cts.Token)) return;
                     }
                 }
@@ -286,7 +278,7 @@ public sealed class TwoPdnFixture : IDappsScenarioBed, IAsyncLifetime
     }
 
     private static string AxudpPort(int remote, int local) => $"""
-        - id: "{PdnNode.PortId}"
+        - id: axudp
           transport:
             kind: axudp
             host: 127.0.0.1

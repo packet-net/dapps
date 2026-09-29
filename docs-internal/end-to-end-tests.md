@@ -129,7 +129,7 @@ Phase 3 of `docs-internal/exchange-plan.md`, on net-sim v0.4.0; the numbers are 
 
 ## On pdn (packet.net)
 
-The same tests run with pdn, packet.net's node, in place of BPQ. DAPPS attaches over RHPv2 (`DAPPS_NODE_BEARER=rhpv2`), as it does when it runs as a pdn app. The image is `ghcr.io/packet-net/packet.net`, pinned by digest in `PdnFixtures.cs` (node-v0.55.2); CI pulls whatever that pins. Each node's config is seeded from `/etc/packetnet/packetnet.yaml` on first boot: one port, the RHPv2 server on 0.0.0.0 (a container needs that; pdn's default is loopback), the panel's login off, telnet off. NET/ROM broadcasts and ID beacons are off by default, so only DAPPS's traffic goes on air. The air record is each node's frame feed (`/api/v1/events`), received frames only, written out in BPQ's monitor style so the same assertions read both.
+The same tests run with pdn, packet.net's node, in place of BPQ. DAPPS attaches over RHPv2 (`DAPPS_NODE_BEARER=rhpv2`), as it does when it runs as a pdn app. The image is `ghcr.io/packet-net/packet.net`, pinned by digest in `PdnFixtures.cs` (node-v0.56.0); CI pulls whatever that pins. Each node's config is seeded from `/etc/packetnet/packetnet.yaml` on first boot: one port, the RHPv2 server on 0.0.0.0 (a container needs that; pdn's default is loopback), the panel's login off, telnet off. NET/ROM broadcasts and ID beacons are off by default, so only DAPPS's traffic goes on air. The air record is each node's frame feed (`/api/v1/events`), received frames only, written out in BPQ's monitor style so the same assertions read both.
 
 ```
 app -> DAPPS A -RHPv2- pdn-A -AXUDP- pdn-B -RHPv2- DAPPS B -> app
@@ -147,10 +147,10 @@ They run like the others (`--filter-class dapps.core.tests.Integration.PdnEndToE
 
 Between two pdn nodes the links are AX.25 v2.2: pdn sends an XID, then a SABME, and runs modulo 128. To BPQ the pdn port dials plain v2.0 (`link: dial: v20`), as pdn's docs say for a BPQ neighbour.
 
-Two workarounds for pdn bugs, both in the fixtures:
+Up to node-v0.55.2 the fixtures worked around two pdn bugs, both fixed in node-v0.56.0:
 
-- Each pdn port is named `1`. DAPPS asks RHPv2 for a port by number, as XRouter numbers them; pdn since its #668 only takes a port's id, so every open failed with errCode 10 (packet.net#841). This also stops DAPPS running as a pdn app from dialling out, unless the node's first port happens to be called `1`.
-- BPQ's AXIP port maps only DAPPS's callsign on pdn. With pdn's node callsign mapped to the same address as well, BPQ sends every frame twice, and pdn takes the second UA as a protocol error and resets the link, again and again (packet.net#842).
+- Each pdn port was named `1`. DAPPS asks RHPv2 for a port by number, as XRouter numbers them, and pdn since its #668 only took a port's id, so every open failed with errCode 10 (packet.net#841). pdn now takes a port's number, counted from 1 in config order, as well as its name.
+- BPQ's AXIP port maps only DAPPS's callsign on pdn. With pdn's node callsign mapped to the same address as well, BPQ sends every frame twice, and pdn took the second UA as a protocol error and reset the link, again and again (packet.net#842). On node-v0.56.0, with both mapped, the pdn and BPQ tests' traffic all went through, but `BpqPdnEndToEndTests` counted BPQ's two copies of its SABM as two connects, so the fixture still maps only DAPPS's callsign.
 
 ### pdn's radio-port settings
 
@@ -214,8 +214,8 @@ No duplicates or corrupt messages in either pdn run. pdn's links are v2.2, and i
 - **DAPPS lost the peer's prompt (fixed).** pdn answers an RHPv2 `open` once the far end's UA is in (its deviation D4; XRouter answers at once), so a quick peer's `DAPPSv1>` prompt can follow the open reply in the same read. RhpClient raised that `recv` before DAPPS had attached its handler, and the prompt was dropped: the caller waited 10 s, sent its exchange, heard nothing more (the peer had sent its rules already) and hung up 30 s later. Over AXUDP it broke about one test in four. `Rhpv2OutboundTransport` now listens from before the open.
 - **Crossed calls over RHPv2 are handled, never spotted.** When both nodes dial, pdn makes one link of the two calls, as BPQ does: each node's `open` succeeds, neither listener gets an `accept`, so neither end sends a prompt. Over RHPv2 DAPPS has no monitor (pdn doesn't serve `trace` sockets), so it can't see the peer's SABM, and each end waits 10 s before sending its exchange. The crossed-call scenario only asks for crossings to be spotted over AGW; over RHPv2 it still requires that a round with one dial never waits out the prompt, and on pdn it allows the default 2 dials and 45 s a round at both speeds. In the WPS scenario it happens nearly every time on pdn: pdn's XID before the SABME adds a turnaround, so A's call isn't up at B until after B's first post, 4 s in. So the pdn WPS classes allow 3 connections, not 2.
 - **Who hangs up.** After `quit` and `bye` both ends let go; BPQ's caller usually sends the DISC first, but with pdn answering, pdn does. The exchange tests accept a clean hang-up from either end where a pdn node is in the pair; between two BPQs, A's is still required.
-- **An open that races a teardown of the same link (packet.net#844).** In the first soak B's daemon restarted while holding A's call. The old handle's DISC waited for the channel, and the new daemon's `open` to A came in meanwhile: pdn failed it (errCode 15) but went on to connect anyway, so A's prompt arrived on a link no handle owned, and the pair spent 7 minutes on stalled sessions before a fresh call cleared it.
-- **A DISC straight after the UA never reaches the open handle (packet.net#843).** Found by hand, not in a test: when the far node answers a call and hangs up at once (as pdn does for an app callsign nobody has bound), the caller's handle stays open, and DAPPS only gives up on its own timeouts.
+- **An open that races a teardown of the same link (packet.net#844, fixed in node-v0.56.0).** In the first soak B's daemon restarted while holding A's call. The old handle's DISC waited for the channel, and the new daemon's `open` to A came in meanwhile: pdn failed it (errCode 15) but went on to connect anyway, so A's prompt arrived on a link no handle owned, and the pair spent 7 minutes on stalled sessions before a fresh call cleared it.
+- **A DISC straight after the UA never reaches the open handle (packet.net#843, fixed in node-v0.56.0).** Found by hand, not in a test: when the far node answers a call and hangs up at once (as pdn does for an app callsign nobody has bound), the caller's handle stays open, and DAPPS only gives up on its own timeouts.
 
 ## Not covered yet
 

@@ -62,7 +62,7 @@ public abstract class NetSimTwoPdnFixture : NetSimTwoNodeFixture
     }
 
     private string RadioPort(int kissPort) => $"""
-        - id: "{PdnNode.PortId}"
+        - id: radio
           transport:
             kind: kiss-tcp
             host: 127.0.0.1
