@@ -101,13 +101,15 @@ jobs:
   # The release gate. Same suite and same retry rationale as ci.yml: a single known-flaky
   # test must not be able to strand a tagged release, but three consecutive failures are a
   # real regression and must block it. The one exception is the simulated-radio scenarios
-  # on net-sim: they run in CI on every PR, but on a runner they still fail now and then
-  # for reasons outside DAPPS. linbpq crashes 10 s after it starts, and on a busy runner
-  # often enough to beat the fixtures' one retry (#201; the fix is M0LTE/linbpq#71, not
-  # yet in the pinned image). pdn before node-v0.58.0 resets a link on a peer's repeated
-  # SABM after a lost UA, and drops the data in it (packet.net#856). The same scenarios
-  # on pdn nodes (WpsReplicationScenarioPdn*, CrossedCallScenarioPdn*) fall under the
-  # same patterns. Put them back here once CI shows them reliable.
+  # on net-sim: they run in CI on every PR, but they still fail now and then for reasons
+  # outside DAPPS. The pinned images carry the fixes for linbpq's start-up crash (#201,
+  # M0LTE/linbpq#71, in master-edcc798) and for pdn's link reset on a repeated SABM
+  # (packet.net#856, in node-v0.59.0). What keeps them out now is pdn: a dial overtaken
+  # by the peer's SABME never completes, and the peer's data on that link is acknowledged
+  # and dropped (packet.net#867), so about one pdn crossed-call run in five fails; a dial
+  # on a link that is already up resets it (packet.net#862). The patterns below cover the
+  # BPQ and pdn classes alike. Put them back here once those are fixed and CI shows them
+  # reliable.
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 75   # three attempts, each with the pdn tests over AXUDP
