@@ -130,7 +130,7 @@ Phase 3 of `docs-internal/exchange-plan.md`, on net-sim v0.4.0; the numbers are 
 
 ## On pdn (packet.net)
 
-The same tests run with pdn, packet.net's node, in place of BPQ. DAPPS attaches over RHPv2 (`DAPPS_NODE_BEARER=rhpv2`), as it does when it runs as a pdn app. The image is `ghcr.io/packet-net/packet.net`, pinned by digest in `PdnFixtures.cs` (node-v0.59.0); CI pulls whatever that pins. Each node's config is seeded from `/etc/packetnet/packetnet.yaml` on first boot: one port, the RHPv2 server on 0.0.0.0 (a container needs that; pdn's default is loopback), the panel's login off, telnet off. NET/ROM broadcasts and ID beacons are off by default, so only DAPPS's traffic goes on air. The air record is each node's frame feed (`/api/v1/events`), received frames only, written out in BPQ's monitor style so the same assertions read both.
+The same tests run with pdn, packet.net's node, in place of BPQ. DAPPS attaches over RHPv2 (`DAPPS_NODE_BEARER=rhpv2`), as it does when it runs as a pdn app. The image is `ghcr.io/packet-net/packet.net`, pinned by digest in `PdnFixtures.cs` (node-v0.62.0); CI pulls whatever that pins. Each node's config is seeded from `/etc/packetnet/packetnet.yaml` on first boot: one port, the RHPv2 server on 0.0.0.0 (a container needs that; pdn's default is loopback), the panel's login off, telnet off. NET/ROM broadcasts and ID beacons are off by default, so only DAPPS's traffic goes on air. The air record is each node's frame feed (`/api/v1/events`), received frames only, written out in BPQ's monitor style so the same assertions read both.
 
 ```
 app -> DAPPS A -RHPv2- pdn-A -AXUDP- pdn-B -RHPv2- DAPPS B -> app
