@@ -190,4 +190,59 @@ public sealed class PeerSessionRegistryTests
         rhp.Retired.CanBeCanceled.Should().BeFalse();
         agw.Retired.IsCancellationRequested.Should().BeFalse();
     }
+
+    // #205: an inbound session that arrives while our own call to the
+    // peer is on its way waits for that call before it says anything.
+
+    [Fact]
+    public void OwnCallsSettled_WithNoCallOfOursOnItsWay_IsAlreadyDone()
+    {
+        var registry = new PeerSessionRegistry();
+        using var ours = registry.Acquire("M0AHN-3", "outbound", linkPort: 0);   // connected: not on its way
+        using var inbound = registry.Acquire("M0AHN-3", "inbound", linkPort: 0);
+
+        registry.OwnCallsSettledAsync(inbound).IsCompleted.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task OwnCallsSettled_WaitsForOurCall_WhichRetiresTheSessionWhenItConnects()
+    {
+        var registry = new PeerSessionRegistry();
+        var dialling = registry.TryAcquire("M0AHN-3", "outbound", out _, linkPort: 0)!;
+        using var inbound = registry.Acquire("M0AHN-3", "inbound", linkPort: 0);
+        var settled = registry.OwnCallsSettledAsync(inbound);
+        settled.IsCompleted.Should().BeFalse("our call hasn't connected yet");
+
+        registry.Connected(dialling);
+
+        await settled.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        inbound.Retired.IsCancellationRequested.Should().BeTrue("the link is our call's now, and the held session never said a word on it");
+        dialling.Dispose();
+    }
+
+    [Fact]
+    public async Task OwnCallsSettled_CompletesWhenOurCallGivesUp_AndTheSessionCarriesOn()
+    {
+        var registry = new PeerSessionRegistry();
+        var dialling = registry.TryAcquire("M0AHN-3", "outbound", out _, linkPort: 0)!;
+        using var inbound = registry.Acquire("M0AHN-3", "inbound", linkPort: 0);
+        var settled = registry.OwnCallsSettledAsync(inbound);
+
+        dialling.Dispose();
+
+        await settled.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        inbound.Retired.IsCancellationRequested.Should().BeFalse();
+    }
+
+    [Fact]
+    public void OwnCallsSettled_IgnoresCallsOnAnotherPort_AndSessionsWithNoPort()
+    {
+        var registry = new PeerSessionRegistry();
+        using var dialling = registry.TryAcquire("M0AHN-3", "outbound", out _, linkPort: 2)!;
+        using var inbound = registry.Acquire("M0AHN-3", "inbound", linkPort: 0);
+        using var rhp = registry.Acquire("M0AHN-3", "inbound");
+
+        registry.OwnCallsSettledAsync(inbound).IsCompleted.Should().BeTrue("a call on another port is another link");
+        registry.OwnCallsSettledAsync(rhp).IsCompleted.Should().BeTrue("RHPv2 takes no part");
+    }
 }

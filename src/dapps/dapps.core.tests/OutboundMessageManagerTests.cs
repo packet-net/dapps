@@ -483,6 +483,39 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         backoff.IsInCooldown("N0DEST", out _).Should().BeFalse("a deferral is not a failure");
     }
 
+    [Fact]
+    public async Task DoRun_AFailureWithAMinimumCooldown_KeepsTheNeighbourInCooldownAtLeastThatLong()
+    {
+        // #204: the bearer knows the peer's own call has just taken the
+        // link and needs time to give up; the ramp's first step is 10 s.
+        var backoff = new OutboundDestinationBackoff(spread: 0);
+        var guarded = MakeManager(new PeerSessionRegistry(), backoff);
+        backhaul.NextResult = BackhaulSendResult.Fail("N0DEST hung up before the exchange", TimeSpan.FromSeconds(50));
+        InsertMessage(id: "cutoff1", ttl: null, createdAt: DateTime.UtcNow);
+
+        await guarded.DoRun(TestContext.Current.CancellationToken);
+
+        backoff.IsInCooldown("N0DEST", out var until).Should().BeTrue();
+        until.Should().BeOnOrAfter(DateTimeOffset.UtcNow + TimeSpan.FromSeconds(45), "the bearer's minimum, not the ramp's 10 s");
+    }
+
+    [Fact]
+    public async Task DoRun_AFloodCopyFailingWithAMinimumCooldown_KeepsThatNeighbourInCooldownAtLeastThatLong()
+    {
+        var backoff = new OutboundDestinationBackoff(spread: 0);
+        var flooding = new FloodingAlgorithm(new BackhaulRoute("N0NEAR", BearerPort: 0));
+        var m = new OutboundMessageManager(
+            database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], flooding, routingContext,
+            destinationBackoff: backoff);
+        backhaul.NextResult = BackhaulSendResult.Fail("N0NEAR hung up before the exchange", TimeSpan.FromSeconds(50));
+        InsertMessage(id: "flood02", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR");
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        backoff.IsInCooldown("N0NEAR", out var until).Should().BeTrue();
+        until.Should().BeOnOrAfter(DateTimeOffset.UtcNow + TimeSpan.FromSeconds(45));
+    }
+
     // Batching: everything queued for one next hop goes out on one
     // session, not one session per message.
 

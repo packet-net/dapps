@@ -30,6 +30,7 @@ public sealed class MultiplexedAgwSessionStream : Stream
     private readonly Pipe incoming = new();
     private readonly Func<byte[], CancellationToken, Task> writeOutgoing;
     private readonly Func<CancellationToken, Task> sendRemoteDisconnect;
+    private readonly CancellationTokenSource remoteClosed = new();
     private int closeState = Open;
 
     private bool IsDisposed => Volatile.Read(ref closeState) == Disposed;
@@ -56,8 +57,15 @@ public sealed class MultiplexedAgwSessionStream : Stream
     public void SignalRemoteDisconnect()
     {
         if (Interlocked.CompareExchange(ref closeState, RemotelyClosed, Open) == Open)
+        {
             CompleteIncoming();
+            remoteClosed.Cancel();
+        }
     }
+
+    /// <summary>Cancelled once <see cref="SignalRemoteDisconnect"/> has
+    /// closed the session: for a wait that should end if the far end goes.</summary>
+    public CancellationToken RemoteClosed => remoteClosed.Token;
 
     private void CompleteIncoming()
     {

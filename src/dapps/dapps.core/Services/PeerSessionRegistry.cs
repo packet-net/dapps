@@ -47,7 +47,10 @@ namespace dapps.core.Services;
 /// callsign pair, and would take the link from the newer session). A
 /// session on another port is another link, and is left alone. Only AGW
 /// sessions take part, as only AGW has been measured: a lease with no
-/// port (RHPv2) never retires anything and is never retired.
+/// port (RHPv2) never retires anything and is never retired. An inbound
+/// session that arrives while our own call to the peer is still on its
+/// way holds its prompt until that call settles
+/// (<see cref="OwnCallsSettledAsync"/>).
 ///
 /// Keyed on the peer's full callsign (SSID included), case-insensitive:
 /// the identity the inbound 'C' frame and the neighbour table share.
@@ -160,7 +163,40 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null)
             foreach (var old in retiring) old.IsRetired = true;
         }
         foreach (var old in retiring) old.Retire();
+        // After the retirements, so a session waiting on this call (below)
+        // is retired before it hears the call has settled.
+        lease.Settle();
         return retiring.Count > 0;
+    }
+
+    /// <summary>
+    /// Completes once no call of ours to <paramref name="lease"/>'s peer on
+    /// the same port is still on its way: each has connected (and so
+    /// retired <paramref name="lease"/>) or given up. At once when there is
+    /// none, and for a lease with no port.
+    ///
+    /// Why (#205): our call can go out just as the peer's call to us
+    /// arrives, and BPQ then sends our SABM down the link the peer's call
+    /// has just made. What the peer's BPQ does with it depends on whether
+    /// it has had any data on that link yet (docs-internal/end-to-end-tests.md,
+    /// "Crossed calls"). If not, it keeps its call up and the two calls
+    /// share the link, as when both dial at once. If it has, as it would
+    /// once our answering session has sent its prompt, it resets the link:
+    /// the peer's call is cut off, and ours lands on a link attached to
+    /// nothing there. So the answering session holds its prompt until our
+    /// call has settled.
+    /// </summary>
+    public Task OwnCallsSettledAsync(PeerSessionLease lease)
+    {
+        lock (gate)
+        {
+            if (lease.LinkPort is not { } port || !open.TryGetValue(lease.Peer, out var leases)) return Task.CompletedTask;
+            var pending = leases
+                .Where(l => !ReferenceEquals(l, lease) && l.LinkPort == port && !l.IsConnected)
+                .Select(l => l.Settled)
+                .ToList();
+            return pending.Count == 0 ? Task.CompletedTask : Task.WhenAll(pending);
+        }
     }
 
     /// <summary>Completes once no session with the peer is open;
@@ -183,6 +219,7 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null)
 
     internal void Release(PeerSessionLease lease)
     {
+        lease.Settle();
         lock (gate)
         {
             if (!open.TryGetValue(lease.Peer, out var leases) || !leases.Remove(lease)) return;
@@ -214,6 +251,7 @@ public sealed class PeerSessionLease : IDisposable
 {
     private readonly PeerSessionRegistry owner;
     private readonly CancellationTokenSource retired = new();
+    private readonly TaskCompletionSource settled = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     internal PeerSessionLease(PeerSessionRegistry owner, string peer, string direction, int? linkPort)
     {
@@ -240,6 +278,11 @@ public sealed class PeerSessionLease : IDisposable
 
     internal bool IsConnected { get; set; }
     internal bool IsRetired { get; set; }
+
+    /// <summary>Completes once the session has connected, or ended.</summary>
+    internal Task Settled => settled.Task;
+
+    internal void Settle() => settled.TrySetResult();
 
     internal void Retire()
     {

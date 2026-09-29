@@ -207,6 +207,7 @@ public sealed class ExchangeSessionTests : IDisposable
 
         session.Failure.Should().Contain("nothing from");
         session.Established.Should().BeFalse();
+        session.RedialAfter.Should().BeNull("we hung up ourselves, which clears the link at both ends: the usual cooldown will do");
     }
 
     [Fact]
@@ -236,6 +237,68 @@ public sealed class ExchangeSessionTests : IDisposable
         await run.WaitAsync(TimeSpan.FromSeconds(5), Ct);
         session.Failure.Should().Contain("no exchange from");
         session.Established.Should().BeFalse();
+        session.RedialAfter.Should().BeNull("we hung up ourselves");
+    }
+
+    // ---- A call ended before the exchange (#204) ----
+
+    [Fact]
+    public async Task ACallerWhoseCallIsEndedBeforeAnyPrompt_LeavesThePeerUntilItsOwnCallHasGivenUp()
+    {
+        // The peer's own call took the link: at our node it now sits on a
+        // link attached to nothing, where it waits a prompt wait, sends its
+        // rules and hangs up three prompt waits later. Dialling before then
+        // would cut it off in turn, which is how the redial loop went.
+        var (ours, theirs) = await LoopbackPairAsync(Ct);
+        var session = new ExchangeSession(ours, Them, dialled: true, new ExchangeSettings(), new RecordingInbox(), NullLoggerFactory.Instance)
+        {
+            PromptWait = TimeSpan.FromSeconds(10),
+        };
+        var run = session.RunAsync(Ct);
+
+        new LinePeer(theirs).Close();
+        await run.WaitAsync(Patience, Ct);
+
+        session.Failure.Should().Contain("no DAPPSv1> prompt");
+        session.RedialAfter.Should().Be(TimeSpan.FromSeconds(50),
+            "a prompt wait, the silent-peer wait of three, and one more for its connect and disconnect to go on air");
+    }
+
+    [Fact]
+    public async Task ACallerWhoseCallIsEndedAfterItSentItsRules_LeavesThePeerAsLong()
+    {
+        // The loop's usual shape: no prompt, our rules went, and the peer's
+        // next call cut ours off while we waited.
+        var (session, peer, run, _) = await CallerAsync();
+        (await peer.ReadLineAsync(Ct, TimeSpan.FromSeconds(5))).Should().StartWith("exchange ");
+
+        peer.Close();
+        await run.WaitAsync(Patience, Ct);
+
+        session.Failure.Should().Contain("hung up before the exchange");
+        session.RedialAfter.Should().Be(Short * 5);
+    }
+
+    [Fact]
+    public async Task ACallThroughAConnectScript_EndedBeforeTheExchange_GetsTheUsualCooldown()
+    {
+        // Our link is to the first node on the way, not to the peer, so the
+        // peer's own call can't have taken it.
+        var (ours, theirs) = await LoopbackPairAsync(Ct);
+        var session = new ExchangeSession(ours, Them, dialled: true, new ExchangeSettings(), new RecordingInbox(), NullLoggerFactory.Instance)
+        {
+            PromptWait = Short,
+            PromptConsumed = true,
+        };
+        var run = session.RunAsync(Ct);
+        var peer = new LinePeer(theirs);
+        (await peer.ReadLineAsync(Ct, TimeSpan.FromSeconds(5))).Should().StartWith("exchange ");
+
+        peer.Close();
+        await run.WaitAsync(Patience, Ct);
+
+        session.Failure.Should().Contain("hung up before the exchange");
+        session.RedialAfter.Should().BeNull();
     }
 
     [Fact]
@@ -644,6 +707,7 @@ public sealed class ExchangeSessionTests : IDisposable
             (first.Id, false, false), (second.Id, false, true));
         batch.Outcomes[0].Result.Error.Should().Contain("broke off");
         session.Established.Should().BeTrue();
+        session.RedialAfter.Should().BeNull("a link that breaks mid-session gets the usual cooldown");
     }
 
     [Fact]

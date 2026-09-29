@@ -248,6 +248,8 @@ public sealed class Dappsv1SessionBackhaulTests
         batch.Outcomes.Single().Result.Deferred.Should().BeFalse();
         batch.Outcomes.Single().Result.Accepted.Should().BeFalse();
         batch.Outcomes.Single().Result.Error.Should().Contain("hung up");
+        batch.Outcomes.Single().Result.MinCooldown.Should().Be(TimeSpan.FromSeconds(50),
+            "the far end ended our call before the exchange, most likely by calling us: its call needs time to give up (#204)");
     }
 
     [Fact]
