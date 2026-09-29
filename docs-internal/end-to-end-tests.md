@@ -38,6 +38,14 @@ Each test starts its own daemons, so the class takes a few minutes. CI runs them
 
 `AgwLargePayloadIntegrationTests` covers payloads around BPQ's 256-byte AGW data limit, which these tests found.
 
+`RelayIntegrationTests` puts a third BPQ in the chain (`ThreeInstanceLinbpqFixture`): A and C have no link at all, only B in the middle. One test gives A a manual route hint to C via B (docs/discovery-and-routing.md's "Route hints"); the other gives A no route at all, so the default passive-flood algorithm's cold-start fallback has to flood to B, which floods on to C in turn. Both check the message arrives at C exactly once, and that B never treats a relayed message as its own.
+
+`DaemonKilledMidTransferTests` kills (SIGKILL, not a clean stop) the receiving daemon while an 80 KB message is still arriving in pieces, restarts it on the same database, and checks the message still arrives exactly once - what the received-message ledger (#195) promises. The soak (below) only ever restarts a daemon cleanly.
+
+`MqttAppInterfaceIntegrationTests` drives the app interface over MQTT instead of the REST app API: one node publishes to `dapps/out/chat/<callsign>`, the message crosses the air the usual way, the other node's subscriber on `dapps/in/chat` gets it (with `dapps-id`/`dapps-source` user properties), and acking on `dapps/ack/chat` clears it from the unacknowledged list. `MqttBrokerRoundTripTests` already covers each topic against the broker and database directly, with no daemon process, no bearer and no peer; this proves the same broker, wired into a real running dapps.core process, actually gets an app's message to another node and back.
+
+`UdpBearerIntegrationTests` puts a neighbour's `UdpEndpoint` between two daemons instead of an AGW bearer port - the fire-and-forget datagram bearer Plan A0.4 stands in for MeshCore with. The two BPQs stay up only so each daemon has a node to be "reachable" on at startup; the test checks BPQ's monitor never sees a session between the two application callsigns at all, proving the message went by plain UDP.
+
 ## On a simulated radio channel
 
 The tests above use AXIP, so frames cost no airtime. `NetSimTwoBpqFixture` puts the two BPQs on a simulated radio channel instead: [net-sim](https://github.com/packet-net/net-sim) runs real modems, gives each an FM radio (a Tait TM8100 at 25 W by default) and puts a physical FM channel between them (its `docs/fm-channel.md`). Each BPQ attaches to one simulated radio over KISS, as it would to a real TNC.
@@ -113,11 +121,8 @@ Phase 3 of `docs-internal/exchange-plan.md`, on net-sim v0.4.0; the numbers are 
 ## Not covered yet
 
 - The link reset with DAPPS at both ends (one node's call goes over a link the other has already heard from): the experiment shows what BPQ does and the unit tests cover each side's part, but no scenario forces the timing. The cold-start round can hit it.
-- Relaying and floods across three or more nodes: the fixture has two BPQs.
-- XRouter and the RHPv2 bearer.
-- The MQTT app interface.
-- The UDP and MeshCore bearers, which use the binary datagram codec rather than DAPPSv1 sessions.
-- A daemon killed mid-transfer: the soak only restarts one cleanly.
+- XRouter and the RHPv2 bearer: covered by the pdn fixtures (separate work).
+- The MeshCore bearer, which needs hardware.
 
 ## The linbpq image
 
