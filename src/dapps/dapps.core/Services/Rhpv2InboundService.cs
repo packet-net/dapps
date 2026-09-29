@@ -77,11 +77,15 @@ public sealed class Rhpv2InboundService(
         // takes effect on the next iteration without a daemon restart -
         // including collapsing an in-flight backoff wait, so a fix to
         // the RHP host/port/callsign reconnects immediately rather than
-        // sitting out the rest of a (possibly multi-minute) delay.
+        // sitting out the rest of a (possibly multi-minute) delay. A wait
+        // under way is collapsed before the cycle is cancelled, as in
+        // AgwInboundService.StartAsync, so the short pause after a
+        // cancelled cycle isn't skipped.
         optionsChangeSubscription = options.OnChange((_, _) =>
         {
-            cycleTokenSource?.Cancel();
+            var cycle = cycleTokenSource;
             reconnect.Interrupt();
+            cycle?.Cancel();
         });
         try
         {

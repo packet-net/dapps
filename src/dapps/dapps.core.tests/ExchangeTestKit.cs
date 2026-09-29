@@ -5,6 +5,7 @@ using System.Text;
 using dapps.client;
 using dapps.client.Backhaul;
 using dapps.client.Transport;
+using Microsoft.Extensions.Time.Testing;
 
 namespace dapps.core.tests;
 
@@ -17,7 +18,16 @@ internal static class ExchangeTestKit
 {
     public static readonly TimeSpan Patience = TimeSpan.FromSeconds(10);
 
-    /// <summary>A connected TCP loopback pair.</summary>
+    /// <summary>
+    /// A connected TCP loopback pair. Both ends stay open until
+    /// <paramref name="ct"/> is cancelled, which closes them. A test mustn't
+    /// leave either end to the garbage collector: a socket finalised without
+    /// being closed goes with a reset, and the session on the other end then
+    /// fails with "connection reset by peer" at whatever moment a collection
+    /// runs. In a Release build a test's last use of its peer ends the
+    /// peer's life there, so a busy runner's collection could land while the
+    /// session was still waiting for its prompt (#202).
+    /// </summary>
     public static async Task<(NetworkStream Ours, NetworkStream Theirs)> LoopbackPairAsync(CancellationToken ct)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -29,7 +39,14 @@ internal static class ExchangeTestKit
             var server = await listener.AcceptTcpClientAsync(ct);
             server.NoDelay = true;
             await connecting;
-            return (client.GetStream(), server.GetStream());
+            var ours = client.GetStream();
+            var theirs = server.GetStream();
+            ct.Register(() =>
+            {
+                ours.Dispose();
+                theirs.Dispose();
+            });
+            return (ours, theirs);
         }
         finally
         {
@@ -51,6 +68,85 @@ internal static class ExchangeTestKit
     /// <summary>The <c>msg</c> or <c>ihave</c> line for a message, as a
     /// peer would send it.</summary>
     public static string Line(string verb, BackhaulMessage m) => OfferLine.Build(verb, m, "p", null);
+}
+
+/// <summary>
+/// A fake clock for sessions under test, moved on only by the test. It
+/// counts the timers set on it: an exchange session sets one each time it
+/// goes back to waiting for its peer, and cancels it when the peer's data
+/// wakes it. So a test can move the clock once the session has read what
+/// the peer sent and is waiting again, and a session's timers can't run
+/// out early on a busy runner, or late (#202).
+/// </summary>
+internal sealed class WatchedClock : FakeTimeProvider
+{
+    private int armed;
+    private int pending;
+
+    /// <summary>Timers set so far.</summary>
+    public int Armed => Volatile.Read(ref armed);
+
+    /// <summary>One-shot timers set and not yet run out or cancelled: 0
+    /// while a session is busy with what the peer sent, 1 while it waits.</summary>
+    public int Pending => Volatile.Read(ref pending);
+
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+    {
+        Interlocked.Increment(ref armed);
+        Interlocked.Increment(ref pending);
+        var timer = new Watched(this);
+        timer.Inner = base.CreateTimer(s =>
+        {
+            timer.Finished();
+            callback(s);
+        }, state, dueTime, period);
+        return timer;
+    }
+
+    /// <summary>Until <paramref name="count"/> timers have been set in all.</summary>
+    public Task WaitForArmedAsync(int count, CancellationToken ct) =>
+        WaitForAsync(() => Armed >= count, () => $"only {Armed} of {count} timers were set", ct);
+
+    /// <summary>Until a timer is waiting to run out.</summary>
+    public Task WaitUntilPendingAsync(CancellationToken ct) =>
+        WaitForAsync(() => Pending > 0, () => "no timer was set", ct);
+
+    /// <summary>Until no timer is waiting: the session has taken what the peer sent.</summary>
+    public Task WaitUntilNonePendingAsync(CancellationToken ct) =>
+        WaitForAsync(() => Pending == 0, () => $"{Pending} timers are still waiting", ct);
+
+    private static async Task WaitForAsync(Func<bool> condition, Func<string> failure, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + ExchangeTestKit.Patience;
+        while (!condition() && DateTime.UtcNow < deadline) await Task.Delay(5, ct);
+        if (!condition()) throw new TimeoutException(failure());
+    }
+
+    private sealed class Watched(WatchedClock clock) : ITimer
+    {
+        private int finished;
+
+        public ITimer Inner { get; set; } = null!;
+
+        public void Finished()
+        {
+            if (Interlocked.Exchange(ref finished, 1) == 0) Interlocked.Decrement(ref clock.pending);
+        }
+
+        public bool Change(TimeSpan dueTime, TimeSpan period) => Inner.Change(dueTime, period);
+
+        public void Dispose()
+        {
+            Finished();
+            Inner.Dispose();
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Finished();
+            return Inner.DisposeAsync();
+        }
+    }
 }
 
 /// <summary>The far end of a link, driven line by line.</summary>

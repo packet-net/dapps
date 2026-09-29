@@ -36,12 +36,13 @@ public sealed class ExchangeSessionTests : IDisposable
     /// <summary>A session that dialled: the peer plays the answering node.</summary>
     private async Task<(ExchangeSession Session, LinePeer Peer, Task Run, WriteRecordingStream Wire)> CallerAsync(
         ExchangeSettings? settings = null, IBackhaulInbox? inbox = null, Action<ExchangeSession>? opened = null,
-        TimeSpan? maxLength = null, TimeSpan? inactivity = null, OutOfStepMemory? memory = null)
+        TimeSpan? maxLength = null, TimeSpan? inactivity = null, OutOfStepMemory? memory = null, TimeProvider? clock = null)
     {
         var (ours, theirs) = await LoopbackPairAsync(Ct);
         var wire = new WriteRecordingStream(ours);
         var session = new ExchangeSession(wire, Them, dialled: true, settings ?? new ExchangeSettings(), inbox ?? new RecordingInbox(), NullLoggerFactory.Instance)
         {
+            TimeProvider = clock ?? TimeProvider.System,
             PromptWait = Short,
             MinQuiet = Short,
             MaxLength = maxLength ?? TimeSpan.FromMinutes(30),
@@ -68,6 +69,13 @@ public sealed class ExchangeSessionTests : IDisposable
         (await peer.ReadLineAsync(Ct)).Should().Be("DAPPSv1>");
         (await peer.ReadLineAsync(Ct)).Should().StartWith("exchange ");
         return (session, peer, run);
+    }
+
+    /// <summary>Until <paramref name="condition"/> holds, or the test's patience runs out.</summary>
+    private async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow + Patience;
+        while (!condition() && DateTime.UtcNow < deadline) await Task.Delay(10, Ct);
     }
 
     // ---- Session start ----
@@ -184,11 +192,16 @@ public sealed class ExchangeSessionTests : IDisposable
     {
         // "no such command" from whatever answered isn't an answer to one
         // of ours: no message id. So our rules don't go early, and it still
-        // fails for want of a prompt.
-        var (session, peer, run, wire) = await CallerAsync();
+        // fails for want of a prompt. The prompt wait runs out once the
+        // session has read the line and is waiting again.
+        var clock = new WatchedClock();
+        var (session, peer, run, wire) = await CallerAsync(clock: clock);
+        await clock.WaitForArmedAsync(1, Ct);
 
         await peer.WriteLineAsync("no such command", Ct);
-        await run.WaitAsync(TimeSpan.FromSeconds(5), Ct);
+        await clock.WaitForArmedAsync(2, Ct);
+        clock.Advance(Short);
+        await run.WaitAsync(Patience, Ct);
 
         session.Failure.Should().Contain("no DAPPSv1> prompt");
         wire.Writes.Should().NotContain(w => w.StartsWith("exchange ", StringComparison.Ordinal));
@@ -200,10 +213,15 @@ public sealed class ExchangeSessionTests : IDisposable
         // No prompt, so it sent its rules, as for a crossed call; but
         // nothing came back at all: the call landed on a link the far node
         // had reset, where nothing will ever answer.
-        var (session, peer, run, _) = await CallerAsync();
-        (await peer.ReadLineAsync(Ct, TimeSpan.FromSeconds(5))).Should().StartWith("exchange ", "no prompt came, so it sent its rules anyway");
+        var clock = new WatchedClock();
+        var (session, peer, run, _) = await CallerAsync(clock: clock);
+        await clock.WaitForArmedAsync(1, Ct);
+        clock.Advance(Short);
+        (await peer.ReadLineAsync(Ct)).Should().StartWith("exchange ", "no prompt came, so it sent its rules anyway");
+        await clock.WaitForArmedAsync(2, Ct);
 
-        await run.WaitAsync(TimeSpan.FromSeconds(5), Ct);
+        clock.Advance(Short * 3);
+        await run.WaitAsync(Patience, Ct);
 
         session.Failure.Should().Contain("nothing from");
         session.Established.Should().BeFalse();
@@ -213,13 +231,17 @@ public sealed class ExchangeSessionTests : IDisposable
     [Fact]
     public async Task ACrossedCaller_WhosePeersRulesComeWithinThreePromptWaits_CarriesOn()
     {
-        var (session, peer, run, _) = await CallerAsync();
-        (await peer.ReadLineAsync(Ct, TimeSpan.FromSeconds(5))).Should().StartWith("exchange ");
+        var clock = new WatchedClock();
+        var (session, peer, run, _) = await CallerAsync(clock: clock);
+        await clock.WaitForArmedAsync(1, Ct);
+        clock.Advance(Short);
+        (await peer.ReadLineAsync(Ct)).Should().StartWith("exchange ");
+        await clock.WaitForArmedAsync(2, Ct);
 
-        await Task.Delay(500, Ct);   // more than one prompt wait (300 ms), less than three
+        clock.Advance(Short * 2);   // more than one prompt wait, less than three
         await peer.WriteLineAsync(Rules(), Ct);
 
-        while (!session.Established && !run.IsCompleted) await Task.Delay(20, Ct);
+        await WaitUntilAsync(() => session.Established || run.IsCompleted);
         session.Established.Should().BeTrue();
         run.IsCompleted.Should().BeFalse();
     }
@@ -229,12 +251,18 @@ public sealed class ExchangeSessionTests : IDisposable
     {
         // BPQ leaves a link it has reset at the node's command prompt: our
         // rules went, and the node answered them as a command.
-        var (session, peer, run, _) = await CallerAsync();
-        (await peer.ReadLineAsync(Ct, TimeSpan.FromSeconds(5))).Should().StartWith("exchange ", "no prompt came, so it sent its rules anyway");
+        var clock = new WatchedClock();
+        var (session, peer, run, _) = await CallerAsync(clock: clock);
+        await clock.WaitForArmedAsync(1, Ct);
+        clock.Advance(Short);
+        (await peer.ReadLineAsync(Ct)).Should().StartWith("exchange ", "no prompt came, so it sent its rules anyway");
+        await clock.WaitForArmedAsync(2, Ct);
 
         await peer.WriteLineAsync("AAA:N0AAA} Invalid command - Enter ? for command list", Ct);
+        await clock.WaitForArmedAsync(3, Ct);
+        clock.Advance(Short);
 
-        await run.WaitAsync(TimeSpan.FromSeconds(5), Ct);
+        await run.WaitAsync(Patience, Ct);
         session.Failure.Should().Contain("no exchange from");
         session.Established.Should().BeFalse();
         session.RedialAfter.Should().BeNull("we hung up ourselves");
@@ -268,9 +296,13 @@ public sealed class ExchangeSessionTests : IDisposable
     public async Task ACallerWhoseCallIsEndedAfterItSentItsRules_LeavesThePeerAsLong()
     {
         // The loop's usual shape: no prompt, our rules went, and the peer's
-        // next call cut ours off while we waited.
-        var (session, peer, run, _) = await CallerAsync();
-        (await peer.ReadLineAsync(Ct, TimeSpan.FromSeconds(5))).Should().StartWith("exchange ");
+        // next call cut ours off while we waited, before our wait for
+        // anything at all back ran out.
+        var clock = new WatchedClock();
+        var (session, peer, run, _) = await CallerAsync(clock: clock);
+        await clock.WaitForArmedAsync(1, Ct);
+        clock.Advance(Short);
+        (await peer.ReadLineAsync(Ct)).Should().StartWith("exchange ");
 
         peer.Close();
         await run.WaitAsync(Patience, Ct);
@@ -307,18 +339,21 @@ public sealed class ExchangeSessionTests : IDisposable
         // The link moved mid-message: the tail of one arrives as text, then
         // the peer carries on in DAPPS. Its rules follow once it sees ours.
         var inbox = new RecordingInbox();
-        var (session, peer, run, _) = await CallerAsync(inbox: inbox);
-        (await peer.ReadLineAsync(Ct, TimeSpan.FromSeconds(5))).Should().StartWith("exchange ");
+        var clock = new WatchedClock();
+        var (session, peer, run, _) = await CallerAsync(inbox: inbox, clock: clock);
+        await clock.WaitForArmedAsync(1, Ct);
+        clock.Advance(Short);
+        (await peer.ReadLineAsync(Ct)).Should().StartWith("exchange ");
 
         await peer.WriteLineAsync("the lazy dog", Ct);
         var m = Message("after the cut", $"app@{Us}");
         await peer.SendMessageAsync(m, Ct);
         (await peer.ReadLineAsync(Ct)).Should().Be($"ack {m.Id}");
 
-        await Task.Delay(Short * 3, Ct);
+        clock.Advance(Short * 3);
         run.IsCompleted.Should().BeFalse("it's talking to a DAPPS node");
         await peer.WriteLineAsync(Rules(), Ct);
-        await Task.Delay(Short, Ct);
+        await WaitUntilAsync(() => session.Established || run.IsCompleted);
         session.Established.Should().BeTrue();
     }
 
@@ -326,15 +361,16 @@ public sealed class ExchangeSessionTests : IDisposable
     public async Task ACallerThatHeardABannerBeforeThePrompt_IsNotHurriedAfterItsRules()
     {
         // The banner came before the prompt, not in answer to our rules.
-        var (session, peer, run, _) = await CallerAsync();
+        var clock = new WatchedClock();
+        var (session, peer, run, _) = await CallerAsync(clock: clock);
         await peer.WriteLineAsync("Welcome to the node", Ct);
         await peer.WriteLineAsync("DAPPSv1>", Ct);
         (await peer.ReadLineAsync(Ct)).Should().StartWith("exchange ");
 
-        await Task.Delay(Short * 3, Ct);
+        clock.Advance(Short * 3);
         run.IsCompleted.Should().BeFalse();
         await peer.WriteLineAsync(Rules(), Ct);
-        await Task.Delay(Short, Ct);
+        await WaitUntilAsync(() => session.Established || run.IsCompleted);
         session.Established.Should().BeTrue();
     }
 
@@ -381,12 +417,18 @@ public sealed class ExchangeSessionTests : IDisposable
         var fromB = Message("from B", $"app@{Us}", 2);
         var batchA = new RecordingBatch(fromA);
         var batchB = new RecordingBatch(fromB);
-        var sessionA = new ExchangeSession(a, Them, dialled: true, new ExchangeSettings(), inboxA, NullLoggerFactory.Instance) { PromptWait = Short, MinQuiet = Short };
-        var sessionB = new ExchangeSession(b, Us, dialled: true, new ExchangeSettings(), inboxB, NullLoggerFactory.Instance) { PromptWait = Short, MinQuiet = Short };
+        var clock = new WatchedClock();
+        var sessionA = new ExchangeSession(a, Them, dialled: true, new ExchangeSettings(), inboxA, NullLoggerFactory.Instance) { TimeProvider = clock, PromptWait = Short, MinQuiet = Short };
+        var sessionB = new ExchangeSession(b, Us, dialled: true, new ExchangeSettings(), inboxB, NullLoggerFactory.Instance) { TimeProvider = clock, PromptWait = Short, MinQuiet = Short };
         sessionA.TryTake(batchA);
         sessionB.TryTake(batchB);
 
         var runs = Task.WhenAll(sessionA.RunAsync(Ct), sessionB.RunAsync(Ct));
+        await clock.WaitForArmedAsync(2, Ct);   // both waiting for a prompt
+        clock.Advance(Short);
+        await batchA.WaitForOutcomesAsync(1, Ct);
+        await batchB.WaitForOutcomesAsync(1, Ct);
+        clock.Advance(Short);                   // a quiet spell: both callers say quit
         await runs.WaitAsync(Patience, Ct);
 
         inboxA.Texts.Should().Equal("from B");
@@ -867,7 +909,8 @@ public sealed class ExchangeSessionTests : IDisposable
         var inbox = new RecordingInbox();
         var ours = Message("waiting behind the peer's mail", $"app@{Them}", 1);
         var batch = new RecordingBatch(ours);
-        var (session, peer, run, _) = await CallerAsync(new ExchangeSettings(HoldSeconds: 60), inbox, inactivity: TimeSpan.FromSeconds(1));
+        var clock = new WatchedClock();
+        var (session, peer, run, _) = await CallerAsync(new ExchangeSettings(HoldSeconds: 60), inbox, inactivity: TimeSpan.FromSeconds(1), clock: clock);
         session.TryTake(batch);
         await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
         await peer.ReadLineAsync(Ct);
@@ -875,8 +918,10 @@ public sealed class ExchangeSessionTests : IDisposable
 
         for (var i = 0; i < 6; i++)
         {
-            await peer.SendMessageAsync(Message($"theirs {i}", $"app@{Us}", 10 + i), Ct);
-            await Task.Delay(400, Ct);
+            var theirs = Message($"theirs {i}", $"app@{Us}", 10 + i);
+            await peer.SendMessageAsync(theirs, Ct);
+            (await peer.ReadLineAsync(Ct)).Should().Be($"ack {theirs.Id}");
+            clock.Advance(TimeSpan.FromMilliseconds(400));
         }
         run.IsCompleted.Should().BeFalse("its mail kept arriving for 2.4 s, more than twice the timeout");
 
@@ -893,21 +938,28 @@ public sealed class ExchangeSessionTests : IDisposable
         var inbox = new RecordingInbox();
         var ours = Message("answered after the long one", $"app@{Them}", 1);
         var batch = new RecordingBatch(ours);
-        var (session, peer, run, _) = await CallerAsync(new ExchangeSettings(HoldSeconds: 60), inbox, inactivity: TimeSpan.FromSeconds(1));
+        var clock = new WatchedClock();
+        var (session, peer, run, _) = await CallerAsync(new ExchangeSettings(HoldSeconds: 60), inbox, inactivity: TimeSpan.FromSeconds(1), clock: clock);
         session.TryTake(batch);
         await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
         await peer.ReadLineAsync(Ct);
         await peer.ReadWithPayloadAsync(Ct);
 
+        // The first piece holds the line: once the session has taken it
+        // and is reading the payload, the rest arrives over 2.4 s.
         var longer = Message(new string('l', 1200), $"app@{Us}", 2);
         var bytes = (byte[])[.. Encoding.UTF8.GetBytes(Line("msg", longer)), .. longer.Payload];
-        for (var offset = 0; offset < bytes.Length; offset += 100)
+        await clock.WaitUntilPendingAsync(Ct);
+        await peer.WriteAsync(bytes[..100], Ct);
+        await clock.WaitUntilNonePendingAsync(Ct);
+        for (var offset = 100; offset < bytes.Length; offset += 100)
         {
+            clock.Advance(TimeSpan.FromMilliseconds(200));
             await peer.WriteAsync(bytes[offset..Math.Min(bytes.Length, offset + 100)], Ct);
-            await Task.Delay(200, Ct);   // 2.6 s in all
+            await Task.Delay(5, Ct);
         }
         (await peer.ReadLineAsync(Ct)).Should().Be($"ack {longer.Id}");
-        await Task.Delay(300, Ct);
+        clock.Advance(TimeSpan.FromMilliseconds(300));
         run.IsCompleted.Should().BeFalse();
 
         await peer.WriteLineAsync($"ack {ours.Id}", Ct);
@@ -923,20 +975,21 @@ public sealed class ExchangeSessionTests : IDisposable
         // air at 1200 baud. While answers keep coming, the link is working.
         var messages = Enumerable.Range(1, 3).Select(i => Message($"slow {i}", $"app@{Them}", i)).ToArray();
         var batch = new RecordingBatch(messages);
-        var (session, peer, _, _) = await CallerAsync(new ExchangeSettings(HoldSeconds: 60), inactivity: TimeSpan.FromSeconds(2));
+        var clock = new WatchedClock();
+        var (session, peer, _, _) = await CallerAsync(new ExchangeSettings(HoldSeconds: 60), inactivity: TimeSpan.FromSeconds(2), clock: clock);
         session.TryTake(batch);
         await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
         await peer.ReadLineAsync(Ct);
         foreach (var _ in messages) await peer.ReadWithPayloadAsync(Ct);
 
         // Answered 1.2 s apart: the last comes 3.6 s after all three went.
-        foreach (var m in messages)
+        for (var i = 0; i < messages.Length; i++)
         {
-            await Task.Delay(1200, Ct);
-            await peer.WriteLineAsync($"ack {m.Id}", Ct);
+            clock.Advance(TimeSpan.FromMilliseconds(1200));
+            await peer.WriteLineAsync($"ack {messages[i].Id}", Ct);
+            await batch.WaitForOutcomesAsync(i + 1, Ct);
         }
 
-        await batch.WaitForOutcomesAsync(3, Ct);
         batch.Outcomes.Should().AllSatisfy(o => o.Result.Accepted.Should().BeTrue());
     }
 
@@ -950,14 +1003,22 @@ public sealed class ExchangeSessionTests : IDisposable
         var fromB = Enumerable.Range(1, 20).Select(i => Message($"from B {i} " + new string('b', i * 20), $"app@{Us}", 100 + i)).ToArray();
         var batchA = new RecordingBatch(fromA);
         var batchB = new RecordingBatch(fromB);
-        var caller = new ExchangeSession(a, Them, dialled: true, new ExchangeSettings(), inboxA, NullLoggerFactory.Instance) { MinQuiet = Short };
+        // On a fake clock the caller's quiet spell can't come in the middle
+        // of it, however slow the runner.
+        var clock = new WatchedClock();
+        var caller = new ExchangeSession(a, Them, dialled: true, new ExchangeSettings(), inboxA, NullLoggerFactory.Instance) { TimeProvider = clock, MinQuiet = Short };
         var callee = new ExchangeSession(b, Us, dialled: false, new ExchangeSettings(), inboxB, NullLoggerFactory.Instance)
         {
+            TimeProvider = clock,
             Opened = s => s.TryTake(batchB),
         };
         caller.TryTake(batchA);
 
-        await Task.WhenAll(caller.RunAsync(Ct), callee.RunAsync(Ct)).WaitAsync(Patience, Ct);
+        var runs = Task.WhenAll(caller.RunAsync(Ct), callee.RunAsync(Ct));
+        await batchA.WaitForOutcomesAsync(20, Ct);
+        await batchB.WaitForOutcomesAsync(20, Ct);
+        clock.Advance(Short);
+        await runs.WaitAsync(Patience, Ct);
 
         inboxB.Texts.Should().Equal(fromA.Select(m => Encoding.UTF8.GetString(m.Payload)), "in the order they were sent");
         inboxA.Texts.Should().Equal(fromB.Select(m => Encoding.UTF8.GetString(m.Payload)));

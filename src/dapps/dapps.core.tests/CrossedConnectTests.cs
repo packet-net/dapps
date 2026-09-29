@@ -28,14 +28,18 @@ public sealed class CrossedConnectTests
         var (atLower, atHigher) = await LoopbackPairAsync(ct);
         var lowerInbox = new RecordingInbox();
         var higherInbox = new RecordingInbox();
-        var lower = new Dappsv1SessionBackhaul(new OneStreamTransport(atLower), NullLoggerFactory.Instance, lowerInbox) { PromptWait = Wait, MinQuiet = Wait };
-        var higher = new Dappsv1SessionBackhaul(new OneStreamTransport(atHigher), NullLoggerFactory.Instance, higherInbox) { PromptWait = Wait, MinQuiet = Wait };
+        var clock = new WatchedClock();
+        var lower = new Dappsv1SessionBackhaul(new OneStreamTransport(atLower), NullLoggerFactory.Instance, lowerInbox) { TimeProvider = clock, PromptWait = Wait, MinQuiet = Wait };
+        var higher = new Dappsv1SessionBackhaul(new OneStreamTransport(atHigher), NullLoggerFactory.Instance, higherInbox) { TimeProvider = clock, PromptWait = Wait, MinQuiet = Wait };
         var toHigher = Message("from the lower call", $"app@{Higher}", 1);
         var toLower = Message("from the higher call", $"app@{Lower}", 2);
 
-        var results = await Task.WhenAll(
+        var sends = Task.WhenAll(
             lower.SendAsync(toHigher, new BackhaulRoute(Higher, BearerPort: 1), Lower, ct),
-            higher.SendAsync(toLower, new BackhaulRoute(Lower, BearerPort: 1), Higher, ct)).WaitAsync(Patience, ct);
+            higher.SendAsync(toLower, new BackhaulRoute(Lower, BearerPort: 1), Higher, ct));
+        await clock.WaitForArmedAsync(2, ct);   // both callers waiting for a prompt
+        clock.Advance(Wait);
+        var results = await sends.WaitAsync(Patience, ct);
 
         results.Should().AllSatisfy(r => r.Accepted.Should().BeTrue());
         await higherInbox.WaitForAsync(1, ct);
@@ -77,8 +81,10 @@ public sealed class CrossedConnectTests
         // have gone, its prompt and rules follow, and the session goes on.
         var ct = TestContext.Current.CancellationToken;
         var (ours, theirs) = await LoopbackPairAsync(ct);
+        var clock = new WatchedClock();
         var backhaul = new Dappsv1SessionBackhaul(new OneStreamTransport(ours), NullLoggerFactory.Instance, new RecordingInbox())
         {
+            TimeProvider = clock,
             PromptWait = Wait,
             MinQuiet = Wait,
         };
@@ -86,8 +92,10 @@ public sealed class CrossedConnectTests
         var message = Message("hello", $"app@{Lower}");
 
         var send = backhaul.SendAsync(message, new BackhaulRoute(Lower, BearerPort: 1), Higher, ct);
+        await clock.WaitForArmedAsync(1, ct);
 
         (await peer.TryReadLineAsync(Wait / 2, ct)).Should().BeNull("nothing is sent before the wait is over");
+        clock.Advance(Wait);
         (await peer.ReadLineAsync(ct)).Should().StartWith("exchange ");
         (await peer.TryReadLineAsync(Wait, ct)).Should().BeNull("no contents before it has our peer's rules");
 
