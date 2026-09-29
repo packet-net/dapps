@@ -25,7 +25,11 @@ namespace dapps.core.tests.Integration;
 /// </summary>
 public sealed class LinbpqIntegrationFixture : IAsyncLifetime
 {
-    private const string Image = "m0lte/linbpq:latest";
+    /// <summary>m0lte/linbpq at 6.0.25.41 (built 29 September 2026 from
+    /// M0LTE/linbpq 391f7b6), pinned so a new build can't change results
+    /// unnoticed; every BPQ fixture uses it. Refresh: pull the image at the
+    /// version tag and take its digest.</summary>
+    public const string Image = "m0lte/linbpq@sha256:53ecd2af432dd0dd434df22363c574270bb95c18c58d4ec248cbef38e1c56974";
     private const int InsideAgwPort = 8000;
     private const int InsideTelnetPort = 8010;
 

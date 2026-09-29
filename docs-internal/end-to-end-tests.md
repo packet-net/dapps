@@ -12,7 +12,7 @@ app -> DAPPS A -AGW- BPQ-A -AXIP- BPQ-B -AGW- DAPPS B -> app
 
 ## Running them
 
-They need Docker (Testcontainers starts `m0lte/linbpq:latest`, and for the pdn tests the pinned `ghcr.io/packet-net/packet.net` image) and a built solution:
+They need Docker (Testcontainers starts `m0lte/linbpq`, and for the pdn tests `ghcr.io/packet-net/packet.net`, both pinned by digest) and a built solution:
 
 ```
 dotnet build src/dapps/dapps.sln
@@ -226,4 +226,4 @@ No duplicates or corrupt messages in either pdn run. pdn's links are v2.2, and i
 
 ## The linbpq image
 
-`m0lte/linbpq:latest` is built from the `patched` branch of M0LTE/linbpq by its `docker-publish` workflow. It was last built on 29 September 2026, from 6.0.25.41 (revision 391f7b6c), with debug information and without `_FORTIFY_SOURCE`. When linbpq dies of SIGSEGV or SIGABRT its own handler writes the signal and a backtrace to its output and exits with code 1, so the fixtures' logs (above) show it.
+`m0lte/linbpq` is built from the `patched` branch of M0LTE/linbpq by its `docker-publish` workflow. The tests pin it by digest in `LinbpqIntegrationFixture.cs`, which CI pulls: 6.0.25.41, built on 29 September 2026 from revision 391f7b6c, with debug information and without `_FORTIFY_SOURCE`. Until then they took `:latest`, last built in May from 6.0.25.28. When linbpq dies of SIGSEGV or SIGABRT its own handler writes the signal and a backtrace to its output and exits with code 1, so the fixtures' logs (above) show it.

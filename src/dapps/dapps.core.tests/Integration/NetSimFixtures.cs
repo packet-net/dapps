@@ -325,7 +325,7 @@ public abstract class NetSimTwoNodeFixture : IDappsScenarioBed, IAsyncLifetime
 /// </summary>
 public abstract class NetSimTwoBpqFixture : NetSimTwoNodeFixture
 {
-    private const string BpqImage = "m0lte/linbpq:latest";
+    private const string BpqImage = LinbpqIntegrationFixture.Image;
 
     private const int InsideAgwPortA = 18101;
     private const int InsideAgwPortB = 18102;

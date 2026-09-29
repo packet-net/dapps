@@ -27,7 +27,7 @@ namespace dapps.core.tests.Integration;
 /// </summary>
 public sealed class PdnBpqFixture : IDappsNodePair, IAsyncLifetime
 {
-    private const string BpqImage = "m0lte/linbpq:latest";
+    private const string BpqImage = LinbpqIntegrationFixture.Image;
 
     private const int InsideAgwB = 18002;
     private const int InsideHttpA = 18301;
