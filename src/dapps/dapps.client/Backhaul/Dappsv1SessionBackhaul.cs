@@ -254,7 +254,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             // message waits for the next one.
             await batch.CompleteAsync(first, session.Established || connection.Retired.IsCancellationRequested
                 ? BackhaulSendResult.Defer($"session with {route.Callsign} ended; {first.Id} stays queued")
-                : BackhaulSendResult.Fail(session.Failure ?? $"no session with {route.Callsign}"), sw.Elapsed, ct);
+                : BackhaulSendResult.Fail(session.Failure ?? $"no session with {route.Callsign}", session.RedialAfter), sw.Elapsed, ct);
         }
     }
 

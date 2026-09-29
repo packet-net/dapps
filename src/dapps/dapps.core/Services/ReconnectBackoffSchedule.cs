@@ -38,11 +38,14 @@ public sealed class ReconnectBackoffSchedule(TimeProvider? timeProvider = null, 
     public DateTimeOffset? NextRetryAtUtc { get; private set; }
 
     /// <summary>Record a failed connect attempt and return how long to wait
-    /// before the next one.</summary>
-    public TimeSpan RecordFailure()
+    /// before the next one: at least <paramref name="atLeast"/>, when the
+    /// failure itself says the usual step is too short. The spread applies
+    /// to that as to any other delay.</summary>
+    public TimeSpan RecordFailure(TimeSpan? atLeast = null)
     {
         FailureStreak++;
         var delay = DelayForAttempt(FailureStreak);
+        if (atLeast > delay) delay = atLeast.Value;
         if (spread > 0) delay += delay * (spread * random.NextDouble());
         NextRetryAtUtc = timeProvider.GetUtcNow() + delay;
         return delay;

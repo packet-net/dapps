@@ -97,11 +97,14 @@ public sealed class OutboundDestinationBackoff(TimeProvider? timeProvider = null
     /// <summary>Record a failed forward and return when this destination
     /// is next eligible for a retry - read back from the schedule rather
     /// than computed independently by the caller, so a logged timestamp
-    /// can't disagree with the actual cooldown expiry.</summary>
-    public DateTimeOffset RecordFailure(string destination)
+    /// can't disagree with the actual cooldown expiry. With
+    /// <paramref name="atLeast"/>, the cooldown is never shorter than that
+    /// (before the spread): the bearer knows the peer needs the time, as
+    /// when the peer's own call has just taken the link (#204).</summary>
+    public DateTimeOffset RecordFailure(string destination, TimeSpan? atLeast = null)
     {
         var schedule = schedules.GetOrAdd(destination, _ => new ReconnectBackoffSchedule(timeProvider, spread, random));
-        schedule.RecordFailure();
+        schedule.RecordFailure(atLeast);
         return schedule.NextRetryAtUtc!.Value; // RecordFailure() just set this
     }
 }

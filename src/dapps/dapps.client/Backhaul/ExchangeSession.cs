@@ -203,6 +203,26 @@ public sealed class ExchangeSession
     public string? Failure { get; private set; }
 
     /// <summary>
+    /// For a caller whose call the far end ended before the exchange: the
+    /// least time to leave the peer before dialling it again. Null otherwise.
+    ///
+    /// <para>
+    /// On a direct link that is the peer's own call taking the link: its
+    /// node sent a SABM down the link ours had made, and our node took
+    /// that for a reset of the link and cut our call off
+    /// (docs-internal/end-to-end-tests.md, "Crossed calls"). At our node
+    /// its call lands on a link attached to nothing, where it hears no
+    /// prompt, sends its exchange after <see cref="PromptWait"/> and hangs
+    /// up <see cref="SilentPeerWait"/> after that. Dialling again before
+    /// then cuts its call off in turn, and at the edge of range two nodes
+    /// kept doing that to each other for minutes on end (#204). So leave it
+    /// that long, and one prompt wait more for its connect and its
+    /// disconnect to go on air. Its hang-up clears the link at both nodes.
+    /// </para>
+    /// </summary>
+    public TimeSpan? RedialAfter { get; private set; }
+
+    /// <summary>
     /// Take a batch of work for the peer. Its messages go once the
     /// session is established, as the window allows. False once the
     /// session is ending; the messages then stay queued. A batch taken
@@ -498,10 +518,20 @@ public sealed class ExchangeSession
 
     private void OnHungUp()
     {
-        if (!Established && dialled) Failure ??= promptSeen || ownSent
-            ? $"{peer} hung up before the exchange"
-            : $"no DAPPSv1> prompt from {peer}";
         logger.LogInformation("{0} hung up", peer);
+        if (!Established && dialled && Failure is null)
+        {
+            Failure = promptSeen || ownSent
+                ? $"{peer} hung up before the exchange"
+                : $"no DAPPSv1> prompt from {peer}";
+            if (!PromptConsumed)
+            {
+                RedialAfter = PromptWait + SilentPeerWait + PromptWait;
+                logger.LogInformation(
+                    "{0} ended our call before the exchange, most likely by calling us at the same time: not dialling it again for at least {1:F0}s",
+                    peer, RedialAfter.Value.TotalSeconds);
+            }
+        }
         End();
     }
 

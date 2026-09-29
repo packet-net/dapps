@@ -113,6 +113,35 @@ public sealed class OutboundDestinationBackoffTests
     }
 
     [Fact]
+    public void AFailureWithAMinimum_WaitsAtLeastThat_ButNeverLessThanTheRampWould()
+    {
+        // #204: a call the peer's own call cut off leaves the peer's call
+        // on a dead link for about 45 s; redialling sooner cuts that off in
+        // turn. A minimum above the ramp's step wins; below it, the step does.
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-01T00:00:00Z"));
+        var backoff = new OutboundDestinationBackoff(clock, spread: 0);
+        var now = clock.GetUtcNow();
+
+        backoff.RecordFailure("N0DEST", TimeSpan.FromSeconds(50)).Should().Be(now + TimeSpan.FromSeconds(50));
+        backoff.RecordFailure("N0DEST").Should().Be(now + TimeSpan.FromSeconds(10), "the next failure is an ordinary one, on the ramp as before");
+        for (var i = 0; i < 7; i++) backoff.RecordFailure("N0DEST");
+        backoff.RecordFailure("N0DEST", TimeSpan.FromSeconds(50)).Should().Be(now + TimeSpan.FromMinutes(5),
+            "a minimum never shortens a cooldown that has already climbed past it");
+    }
+
+    [Fact]
+    public void AMinimumCooldown_IsSpreadAtRandomLikeAnyOther()
+    {
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-01T00:00:00Z"));
+        var retries = Enumerable.Range(0, 20)
+            .Select(_ => new OutboundDestinationBackoff(clock).RecordFailure("N0DEST", TimeSpan.FromSeconds(50)) - clock.GetUtcNow())
+            .ToList();
+
+        retries.Should().AllSatisfy(d => d.Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(50)).And.BeLessThan(TimeSpan.FromSeconds(75)));
+        retries.Distinct().Count().Should().BeGreaterThan(15, "two nodes backing off together mustn't come back together");
+    }
+
+    [Fact]
     public void ByDefault_CooldownsAreSpreadAtRandom_SoTwoNodesDontRetryTogether()
     {
         var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-01T00:00:00Z"));

@@ -79,6 +79,8 @@ That check originally ran once, early in the forwarder tick - before the link-se
 
 There is a narrower variant neither check can see coming: both nodes dial within the same round trip, so neither has an inbound session yet when it decides to dial. Both links come up, but each BPQ attaches its link to its own outgoing session, so neither DAPPS is handed an inbound connect and neither sends `DAPPSv1>`. On a monitor this looks like a connect that succeeds and then goes quiet. DAPPS copes with this. On AGW each node watches its BPQ's monitor while its call is on the way, and on seeing the other's connect request (`<C C P>`) sends its `exchange` line at once (log lines `the calls crossed` and `Our call to <peer> crossed its call to us`). Otherwise, after 10 seconds of silence, it sends it anyway (`Nothing from <peer> for 10s after connecting: assuming it dialled us at the same moment`). From then on the session works as any other, with traffic both ways.
 
+Two near misses are handled too. If the other node's call arrives just as yours goes out, DAPPS holds back its prompt until its own call connects (`holding the prompt until it connects`), and the two calls then share the link. And if one of your calls is cut off before the exchange, most likely by the other node calling at the same moment, DAPPS leaves that neighbour for 50 to 75 seconds (`not dialling it again for at least 50s`) so the other node's call can finish first. Without that pause, two nodes at the edge of range could keep cutting each other off for minutes.
+
 ### Inbound sessions never arrive (XRouter RHPv2)
 
 A remote node can `c <your-callsign>` and lands at the XRouter node prompt, but not at the `DAPPSv1>` prompt. Check:

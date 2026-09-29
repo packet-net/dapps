@@ -19,6 +19,17 @@ public sealed record BackhaulSendResult(bool Accepted, string? Error, bool Defer
 {
     public static BackhaulSendResult Ok() => new(true, null);
     public static BackhaulSendResult Fail(string error) => new(false, error);
+
+    /// <summary>A failure after which the neighbour is left alone for at
+    /// least <paramref name="minCooldown"/>, however short its cooldown
+    /// would otherwise be. Null: the usual cooldown.</summary>
+    public static BackhaulSendResult Fail(string error, TimeSpan? minCooldown) => new(false, error) { MinCooldown = minCooldown };
+
+    /// <summary>For a failure: the least time before the neighbour is
+    /// dialled again, when the bearer knows the usual cooldown is too
+    /// short (a peer whose own call has taken the link, say).</summary>
+    public TimeSpan? MinCooldown { get; init; }
+
     /// <summary>Not sent, not failed: <paramref name="reason"/> says
     /// why, for the log.</summary>
     public static BackhaulSendResult Defer(string reason) => new(false, reason, Deferred: true);

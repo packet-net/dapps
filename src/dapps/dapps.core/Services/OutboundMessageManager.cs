@@ -414,7 +414,7 @@ public class OutboundMessageManager(
             }
             else
             {
-                var nextRetryAtUtc = destinationBackoff.RecordFailure(route.Callsign);
+                var nextRetryAtUtc = destinationBackoff.RecordFailure(route.Callsign, result.MinCooldown);
                 logger.LogError("Failed to forward message {0} to {1} via {2}: {3} (retrying no earlier than {4:O})",
                     message.Id, route.Callsign, backhaulName, result.Error, nextRetryAtUtc);
                 metrics.RecordForwardFailure(message.Id, route.Callsign, message.Payload.Length, result.Error);
@@ -686,7 +686,7 @@ public class OutboundMessageManager(
                     // its streak, and so a burst of floods to the same
                     // failing neighbour doesn't reset a streak NextHop is
                     // tracking.
-                    destinationBackoff.RecordFailure(route.Callsign);
+                    destinationBackoff.RecordFailure(route.Callsign, result.MinCooldown);
                     metrics.RecordForwardFailure(message.Id, route.Callsign, message.Payload.Length, result.Error);
                 }
             }
