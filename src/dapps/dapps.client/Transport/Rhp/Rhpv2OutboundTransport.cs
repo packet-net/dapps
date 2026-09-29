@@ -80,16 +80,6 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
                     $"RHP active open {localCallsign}->{remoteCallsign} on port {portName}: {txGate.BlockReason ?? "(no reason)"}");
             }
 
-            logger.LogInformation("RHP: open active {local}->{remote} on port {p}", localCallsign, remoteCallsign, portName);
-            var handle = await rhp.OpenAsync(
-                family: ProtocolFamily.Ax25,
-                mode: SocketMode.Stream,
-                port: portName,
-                local: localCallsign,
-                remote: remoteCallsign,
-                flags: OpenFlags.Active,
-                ct: stoppingToken);
-
             // Stream view of the handle. Reuses MultiplexedAgwSessionStream
             // (functionally generic - just a Pipe + 2 callbacks).
             // RF-emitting: SendOnHandleAsync emits AX.25 I-frames. Gate
@@ -97,6 +87,7 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
             // silent the moment the operator hits the kill-switch.
             // CloseAsync stays ungated to avoid leaking handles.
             var gate = txGate;
+            var handle = 0;
             var stream = new MultiplexedAgwSessionStream(
                 writeOutgoing: async (data, c) =>
                 {
@@ -113,21 +104,57 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
                     catch { /* server may have already closed */ }
                 });
 
+            // Listen from before the open. A node that answers the open
+            // only once the far end's UA is in (pdn does) can push the
+            // far end's first data, or its hang-up, straight behind the
+            // reply, and RhpClient raises those events before the code
+            // after OpenAsync runs: added afterwards, the handlers missed
+            // the peer's prompt. So what arrives before the handle is
+            // known is held, then handed over in order.
+            var early = new List<(int Handle, byte[]? Data)>();   // Data null: the node closed it
+            int? opened = null;
             EventHandler<RhpReceivedEventArgs> recvHandler = (_, e) =>
             {
-                if (e.Message.Handle != handle) return;
                 var bytes = RhpDataEncoding.FromWireString(e.Message.Data);
-                // Fire-and-forget: PushIncoming awaits the pipe write,
-                // which is bounded only by the consumer's read pace.
-                _ = stream.PushIncoming(bytes, CancellationToken.None);
+                lock (early)
+                {
+                    if (opened is null) early.Add((e.Message.Handle, bytes));
+                    // Fire-and-forget: PushIncoming awaits the pipe write,
+                    // which is bounded only by the consumer's read pace.
+                    else if (e.Message.Handle == opened) _ = stream.PushIncoming(bytes, CancellationToken.None);
+                }
             };
             EventHandler<RhpClosedEventArgs> closeHandler = (_, e) =>
             {
-                if (e.Handle == handle) stream.SignalRemoteDisconnect();
+                lock (early)
+                {
+                    if (opened is null) early.Add((e.Handle, null));
+                    else if (e.Handle == opened) stream.SignalRemoteDisconnect();
+                }
             };
-
             rhp.Received += recvHandler;
             rhp.Closed += closeHandler;
+
+            logger.LogInformation("RHP: open active {local}->{remote} on port {p}", localCallsign, remoteCallsign, portName);
+            handle = await rhp.OpenAsync(
+                family: ProtocolFamily.Ax25,
+                mode: SocketMode.Stream,
+                port: portName,
+                local: localCallsign,
+                remote: remoteCallsign,
+                flags: OpenFlags.Active,
+                ct: stoppingToken);
+
+            lock (early)
+            {
+                opened = handle;
+                foreach (var (_, data) in early.Where(x => x.Handle == handle))
+                {
+                    if (data is null) stream.SignalRemoteDisconnect();
+                    else _ = stream.PushIncoming(data, CancellationToken.None);
+                }
+                early.Clear();
+            }
 
             return new Rhpv2Connection(rhp, stream, recvHandler, closeHandler, handle, logger);
         }

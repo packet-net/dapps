@@ -24,21 +24,23 @@ internal sealed class DappsDaemon : IAsyncDisposable
     private Process process;
     private readonly StringBuilder output = new();
     private readonly string directory;
+    private readonly NodeAttachment node;
 
     public string Name { get; }
     public string Callsign { get; }
     public HttpClient Http { get; }
 
-    private DappsDaemon(string name, string callsign, string directory, Process process, HttpClient http)
+    private DappsDaemon(string name, string callsign, string directory, NodeAttachment node, Process process, HttpClient http)
     {
         Name = name;
         Callsign = callsign;
         this.directory = directory;
+        this.node = node;
         this.process = process;
         Http = http;
     }
 
-    /// <summary>A neighbour row to seed: its callsign and the AGW port that reaches it.
+    /// <summary>A neighbour row to seed: its callsign and the node port (AGW port byte) that reaches it.
     /// <paramref name="UdpEndpoint"/> switches this neighbour to the UDP datagram
     /// backhaul (<c>host:port</c>); <paramref name="BearerPort"/> is then unused.</summary>
     public sealed record Neighbour(
@@ -52,8 +54,15 @@ internal sealed class DappsDaemon : IAsyncDisposable
 
     public int MqttPort { get; private set; }
 
-    public static async Task<DappsDaemon> StartAsync(
+    public static Task<DappsDaemon> StartAsync(
         string name, string callsign, string agwHost, int agwPort, int bearerPort,
+        IEnumerable<Neighbour> neighbours, IReadOnlyDictionary<string, string>? settings, CancellationToken ct,
+        IEnumerable<RouteHint>? routeHints = null) =>
+        StartAsync(name, callsign, NodeAttachment.Agw(agwHost, agwPort, bearerPort), neighbours, settings, ct, routeHints);
+
+    /// <summary>Start a daemon on its node, over AGW or RHPv2 as <paramref name="node"/> says.</summary>
+    public static async Task<DappsDaemon> StartAsync(
+        string name, string callsign, NodeAttachment node,
         IEnumerable<Neighbour> neighbours, IReadOnlyDictionary<string, string>? settings, CancellationToken ct,
         IEnumerable<RouteHint>? routeHints = null)
     {
@@ -97,9 +106,8 @@ internal sealed class DappsDaemon : IAsyncDisposable
         var env = new Dictionary<string, string>
         {
             ["DAPPS_CALLSIGN"] = callsign,
-            ["DAPPS_NODE_HOST"] = agwHost,
-            ["DAPPS_AGW_PORT"] = agwPort.ToString(),
-            ["DAPPS_DEFAULT_BEARER_PORT"] = bearerPort.ToString(),
+            ["DAPPS_NODE_HOST"] = node.Host,
+            ["DAPPS_DEFAULT_BEARER_PORT"] = node.BearerPort.ToString(),
             ["DAPPS_MQTT_PORT"] = mqttPort.ToString(),
             ["DAPPS_UDP_LISTEN_PORT"] = "0",
             ["DAPPS_AUTH_REQUIRED"] = "false",
@@ -107,6 +115,15 @@ internal sealed class DappsDaemon : IAsyncDisposable
             ["ASPNETCORE_URLS"] = $"http://127.0.0.1:{httpPort}",
             ["DOTNET_ENVIRONMENT"] = "Production",
         };
+        if (node.IsRhp)
+        {
+            env["DAPPS_NODE_BEARER"] = "rhpv2";
+            env["DAPPS_RHP_PORT"] = node.Port.ToString();
+        }
+        else
+        {
+            env["DAPPS_AGW_PORT"] = node.Port.ToString();
+        }
         foreach (var (key, value) in settings ?? new Dictionary<string, string>()) env[key] = value;
         foreach (var (key, value) in env) start.Environment[key] = value;
 
@@ -117,9 +134,9 @@ internal sealed class DappsDaemon : IAsyncDisposable
             BaseAddress = new Uri($"http://127.0.0.1:{httpPort}/"),
             Timeout = TimeSpan.FromSeconds(60),
         };
-        var daemon = new DappsDaemon(name, callsign, directory, new Process { StartInfo = start, EnableRaisingEvents = true }, http)
+        var daemon = new DappsDaemon(name, callsign, directory, node, new Process { StartInfo = start, EnableRaisingEvents = true }, http)
         {
-            MqttPort = int.Parse(env["DAPPS_MQTT_PORT"]),
+            MqttPort = mqttPort,
         };
         try
         {
@@ -266,6 +283,8 @@ internal sealed class DappsDaemon : IAsyncDisposable
     private async Task WaitUntilOnTheNodeAsync(CancellationToken ct)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(60);
+        int launchedAt;
+        lock (output) launchedAt = output.Length;
         while (DateTime.UtcNow < deadline)
         {
             if (process.HasExited) throw new InvalidOperationException($"{Name} exited with {process.ExitCode} while starting.\n{Tail()}");
@@ -274,10 +293,21 @@ internal sealed class DappsDaemon : IAsyncDisposable
                 var snapshot = await Http.GetFromJsonAsync<JsonElement>("Operational", ct);
                 if (snapshot.TryGetProperty("nodeReachable", out var reachable) && reachable.GetBoolean())
                 {
-                    // Reachable is the AGW socket; give its listener
-                    // registration a moment to land on the node.
-                    await Task.Delay(1000, ct);
-                    return;
+                    if (node.IsRhp)
+                    {
+                        // Reachable is only the RHP port; the daemon says
+                        // when its listener is bound.
+                        string since;
+                        lock (output) since = output.ToString(launchedAt, output.Length - launchedAt);
+                        if (since.Contains("RHP inbound: listener bound to ", StringComparison.Ordinal)) return;
+                    }
+                    else
+                    {
+                        // Reachable is the AGW socket; give its listener
+                        // registration a moment to land on the node.
+                        await Task.Delay(1000, ct);
+                        return;
+                    }
                 }
             }
             catch (HttpRequestException)

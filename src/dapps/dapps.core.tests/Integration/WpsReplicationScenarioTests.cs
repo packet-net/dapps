@@ -8,7 +8,7 @@ namespace dapps.core.tests.Integration;
 
 /// <summary>
 /// Kevin M0AHN's WPS replication trace from #187, replayed between two real
-/// DAPPS daemons over a simulated radio channel (<see cref="NetSimTwoBpqFixture"/>),
+/// DAPPS daemons over a simulated radio channel (<see cref="NetSimTwoNodeFixture"/>, BPQ or pdn),
 /// with the same timing: DPSTST posts four times about half a second apart,
 /// MB7NPW posts four times starting four seconds later, and each side's WPS
 /// acknowledges cumulatively a few seconds after the first post it hasn't
@@ -22,7 +22,7 @@ namespace dapps.core.tests.Integration;
 /// (net-sim runs in real time) to scenario-reports/ beside the test build,
 /// which CI keeps as an artifact.
 /// </summary>
-public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) : IAsyncLifetime
+public abstract class WpsReplicationScenarioTests(NetSimTwoNodeFixture fixture) : IAsyncLifetime
 {
     private const string App = "wps-repl";
     private static readonly TimeSpan AckDelay = TimeSpan.FromSeconds(5);
@@ -33,12 +33,12 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
     private static readonly double[] Mb7npwPosts = [4.100, 4.484, 4.888, 5.585];
 
     private readonly List<IAsyncDisposable> running = [];
-    private AirMonitor? air;
+    private IAirMonitor? air;
     private ChannelLog? channel;
 
     public async ValueTask InitializeAsync()
     {
-        air = await AirMonitor.StartAsync(fixture.Host, fixture.AgwPortA, fixture.AgwPortB, TestContext.Current.CancellationToken);
+        air = await fixture.StartAirMonitorAsync(TestContext.Current.CancellationToken);
         channel = await fixture.StartChannelLogAsync(TestContext.Current.CancellationToken);
     }
 
@@ -54,8 +54,8 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
     public async Task KevinsTrace_Replayed_EveryMessageArrivesOnce_OnFewConnections()
     {
         var ct = TestContext.Current.CancellationToken;
-        var a = await StartNodeAsync("dpststA", fixture.ApplCallA, fixture.AgwPortA, fixture.ApplCallB, ct);
-        var b = await StartNodeAsync("mb7npwB", fixture.ApplCallB, fixture.AgwPortB, fixture.ApplCallA, ct);
+        var a = await StartNodeAsync("dpststA", fixture.ApplCallA, fixture.NodeA, fixture.ApplCallB, ct);
+        var b = await StartNodeAsync("mb7npwB", fixture.ApplCallB, fixture.NodeB, fixture.ApplCallA, ct);
         var clock = new Stopwatch();
         var sideA = new WpsSide(a, b.Callsign, clock, origin: "DPSTST", author: "G5ALF", firstSeq: 21);
         var sideB = new WpsSide(b, a.Callsign, clock, origin: "MB7NPW", author: "M0AHN", firstSeq: 535);
@@ -96,15 +96,15 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
             catch (Exception e) { failure ??= e; }
         }
 
-        var report = Report(sideA, sideB, elapsed, channel!.Summarise(started, started + elapsed), channel.Timeline(started, started + elapsed));
+        var report = Report(sideA, sideB, elapsed, channel!.Summarise(started, started + elapsed), channel!.Timeline(started, started + elapsed));
         WriteReport(report);
 
         failure.Should().BeNull($"the test's own posting and inbox reading should work\n{report}\n{Diagnostics()}");
         sideA.Complete.Should().BeTrue($"everything should arrive within {Deadline.TotalMinutes:F0} minutes\n{report}\n{Diagnostics()}");
         sideB.Complete.Should().BeTrue($"{report}\n{Diagnostics()}");
         (sideA.Duplicates + sideB.Duplicates).Should().Be(0, "every message should arrive exactly once\n" + report);
-        (Connects("A") + Connects("B")).Should().BeLessThanOrEqualTo(2,
-            "Kevin's trace took six connections; the exchange needs one, two if a SABM or UA is lost\n" + report);
+        (Connects("A") + Connects("B")).Should().BeLessThanOrEqualTo(MaxConnections,
+            $"Kevin's trace took six connections; the exchange needs {MaxConnections - 1}, {MaxConnections} if a SABM or UA is lost\n" + report);
         var messages = sideA.PostsReceived + sideB.PostsReceived + sideA.AcksReceived + sideB.AcksReceived;
         (Frames("A") + Frames("B")).Should().BeLessThanOrEqualTo(FramesPerMessage * messages,
             $"Kevin's trace took about 14 frames a message; the exchange takes {FramesPerMessage - 2} or fewer here\n" + report);
@@ -115,6 +115,10 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
     /// <summary>Most frames a message may take, with room for a slow
     /// runner (about two more than the exchange takes on this channel).</summary>
     protected abstract int FramesPerMessage { get; }
+
+    /// <summary>Most connections (SABMs) the exchange may take: one, and
+    /// one more if a SABM or UA is lost.</summary>
+    protected virtual int MaxConnections => 2;
 
     /// <summary>Longest the exchange may take, first post to last ack:
     /// about twice what it takes on this channel.</summary>
@@ -134,10 +138,9 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
         await Task.Delay(TimeSpan.FromSeconds(5), ct);
     }
 
-    private async Task<DappsDaemon> StartNodeAsync(string name, string callsign, int agwPort, string neighbour, CancellationToken ct)
+    private async Task<DappsDaemon> StartNodeAsync(string name, string callsign, NodeAttachment on, string neighbour, CancellationToken ct)
     {
-        var node = await DappsDaemon.StartAsync(name, callsign, fixture.Host, agwPort, fixture.RadioPortIndex,
-            [new(neighbour, fixture.RadioPortIndex)], settings: null, ct);
+        var node = await DappsDaemon.StartAsync(name, callsign, on, [new(neighbour, on.BearerPort)], settings: null, ct);
         running.Add(node);
         return node;
     }
@@ -161,7 +164,7 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
         sb.AppendLine("Kevin M0AHN's #187 trace replayed between two DAPPS daemons on a simulated channel.");
         sb.AppendLine("Each side acks 5 s after the first post it hasn't acked, so the number of acks depends on how fast posts arrive.");
         sb.AppendLine();
-        sb.AppendLine($"BPQ radio port: {fixture.RadioSettings}");
+        sb.AppendLine($"Radio port: {fixture.RadioSettings}");
         sb.AppendLine();
         sb.AppendLine("| | Kevin's trace, before 0.40.0 (1200 baud) | This run |");
         sb.AppendLine("|---|---|---|");
@@ -205,8 +208,7 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoBpqFixture fixture) :
     {
         var dir = Path.Combine(AppContext.BaseDirectory, "scenario-reports");
         Directory.CreateDirectory(dir);
-        var name = "wps-" + fixture.ChannelName.Split(' ')[0].ToLowerInvariant() + fixture.ChannelName.Split(' ')[1] + ".md";
-        File.WriteAllText(Path.Combine(dir, name), report);
+        File.WriteAllText(Path.Combine(dir, "wps-" + fixture.ReportTag + ".md"), report);
         TestContext.Current.TestOutputHelper?.WriteLine(report);
     }
 
@@ -321,5 +323,29 @@ public sealed class WpsReplicationScenarioAfsk1200Tests(NetSimAfsk1200Fixture fi
 public sealed class WpsReplicationScenarioQpsk3600Tests(NetSimQpsk3600Fixture fixture) : WpsReplicationScenarioTests(fixture)
 {
     protected override int FramesPerMessage => 6;
+    protected override TimeSpan TimeLimit => TimeSpan.FromSeconds(45);
+}
+
+// On pdn both nodes dial, every run: pdn sends an XID and waits for the
+// answer before its SABME, so A's call isn't up at B until after B's first
+// post, 4 s in, and B dials too. pdn makes one link of the two calls, but
+// over RHPv2 neither DAPPS daemon can tell (no monitor), so each waits
+// 10 s for a prompt before sending its exchange. That's two connections
+// before anything is lost, and about 10 s of the time.
+[Collection("net-sim pdn AFSK 1200")]
+[Trait("Category", "Integration")]
+public sealed class WpsReplicationScenarioPdnAfsk1200Tests(NetSimPdnAfsk1200Fixture fixture) : WpsReplicationScenarioTests(fixture)
+{
+    protected override int FramesPerMessage => 7;
+    protected override int MaxConnections => 3;
+    protected override TimeSpan TimeLimit => TimeSpan.FromSeconds(75);
+}
+
+[Collection("net-sim pdn QPSK 3600")]
+[Trait("Category", "Integration")]
+public sealed class WpsReplicationScenarioPdnQpsk3600Tests(NetSimPdnQpsk3600Fixture fixture) : WpsReplicationScenarioTests(fixture)
+{
+    protected override int FramesPerMessage => 6;
+    protected override int MaxConnections => 3;
     protected override TimeSpan TimeLimit => TimeSpan.FromSeconds(45);
 }

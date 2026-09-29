@@ -19,7 +19,7 @@ namespace dapps.core.tests.Integration;
 /// stop of the simulator, but a transmission cut off by one never gets
 /// its end, so <see cref="ChannelStopped"/> closes it.
 /// </summary>
-internal sealed class ChannelLog : IAsyncDisposable
+public sealed class ChannelLog : IAsyncDisposable
 {
     private readonly HttpClient http;
     private readonly CancellationTokenSource stop = new();

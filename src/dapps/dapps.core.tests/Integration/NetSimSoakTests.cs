@@ -23,9 +23,7 @@ namespace dapps.core.tests.Integration;
 /// CI: e.g. <c>DAPPS_SOAK_MINUTES=30 ./dapps.core.tests --filter-class
 /// dapps.core.tests.Integration.NetSimSoakTests</c>.
 /// </summary>
-[Collection("net-sim noisy AFSK 1200")]
-[Trait("Category", "Soak")]
-public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsyncLifetime
+public abstract class SoakScenarioTests(NetSimTwoNodeFixture fixture) : IAsyncLifetime
 {
     private const string App = "soak";
     private static readonly TimeSpan Outage = TimeSpan.FromMinutes(1);
@@ -44,7 +42,7 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
     private int duplicates;
     private int resubmittedTwice;
     private int corrupt;
-    private AirMonitor? air;
+    private IAirMonitor? air;
     private ChannelLog? channel;
     private StreamWriter? progress;
 
@@ -54,7 +52,7 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
     {
         if (!SoakSettings.Requested) return;
         var ct = TestContext.Current.CancellationToken;
-        air = await AirMonitor.StartAsync(fixture.Host, fixture.AgwPortA, fixture.AgwPortB, ct);
+        air = await fixture.StartAirMonitorAsync(ct);
         channel = await fixture.StartChannelLogAsync(ct);
     }
 
@@ -76,10 +74,10 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
         var traffic = TimeSpan.FromMinutes(minutes);
         var reports = Path.Combine(AppContext.BaseDirectory, "scenario-reports");
         Directory.CreateDirectory(reports);
-        progress = new StreamWriter(Path.Combine(reports, "soak-progress.log")) { AutoFlush = true };
+        progress = new StreamWriter(Path.Combine(reports, $"{ReportPrefix}-progress.log")) { AutoFlush = true };
 
-        var a = await StartNodeAsync("soakA", fixture.ApplCallA, fixture.AgwPortA, fixture.ApplCallB, ct);
-        var b = await StartNodeAsync("soakB", fixture.ApplCallB, fixture.AgwPortB, fixture.ApplCallA, ct);
+        var a = await StartNodeAsync("soakA", fixture.ApplCallA, fixture.NodeA, fixture.ApplCallB, ct);
+        var b = await StartNodeAsync("soakB", fixture.ApplCallB, fixture.NodeB, fixture.ApplCallA, ct);
         var started = DateTime.UtcNow;
         clock.Start();
         Note("traffic starts");
@@ -103,7 +101,8 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
             // a message re-offered after a lost ack would arrive then.
             while (clock.Elapsed < drainDeadline && await PendingAsync(ct) > 0) await Task.Delay(1000, ct);
             await Task.Delay(TimeSpan.FromSeconds(10), ct);
-            Note("queues empty");
+            var pending = await PendingAsync(ct);
+            Note(pending == 0 ? "queues empty" : $"drain time up with {pending} message(s) still queued");
         }
         catch (Exception e) when (!ct.IsCancellationRequested)
         {
@@ -115,10 +114,10 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
         try { await Task.WhenAll([.. pumps, reporter]); } catch (OperationCanceledException) { }
 
         var report = Report(seed, traffic, elapsed, channel!.Summarise(started, started + elapsed));
-        await File.WriteAllTextAsync(Path.Combine(reports, "soak.md"), report, ct);
-        await File.WriteAllTextAsync(Path.Combine(reports, "soak-air.txt"), air!.Transcript(), ct);
-        await File.WriteAllTextAsync(Path.Combine(reports, "soak-channel.txt"), channel!.Timeline(started, started + elapsed), ct);
-        foreach (var d in running) await File.WriteAllTextAsync(Path.Combine(reports, $"soak-{d.Name}.log"), d.Log, ct);
+        await File.WriteAllTextAsync(Path.Combine(reports, $"{ReportPrefix}.md"), report, ct);
+        await File.WriteAllTextAsync(Path.Combine(reports, $"{ReportPrefix}-air.txt"), air!.Transcript(), ct);
+        await File.WriteAllTextAsync(Path.Combine(reports, $"{ReportPrefix}-channel.txt"), channel!.Timeline(started, started + elapsed), ct);
+        foreach (var d in running) await File.WriteAllTextAsync(Path.Combine(reports, $"{ReportPrefix}-{d.Name}.log"), d.Log, ct);
         TestContext.Current.TestOutputHelper?.WriteLine(report);
 
         failure.Should().BeNull($"the soak's own sending, disruptions and reading should work\n{report}");
@@ -138,10 +137,12 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
         return pending;
     }
 
-    private async Task<DappsDaemon> StartNodeAsync(string name, string callsign, int agwPort, string neighbour, CancellationToken ct)
+    /// <summary>Report file names start with this: "soak" for BPQ.</summary>
+    protected virtual string ReportPrefix => "soak";
+
+    private async Task<DappsDaemon> StartNodeAsync(string name, string callsign, NodeAttachment on, string neighbour, CancellationToken ct)
     {
-        var node = await DappsDaemon.StartAsync(name, callsign, fixture.Host, agwPort, fixture.RadioPortIndex,
-            [new(neighbour, fixture.RadioPortIndex)], settings: null, ct);
+        var node = await DappsDaemon.StartAsync(name, callsign, on, [new(neighbour, on.BearerPort)], settings: null, ct);
         running.Add(node);
         return node;
     }
@@ -310,7 +311,7 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
         sb.AppendLine($"{traffic.TotalMinutes:F0} minutes of random traffic both ways (seed {seed}), then a wait for the queues to drain.");
         sb.AppendLine($"A third of the way in net-sim stops for {Outage.TotalSeconds:F0} s; two thirds in, B's daemon restarts.");
         sb.AppendLine();
-        sb.AppendLine($"BPQ radio port: {fixture.RadioSettings}");
+        sb.AppendLine($"Radio port: {fixture.RadioSettings}");
         sb.AppendLine();
         sb.AppendLine("| | |");
         sb.AppendLine("|---|---|");
@@ -351,4 +352,17 @@ public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : IAsync
 
     private static double Pct(List<double> sorted, double p) =>
         sorted.Count == 0 ? double.NaN : sorted[(int)Math.Min(sorted.Count - 1, Math.Floor(p * sorted.Count))];
+}
+
+/// <summary>The soak on two BPQ nodes.</summary>
+[Collection("net-sim noisy AFSK 1200")]
+[Trait("Category", "Soak")]
+public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : SoakScenarioTests(fixture);
+
+/// <summary>The soak on two pdn nodes.</summary>
+[Collection("net-sim pdn noisy AFSK 1200")]
+[Trait("Category", "Soak")]
+public sealed class NetSimPdnSoakTests(NetSimPdnNoisyAfsk1200Fixture fixture) : SoakScenarioTests(fixture)
+{
+    protected override string ReportPrefix => "soak-pdn";
 }
