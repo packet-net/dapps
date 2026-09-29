@@ -94,8 +94,9 @@ public sealed class CrossedConnectTests
         var send = backhaul.SendAsync(message, new BackhaulRoute(Lower, BearerPort: 1), Higher, ct);
         await clock.WaitForArmedAsync(1, ct);
 
+        clock.Advance(Wait - TimeSpan.FromMilliseconds(1));
         (await peer.TryReadLineAsync(Wait / 2, ct)).Should().BeNull("nothing is sent before the wait is over");
-        clock.Advance(Wait);
+        clock.Advance(TimeSpan.FromMilliseconds(1));
         (await peer.ReadLineAsync(ct)).Should().StartWith("exchange ");
         (await peer.TryReadLineAsync(Wait, ct)).Should().BeNull("no contents before it has our peer's rules");
 
