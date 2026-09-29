@@ -13,8 +13,9 @@ namespace dapps.core.tests.Integration;
 ///     app -> DAPPS A -- node A -- node B -- DAPPS B -> app
 ///
 /// These cases run on any pair of nodes (<see cref="IDappsNodePair"/>): BPQ
-/// over AXIP (<see cref="DappsEndToEndTests"/>) and pdn over AXUDP
-/// (<see cref="PdnEndToEndTests"/>).
+/// over AXIP (<see cref="DappsEndToEndTests"/>), pdn over AXUDP
+/// (<see cref="PdnEndToEndTests"/>), and pdn with BPQ, each end calling
+/// (<see cref="PdnBpqEndToEndTests"/>, <see cref="BpqPdnEndToEndTests"/>).
 /// </summary>
 public abstract class DappsExchangeTests(IDappsNodePair pair) : IAsyncLifetime
 {
@@ -56,7 +57,7 @@ public abstract class DappsExchangeTests(IDappsNodePair pair) : IAsyncLifetime
         // The whole session: B's prompt and rules, the routes pull, A's
         // rules with the message in one frame, the ack, and once the link
         // has been quiet a while, A's quit and a clean hang-up.
-        await AirShowsAsync("A", $"Fm {pair.ApplCallA} To {pair.ApplCallB} <D C", ct, TimeSpan.FromSeconds(45));
+        await HangUpShowsAsync(ct, TimeSpan.FromSeconds(45));
         Connects("A").Should().Be(1, Transcript());
         AirSent("B", "DAPPSv1>").Should().Be(1, Transcript());
         AirSent("B", "exchange id=").Should().Be(1, "B's rules go once, with its prompt\n" + Transcript());
@@ -85,7 +86,7 @@ public abstract class DappsExchangeTests(IDappsNodePair pair) : IAsyncLifetime
         var inbox = await b.WaitForInboundAsync("chat", 5, Delivery, ct);
         inbox.Select(m => Encoding.UTF8.GetString(m.Payload)).Should().BeEquivalentTo(
             Enumerable.Range(1, 5).Select(i => $"post {i}"));
-        await AirShowsAsync("A", $"Fm {pair.ApplCallA} To {pair.ApplCallB} <D C", ct, TimeSpan.FromSeconds(45));
+        await HangUpShowsAsync(ct, TimeSpan.FromSeconds(45));
         Connects("A").Should().Be(1, "five queued messages share one session\n" + Transcript());
         Connects("B").Should().Be(0, Transcript());
     }
@@ -161,7 +162,7 @@ public abstract class DappsExchangeTests(IDappsNodePair pair) : IAsyncLifetime
 
         Connects("A").Should().Be(1, "all three went on the link A opened\n" + Transcript());
         Connects("B").Should().Be(0, Transcript());
-        HangUps("A").Should().Be(0, "the link is still held\n" + Transcript());
+        (HangUps("A") + HangUps("B")).Should().Be(0, "the link is still held\n" + Transcript());
     }
 
     [Fact]
@@ -173,7 +174,7 @@ public abstract class DappsExchangeTests(IDappsNodePair pair) : IAsyncLifetime
         await a.SubmitAsync("chat", b.Callsign, Encoding.UTF8.GetBytes("first"), ct);
         await b.WaitForInboundAsync("chat", 1, Delivery, ct);
         await AirShowsAsync("A", "quit", ct, TimeSpan.FromSeconds(30));
-        await AirShowsAsync("A", $"Fm {pair.ApplCallA} To {pair.ApplCallB} <D C", ct, TimeSpan.FromSeconds(30));
+        await HangUpShowsAsync(ct, TimeSpan.FromSeconds(30));
 
         await a.SubmitAsync("chat", b.Callsign, Encoding.UTF8.GetBytes("second"), ct);
         await b.WaitForInboundAsync("chat", 2, Delivery, ct);
@@ -228,6 +229,22 @@ public abstract class DappsExchangeTests(IDappsNodePair pair) : IAsyncLifetime
     private static string Other(string side) => side == "A" ? "B" : "A";
 
     protected int AirSent(string side, string contains) => air.CountSentBy(side, contains.Replace("\\n", "\n"));
+
+    /// <summary>
+    /// Wait for the link between the two DAPPS callsigns to be hung up.
+    /// After quit and bye both ends let go, and which node's DISC reaches
+    /// the air first is down to the nodes: BPQ's caller usually beats BPQ's
+    /// answerer, but pdn answering hangs up before BPQ calling does.
+    /// </summary>
+    protected async Task HangUpShowsAsync(CancellationToken ct, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (HangUps("A") + HangUps("B") == 0)
+        {
+            if (DateTime.UtcNow >= deadline) throw new TimeoutException($"Neither end hung up.\n{Transcript()}");
+            await Task.Delay(100, ct);
+        }
+    }
 
     protected async Task AirShowsAsync(string side, string contains, CancellationToken ct, TimeSpan? timeout = null)
     {

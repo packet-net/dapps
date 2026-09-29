@@ -31,3 +31,23 @@ public sealed class PdnCrossedCallAxudpTests(TwoPdnFixture fixture) : CrossedCal
     protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(30);
     protected override (int From, int To) StaggerMs => (0, 51);
 }
+
+/// <summary>
+/// The exchange between DAPPS on a pdn node and DAPPS on a BPQ node, pdn's
+/// AXUDP port facing BPQ's AXIP port (<see cref="PdnBpqFixture"/>):
+///
+///     app -> DAPPS A -RHPv2- pdn-A -AXUDP- BPQ-B -AGW- DAPPS B -> app
+///
+/// The same cases as <see cref="PdnEndToEndTests"/>, across the two stacks.
+/// </summary>
+[Collection("pdn and BPQ")]
+[Trait("Category", "Integration")]
+public sealed class PdnBpqEndToEndTests(PdnBpqFixture fixture) : DappsExchangeTests(fixture);
+
+/// <summary>
+/// <see cref="PdnBpqEndToEndTests"/> with the sides swapped: DAPPS on BPQ
+/// is A, so it's BPQ that calls pdn.
+/// </summary>
+[Collection("pdn and BPQ")]
+[Trait("Category", "Integration")]
+public sealed class BpqPdnEndToEndTests(PdnBpqFixture fixture) : DappsExchangeTests(new SwappedPair(fixture));
