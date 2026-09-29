@@ -94,12 +94,12 @@ public abstract class SoakScenarioTests(NetSimTwoNodeFixture fixture) : IAsyncLi
                 DisruptAsync(b, traffic, ct));
             Note("traffic stops; draining");
             var drainDeadline = clock.Elapsed + DrainLimit;
-            while (clock.Elapsed < drainDeadline && Missing().Count > 0) await Task.Delay(1000, ct);
+            while (clock.Elapsed < drainDeadline && Missing().Count > 0 && fixture.Died is null) await Task.Delay(1000, ct);
             Note(Missing().Count == 0 ? "all delivered" : $"gave up with {Missing().Count} undelivered");
 
             // Keep reading until neither daemon has anything left to send:
             // a message re-offered after a lost ack would arrive then.
-            while (clock.Elapsed < drainDeadline && await PendingAsync(ct) > 0) await Task.Delay(1000, ct);
+            while (clock.Elapsed < drainDeadline && fixture.Died is null && await PendingAsync(ct) > 0) await Task.Delay(1000, ct);
             await Task.Delay(TimeSpan.FromSeconds(10), ct);
             var pending = await PendingAsync(ct);
             Note(pending == 0 ? "queues empty" : $"drain time up with {pending} message(s) still queued");
@@ -120,6 +120,7 @@ public abstract class SoakScenarioTests(NetSimTwoNodeFixture fixture) : IAsyncLi
         foreach (var d in running) await File.WriteAllTextAsync(Path.Combine(reports, $"{ReportPrefix}-{d.Name}.log"), d.Log, ct);
         TestContext.Current.TestOutputHelper?.WriteLine(report);
 
+        await fixture.ThrowIfDiedAsync(report);
         failure.Should().BeNull($"the soak's own sending, disruptions and reading should work\n{report}");
         Missing().Should().BeEmpty($"every message should arrive\n{report}");
         duplicates.Should().Be(0, $"no message should arrive twice\n{report}");

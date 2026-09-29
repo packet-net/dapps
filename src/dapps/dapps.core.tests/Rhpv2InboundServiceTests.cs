@@ -140,6 +140,51 @@ public sealed class Rhpv2InboundServiceTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task AConfigSaveWhileListening_ListensAgainAfterTheShortNonFailureDelay()
+    {
+        // As AgwInboundSessionSeamTests.AConfigSaveWhileConnected: a save
+        // cancels the cycle, which is not a failure, but the loop still
+        // pauses briefly before it listens again. Here the cycle ends on the
+        // thread pool, so the ordering that keeps the pause (collapse, then
+        // cancel) is tested in ReconnectBackoffScheduleTests.
+        await using var server = new MockRhpServer();
+        server.Start();
+        SystemOptions Options() => new()
+        {
+            Callsign = "G0DPB-1",
+            NodeBearer = "rhpv2",
+            NodeHost = server.Endpoint.Address.ToString(),
+            RhpPort = server.Endpoint.Port,
+        };
+        var opts = new MutableOptionsMonitor<SystemOptions>(Options());
+        var clock = new ObservableTimeProvider();
+        var service = new Rhpv2InboundService(
+            opts, NullLoggerFactory.Instance, NullLogger<Rhpv2InboundService>.Instance,
+            new Database(NullLogger<Database>.Instance, opts), new NoopInbox(), new OperationalMetrics(), timeProvider: clock);
+
+        var ct = TestContext.Current.CancellationToken;
+        await service.StartAsync(ct);
+        try
+        {
+            WaitForFrames(server, count: 3, TimeSpan.FromSeconds(5));
+
+            opts.Set(Options());
+
+            await clock.WaitForTimerAsync(Rhpv2InboundService.NonFailureRetryDelay, ct);
+            await Task.Delay(500, ct);
+            server.ReceivedFrames.Count.Should().Be(3, "a cancelled cycle is not a failure, but it still pauses briefly");
+
+            clock.Advance(Rhpv2InboundService.NonFailureRetryDelay);
+            WaitForFrames(server, count: 6, TimeSpan.FromSeconds(5)).Skip(3).Select(f => f.GetType())
+                .Should().Equal(typeof(SocketMessage), typeof(BindMessage), typeof(ListenMessage));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
     private sealed class NoopInbox : IBackhaulInbox
     {
         public Task DeliverAsync(BackhaulMessage message, string sourceCallsign, CancellationToken ct)

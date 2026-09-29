@@ -11,7 +11,7 @@ Today that interface is **AGW** - the long-standing host-side TCP protocol that 
 |---------------|----------------|----------------------------|
 | BPQ AGW       | Production     | [BPQ (AGW)](bpq.md)        |
 | XRouter (RHPv2) | Production - RHPv2 is required for DAPPS-on-XRouter; XRouter AGW does not work as a DAPPS bearer | [XRouter (RHPv2)](xrouter.md) |
-| pdn (RHPv2)   | Works - DAPPS runs as a pdn app; tested end to end against pdn node-v0.55.2 | [pdn (RHPv2)](pdn.md) |
+| pdn (RHPv2)   | Works - DAPPS runs as a pdn app; tested end to end against pdn node-v0.57.0 | [pdn (RHPv2)](pdn.md) |
 | Other AGW host| Likely works   | [BPQ (AGW)](bpq.md) covers the protocol-shaped bits; only the config-file specifics differ |
 | MeshCore Companion (USB) | Available - off by default (`MeshCoreEnabled=true`) | [MeshCore](meshcore.md) |
 | MeshCore KISS | Planned        | [MeshCore](meshcore.md)    |

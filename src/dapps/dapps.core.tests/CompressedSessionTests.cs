@@ -179,23 +179,8 @@ public sealed class CompressedSessionTests : IAsyncLifetime
         (await peer.ReadLineAsync(ct)).Should().Be($"ack {id}");
     }
 
-    private static async Task<(Stream Ours, Stream Theirs)> LoopbackPairAsync(CancellationToken ct)
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try
-        {
-            var client = new TcpClient();
-            var connecting = client.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, ct);
-            var server = await listener.AcceptTcpClientAsync(ct);
-            await connecting;
-            return (client.GetStream(), server.GetStream());
-        }
-        finally
-        {
-            listener.Stop();
-        }
-    }
+    /// <summary>The shared loopback pair, kept open until <paramref name="ct"/> is cancelled (see <see cref="ExchangeTestKit.LoopbackPairAsync"/>).</summary>
+    private static async Task<(Stream Ours, Stream Theirs)> LoopbackPairAsync(CancellationToken ct) => await ExchangeTestKit.LoopbackPairAsync(ct);
 
     /// <summary>The far end of a link, driven line by line.</summary>
     private sealed class LinePeer(Stream stream)

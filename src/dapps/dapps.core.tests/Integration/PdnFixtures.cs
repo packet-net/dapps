@@ -19,23 +19,16 @@ namespace dapps.core.tests.Integration;
 /// </summary>
 internal static class PdnNode
 {
-    /// <summary>ghcr.io/packet-net/packet.net at node-v0.55.2, pinned so a new
+    /// <summary>ghcr.io/packet-net/packet.net at node-v0.57.0, pinned so a new
     /// build can't change results unnoticed. Refresh: pull the image at the
     /// release tag and take its digest.</summary>
-    public const string Image = "ghcr.io/packet-net/packet.net@sha256:e2a0024c49be6b289df3fce5b9f97daaf3b3dc8e4c16dfaca4281780a3fd08af";
+    public const string Image = "ghcr.io/packet-net/packet.net@sha256:97fbb00691b67682c96de881581e3787c97586a3f37a5c24b4de390f46457e01";
 
     /// <summary>
     /// The node's seed config. <paramref name="portYaml"/> is one entry of
     /// <c>ports:</c>. RHPv2 binds 0.0.0.0, as it must in a container for
     /// the daemon outside to reach it; pdn's own default is loopback.
     /// </summary>
-    /// <remarks>
-    /// The one port's id is <see cref="PortId"/>, "1": DAPPS asks RHPv2 for
-    /// a port by number, 1 for the first, as XRouter numbers them, and pdn
-    /// since node-v0.36.2 only takes a port's id (packet.net#841). Naming the
-    /// port "1" works either way. A workaround: remove it once packet.net#841
-    /// is fixed.
-    /// </remarks>
     public static string Config(string callsign, string alias, string portYaml, int httpPort, int rhpPort) => $"""
         schemaVersion: 2
         identity:
@@ -59,10 +52,9 @@ internal static class PdnNode
 
         """;
 
-    /// <summary>The id every test node's one port has; see <see cref="Config"/>.
-    /// Workaround for packet.net#841: remove once it is fixed, and give the
-    /// ports ordinary names.</summary>
-    public const string PortId = "1";
+    /// <summary>A node's first port as RHPv2 numbers it, counted from 1 in
+    /// config order: how DAPPS asks for it, as XRouter numbers ports.</summary>
+    private const string FirstPort = "1";
 
     private static string Indent(string yaml, int spaces) =>
         string.Join('\n', yaml.TrimEnd().Split('\n').Select(l => new string(' ', spaces) + l));
@@ -75,19 +67,25 @@ internal static class PdnNode
     /// </summary>
     public static async Task<IContainer> StartAsync(string config, string? networkOf, IEnumerable<int> publish)
     {
+        var container = Build(config, networkOf, publish);
+        await container.StartAsync();
+        return container;
+    }
+
+    /// <summary>A node as <see cref="StartAsync"/> starts it, not started yet.</summary>
+    public static IContainer Build(string config, string? networkOf, IEnumerable<int> publish)
+    {
         var builder = new ContainerBuilder()
             .WithImage(Image)
             .WithResourceMapping(Encoding.UTF8.GetBytes(config), "/etc/packetnet/packetnet.yaml");
         if (networkOf is not null) builder = builder.WithCreateParameterModifier(p => p.HostConfig.NetworkMode = $"container:{networkOf}");
         foreach (var port in publish) builder = builder.WithPortBinding(port, assignRandomHostPort: true);
-        var container = builder.Build();
-        await container.StartAsync();
-        return container;
+        return builder.Build();
     }
 
     /// <summary>Wait until the node answers and (unless <paramref name="portsUp"/>
     /// is false) every port it has is up.</summary>
-    public static async Task WaitUntilUpAsync(string host, int httpPort, string name, TimeSpan limit, bool portsUp = true)
+    public static async Task WaitUntilUpAsync(string host, int httpPort, string name, TimeSpan limit, bool portsUp = true, CancellationToken ct = default)
     {
         using var http = new HttpClient { BaseAddress = new Uri($"http://{host}:{httpPort}/"), Timeout = TimeSpan.FromSeconds(5) };
         var deadline = DateTime.UtcNow + limit;
@@ -96,16 +94,16 @@ internal static class PdnNode
         {
             try
             {
-                var ports = await http.GetFromJsonAsync<JsonElement>("api/v1/ports");
+                var ports = await http.GetFromJsonAsync<JsonElement>("api/v1/ports", ct);
                 var states = ports.EnumerateArray().Select(p => p.GetProperty("state").GetString()).ToList();
                 if (!portsUp || (states.Count > 0 && states.All(s => s == "up"))) return;
                 last = "ports " + string.Join(", ", states);
             }
-            catch (Exception e) when (e is HttpRequestException or TaskCanceledException or JsonException)
+            catch (Exception e) when (e is HttpRequestException or TaskCanceledException or JsonException && !ct.IsCancellationRequested)
             {
                 last = e.Message;
             }
-            await Task.Delay(500);
+            await Task.Delay(500, ct);
         }
         throw new TimeoutException($"pdn node {name} wasn't up within {limit.TotalSeconds:F0}s ({last}).");
     }
@@ -115,10 +113,11 @@ internal static class PdnNode
     /// the other node hears one: the first can transmit and the second
     /// receive. The frames go out through the node's RHPv2 datagram socket.
     /// </summary>
-    public static async Task WaitUntilHeardAsync(string host, int fromRhpPort, string fromCall, int toHttpPort, string what)
+    public static async Task WaitUntilHeardAsync(string host, int fromRhpPort, string fromCall, int toHttpPort, string what, CancellationToken ct = default)
     {
         var limit = TimeSpan.FromMinutes(2);
-        using var cts = new CancellationTokenSource(limit);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(limit);
         await using var heard = await AirMonitor.StartAsync([AirMonitor.Tap.PdnNode("B", host, toHttpPort)], cts.Token);
         try
         {
@@ -128,10 +127,10 @@ internal static class PdnNode
                 {
                     await using var rhp = await RhpClient.ConnectAsync(host, fromRhpPort, cts.Token);
                     var handle = await rhp.SocketAsync(RhpV2.Client.Protocol.ProtocolFamily.Ax25, SocketMode.Dgram, cts.Token);
-                    await rhp.BindAsync(handle, fromCall, PortId, cts.Token);
+                    await rhp.BindAsync(handle, fromCall, FirstPort, cts.Token);
                     while (true)
                     {
-                        await rhp.SendToAsync(handle, "ready", port: PortId, local: fromCall, remote: "READY", ct: cts.Token);
+                        await rhp.SendToAsync(handle, "ready", port: FirstPort, local: fromCall, remote: "READY", ct: cts.Token);
                         if (await heard.WaitForAsync("A", $"Fm {fromCall} To READY", TimeSpan.FromSeconds(3), cts.Token)) return;
                     }
                 }
@@ -141,7 +140,7 @@ internal static class PdnNode
                 }
             }
         }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        catch (OperationCanceledException) when (cts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
             throw new TimeoutException(
                 $"{what}: sent UI frames from {fromCall} for {limit.TotalMinutes:F0} minutes and the other pdn node never heard them.");
@@ -279,7 +278,7 @@ public sealed class TwoPdnFixture : IDappsScenarioBed, IAsyncLifetime
     }
 
     private static string AxudpPort(int remote, int local) => $"""
-        - id: "{PdnNode.PortId}"
+        - id: axudp
           transport:
             kind: axudp
             host: 127.0.0.1
@@ -303,6 +302,12 @@ public sealed class TwoPdnFixture : IDappsScenarioBed, IAsyncLifetime
         await PdnNode.WaitUntilUpAsync(Host, HttpPortA, CallsignA, TimeSpan.FromMinutes(1), portsUp: false);
         await PdnNode.WaitUntilUpAsync(Host, HttpPortB, CallsignB, TimeSpan.FromMinutes(1), portsUp: false);
     }
+
+    /// <summary>Not watched: the containers that have been seen to die are
+    /// linbpq's, on the simulated channel (<see cref="NetSimTwoNodeFixture"/>).</summary>
+    public string? Died => null;
+
+    public Task ThrowIfDiedAsync(string? detail = null) => Task.CompletedTask;
 
     public async Task WaitUntilReadyAsync()
     {

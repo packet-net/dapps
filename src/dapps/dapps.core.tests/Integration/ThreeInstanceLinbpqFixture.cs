@@ -30,7 +30,7 @@ namespace dapps.core.tests.Integration;
 /// </summary>
 public sealed class ThreeInstanceLinbpqFixture : IAsyncLifetime
 {
-    private const string Image = "m0lte/linbpq:latest";
+    private const string Image = LinbpqIntegrationFixture.Image;
 
     private const int InsideAgwPortA = 18001;
     private const int InsideAgwPortB = 18002;
