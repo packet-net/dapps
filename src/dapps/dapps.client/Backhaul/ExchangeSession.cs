@@ -669,11 +669,21 @@ public sealed class ExchangeSession
     /// at once with a <c>quit</c>, so the peer defers what it has waiting
     /// and the link goes; the next one starts in step. Nothing of ours
     /// counts as failed either, the first time: the link was working.
+    /// When the last session with this neighbour went out of step too, it
+    /// keeps happening: hang up without a <c>quit</c>, so a peer that
+    /// dialled counts it as a break and waits a cooldown, whichever end
+    /// the fault shows at.
     /// </summary>
     private void OutOfStep(string what)
     {
-        logger.LogWarning("Out of step with {0}: {1}. Ending the session so the next link starts afresh", peer, what);
         outOfStep = true;
+        if (Established && OutOfStepHistory.InARow(peer) > 0)
+        {
+            logger.LogWarning("Out of step with {0} again: {1}. Hanging up without a quit, so it counts as a break", peer, what);
+            End();
+            return;
+        }
+        logger.LogWarning("Out of step with {0}: {1}. Ending the session so the next link starts afresh", peer, what);
         Say("quit\n", end: true);
     }
 

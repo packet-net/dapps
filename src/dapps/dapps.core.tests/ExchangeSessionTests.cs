@@ -1214,14 +1214,70 @@ public sealed class ExchangeSessionTests : IDisposable
 
             await peer.WriteLineAsync("Returned to node N0XYZ", Ct);
 
-            (await peer.ReadLineAsync(Ct)).Should().Be("quit");
+            if (i == 0) (await peer.ReadLineAsync(Ct)).Should().Be("quit");
             await run.WaitAsync(Patience, Ct);
+            if (i == 1) await ExpectNothingSaidAsync(peer);
             outcomes.Add(batch.Outcomes.Single().Result);
         }
 
         outcomes[0].Deferred.Should().BeTrue("once could be a stale frame");
         outcomes[1].Deferred.Should().BeFalse();
         outcomes[1].Error.Should().Contain("out of step 2 times in a row");
+    }
+
+    [Fact]
+    public async Task ARepeatSeenOnlyByTheReceiver_HangsUpWithoutAQuit_SoTheSenderThatDialledGetsACooldown()
+    {
+        // A path that adds a byte: the second time, the receiver answers bad
+        // (the same message damaged again), then reads the leftover byte and
+        // the next message's header as one line, and goes out of step. A quit
+        // would have the sender defer both, with no cooldown, for ever.
+        var m = Message("no line feeds, and ends with a bang!", $"app@{Us}", 1);
+        var next = Message("the one after", $"app@{Us}", 2);
+        var memory = new OutOfStepMemory();
+
+        var first = new RecordingBatch(m, next);
+        await RunPairAsync(first, memory, new RecordingInbox(), senderStream: s => new AddsAByte(s));
+        first.Outcomes.Should().OnlyContain(o => o.Result.Deferred, "the first time, the receiver said quit");
+
+        var second = new RecordingBatch(m, next);
+        await RunPairAsync(second, memory, new RecordingInbox(), senderStream: s => new AddsAByte(s));
+        var result = second.Outcomes.Single(o => o.Id == m.Id).Result;
+        result.Deferred.Should().BeFalse("the receiver hung up without a quit, a break for the node that dialled");
+        result.Error.Should().Contain("broke off");
+        second.Outcomes.Single(o => o.Id == next.Id).Result.Deferred.Should().BeTrue();
+        memory.InARow(Them).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task TheSecondOutOfStepEndingInARow_HangsUpWithoutAQuit()
+    {
+        var memory = new OutOfStepMemory();
+        memory.EndedOutOfStep(Them);
+        var (session, peer, run) = await CalleeAsync(memory: memory);
+        await peer.WriteLineAsync(Rules(), Ct);
+
+        await peer.WriteLineAsync("Returned to node N0XYZ", Ct);
+
+        await run.WaitAsync(Patience, Ct);
+        await ExpectNothingSaidAsync(peer);
+        memory.InARow(Them).Should().Be(2);
+    }
+
+    /// <summary>The session has ended without a word: no quit. (Its
+    /// transport then drops the link.)</summary>
+    private async Task ExpectNothingSaidAsync(LinePeer peer)
+    {
+        string? line = null;
+        try
+        {
+            line = await peer.TryReadLineAsync(Short, Ct);
+        }
+        catch (EndOfStreamException)
+        {
+            // The link went: nothing was said either.
+        }
+        line.Should().BeNull("it hangs up without a quit");
     }
 
     [Fact]
@@ -1295,7 +1351,19 @@ public sealed class ExchangeSessionTests : IDisposable
             OutOfStepHistory = receiverMemory,
         };
         sender.TryTake(batch);
-        await Task.WhenAll(sender.RunAsync(Ct), receiver.RunAsync(Ct)).WaitAsync(Patience, Ct);
+        // Each end's transport drops the link once its session ends.
+        async Task RunThenCloseAsync(ExchangeSession session, Stream stream)
+        {
+            try
+            {
+                await session.RunAsync(Ct);
+            }
+            finally
+            {
+                await stream.DisposeAsync();
+            }
+        }
+        await Task.WhenAll(RunThenCloseAsync(sender, a), RunThenCloseAsync(receiver, b)).WaitAsync(Patience, Ct);
     }
 
     /// <summary>A path that turns every LF into CR on the way, as BPQ's Telnet bridge does.</summary>
@@ -1306,6 +1374,20 @@ public sealed class ExchangeSessionTests : IDisposable
             var copy = buffer.ToArray();
             for (var i = 0; i < copy.Length; i++) if (copy[i] == (byte)'\n') copy[i] = (byte)'\r';
             return Inner.WriteAsync(copy, ct);
+        }
+    }
+
+    /// <summary>A path that adds a byte: one at the start of the first
+    /// payload in each write that carries a <c>msg</c>.</summary>
+    private sealed class AddsAByte(Stream inner) : PassThrough(inner)
+    {
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
+        {
+            var bytes = buffer.ToArray();
+            var msg = Encoding.Latin1.GetString(bytes).IndexOf("msg ", StringComparison.Ordinal);
+            if (msg < 0) return Inner.WriteAsync(buffer, ct);
+            var payload = Array.IndexOf(bytes, (byte)'\n', msg) + 1;
+            return Inner.WriteAsync((byte[])[.. bytes[..payload], (byte)'#', .. bytes[payload..]], ct);
         }
     }
 

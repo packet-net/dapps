@@ -17,9 +17,11 @@ namespace dapps.client.Backhaul;
 /// rule: the sender sends it once more plain, and fails it with a
 /// cooldown if that's no good either.</item>
 /// <item>Something other than DAPPS keeps answering on the link, such as a
-/// node's "Returned to node" once the far end has gone. The second
-/// session in a row with one neighbour that ends out of step counts as a
-/// break: the oldest of ours fails, for one cooldown.</item>
+/// node's "Returned to node" once the far end has gone, or a path that
+/// adds or drops bytes. The second session in a row with one neighbour
+/// that ends out of step counts as a break: the oldest of ours fails, for
+/// one cooldown, and the session hangs up without a <c>quit</c>, so a
+/// peer that dialled counts it as a break too.</item>
 /// </list>
 /// In memory only, and small: a restart forgets it, as it does cooldowns.
 /// </summary>
@@ -57,6 +59,9 @@ public sealed class OutOfStepMemory
     /// <summary>A session with <paramref name="peer"/> ended out of step:
     /// how many have now, in a row.</summary>
     public int EndedOutOfStep(string peer) => inARow.AddOrUpdate(peer, 1, (_, n) => n + 1);
+
+    /// <summary>How many sessions with <paramref name="peer"/> in a row have ended out of step so far.</summary>
+    public int InARow(string peer) => inARow.TryGetValue(peer, out var n) ? n : 0;
 
     /// <summary>A session with <paramref name="peer"/> that got going ended any other way.</summary>
     public void EndedInStep(string peer) => inARow.TryRemove(peer, out _);
