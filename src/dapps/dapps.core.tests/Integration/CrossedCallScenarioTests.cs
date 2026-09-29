@@ -85,9 +85,7 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
         results.Should().AllSatisfy(r => r.Complete.Should().BeTrue($"round {r.Round}'s messages should all arrive within {RoundLimit.TotalSeconds:F0}s\n{report}\n{Diagnostics()}"));
         duplicates.Should().Be(0, "every message should arrive exactly once\n" + report);
         results.Should().AllSatisfy(r => r.Dials.Should().BeLessThanOrEqualTo(MaxDials, $"round {r.Round}: {MaxDials} dials at most\n{report}"));
-        // A round that needed more than one call each went through BPQ's
-        // link reset, where waiting out the prompt is the way back.
-        results.Where(r => r.Dials <= 2).Should().AllSatisfy(r => r.Fallbacks.Should().Be(0, $"round {r.Round}: no session should have had to wait out the prompt\n{report}"));
+        results.Should().AllSatisfy(r => r.Fallbacks.Should().Be(0, $"round {r.Round}: no session should have had to wait out the prompt\n{report}"));
         results.Where(r => r.Dials == 2).Should().AllSatisfy(r => r.Spotted.Should().BePositive(
             $"round {r.Round}: both nodes dialled, so one of them should have seen the calls cross or the link already up\n{report}"));
     }
@@ -288,14 +286,12 @@ public abstract class CrossedCallScenarioTests(NetSimTwoBpqFixture fixture) : IA
 [Trait("Category", "Integration")]
 public sealed class CrossedCallScenarioAfsk1200Tests(NetSimAfsk1200Fixture fixture) : CrossedCallScenarioTests(fixture)
 {
-    // Usually 1 or 2 dials and 14 to 19 s. But at 1200 baud the second
-    // node's call can land just as the first node's connects, over a link
-    // the first node has already heard on: BPQ resets it, and recovering
-    // takes a cooldown, a prompt wait, the 30 s silent-peer wait and a
-    // second crossing: 5 dials and about 70 s (2 rounds of 8 on net-sim
-    // v0.4.0; never at QPSK 3600, where the prompt arrives sooner).
-    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(100);
-    protected override int MaxDials => 6;
+    // 1 or 2 dials and 14 to 24 s, or up to 30 s when two transmissions
+    // collide. The second node's call can land just as the first node's
+    // connects; the first node now holds its prompt until its own call has
+    // connected, so that is an ordinary crossing too (#205: it was 5 dials
+    // and about 70 s). The cold round meets that timing nearly every time.
+    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(45);
 }
 
 [Collection("net-sim QPSK 3600")]

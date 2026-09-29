@@ -458,6 +458,15 @@ public sealed class AgwInboundService(
             logger.LogInformation("AGW inbound: session {0}<->{1} retired: a newer session with that peer has the link", local, remote);
         });
 
+        // #205: our own call to this peer may already be on its way, the
+        // two calls made a moment apart. Our node then sends our SABM down
+        // this link, and the peer's node keeps its call up, sharing the link
+        // with ours, only if nothing has reached it on the link yet;
+        // otherwise it resets the link, and both calls are lost. So no
+        // prompt until our call has connected (this session is then
+        // retired, having said nothing) or given up.
+        var ownCall = lease is null ? Task.CompletedTask : peerSessions!.OwnCallsSettledAsync(lease);
+
         var handler = new InboundConnectionHandler(
             stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics,
             settingsFor: exchangePolicy is null ? null : exchangePolicy.ForPeerAsync,
@@ -471,7 +480,10 @@ public sealed class AgwInboundService(
         {
             using var session = CancellationTokenSource.CreateLinkedTokenSource(
                 stoppingTokenSource.Token, lease?.Retired ?? CancellationToken.None);
-            try { await handler.Handle(session.Token); }
+            try
+            {
+                if (await HoldForOwnCallAsync(ownCall, remote, session.Token)) await handler.Handle(session.Token);
+            }
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "AGW inbound: session handler {0}<->{1} failed", local, remote);
@@ -489,6 +501,40 @@ public sealed class AgwInboundService(
             }
         });
     }
+
+    /// <summary>
+    /// Waits for our own call to the peer to connect or give up before
+    /// this session answers (see <see cref="OwnCallHold"/>). False when
+    /// the session was retired meanwhile, our call having connected, or
+    /// the service is stopping: then it never answers.
+    /// </summary>
+    private async Task<bool> HoldForOwnCallAsync(Task ownCall, string remote, CancellationToken ct)
+    {
+        if (ownCall.IsCompleted) return !ct.IsCancellationRequested;
+        logger.LogInformation("AGW inbound: our own call to {0} is on its way; holding the prompt until it connects", remote);
+        try
+        {
+            await ownCall.WaitAsync(OwnCallHold, timeProvider, ct);
+        }
+        catch (TimeoutException)
+        {
+            logger.LogInformation("AGW inbound: our call to {0} hasn't connected after {1:F0}s; answering its call",
+                remote, OwnCallHold.TotalSeconds);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+        }
+        return !ct.IsCancellationRequested;
+    }
+
+    /// <summary>
+    /// Longest an inbound session holds its prompt for our own call to the
+    /// same peer. On net-sim at 1200 baud such a call connected 2 to 3 s
+    /// after it was asked for, every time. By 10 s the peer's call has
+    /// stopped waiting for a prompt and sent its <c>exchange</c> anyway, so
+    /// holding longer gains nothing.
+    /// </summary>
+    internal static readonly TimeSpan OwnCallHold = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// Finds the session a 'D' / 'd' frame refers to. Exact

@@ -209,10 +209,13 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
     // One session per peer: our dial to a peer that has just called us
     // makes BPQ move the link to our dial's socket. The inbound session is
     // then retired: out of the table, no 'd' from it (BPQ would apply that
-    // to the link, now the newer session's), and its handler ended.
+    // to the link, now the newer session's), and its handler ended. Until
+    // our dial has connected it says nothing at all (#205): the peer's BPQ
+    // keeps its call up and shares the link with ours only if nothing has
+    // reached it on the link yet. A prompt there makes it reset the link.
 
     [Fact]
-    public async Task OurDialConnectingForAPeer_RetiresItsInboundSession_WithoutADisconnect()
+    public async Task OurDialConnectingForAPeer_RetiresItsInboundSession_WhichNeverSaidAWord()
     {
         var ct = TestContext.Current.CancellationToken;
         var peers = new PeerSessionRegistry();
@@ -221,7 +224,8 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Port)!;   // on its way already
 
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
-        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
+        await h.Logs.WaitForAsync("holding the prompt", ct);
+        (await bpq.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'D', "no prompt while our own call is on its way");
 
         peers.Connected(dialling);
         await h.Logs.WaitForAsync("retired", ct);
@@ -230,9 +234,64 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         await bpq.WriteAsync(ct, FakeAgwSocket.Data(Remote, Local, Port, "help\n"));
         var sent = await bpq.DrainAsync(ct, TimeSpan.FromMilliseconds(500));
         sent.Should().NotContain(f => f.Kind == 'd', "a retired session never disconnects the link");
-        sent.Should().NotContain(f => f.Kind == 'D', "a retired session sends nothing more");
+        sent.Should().NotContain(f => f.Kind == 'D', "a retired session sends nothing");
+        bpq.Received.Should().NotContain(f => f.Kind == 'D', "the held session never prompted");
         peers.IsActive(Remote, out var direction).Should().BeTrue();
         dialling.Dispose();
+    }
+
+    [Fact]
+    public async Task OurDialGivingUp_LetsTheHeldInboundSessionAnswer()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
+        var bpq = await h.StartAsync(ct);
+        var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Port)!;
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        await h.Logs.WaitForAsync("holding the prompt", ct);
+
+        dialling.Dispose();   // BPQ refused our connect, say
+
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
+        h.Logs.Warnings.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task OurDialNotConnectingInTime_TheHeldInboundSessionAnswersAnyway()
+    {
+        // By then the peer has given up waiting for a prompt; holding on
+        // gains nothing.
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        var peers = new PeerSessionRegistry();
+        await using var h = new AgwInboundServiceHarness(Local, clock, peerSessions: peers);
+        var bpq = await h.StartAsync(ct);
+        using var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Port)!;
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        await clock.WaitForTimerAsync(AgwInboundService.OwnCallHold, ct);
+        (await bpq.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'D');
+
+        clock.Advance(AgwInboundService.OwnCallHold);
+
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
+        h.Logs.Any("hasn't connected after 10s; answering its call").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task OurDialOnAnotherPort_DoesNotHoldThePrompt()
+    {
+        // Another port is another link: our SABM won't come down this one.
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
+        var bpq = await h.StartAsync(ct);
+        using var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Port + 1)!;
+
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
+        h.Logs.Any("holding the prompt").Should().BeFalse();
     }
 
     [Fact]
