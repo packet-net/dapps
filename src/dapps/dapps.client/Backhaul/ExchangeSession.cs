@@ -41,7 +41,9 @@ namespace dapps.client.Backhaul;
 /// at once with a <c>quit</c>, and everything unanswered at both ends
 /// waits for the next session: at the edge of range BPQ can hand over a
 /// stale frame in place of the one the peer sent, and a new link starts
-/// in step.
+/// in step. A fault that repeats is bounded (<see cref="OutOfStepMemory"/>):
+/// the same message arriving damaged again is answered <c>bad</c>, and a
+/// second out-of-step ending in a row with one neighbour fails the oldest.
 /// </para>
 /// </summary>
 public sealed class ExchangeSession
@@ -132,6 +134,9 @@ public sealed class ExchangeSession
     }
 
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
+
+    /// <summary>Out-of-step endings and damaged messages, between sessions.</summary>
+    public OutOfStepMemory OutOfStepHistory { get; init; } = OutOfStepMemory.Shared;
 
     /// <summary>How long a caller waits for the prompt or the peer's
     /// <c>exchange</c> before sending its own anyway: when two nodes
@@ -288,19 +293,31 @@ public sealed class ExchangeSession
     /// neighbour gets a cooldown, and routing learns of it. Not when
     /// <paramref name="deferAll"/>: we're shutting down, or the link went
     /// to a newer session. Nor when the stream from the peer went out of
-    /// step: the link was working, and a new one clears it. Work handed to
-    /// the session and not started yet is deferred too, so every message
-    /// handed out gets an outcome, a flood copy included.
+    /// step: the link was working, and a new one clears it. Unless the
+    /// last session with this neighbour went out of step too: then it's
+    /// something that keeps happening, and it counts as a break. Work
+    /// handed to the session and not started yet is deferred too, so every
+    /// message handed out gets an outcome, a flood copy included.
     /// </summary>
     private async Task SettleUnfinishedAsync(bool deferAll)
     {
-        var failOldest = Established && !deferAll && !outOfStep && (stuck || dialled && !quitting && !peerQuit);
+        var inARow = 0;
+        if (Established && !deferAll)
+        {
+            if (outOfStep) inARow = OutOfStepHistory.EndedOutOfStep(peer);
+            else OutOfStepHistory.EndedInStep(peer);
+        }
+        var failOldest = Established && !deferAll && (outOfStep
+            ? inARow >= 2
+            : stuck || dialled && !quitting && !peerQuit);
         foreach (var o in unanswered.ToList())
         {
             await CompleteAsync(o, failOldest
                 ? BackhaulSendResult.Fail(stuck
                     ? $"no answer from {peer} to {o.Message.Id}, and nothing else from it, in {AnswerTimeout.TotalSeconds:F0}s"
-                    : $"the session with {peer} broke off before {o.Message.Id} was answered")
+                    : outOfStep
+                        ? $"sessions with {peer} have gone out of step {inARow} times in a row"
+                        : $"the session with {peer} broke off before {o.Message.Id} was answered")
                 : BackhaulSendResult.Defer(outOfStep
                     ? $"session with {peer} ended out of step before {o.Message.Id} was answered; it goes on the next one"
                     : $"session with {peer} ended before {o.Message.Id} was answered; it stays queued"));
@@ -651,7 +668,7 @@ public sealed class ExchangeSession
     /// corruption"), and nothing after it can be trusted. Ends the session
     /// at once with a <c>quit</c>, so the peer defers what it has waiting
     /// and the link goes; the next one starts in step. Nothing of ours
-    /// counts as failed either: the link was working.
+    /// counts as failed either, the first time: the link was working.
     /// </summary>
     private void OutOfStep(string what)
     {
@@ -1096,10 +1113,12 @@ public sealed class ExchangeSession
         }
         catch (InvalidDataException ex)
         {
-            // In exchange mode, bytes out of step rather than a path that
-            // mangles binary: every bearer DAPPS uses is 8-bit clean. A
-            // single message pushed before any exchange still gets bad.
-            if (Established)
+            // In exchange mode, the first time, most likely a stale frame
+            // from BPQ at the edge of range. The same message damaged again
+            // is a fault of the message or the path (one that isn't 8-bit
+            // clean), and bad has the sender try it plain, then give up.
+            // A single message pushed before any exchange gets bad at once.
+            if (Established && !OutOfStepHistory.ArrivedDamaged(offer.Id))
             {
                 OutOfStep($"the payload of {offer.Id} does not decode ({ex.Message})");
                 return;
@@ -1112,7 +1131,7 @@ public sealed class ExchangeSession
         if (DappsMessage.ComputeHash(payload, offer.Salt)[..7] != offer.Id)
         {
             HashMismatch?.Invoke(offer.Id);
-            if (Established)
+            if (Established && !OutOfStepHistory.ArrivedDamaged(offer.Id))
             {
                 OutOfStep($"the payload of {offer.Id} doesn't hash to its id");
                 return;
