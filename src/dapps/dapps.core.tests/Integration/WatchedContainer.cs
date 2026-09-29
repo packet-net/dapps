@@ -107,7 +107,13 @@ internal sealed class WatchedContainer(string name, IContainer container) : IAsy
     public async ValueTask DisposeAsync()
     {
         await watching.CancelAsync();
-        await container.DisposeAsync();
-        watching.Dispose();
+        try
+        {
+            await container.DisposeAsync();
+        }
+        finally
+        {
+            watching.Dispose();
+        }
     }
 }

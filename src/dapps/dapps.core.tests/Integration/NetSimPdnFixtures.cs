@@ -72,9 +72,9 @@ public abstract class NetSimTwoPdnFixture : NetSimTwoNodeFixture
 
     protected override async Task StopNodesAsync()
     {
-        if (pdnB is not null) await pdnB.DisposeAsync();
-        if (pdnA is not null) await pdnA.DisposeAsync();
+        var (a, b) = (pdnA, pdnB);
         pdnA = pdnB = null;
+        await StopEachAsync(b, a);
     }
 
     /// <summary>

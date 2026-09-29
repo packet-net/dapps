@@ -136,11 +136,35 @@ public abstract class NetSimTwoNodeFixture : IDappsScenarioBed, IAsyncLifetime
         await StartNodesAsync();
     }
 
+    /// <summary>Both nodes, then net-sim (the nodes live in its network
+    /// namespace), net-sim even if a node didn't stop.</summary>
     private async Task StopAllAsync()
     {
-        await StopNodesAsync();
-        if (netSim is not null) await netSim.DisposeAsync();
+        var sim = netSim;
         netSim = null;
+        List<Exception> failures = [];
+        try { await StopNodesAsync(); }
+        catch (Exception e) { failures.Add(e); }
+        try { await StopEachAsync(sim); }
+        catch (Exception e) { failures.Add(e); }
+        if (failures.Count > 0) throw new AggregateException($"{ChannelName}: not every container stopped.", failures);
+    }
+
+    /// <summary>
+    /// Stop each of <paramref name="containers"/> in turn, each on its own,
+    /// so one that fails to stop doesn't leave the rest running; then throw
+    /// what went wrong.
+    /// </summary>
+    private protected static async Task StopEachAsync(params WatchedContainer?[] containers)
+    {
+        List<Exception> failures = [];
+        foreach (var c in containers)
+        {
+            if (c is null) continue;
+            try { await c.DisposeAsync(); }
+            catch (Exception e) { failures.Add(e); }
+        }
+        if (failures.Count > 0) throw new AggregateException($"Not every container stopped ({string.Join(", ", containers.OfType<WatchedContainer>().Select(c => c.Name))}).", failures);
     }
 
     /// <summary>Start both nodes in net-sim's network namespace.</summary>
@@ -229,7 +253,16 @@ public abstract class NetSimTwoNodeFixture : IDappsScenarioBed, IAsyncLifetime
     {
         var firstLogs = await LogsAsync();
         WriteFixtureLog("retried", $"{first}\n\nRecreating the containers and trying again.\n\n{firstLogs}");
-        await StopAllAsync();
+        try
+        {
+            await StopAllAsync();
+        }
+        catch (Exception e)
+        {
+            // The new containers get ports of their own, and Testcontainers
+            // removes any leftovers when the run ends.
+            WriteFixtureLog("stop-failed", $"{ChannelName}: not every old container stopped; trying on new ones anyway.\n\n{e}");
+        }
         if (await StartUntilReadyAsync() is not { } second) return;
         var secondLogs = await LogsAsync();
         WriteFixtureLog("failed", $"{second}\n\nThe second try, on new containers, failed too.\n\n{secondLogs}");
@@ -405,9 +438,9 @@ public abstract class NetSimTwoBpqFixture : NetSimTwoNodeFixture
 
     protected override async Task StopNodesAsync()
     {
-        if (bpqB is not null) await bpqB.DisposeAsync();
-        if (bpqA is not null) await bpqA.DisposeAsync();
+        var (a, b) = (bpqA, bpqB);
         bpqA = bpqB = null;
+        await StopEachAsync(b, a);
     }
 
     /// <summary>
