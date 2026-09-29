@@ -127,11 +127,7 @@ public sealed class AgwInboundService(
         // Subscribed in StartAsync so test fixtures that construct the
         // service without ever calling StartAsync don't accumulate
         // listeners.
-        optionsChangeSubscription = options.OnChange((_, _) =>
-        {
-            cycleTokenSource?.Cancel();
-            reconnect.Interrupt();
-        });
+        optionsChangeSubscription = options.OnChange((_, _) => reconnect.OptionsChanged(cycleTokenSource));
         loopTask = Task.Run(() => RunLoop(stoppingTokenSource.Token));
         return Task.CompletedTask;
     }

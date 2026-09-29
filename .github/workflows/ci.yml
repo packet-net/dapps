@@ -46,7 +46,8 @@ jobs:
         # the first integration test blocks on a docker pull and
         # sometimes trips its own timeout.
         run: |
-          docker pull m0lte/linbpq:latest
+          # linbpq, at the digest the tests pin.
+          docker pull "$(grep -oE 'm0lte/linbpq@sha256:[0-9a-f]{64}' src/dapps/dapps.core.tests/Integration/LinbpqIntegrationFixture.cs)"
           docker pull ghcr.io/packethacking/xrouter:latest
           # net-sim, for the simulated-radio scenarios, at the digest the tests pin.
           docker pull "$(grep -oE 'ghcr\.io/packet-net/net-sim@sha256:[0-9a-f]{64}' src/dapps/dapps.core.tests/Integration/NetSimFixtures.cs)"

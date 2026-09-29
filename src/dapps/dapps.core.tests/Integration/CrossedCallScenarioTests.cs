@@ -66,8 +66,9 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         if (air is not null) await air.DisposeAsync();
         if (channel is not null) await channel.DisposeAsync();
         await Task.Delay(3000);
-        // Leave the nodes warm for the next test.
-        if (restartedNodes) await fixture.WaitUntilReadyAsync();
+        // Leave the nodes warm for the next test, and working: a node that
+        // died is replaced.
+        if (restartedNodes || fixture.Died is not null) await fixture.WaitUntilReadyAsync();
     }
 
     [Fact]
@@ -81,7 +82,7 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         var results = new List<RoundResult>();
         var started = DateTime.UtcNow;
 
-        for (var round = 1; round <= Rounds; round++)
+        for (var round = 1; round <= Rounds && fixture.Died is null; round++)
         {
             results.Add(await RoundAsync(a, b, round, RoundLimit, ct));
         }
@@ -91,6 +92,7 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
             $"Both nodes submit {MessagesEach} messages to each other within {StaggerMs.From / 1000.0:0.###} to {(StaggerMs.To - 1) / 1000.0:0.###} s, so both dial. {Rounds} rounds, each from no link.");
         WriteReport(report, "crossed-");
 
+        await fixture.ThrowIfDiedAsync($"{report}\n{Diagnostics()}");
         results.Should().AllSatisfy(r => r.Complete.Should().BeTrue($"round {r.Round}'s messages should all arrive within {RoundLimit.TotalSeconds:F0}s\n{report}\n{Diagnostics()}"));
         duplicates.Should().Be(0, "every message should arrive exactly once\n" + report);
         results.Should().AllSatisfy(r => r.Dials.Should().BeLessThanOrEqualTo(MaxDials, $"round {r.Round}: {MaxDials} dials at most\n{report}"));
@@ -113,6 +115,32 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         // KISS link is up, so both calls go out late, together.
         var ct = TestContext.Current.CancellationToken;
         restartedNodes = true;
+        var (result, duplicates, report, a, b) = await ColdRoundAsync(ct);
+        if (fixture.Died is not null)
+        {
+            // linbpq has been seen to exit just as its KISS link comes up,
+            // which is when this round's calls go out (#201). Keep what
+            // happened, and run the round once more on new containers.
+            WriteReport(report, "crossed-cold-died-");
+            WriteLogs("crossed-cold-died-", a, b);
+            foreach (var r in running) await r.DisposeAsync();
+            running.Clear();
+            if (channel is not null) await channel.DisposeAsync();
+            await fixture.WaitUntilReadyAsync();
+            channel = await fixture.StartChannelLogAsync(ct);
+            (result, duplicates, report, a, b) = await ColdRoundAsync(ct);
+        }
+        WriteReport(report, "crossed-cold-");
+        WriteLogs("crossed-cold-", a, b);
+
+        await fixture.ThrowIfDiedAsync($"{report}\n{Diagnostics()}");
+        result.Complete.Should().BeTrue($"the messages should all arrive within {ColdLimit.TotalSeconds:F0}s\n{report}\n{Diagnostics()}");
+        duplicates.Should().Be(0, "every message should arrive exactly once\n" + report);
+    }
+
+    /// <summary>Both nodes restart, then one round, with its report.</summary>
+    private async Task<(RoundResult Result, int Duplicates, string Report, DappsDaemon A, DappsDaemon B)> ColdRoundAsync(CancellationToken ct)
+    {
         await fixture.RestartNodesColdAsync();
         // The monitor's sockets went with the old nodes.
         await air!.DisposeAsync();
@@ -127,11 +155,7 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         var duplicates = await DuplicatesAsync(a, b, ct);
         var report = Report([result], duplicates, channel?.Summarise(started, DateTime.UtcNow),
             $"Both nodes restarted, then both DAPPS daemons submit {MessagesEach} messages to each other within {StaggerMs.From / 1000.0:0.###} to {(StaggerMs.To - 1) / 1000.0:0.###} s.");
-        WriteReport(report, "crossed-cold-");
-        WriteLogs("crossed-cold-", a, b);
-
-        result.Complete.Should().BeTrue($"the messages should all arrive within {ColdLimit.TotalSeconds:F0}s\n{report}\n{Diagnostics()}");
-        duplicates.Should().Be(0, "every message should arrive exactly once\n" + report);
+        return (result, duplicates, report, a, b);
     }
 
     /// <summary>Both nodes submit, 0.3 to 2 s apart; wait for delivery, then for the link to go.</summary>
@@ -200,10 +224,11 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         }
     }
 
-    private static async Task<bool> WaitForRoundAsync(DappsDaemon node, int round, string from, TimeSpan limit, CancellationToken ct)
+    /// <summary>False if the round's messages don't all arrive in time, or a node dies first.</summary>
+    private async Task<bool> WaitForRoundAsync(DappsDaemon node, int round, string from, TimeSpan limit, CancellationToken ct)
     {
         var deadline = DateTime.UtcNow + limit;
-        while (DateTime.UtcNow < deadline)
+        while (DateTime.UtcNow < deadline && fixture.Died is null)
         {
             var got = (await node.InboundAsync(App, ct)).Count(m => Encoding.UTF8.GetString(m.Payload).StartsWith($"round {round} {from}", StringComparison.Ordinal));
             if (got >= MessagesEach) return true;
@@ -218,7 +243,7 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         var until = DateTime.UtcNow + TimeSpan.FromMinutes(2);
         var frames = Frames();
         var quietSince = DateTime.UtcNow;
-        while (DateTime.UtcNow < until)
+        while (DateTime.UtcNow < until && fixture.Died is null)
         {
             await Task.Delay(1000, ct);
             var pending = 0;

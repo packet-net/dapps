@@ -1,4 +1,3 @@
-using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using AwesomeAssertions;
@@ -182,23 +181,8 @@ public sealed class DuplicateOfferTests : IAsyncLifetime
         await database.CommitReceivedAsync(key);
     }
 
-    private static async Task<(NetworkStream Ours, NetworkStream Theirs)> LoopbackPairAsync(CancellationToken ct)
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        try
-        {
-            var client = new TcpClient();
-            var connecting = client.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port, ct);
-            var server = await listener.AcceptTcpClientAsync(ct);
-            await connecting;
-            return (client.GetStream(), server.GetStream());
-        }
-        finally
-        {
-            listener.Stop();
-        }
-    }
+    /// <summary>The shared loopback pair, kept open until <paramref name="ct"/> is cancelled (see <see cref="ExchangeTestKit.LoopbackPairAsync"/>).</summary>
+    private static async Task<(NetworkStream Ours, NetworkStream Theirs)> LoopbackPairAsync(CancellationToken ct) => await ExchangeTestKit.LoopbackPairAsync(ct);
 
     private sealed class LinePeer(NetworkStream stream)
     {

@@ -231,23 +231,19 @@ public abstract class DappsExchangeTests(IDappsNodePair pair) : IAsyncLifetime
     protected int AirSent(string side, string contains) => air.CountSentBy(side, contains.Replace("\\n", "\n"));
 
     /// <summary>
-    /// Whether B's node may be the one to hang up after quit and bye. Both
-    /// ends let go then, and which node's DISC reaches the air first is
-    /// down to the nodes: between two BPQs it is A's (the caller's), but a
-    /// pdn node answering hangs up first. False unless a pdn node is in it.
+    /// Wait for either node to hang up the link between the two DAPPS
+    /// callsigns. Both ends let go after quit and bye, and which node's DISC
+    /// reaches the air first is down to the nodes: a pdn node answering
+    /// usually goes first, and between two BPQs on 6.0.25.41 either can.
     /// </summary>
-    protected virtual bool EitherEndMayHangUp => false;
-
-    /// <summary>Wait for A's node to hang up the link between the two DAPPS
-    /// callsigns (or either node, where <see cref="EitherEndMayHangUp"/>).</summary>
     protected async Task HangUpShowsAsync(CancellationToken ct, TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
-        while (HangUps("A") + (EitherEndMayHangUp ? HangUps("B") : 0) == 0)
+        while (HangUps("A") + HangUps("B") == 0)
         {
             if (DateTime.UtcNow >= deadline)
             {
-                throw new TimeoutException($"{(EitherEndMayHangUp ? "Neither end" : "A")} never hung up.\n{Transcript()}");
+                throw new TimeoutException($"Neither end hung up.\n{Transcript()}");
             }
             await Task.Delay(100, ct);
         }

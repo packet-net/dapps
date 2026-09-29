@@ -16,9 +16,9 @@ namespace dapps.core.tests.Integration;
 /// QUALITY=0, so no NET/ROM: what goes over the link is DAPPS's own traffic.
 ///
 /// BPQ maps only DAPPS's callsign on pdn, not pdn's node callsign as well:
-/// with two MAP lines for one address BPQ sends every frame twice, and a
-/// second UA puts pdn into a loop of link resets (packet.net#842). A
-/// workaround: map the node callsign too once packet.net#842 is fixed.
+/// with two MAP lines for one address BPQ sends every frame twice. pdn copes
+/// with that since node-v0.56.0 (before, the second UA put it into a loop of
+/// link resets, packet.net#842), but the tests count frames on the link.
 ///
 /// pdn's port dials plain v2.0 (<c>link: dial: v20</c>), as pdn's docs say
 /// for a BPQ neighbour: many BPQ builds ignore a v2.2 SABME rather than
@@ -27,7 +27,7 @@ namespace dapps.core.tests.Integration;
 /// </summary>
 public sealed class PdnBpqFixture : IDappsNodePair, IAsyncLifetime
 {
-    private const string BpqImage = "m0lte/linbpq:latest";
+    private const string BpqImage = LinbpqIntegrationFixture.Image;
 
     private const int InsideAgwB = 18002;
     private const int InsideHttpA = 18301;
@@ -71,7 +71,7 @@ public sealed class PdnBpqFixture : IDappsNodePair, IAsyncLifetime
         RhpPortA = bpq.GetMappedPublicPort(InsideRhpA);
 
         var port = $"""
-            - id: "{PdnNode.PortId}"
+            - id: axudp
               transport:
                 kind: axudp
                 host: 127.0.0.1
@@ -118,8 +118,6 @@ public sealed class PdnBpqFixture : IDappsNodePair, IAsyncLifetime
          QUALITY=0
          CONFIG
          UDP {AxipBpq}
-         ; Workaround for packet.net#842: remove once it is fixed, and map
-         ; pdn's node callsign ({CallsignA}) here as well.
          MAP {ApplCallA} 127.0.0.1 UDP {AxudpPdn}
         ENDPORT
 

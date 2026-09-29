@@ -45,13 +45,15 @@ If you installed DAPPS separately (say from the [apt repo](../install/index.md))
 | Node bearer | **RHPv2** |
 | Node host | pdn's host (`localhost` if it's the same machine) |
 | RHPv2 port | `9000`, or whatever pdn's `rhp.port` says |
-| Default bearer port | `0`, for the pdn port named `1` (see below) |
+| Default bearer port | `0`, for pdn's first port (see below) |
 
 If DAPPS is on another machine, pdn's `rhp.bind` has to be an address that machine can reach. RHPv2 has no encryption, so keep it on a network you trust. If you set `requireAuth: true`, give DAPPS a pdn username and password as its RHPv2 user and password.
 
-## Name your port `1` (for now)
+## Which port DAPPS uses
 
-DAPPS asks pdn for a port by number, one more than its bearer port (bearer port `0` asks for port `1`), but current pdn releases only accept a port's name (its `id`). Until that's fixed ([packet.net#841](https://github.com/packet-net/packet.net/issues/841)), name the port DAPPS uses `1`, or `2` if you set DAPPS's bearer port to `1`, and so on:
+DAPPS asks pdn for a port by number, one more than its bearer port: bearer port `0` is pdn's first port, `1` its second, in the order your config lists them. pdn node-v0.56.0 and later take a port's number as well as its name, so the port can have any name.
+
+Older pdn releases only take a port's name ([packet.net#841](https://github.com/packet-net/packet.net/issues/841)). On those, name the port DAPPS uses `1`, or `2` if you set DAPPS's bearer port to `1`, and so on:
 
 ```yaml
 ports:
@@ -82,4 +84,4 @@ If the neighbour is a BPQ node, set `link: dial: v20` on that port, as pdn's own
 ## Good to know
 
 - **When both nodes call each other at once**, pdn joins the two calls into one link. pdn node-v0.57.0 and later tell DAPPS when that happens (from the DAPPS release after 0.42.0), so it carries straight on and a crossed call finishes about 10 s sooner. With older pdn each end waits 10 s for a greeting first. Nothing is lost either way.
-- **Linking pdn to a BPQ node over AXIP:** give BPQ one `MAP` line for pdn's address, for the DAPPS callsign. With two lines for the same address (the node's callsign as well), BPQ sends every frame twice and the link never comes up ([packet.net#842](https://github.com/packet-net/packet.net/issues/842)).
+- **Linking pdn to a BPQ node over AXIP:** one `MAP` line in BPQ for pdn's address, for the DAPPS callsign, is all DAPPS needs. With a second line for the same address (the node's callsign as well), BPQ sends every frame twice. pdn node-v0.56.0 and later cope with that; on older pdn the link never comes up ([packet.net#842](https://github.com/packet-net/packet.net/issues/842)).

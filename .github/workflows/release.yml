@@ -101,11 +101,13 @@ jobs:
   # The release gate. Same suite and same retry rationale as ci.yml: a single known-flaky
   # test must not be able to strand a tagged release, but three consecutive failures are a
   # real regression and must block it. The one exception is the simulated-radio scenarios
-  # on net-sim: they run in CI on every PR, but on a runner they fail often for reasons
-  # outside DAPPS (linbpq sometimes exits just after it starts, #201), and blocked 0.42.0
-  # six attempts running. Put them back here once #201 is fixed. The same scenarios on
-  # pdn nodes (WpsReplicationScenarioPdn*, CrossedCallScenarioPdn*) fall under the same
-  # patterns: they're as sensitive to a busy runner, and new.
+  # on net-sim: they run in CI on every PR, but on a runner they still fail now and then
+  # for reasons outside DAPPS. linbpq crashes 10 s after it starts, and on a busy runner
+  # often enough to beat the fixtures' one retry (#201; the fix is M0LTE/linbpq#71, not
+  # yet in the pinned image). pdn before node-v0.58.0 resets a link on a peer's repeated
+  # SABM after a lost UA, and drops the data in it (packet.net#856). The same scenarios
+  # on pdn nodes (WpsReplicationScenarioPdn*, CrossedCallScenarioPdn*) fall under the
+  # same patterns. Put them back here once CI shows them reliable.
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 75   # three attempts, each with the pdn tests over AXUDP
@@ -119,7 +121,8 @@ jobs:
 
       - name: Pre-pull integration images
         run: |
-          docker pull m0lte/linbpq:latest
+          # linbpq, at the digest the tests pin.
+          docker pull "$(grep -oE 'm0lte/linbpq@sha256:[0-9a-f]{64}' src/dapps/dapps.core.tests/Integration/LinbpqIntegrationFixture.cs)"
           docker pull ghcr.io/packethacking/xrouter:latest
           # net-sim, for the simulated-radio scenarios, at the digest the tests pin.
           docker pull "$(grep -oE 'ghcr\.io/packet-net/net-sim@sha256:[0-9a-f]{64}' src/dapps/dapps.core.tests/Integration/NetSimFixtures.cs)"

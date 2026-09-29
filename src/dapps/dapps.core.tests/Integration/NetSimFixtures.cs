@@ -82,22 +82,42 @@ public abstract class NetSimTwoNodeFixture : IDappsScenarioBed, IAsyncLifetime
     protected abstract IReadOnlyList<int> NodePorts { get; }
 
     /// <summary>Where one of <see cref="NodePorts"/> is on the host.</summary>
-    protected int MappedPort(int inside) => netSim!.GetMappedPublicPort(inside);
+    protected int MappedPort(int inside) => netSim!.Container.GetMappedPublicPort(inside);
 
     /// <summary>net-sim's container, whose network namespace the nodes join.</summary>
-    protected string NetSimId => netSim!.Id;
+    protected string NetSimId => netSim!.Container.Id;
 
     /// <summary>Start recording when each radio transmits.</summary>
     public async Task<ChannelLog?> StartChannelLogAsync(CancellationToken ct) => await ChannelLog.StartAsync(Host, NetSimWebPort, ct);
 
     public abstract Task<IAirMonitor> StartAirMonitorAsync(CancellationToken ct);
 
-    private IContainer? netSim;
+    private WatchedContainer? netSim;
 
     public async ValueTask InitializeAsync()
     {
         if (!Wanted) return;
+        if (await StartUntilReadyAsync() is { } failed) await RetryOnNewContainersAsync(failed);
+    }
 
+    /// <summary>Start all three containers; null once each node has heard
+    /// the other, otherwise what went wrong.</summary>
+    private async Task<string?> StartUntilReadyAsync()
+    {
+        try
+        {
+            await StartAllAsync();
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return $"{ChannelName}: the containers didn't start. {e.Message}";
+        }
+        return await TryUntilReadyAsync();
+    }
+
+    /// <summary>net-sim, then both nodes in its network namespace.</summary>
+    private async Task StartAllAsync()
+    {
         var builder = new ContainerBuilder()
             .WithImage(NetSimImage)
             .WithResourceMapping(Encoding.UTF8.GetBytes(NetworkYaml()), "/etc/sim/network.yaml")
@@ -109,12 +129,42 @@ public abstract class NetSimTwoNodeFixture : IDappsScenarioBed, IAsyncLifetime
                 .ForResponseMessageMatching(async m => (await m.Content.ReadAsStringAsync()).Contains("\"running\":true")),
                 o => o.WithTimeout(TimeSpan.FromMinutes(2))));
         foreach (var port in NodePorts) builder = builder.WithPortBinding(port, assignRandomHostPort: true);
-        netSim = builder.Build();
+        netSim = new WatchedContainer("net-sim", builder.Build());
         await netSim.StartAsync();
-        NetSimWebPort = netSim.GetMappedPublicPort(InsideWebPort);
+        NetSimWebPort = netSim.Container.GetMappedPublicPort(InsideWebPort);
 
         await StartNodesAsync();
-        await WaitUntilReadyAsync();
+    }
+
+    /// <summary>Both nodes, then net-sim (the nodes live in its network
+    /// namespace), net-sim even if a node didn't stop.</summary>
+    private async Task StopAllAsync()
+    {
+        var sim = netSim;
+        netSim = null;
+        List<Exception> failures = [];
+        try { await StopNodesAsync(); }
+        catch (Exception e) { failures.Add(e); }
+        try { await StopEachAsync(sim); }
+        catch (Exception e) { failures.Add(e); }
+        if (failures.Count > 0) throw new AggregateException($"{ChannelName}: not every container stopped.", failures);
+    }
+
+    /// <summary>
+    /// Stop each of <paramref name="containers"/> in turn, each on its own,
+    /// so one that fails to stop doesn't leave the rest running; then throw
+    /// what went wrong.
+    /// </summary>
+    private protected static async Task StopEachAsync(params WatchedContainer?[] containers)
+    {
+        List<Exception> failures = [];
+        foreach (var c in containers)
+        {
+            if (c is null) continue;
+            try { await c.DisposeAsync(); }
+            catch (Exception e) { failures.Add(e); }
+        }
+        if (failures.Count > 0) throw new AggregateException($"Not every container stopped ({string.Join(", ", containers.OfType<WatchedContainer>().Select(c => c.Name))}).", failures);
     }
 
     /// <summary>Start both nodes in net-sim's network namespace.</summary>
@@ -122,6 +172,11 @@ public abstract class NetSimTwoNodeFixture : IDappsScenarioBed, IAsyncLifetime
 
     /// <summary>Stop both nodes.</summary>
     protected abstract Task StopNodesAsync();
+
+    /// <summary>Both nodes' containers, while they're up.</summary>
+    private protected abstract IEnumerable<WatchedContainer?> NodeContainers { get; }
+
+    private IEnumerable<WatchedContainer> Containers => new[] { netSim }.Concat(NodeContainers).OfType<WatchedContainer>();
 
     /// <summary>
     /// Restart both nodes, as after a reboot, and don't wait for them to be
@@ -134,8 +189,104 @@ public abstract class NetSimTwoNodeFixture : IDappsScenarioBed, IAsyncLifetime
         await StartNodesAsync();
     }
 
-    /// <summary>Wait until each node has been heard by the other.</summary>
-    public abstract Task WaitUntilReadyAsync();
+    /// <summary>
+    /// Which container has stopped by itself, with its exit code, or null
+    /// while net-sim and both nodes are running. Nothing more gets through
+    /// once one has.
+    /// </summary>
+    public string? Died => Containers.Select(c => c.Died).FirstOrDefault(d => d is not null);
+
+    /// <summary>
+    /// Throws, with the containers' logs and <paramref name="detail"/>, if
+    /// net-sim or a node has stopped by itself: nothing more can get
+    /// through, so a test waiting for traffic should stop there rather than
+    /// run out its time. The logs also go to scenario-reports/.
+    /// </summary>
+    public async Task ThrowIfDiedAsync(string? detail = null)
+    {
+        if (Died is not { } died) return;
+        var logs = await LogsAsync();
+        WriteFixtureLog("died", $"{ChannelName}: {died}.\n\n{logs}");
+        throw new InvalidOperationException($"{ChannelName}: {died}, so nothing more can get through.\n\n{logs}\n{detail}");
+    }
+
+    /// <summary>
+    /// Wait until each node has been heard by the other. If a container has
+    /// stopped, or that takes too long (2 minutes a way), the containers'
+    /// logs go to scenario-reports/, all three are recreated, and it tries
+    /// once more; only a second failure throws, with both sets of logs.
+    /// linbpq has been seen to exit about 10 s after it starts (#201).
+    /// </summary>
+    public async Task WaitUntilReadyAsync()
+    {
+        if (await TryUntilReadyAsync() is { } failed) await RetryOnNewContainersAsync(failed);
+    }
+
+    /// <summary>Wait until each node has been heard by the other, or throw
+    /// a <see cref="TimeoutException"/> saying which wasn't.</summary>
+    protected abstract Task WaitUntilEachHearsTheOtherAsync(CancellationToken ct);
+
+    /// <summary>Null once each node has heard the other; otherwise what went wrong.</summary>
+    private async Task<string?> TryUntilReadyAsync()
+    {
+        using var stop = new CancellationTokenSource();
+        var hearing = WaitUntilEachHearsTheOtherAsync(stop.Token);
+        var exited = Task.WhenAny(Containers.Select(c => (Task)c.Exited));
+        if (await Task.WhenAny(hearing, exited) == exited)
+        {
+            await stop.CancelAsync();
+            try { await hearing; } catch (Exception) { /* stopped */ }
+            return $"{ChannelName}: {Died}.";
+        }
+        try
+        {
+            await hearing;
+            return Died is { } died ? $"{ChannelName}: {died}." : null;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return e.Message.StartsWith(ChannelName, StringComparison.Ordinal) ? e.Message : $"{ChannelName}: {e.Message}";
+        }
+    }
+
+    private async Task RetryOnNewContainersAsync(string first)
+    {
+        var firstLogs = await LogsAsync();
+        WriteFixtureLog("retried", $"{first}\n\nRecreating the containers and trying again.\n\n{firstLogs}");
+        try
+        {
+            await StopAllAsync();
+        }
+        catch (Exception e)
+        {
+            // The new containers get ports of their own, and Testcontainers
+            // removes any leftovers when the run ends.
+            WriteFixtureLog("stop-failed", $"{ChannelName}: not every old container stopped; trying on new ones anyway.\n\n{e}");
+        }
+        if (await StartUntilReadyAsync() is not { } second) return;
+        var secondLogs = await LogsAsync();
+        WriteFixtureLog("failed", $"{second}\n\nThe second try, on new containers, failed too.\n\n{secondLogs}");
+        throw new TimeoutException($"{second}\nIt failed the same way on new containers.\n\nFirst try: {first}\n\n{firstLogs}\n\nSecond try:\n\n{secondLogs}");
+    }
+
+    /// <summary>The end of each container's log, for a failure message.</summary>
+    public async Task<string> LogsAsync()
+    {
+        var sb = new StringBuilder();
+        foreach (var c in Containers) sb.AppendLine(await c.LogTailAsync(80));
+        return sb.ToString();
+    }
+
+    /// <summary>A readiness failure or a container that stopped, kept beside
+    /// the scenario reports (which CI keeps) even when the retry works.</summary>
+    private void WriteFixtureLog(string what, string text)
+    {
+        var dir = Path.Combine(AppContext.BaseDirectory, "scenario-reports");
+        Directory.CreateDirectory(dir);
+        var name = $"fixture-{ReportTag}-{what}-{DateTime.UtcNow:HHmmss}.log";
+        File.WriteAllText(Path.Combine(dir, name), text);
+        TestContext.Current.SendDiagnosticMessage($"{ChannelName}: {what}; see scenario-reports/{name}");
+    }
 
     /// <summary>
     /// Take the channel down for <paramref name="outage"/>, then bring it
@@ -152,12 +303,7 @@ public abstract class NetSimTwoNodeFixture : IDappsScenarioBed, IAsyncLifetime
         (await http.PostAsync("api/start", null, ct)).EnsureSuccessStatusCode();
     }
 
-    public async ValueTask DisposeAsync()
-    {
-        if (netSim is null) return;
-        await StopNodesAsync();
-        await netSim.DisposeAsync();
-    }
+    public async ValueTask DisposeAsync() => await StopAllAsync();
 
     private string NetworkYaml() => $"""
         time_scale: 1
@@ -212,7 +358,7 @@ public abstract class NetSimTwoNodeFixture : IDappsScenarioBed, IAsyncLifetime
 /// </summary>
 public abstract class NetSimTwoBpqFixture : NetSimTwoNodeFixture
 {
-    private const string BpqImage = "m0lte/linbpq:latest";
+    private const string BpqImage = LinbpqIntegrationFixture.Image;
 
     private const int InsideAgwPortA = 18101;
     private const int InsideAgwPortB = 18102;
@@ -279,8 +425,10 @@ public abstract class NetSimTwoBpqFixture : NetSimTwoNodeFixture
     /// <summary>The BPQ radio-port settings in use, for reports.</summary>
     public override string RadioSettings => "BPQ " + Radio;
 
-    private IContainer? bpqA;
-    private IContainer? bpqB;
+    private WatchedContainer? bpqA;
+    private WatchedContainer? bpqB;
+
+    private protected override IEnumerable<WatchedContainer?> NodeContainers => [bpqA, bpqB];
 
     protected override async Task StartNodesAsync()
     {
@@ -290,22 +438,22 @@ public abstract class NetSimTwoBpqFixture : NetSimTwoNodeFixture
 
     protected override async Task StopNodesAsync()
     {
-        if (bpqB is not null) await bpqB.DisposeAsync();
-        if (bpqA is not null) await bpqA.DisposeAsync();
+        var (a, b) = (bpqA, bpqB);
         bpqA = bpqB = null;
+        await StopEachAsync(b, a);
     }
 
     /// <summary>
     /// Wait until each BPQ has been heard by the other. Each BPQ has to
     /// open its KISS link to the simulator before it can transmit; until
-    /// then a connect request waits (about 8 s after start-up, seen in the
-    /// crossed-call experiments), and a test's first call goes out late
-    /// enough to cross the other side's.
+    /// then a connect request waits (linbpq dials its KISS port 10 s after
+    /// it starts), and a test's first call goes out late enough to cross
+    /// the other side's.
     /// </summary>
-    public override async Task WaitUntilReadyAsync()
+    protected override async Task WaitUntilEachHearsTheOtherAsync(CancellationToken ct)
     {
-        await WaitUntilHeardAsync(AgwPortA, ApplCallA, AgwPortB);
-        await WaitUntilHeardAsync(AgwPortB, ApplCallB, AgwPortA);
+        await WaitUntilHeardAsync(AgwPortA, ApplCallA, AgwPortB, ct);
+        await WaitUntilHeardAsync(AgwPortB, ApplCallB, AgwPortA, ct);
     }
 
     /// <summary>
@@ -313,10 +461,11 @@ public abstract class NetSimTwoBpqFixture : NetSimTwoNodeFixture
     /// it: that node can transmit and the other receive. A BPQ still
     /// starting up can drop the AGW socket, so that just means try again.
     /// </summary>
-    private async Task WaitUntilHeardAsync(int fromAgwPort, string fromCall, int toAgwPort)
+    private async Task WaitUntilHeardAsync(int fromAgwPort, string fromCall, int toAgwPort, CancellationToken ct)
     {
         var limit = TimeSpan.FromMinutes(2);
-        using var cts = new CancellationTokenSource(limit);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(limit);
         try
         {
             while (true)
@@ -332,7 +481,7 @@ public abstract class NetSimTwoBpqFixture : NetSimTwoNodeFixture
                 }
             }
         }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        catch (OperationCanceledException) when (cts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
             throw new TimeoutException(
                 $"{ChannelName}: the BPQ on AGW port {fromAgwPort} sent UI frames from {fromCall} for {limit.TotalMinutes:F0} minutes " +
@@ -366,15 +515,15 @@ public abstract class NetSimTwoBpqFixture : NetSimTwoNodeFixture
         await heard;
     }
 
-    private async Task<IContainer> StartBpqAsync(
+    private async Task<WatchedContainer> StartBpqAsync(
         string nodeCall, string nodeAlias, string applCall, string applAlias, int agwPort, int kissPort, int telnetPort)
     {
-        var bpq = new ContainerBuilder()
+        var bpq = new WatchedContainer($"BPQ {nodeCall}", new ContainerBuilder()
             .WithImage(BpqImage)
             .WithResourceMapping(Encoding.UTF8.GetBytes(BpqConfig(nodeCall, nodeAlias, applCall, applAlias, agwPort, kissPort, telnetPort)), "/data/bpq32.cfg")
             .WithCreateParameterModifier(p => p.HostConfig.NetworkMode = $"container:{NetSimId}")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(agwPort))
-            .Build();
+            .Build());
         await bpq.StartAsync();
         return bpq;
     }
