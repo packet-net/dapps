@@ -103,8 +103,8 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoNodeFixture fixture) 
         sideA.Complete.Should().BeTrue($"everything should arrive within {Deadline.TotalMinutes:F0} minutes\n{report}\n{Diagnostics()}");
         sideB.Complete.Should().BeTrue($"{report}\n{Diagnostics()}");
         (sideA.Duplicates + sideB.Duplicates).Should().Be(0, "every message should arrive exactly once\n" + report);
-        (Connects("A") + Connects("B")).Should().BeLessThanOrEqualTo(2,
-            "Kevin's trace took six connections; the exchange needs one, two if a SABM or UA is lost\n" + report);
+        (Connects("A") + Connects("B")).Should().BeLessThanOrEqualTo(MaxConnections,
+            $"Kevin's trace took six connections; the exchange needs {MaxConnections - 1}, {MaxConnections} if a SABM or UA is lost\n" + report);
         var messages = sideA.PostsReceived + sideB.PostsReceived + sideA.AcksReceived + sideB.AcksReceived;
         (Frames("A") + Frames("B")).Should().BeLessThanOrEqualTo(FramesPerMessage * messages,
             $"Kevin's trace took about 14 frames a message; the exchange takes {FramesPerMessage - 2} or fewer here\n" + report);
@@ -115,6 +115,10 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoNodeFixture fixture) 
     /// <summary>Most frames a message may take, with room for a slow
     /// runner (about two more than the exchange takes on this channel).</summary>
     protected abstract int FramesPerMessage { get; }
+
+    /// <summary>Most connections (SABMs) the exchange may take: one, and
+    /// one more if a SABM or UA is lost.</summary>
+    protected virtual int MaxConnections => 2;
 
     /// <summary>Longest the exchange may take, first post to last ack:
     /// about twice what it takes on this channel.</summary>
@@ -319,5 +323,29 @@ public sealed class WpsReplicationScenarioAfsk1200Tests(NetSimAfsk1200Fixture fi
 public sealed class WpsReplicationScenarioQpsk3600Tests(NetSimQpsk3600Fixture fixture) : WpsReplicationScenarioTests(fixture)
 {
     protected override int FramesPerMessage => 6;
+    protected override TimeSpan TimeLimit => TimeSpan.FromSeconds(45);
+}
+
+// On pdn both nodes dial, every run: pdn sends an XID and waits for the
+// answer before its SABME, so A's call isn't up at B until after B's first
+// post, 4 s in, and B dials too. pdn makes one link of the two calls, but
+// over RHPv2 neither DAPPS daemon can tell (no monitor), so each waits
+// 10 s for a prompt before sending its exchange. That's two connections
+// before anything is lost, and about 10 s of the time.
+[Collection("net-sim pdn AFSK 1200")]
+[Trait("Category", "Integration")]
+public sealed class WpsReplicationScenarioPdnAfsk1200Tests(NetSimPdnAfsk1200Fixture fixture) : WpsReplicationScenarioTests(fixture)
+{
+    protected override int FramesPerMessage => 7;
+    protected override int MaxConnections => 3;
+    protected override TimeSpan TimeLimit => TimeSpan.FromSeconds(75);
+}
+
+[Collection("net-sim pdn QPSK 3600")]
+[Trait("Category", "Integration")]
+public sealed class WpsReplicationScenarioPdnQpsk3600Tests(NetSimPdnQpsk3600Fixture fixture) : WpsReplicationScenarioTests(fixture)
+{
+    protected override int FramesPerMessage => 6;
+    protected override int MaxConnections => 3;
     protected override TimeSpan TimeLimit => TimeSpan.FromSeconds(45);
 }

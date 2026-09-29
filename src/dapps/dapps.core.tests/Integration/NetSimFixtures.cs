@@ -21,7 +21,8 @@ namespace dapps.core.tests.Integration;
 ///
 /// The nodes share net-sim's network namespace, so each dials its KISS port
 /// on 127.0.0.1, and net-sim publishes the ports the tests and daemons use.
-/// The nodes are BPQ (<see cref="NetSimTwoBpqFixture"/>).
+/// The nodes are BPQ (<see cref="NetSimTwoBpqFixture"/>) or pdn
+/// (<see cref="NetSimTwoPdnFixture"/>).
 /// </summary>
 public abstract class NetSimTwoNodeFixture : IDappsScenarioBed, IAsyncLifetime
 {

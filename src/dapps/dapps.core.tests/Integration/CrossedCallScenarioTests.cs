@@ -324,3 +324,18 @@ public sealed class CrossedCallScenarioQpsk3600Tests(NetSimQpsk3600Fixture fixtu
 {
     protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(30);
 }
+
+[Collection("net-sim pdn AFSK 1200")]
+[Trait("Category", "Integration")]
+public sealed class CrossedCallScenarioPdnAfsk1200Tests(NetSimPdnAfsk1200Fixture fixture) : CrossedCallScenarioTests(fixture)
+{
+    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(100);
+    protected override int MaxDials => 6;
+}
+
+[Collection("net-sim pdn QPSK 3600")]
+[Trait("Category", "Integration")]
+public sealed class CrossedCallScenarioPdnQpsk3600Tests(NetSimPdnQpsk3600Fixture fixture) : CrossedCallScenarioTests(fixture)
+{
+    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(30);
+}

@@ -101,7 +101,8 @@ public abstract class SoakScenarioTests(NetSimTwoNodeFixture fixture) : IAsyncLi
             // a message re-offered after a lost ack would arrive then.
             while (clock.Elapsed < drainDeadline && await PendingAsync(ct) > 0) await Task.Delay(1000, ct);
             await Task.Delay(TimeSpan.FromSeconds(10), ct);
-            Note("queues empty");
+            var pending = await PendingAsync(ct);
+            Note(pending == 0 ? "queues empty" : $"drain time up with {pending} message(s) still queued");
         }
         catch (Exception e) when (!ct.IsCancellationRequested)
         {
@@ -357,3 +358,11 @@ public abstract class SoakScenarioTests(NetSimTwoNodeFixture fixture) : IAsyncLi
 [Collection("net-sim noisy AFSK 1200")]
 [Trait("Category", "Soak")]
 public sealed class NetSimSoakTests(NetSimNoisyAfsk1200Fixture fixture) : SoakScenarioTests(fixture);
+
+/// <summary>The soak on two pdn nodes.</summary>
+[Collection("net-sim pdn noisy AFSK 1200")]
+[Trait("Category", "Soak")]
+public sealed class NetSimPdnSoakTests(NetSimPdnNoisyAfsk1200Fixture fixture) : SoakScenarioTests(fixture)
+{
+    protected override string ReportPrefix => "soak-pdn";
+}
