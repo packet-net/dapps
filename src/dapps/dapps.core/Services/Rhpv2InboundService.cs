@@ -45,7 +45,7 @@ public sealed class Rhpv2InboundService(
     /// save) - deliberately short and flat; the sliding backoff (see
     /// <see cref="reconnect"/>) only applies to actual connect/bind
     /// failures.</summary>
-    private static readonly TimeSpan NonFailureRetryDelay = TimeSpan.FromSeconds(5);
+    internal static readonly TimeSpan NonFailureRetryDelay = TimeSpan.FromSeconds(5);
 
     private readonly IDappsTxGate txGate = txGate ?? AlwaysOpenTxGate.Instance;
     private readonly TimeProvider timeProvider = timeProvider ?? TimeProvider.System;
@@ -77,16 +77,8 @@ public sealed class Rhpv2InboundService(
         // takes effect on the next iteration without a daemon restart -
         // including collapsing an in-flight backoff wait, so a fix to
         // the RHP host/port/callsign reconnects immediately rather than
-        // sitting out the rest of a (possibly multi-minute) delay. A wait
-        // under way is collapsed before the cycle is cancelled, as in
-        // AgwInboundService.StartAsync, so the short pause after a
-        // cancelled cycle isn't skipped.
-        optionsChangeSubscription = options.OnChange((_, _) =>
-        {
-            var cycle = cycleTokenSource;
-            reconnect.Interrupt();
-            cycle?.Cancel();
-        });
+        // sitting out the rest of a (possibly multi-minute) delay.
+        optionsChangeSubscription = options.OnChange((_, _) => reconnect.OptionsChanged(cycleTokenSource));
         try
         {
             while (!stoppingToken.IsCancellationRequested)

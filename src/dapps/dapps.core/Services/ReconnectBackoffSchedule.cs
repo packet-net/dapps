@@ -161,4 +161,19 @@ public sealed class InboundReconnectController(TimeProvider? timeProvider = null
         try { waitCts?.Cancel(); }
         catch (ObjectDisposedException) { /* wait already completing */ }
     }
+
+    /// <summary>
+    /// For a /Config save: collapses a wait under way (<see cref="Interrupt"/>),
+    /// then cancels <paramref name="cycle"/>, the connection cycle the loop
+    /// is running, if any. In that order: cancelling can run the cycle's own
+    /// ending on this thread, as far as the short pause it then starts, and
+    /// collapsing after that would skip the pause. A cancelled cycle isn't a
+    /// failure, but the loop still pauses before it tries again.
+    /// </summary>
+    public void OptionsChanged(CancellationTokenSource? cycle)
+    {
+        Interrupt();
+        try { cycle?.Cancel(); }
+        catch (ObjectDisposedException) { /* cycle already over */ }
+    }
 }

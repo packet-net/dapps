@@ -132,6 +132,45 @@ public sealed class InboundReconnectControllerTests
     }
 
     [Fact]
+    public async Task OptionsChanged_KeepsThePauseThatTheCancelledCycleStarts()
+    {
+        // Cancelling a connected cycle can run its ending on the saving
+        // thread, as far as its short pause (AgwInboundService's does):
+        // here the cancel starts the pause itself. The save once collapsed
+        // it straight after, so the loop reconnected with no pause at all.
+        var clock = new FakeTimeProvider();
+        var controller = new InboundReconnectController(clock);
+        var ct = TestContext.Current.CancellationToken;
+        using var cycle = new CancellationTokenSource();
+        Task? pause = null;
+        cycle.Token.Register(() => pause = controller.WaitAsync(TimeSpan.FromSeconds(5), ct));
+
+        controller.OptionsChanged(cycle);
+
+        pause.Should().NotBeNull();
+        (await Task.WhenAny(pause!, Task.Delay(TimeSpan.FromMilliseconds(300), ct))).Should().NotBeSameAs(pause,
+            "the pause after a cancelled cycle runs its course");
+        clock.Advance(TimeSpan.FromSeconds(5));
+        await pause!.WaitAsync(AssertionTimeout, ct);
+    }
+
+    [Fact]
+    public async Task OptionsChanged_CollapsesAWaitUnderWay()
+    {
+        // A backoff under the old settings shouldn't hold up the new ones.
+        var controller = new InboundReconnectController();
+        var ct = TestContext.Current.CancellationToken;
+        var wait = controller.WaitAsync(TimeSpan.FromMinutes(10), ct);
+        await WaitUntilTrueAsync(() =>
+        {
+            controller.OptionsChanged(null);
+            return wait.IsCompleted;
+        }, ct);
+
+        await wait.WaitAsync(AssertionTimeout, ct);
+    }
+
+    [Fact]
     public async Task WaitAsync_HonoursTheOuterCancellationToken()
     {
         var controller = new InboundReconnectController();

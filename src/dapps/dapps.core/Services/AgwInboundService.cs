@@ -127,17 +127,7 @@ public sealed class AgwInboundService(
         // Subscribed in StartAsync so test fixtures that construct the
         // service without ever calling StartAsync don't accumulate
         // listeners.
-        //
-        // A wait already under way is collapsed before the cycle is
-        // cancelled, not after: cancelling can run the cycle's own ending
-        // on this thread, as far as the short pause it then starts, and
-        // collapsing after that would skip the pause.
-        optionsChangeSubscription = options.OnChange((_, _) =>
-        {
-            var cycle = cycleTokenSource;
-            reconnect.Interrupt();
-            cycle?.Cancel();
-        });
+        optionsChangeSubscription = options.OnChange((_, _) => reconnect.OptionsChanged(cycleTokenSource));
         loopTask = Task.Run(() => RunLoop(stoppingTokenSource.Token));
         return Task.CompletedTask;
     }
