@@ -1,6 +1,6 @@
 # End-to-end tests
 
-`dapps.core.tests/Integration/DappsEndToEndTests.cs` runs the DAPPSv1 protocol for real: two DAPPS daemons, each in its own process on its own linbpq node, the nodes linked over AXIP.
+`dapps.core.tests/Integration/DappsEndToEndTests.cs` runs the DAPPSv1 protocol for real: two DAPPS daemons, each in its own process on its own linbpq node, the nodes linked over AXIP. The same cases also run on pdn nodes and on a pdn node paired with a BPQ one ([below](#on-pdn-packetnet)).
 
 ```
 app -> DAPPS A -AGW- BPQ-A -AXIP- BPQ-B -AGW- DAPPS B -> app
@@ -12,7 +12,7 @@ app -> DAPPS A -AGW- BPQ-A -AXIP- BPQ-B -AGW- DAPPS B -> app
 
 ## Running them
 
-They need Docker (Testcontainers starts `m0lte/linbpq:latest`) and a built solution:
+They need Docker (Testcontainers starts `m0lte/linbpq:latest`, and for the pdn tests the pinned `ghcr.io/packet-net/packet.net` image) and a built solution:
 
 ```
 dotnet build src/dapps/dapps.sln
@@ -20,6 +20,8 @@ src/dapps/dapps.core.tests/bin/Debug/net10.0/dapps.core.tests --filter-class dap
 ```
 
 Each test starts its own daemons, so the class takes a few minutes. CI runs them with the rest of the integration tests.
+
+The cases that don't depend on BPQ live in `DappsExchangeTests`, which takes any pair of nodes (`IDappsNodePair`); `DappsEndToEndTests` adds the two that do (the bare AGW caller and the connect script). The crossed-call, WPS and soak scenarios likewise take a pair (`IDappsScenarioBed`, `NetSimTwoNodeFixture`), BPQ or pdn. A failed exchange test leaves the air transcript and both daemons' logs in `scenario-reports/e2e-*.txt`.
 
 ## What they cover
 
@@ -89,7 +91,7 @@ The looser AFSK limit is for something real. With the stagger, the second node's
 - **Both calls at once** (or the second 0.3 s after the first): neither listener gets a connect. Both callers are confirmed with the usual "*** CONNECTED With Station", indistinguishable from an ordinary call, and one link carries data both ways between the two callers' sockets. Setting it up took three or four SABMs and as many UAs.
 - Each node's monitor does show the other's SABM arriving (BPQ writes a SABM as ` 1:Fm B To A <C C P>`), which is how a caller tells its call crossed. A SABM through a digipeater (`Via ...`) or a SABME (`<?? C P>`) prints differently; those crossings fall back to the 10 s wait.
 
-So DAPPS keeps one session per peer and AGW port at a node: the newest connected one has the link, and an older one is retired without sending a 'd' or anything else (`PeerSessionRegistry`). A caller sends its `exchange` at once, instead of waiting 10 s for a prompt, when it sees the peer's SABM while its own call is on the way, when its call retired an older session (the link was already up, so nothing at the far end will prompt), or when it hears exchange traffic before any prompt. If its `exchange` gets only other text back for 10 s, as at a node's command prompt, it gives up and hangs up rather than waiting 3 minutes for silence; both ends then redial after their first short cooldown. If it gets nothing at all back for 30 s (three prompt waits), it hangs up too (below, "A redial loop at the edge"). A call's 'd' is never sent once the node has already disconnected it. Retirement is AGW only: RHPv2 hasn't been measured, so its sessions neither retire nor are retired.
+So DAPPS keeps one session per peer and AGW port at a node: the newest connected one has the link, and an older one is retired without sending a 'd' or anything else (`PeerSessionRegistry`). A caller sends its `exchange` at once, instead of waiting 10 s for a prompt, when it sees the peer's SABM while its own call is on the way, when its call retired an older session (the link was already up, so nothing at the far end will prompt), or when it hears exchange traffic before any prompt. If its `exchange` gets only other text back for 10 s, as at a node's command prompt, it gives up and hangs up rather than waiting 3 minutes for silence; both ends then redial after their first short cooldown. If it gets nothing at all back for 30 s (three prompt waits), it hangs up too (below, "A redial loop at the edge"). A call's 'd' is never sent once the node has already disconnected it. Retirement is AGW only: over RHPv2 sessions neither retire nor are retired, and a crossing is never spotted (see the pdn section).
 
 ### The soak
 
@@ -118,10 +120,101 @@ Phase 3 of `docs-internal/exchange-plan.md`, on net-sim v0.4.0; the numbers are 
 - **Stream corruption.** In one 156.75 dB soak, bytes arrived twice that the sender never sent in that place, inside one AX.25 connection with no link reset: a payload that didn't decompress followed by a line starting `0AAAe 3b1f348 len=3113 ...` (where `ihave 3b1f348 ...` was sent), and later another payload that didn't decompress. The cause is almost certainly BPQ's receive side (L2Code.c, the N(S) check in `SDIFRM`, around lines 2585 to 2650 on the `patched` branch). BPQ keeps each out-of-sequence I-frame in a slot per N(S) (`RXFRAMES`), and when the next frame it needs is missing it takes whatever is in that slot, without checking that it belongs to the current turn of the modulo-8 sequence numbers. A copy of a frame it already has lands in a slot when the sender goes back after a stale REJ (a REJ queued in the TNC behind the burst that made it out of date), and stays there until a frame with that N(S) arrives in sequence. If that new frame is lost, BPQ hands DAPPS the old copy in its place, one sequence turn late. Replaying the air transcript through that logic (`docs-internal/tools/rxsim.py`) finds a stale copy taken at the exact second of both corruptions (18:26:55 and 18:28:46), and nowhere else in the three 156.75 dB soaks. In the first case the stale frame ended in `src=N0AAA`, the same length as the frame it replaced, so the payload read took all but its last four bytes and the next line began `0AAA` instead of `ihav`. DAPPS now ends the session at once, with a `quit`, when what arrives can't have been sent that way: a payload that doesn't decode or hash to its id, a line that isn't DAPPS, or an offer or answer without an id. Nothing counts as failed, and everything goes on the next link, which starts in step. A fault that comes back is bounded: the same message arriving damaged a second time is answered `bad` (a message whose id doesn't hash from its payload, or a path that isn't 8-bit clean, not a stale frame), and a second out-of-step ending in a row with one neighbour counts as a break, at both ends: that session hangs up without a `quit`. One 156.5 dB soak (f5-soak-1) had two more payloads that didn't decode, in one session; the replay finds no stale frame there, but it loses track of BPQ's state often enough in that run that this doesn't rule one out. No stream went out of step in the four soaks since (two at 156.75 dB).
 - **samoyed on v0.4.0** loses everything after about the first 2 s of a transmission (see the start of this section), so the AFSK fixtures use Dire Wolf.
 
+## On pdn (packet.net)
+
+The same tests run with pdn, packet.net's node, in place of BPQ. DAPPS attaches over RHPv2 (`DAPPS_NODE_BEARER=rhpv2`), as it does when it runs as a pdn app. The image is `ghcr.io/packet-net/packet.net`, pinned by digest in `PdnFixtures.cs` (node-v0.55.2); CI pulls whatever that pins. Each node's config is seeded from `/etc/packetnet/packetnet.yaml` on first boot: one port, the RHPv2 server on 0.0.0.0 (a container needs that; pdn's default is loopback), the panel's login off, telnet off. NET/ROM broadcasts and ID beacons are off by default, so only DAPPS's traffic goes on air. The air record is each node's frame feed (`/api/v1/events`), received frames only, written out in BPQ's monitor style so the same assertions read both.
+
+```
+app -> DAPPS A -RHPv2- pdn-A -AXUDP- pdn-B -RHPv2- DAPPS B -> app
+```
+
+| Class | Nodes | Link |
+|---|---|---|
+| `PdnEndToEndTests` | two pdn | AXUDP |
+| `PdnCrossedCallAxudpTests` | two pdn | AXUDP, the submits 0 to 50 ms apart |
+| `PdnBpqEndToEndTests`, `BpqPdnEndToEndTests` | pdn and BPQ: pdn calls, then BPQ calls | pdn's AXUDP port to BPQ's AXIP port |
+| `WpsReplicationScenarioPdn*`, `CrossedCallScenarioPdn*` | two pdn | net-sim, AFSK 1200 and QPSK 3600 |
+| `NetSimPdnSoakTests` | two pdn | net-sim, the soak's marginal AFSK 1200 link |
+
+They run like the others (`--filter-class dapps.core.tests.Integration.PdnEndToEndTests`), and the pdn soak like the BPQ one, with `DAPPS_SOAK_MINUTES`. Their reports carry `pdn` in the name: `wps-pdn-afsk1200.md`, `crossed-pdn-axudp.md`, `soak-pdn.md` and so on.
+
+Between two pdn nodes the links are AX.25 v2.2: pdn sends an XID, then a SABME, and runs modulo 128. To BPQ the pdn port dials plain v2.0 (`link: dial: v20`), as pdn's docs say for a BPQ neighbour.
+
+Two workarounds for pdn bugs, both in the fixtures:
+
+- Each pdn port is named `1`. DAPPS asks RHPv2 for a port by number, as XRouter numbers them; pdn since its #668 only takes a port's id, so every open failed with errCode 10 (packet.net#841). This also stops DAPPS running as a pdn app from dialling out, unless the node's first port happens to be called `1`.
+- BPQ's AXIP port maps only DAPPS's callsign on pdn. With pdn's node callsign mapped to the same address as well, BPQ sends every frame twice, and pdn takes the second UA as a protocol error and resets the link, again and again (packet.net#842).
+
+### pdn's radio-port settings
+
+On net-sim the pdn ports are set as the BPQ fixtures' are, so the two compare:
+
+| pdn setting | AFSK 1200 | QPSK 3600 | Why |
+|---|---|---|---|
+| `ax25.t1Ms` | 7000 | 4000 | BPQ's `FRACK` |
+| `ax25.t2Ms` | 1000 | 1000 | BPQ's `RESPTIME`; pdn's own default, 3000, holds every RR back 3 s |
+| `ax25.n2` | 10 | 10 | BPQ's `RETRIES` |
+| `ax25.windowSize`, `ax25.n1` | 4, 120 | 7, 236 | BPQ's `MAXFRAME`, `PACLEN` |
+| `kiss.txDelay`, `persistence`, `slotTime` | 15, 64, 10 | 15, 64, 10 | BPQ's `TXDELAY`, `PERSIST`, `SLOTTIME` (the soak has 30, as BPQ's has 300 ms) |
+| `kiss.txTail` | 10 | 2 | pdn always sends a TX tail, 0 unless set; BPQ sends none, so the BPQ runs had the TNC's own: 100 ms on Dire Wolf, 20 ms on pdn-soundmodem |
+
+No ACKMODE: Dire Wolf doesn't do it, and the BPQ runs didn't use it at QPSK. Over AXUDP the ports run pdn's defaults. `DAPPS_NETSIM_PDN_RADIO` tries other settings without a rebuild, e.g. `T1=10000,WINDOW=2,ACKMODE=1,T1FROMTX=1`, and `DAPPS_PDN_RADIO` does the same for the pdn-and-BPQ port (e.g. `DIAL=auto`).
+
+### pdn against BPQ
+
+On the same net-sim image. BPQ's numbers are phase 3's in `docs-internal/exchange-plan.md` "Results"; medians with ranges.
+
+Kevin's WPS replication:
+
+| | BPQ (4 runs) | pdn (4 runs) |
+|---|---|---|
+| AFSK 1200: first post to last ack | 44 s (42-46) | 47.5 s (47.5-47.7) |
+| AFSK 1200: connections | 1 | 2 |
+| AFSK 1200: frames | 63 (60-65) | 57 |
+| AFSK 1200: transmissions | 26 (25-28) | 14 |
+| AFSK 1200: post delivered, median | 20 s (19-21) | 27 s |
+| QPSK 3600: first post to last ack | 22 s (22-27) | 29 s (18-34) |
+| QPSK 3600: connections | | 2 (1-3) |
+| QPSK 3600: frames | 36 (35-37) | 30 (25-37) |
+| QPSK 3600: transmissions | 18 (16-19) | 16 (12-20) |
+| QPSK 3600: post delivered, median | 10 s (10-12) | 21 s (8.5-22) |
+
+pdn is steadier (its four AFSK runs are frame for frame the same), fits more into each transmission, and loses about 10 s to one thing: both nodes dial, in every AFSK run and three of the four at QPSK (below). The one QPSK run where only one node dialled took 18.4 s, with posts delivered in 8.5 s, quicker than any BPQ run.
+
+Crossed calls, 3 runs of 3 rounds each, plus each run's cold round:
+
+| | BPQ | pdn |
+|---|---|---|
+| AFSK 1200 | usually 1 or 2 dials and 14 to 19 s; 2 rounds of 8 took 5 dials and about 70 s (BPQ's link reset) | always 2 dials, 21 to 27 s; cold rounds 26 s |
+| QPSK 3600 | 1 or 2 dials, 10 to 19 s | always 2 dials, 17 to 29 s; cold rounds 20 s |
+
+On pdn the two calls always make one link, never a reset; every round pays the 10 s prompt wait instead. Over AXUDP the first round took one dial and 3 s (the other node's mail went on the first link), later rounds 2 dials and 10.5 s.
+
+The soak, 12 minutes of the same traffic (seed 187) on the same link:
+
+| | BPQ, phase 3 (2 runs) | pdn (2 runs) |
+|---|---|---|
+| Delivered | all, both runs | 63 of 64 before the drain ran out; all |
+| Short messages, median delivery | 418 s, 336 s | 71 s, 46 s |
+| Long messages, median delivery | 1186 s, 633 s | 487 s, 213 s |
+| Total, including the drain | 32.5, 22.1 min | 32.6 min (gave up), 15.6 min |
+| Connections | 26, 15 | 12, 3 |
+
+No duplicates or corrupt messages in either pdn run. pdn's links are v2.2, and it recovered lost frames with selective rejects (154 and 101 SREJ, against 8 and 3 REJ), resending only what was lost, where BPQ resends everything from the lost frame on; that is the likely reason its links held (12 and 3 connections, against 26 and 15) and short messages went so much quicker. In the first, the one message left was a 3 KB one on its second try (the offer accepted) when the drain ran out. That run's biggest single delay, 7 minutes, came from the teardown race below (packet.net#844); the rest were sessions that stalled at the edge of range, as BPQ's did. In the second, B's daemon restart and the channel outage each cost about a minute, and nothing else went wrong.
+
+### What pdn showed
+
+- **DAPPS lost the peer's prompt (fixed).** pdn answers an RHPv2 `open` once the far end's UA is in (its deviation D4; XRouter answers at once), so a quick peer's `DAPPSv1>` prompt can follow the open reply in the same read. RhpClient raised that `recv` before DAPPS had attached its handler, and the prompt was dropped: the caller waited 10 s, sent its exchange, heard nothing more (the peer had sent its rules already) and hung up 30 s later. Over AXUDP it broke about one test in four. `Rhpv2OutboundTransport` now listens from before the open.
+- **Crossed calls over RHPv2 are handled, never spotted.** When both nodes dial, pdn makes one link of the two calls, as BPQ does: each node's `open` succeeds, neither listener gets an `accept`, so neither end sends a prompt. Over RHPv2 DAPPS has no monitor (pdn doesn't serve `trace` sockets), so it can't see the peer's SABM, and each end waits 10 s before sending its exchange. The crossed-call scenario only asks for crossings to be spotted over AGW; over RHPv2 it still requires that a round with one dial never waits out the prompt, and on pdn it allows the default 2 dials and 45 s a round at both speeds. In the WPS scenario it happens nearly every time on pdn: pdn's XID before the SABME adds a turnaround, so A's call isn't up at B until after B's first post, 4 s in. So the pdn WPS classes allow 3 connections, not 2.
+- **Who hangs up.** After `quit` and `bye` both ends let go; BPQ's caller usually sends the DISC first, but with pdn answering, pdn does. The exchange tests accept a clean hang-up from either end where a pdn node is in the pair; between two BPQs, A's is still required.
+- **An open that races a teardown of the same link (packet.net#844).** In the first soak B's daemon restarted while holding A's call. The old handle's DISC waited for the channel, and the new daemon's `open` to A came in meanwhile: pdn failed it (errCode 15) but went on to connect anyway, so A's prompt arrived on a link no handle owned, and the pair spent 7 minutes on stalled sessions before a fresh call cleared it.
+- **A DISC straight after the UA never reaches the open handle (packet.net#843).** Found by hand, not in a test: when the far node answers a call and hangs up at once (as pdn does for an app callsign nobody has bound), the caller's handle stays open, and DAPPS only gives up on its own timeouts.
+
 ## Not covered yet
 
 - The link reset with DAPPS at both ends (one node's call goes over a link the other has already heard from): the experiment shows what BPQ does and the unit tests cover each side's part, but no scenario forces the timing. The cold-start round can hit it.
-- XRouter and the RHPv2 bearer: covered by the pdn fixtures (separate work).
+- XRouter. RHPv2 runs on pdn (above).
+- A crossed call over RHPv2 being spotted rather than waited out: RHPv2 gives DAPPS no way to see it.
 - The MeshCore bearer, which needs hardware.
 
 ## The linbpq image

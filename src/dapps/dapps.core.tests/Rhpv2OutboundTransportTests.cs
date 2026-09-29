@@ -193,6 +193,109 @@ public sealed class Rhpv2OutboundTransportTests
         Encoding.UTF8.GetString(buf, 0, n).Should().Be("hello\n");
     }
 
+    // pdn answers an open only once the far end's UA is in, so a quick
+    // peer's prompt, and even its hang-up, can reach DAPPS in the same read
+    // as the open reply, or ahead of it. RhpClient raises those events as it
+    // reads them, before the code after OpenAsync runs, so the transport has
+    // to be listening from before the open. With the prompt ahead of the
+    // reply the old transport lost it every time; with it behind, only when
+    // the read loop beat OpenAsync's continuation, which is usual but not
+    // certain.
+
+    [Fact]
+    public async Task Stream_Read_KeepsDataTheNodeSendsBeforeTheOpenReply()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var node = ScriptedNode.Start(open => [Prompt, Reply(open)], ct);
+        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct);
+
+        (await ReadTextAsync(conn.Stream, ct)).Should().Be("DAPPSv1>\n");
+    }
+
+    [Fact]
+    public async Task Stream_Read_KeepsDataTheNodeSendsStraightBehindTheOpenReply()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var node = ScriptedNode.Start(open => [Reply(open), Prompt], ct);
+        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct);
+
+        (await ReadTextAsync(conn.Stream, ct)).Should().Be("DAPPSv1>\n");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Stream_ReadsThePromptThenEnds_WhenTheNodeClosesAtOnce(bool beforeTheReply)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var closed = new CloseMessage { Handle = OpenedHandle };
+        await using var node = ScriptedNode.Start(
+            open => beforeTheReply ? [Prompt, closed, Reply(open)] : [Reply(open), Prompt, closed], ct);
+        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct);
+
+        (await ReadTextAsync(conn.Stream, ct)).Should().Be("DAPPSv1>\n");
+        (await ReadTextAsync(conn.Stream, ct)).Should().BeEmpty("the node closed the handle, so the stream ends");
+    }
+
+    private const int OpenedHandle = 101;
+
+    private static RecvMessage Prompt => new() { Handle = OpenedHandle, Data = RhpDataEncoding.ToWireString("DAPPSv1>\n"u8) };
+
+    private static OpenReplyMessage Reply(OpenMessage open) => new() { Id = open.Id, Handle = OpenedHandle, ErrText = "Ok" };
+
+    private static async Task<string> ReadTextAsync(Stream stream, CancellationToken ct)
+    {
+        var buf = new byte[64];
+        var n = await stream.ReadAsync(buf.AsMemory(), ct).AsTask().WaitAsync(TimeSpan.FromSeconds(2), ct);
+        return Encoding.UTF8.GetString(buf, 0, n);
+    }
+
+    /// <summary>
+    /// An RHPv2 node that answers an open with what the script says, all in
+    /// one write so RhpClient reads the messages back to back, and answers a
+    /// close. Unlike MockRhpServer it can put a push ahead of a reply.
+    /// </summary>
+    private sealed class ScriptedNode : IAsyncDisposable
+    {
+        private readonly System.Net.Sockets.TcpListener listener = new(System.Net.IPAddress.Loopback, 0);
+        private Task serving = Task.CompletedTask;
+
+        public Rhpv2OutboundTransport Transport { get; private set; } = null!;
+
+        public static ScriptedNode Start(Func<OpenMessage, RhpMessage[]> onOpen, CancellationToken ct)
+        {
+            var node = new ScriptedNode();
+            node.listener.Start();
+            node.Transport = new Rhpv2OutboundTransport(
+                "127.0.0.1", ((System.Net.IPEndPoint)node.listener.LocalEndpoint).Port,
+                NullLogger<Rhpv2OutboundTransport>.Instance);
+            node.serving = Task.Run(async () =>
+            {
+                using var tcp = await node.listener.AcceptTcpClientAsync(ct);
+                var s = tcp.GetStream();
+                while (await RhpFraming.ReadFrameAsync(s, ct) is { } frame)
+                {
+                    var messages = RhpJson.Deserialize(frame) switch
+                    {
+                        OpenMessage open => onOpen(open),
+                        CloseMessage close => [new CloseReplyMessage { Id = close.Id, Handle = close.Handle, ErrText = "Ok" }],
+                        _ => [],
+                    };
+                    var write = new MemoryStream();
+                    foreach (var m in messages) RhpFraming.WriteFrame(write, RhpJson.Serialize(m));
+                    await s.WriteAsync(write.ToArray(), ct);
+                }
+            }, ct);
+            return node;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            listener.Stop();
+            try { await serving; } catch { /* the client went, or the test was cancelled */ }
+        }
+    }
+
     [Fact]
     public async Task Stream_IgnoresRecvForOtherHandles()
     {

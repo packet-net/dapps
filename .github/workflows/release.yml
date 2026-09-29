@@ -103,10 +103,12 @@ jobs:
   # real regression and must block it. The one exception is the simulated-radio scenarios
   # on net-sim: they run in CI on every PR, but on a runner they fail often for reasons
   # outside DAPPS (linbpq sometimes exits just after it starts, #201), and blocked 0.42.0
-  # six attempts running. Put them back here once #201 is fixed.
+  # six attempts running. Put them back here once #201 is fixed. The same scenarios on
+  # pdn nodes (WpsReplicationScenarioPdn*, CrossedCallScenarioPdn*) fall under the same
+  # patterns: they're as sensitive to a busy runner, and new.
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 60   # the simulated-radio scenarios run in real time
+    timeout-minutes: 75   # three attempts, each with the pdn tests over AXUDP
     steps:
       - uses: actions/checkout@v6
 
@@ -121,6 +123,8 @@ jobs:
           docker pull ghcr.io/packethacking/xrouter:latest
           # net-sim, for the simulated-radio scenarios, at the digest the tests pin.
           docker pull "$(grep -oE 'ghcr\.io/packet-net/net-sim@sha256:[0-9a-f]{64}' src/dapps/dapps.core.tests/Integration/NetSimFixtures.cs)"
+          # pdn (packet.net), for the tests that run DAPPS on it, at the digest the tests pin.
+          docker pull "$(grep -oE 'ghcr\.io/packet-net/packet\.net@sha256:[0-9a-f]{64}' src/dapps/dapps.core.tests/Integration/PdnFixtures.cs)"
 
       - name: Restore
         run: dotnet restore src/dapps/dapps.sln
@@ -140,7 +144,8 @@ jobs:
                 --filter-not-class 'dapps.core.tests.Integration.WpsReplicationScenario*' \
                 --filter-not-class 'dapps.core.tests.Integration.CrossedCallScenario*' \
                 --filter-not-class 'dapps.core.tests.Integration.BpqCrossedCallExperiments*' \
-                --filter-not-class 'dapps.core.tests.Integration.NetSimSoakTests'; then
+                --filter-not-class 'dapps.core.tests.Integration.NetSimSoakTests' \
+                --filter-not-class 'dapps.core.tests.Integration.NetSimPdnSoakTests'; then
               echo "::endgroup::"
               echo "Tests passed on attempt $i/$attempts."
               exit 0
