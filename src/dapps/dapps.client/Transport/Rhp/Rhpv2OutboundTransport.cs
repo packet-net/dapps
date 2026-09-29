@@ -28,6 +28,13 @@ namespace dapps.client.Transport.Rhp;
 /// authorisation is per-handle-bind. So opening a fresh RhpClient
 /// per outbound forward works on XR without any of the AGW
 /// double-registration drama.
+///
+/// There's no monitor to spot a crossed call by, as the AGW transport
+/// does. pdn (0.57.0 on) says so itself instead: its open reply carries
+/// <c>"crossed": true</c> when the peer's call to us arrived while it was
+/// dialling, or the link was already up. Then no prompt is coming, and
+/// <see cref="IDappsConnection.CrossedCall"/> says so. XRouter never
+/// sends the key, and without it the session waits for a prompt as before.
 /// </summary>
 public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
 {
@@ -136,7 +143,7 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
             rhp.Closed += closeHandler;
 
             logger.LogInformation("RHP: open active {local}->{remote} on port {p}", localCallsign, remoteCallsign, portName);
-            handle = await rhp.OpenAsync(
+            var reply = await rhp.OpenWithReplyAsync(
                 family: ProtocolFamily.Ax25,
                 mode: SocketMode.Stream,
                 port: portName,
@@ -144,6 +151,7 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
                 remote: remoteCallsign,
                 flags: OpenFlags.Active,
                 ct: stoppingToken);
+            handle = reply.Handle;
 
             lock (early)
             {
@@ -156,7 +164,16 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
                 early.Clear();
             }
 
-            return new Rhpv2Connection(rhp, stream, recvHandler, closeHandler, handle, logger);
+            // pdn's word that the peer was calling us too (see the class
+            // doc). Absent, as from XRouter, means it can't tell.
+            var crossed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (reply.Crossed == true)
+            {
+                logger.LogInformation("RHP: the node says {remote} was calling us as we called it: the calls crossed", remoteCallsign);
+                crossed.TrySetResult();
+            }
+
+            return new Rhpv2Connection(rhp, stream, recvHandler, closeHandler, handle, logger, crossed.Task);
         }
         catch
         {
@@ -182,7 +199,8 @@ internal sealed class Rhpv2Connection : IDappsConnection
         EventHandler<RhpReceivedEventArgs> recvHandler,
         EventHandler<RhpClosedEventArgs> closeHandler,
         int handle,
-        ILogger logger)
+        ILogger logger,
+        Task crossedCall)
     {
         this.rhp = rhp;
         this.stream = stream;
@@ -190,9 +208,12 @@ internal sealed class Rhpv2Connection : IDappsConnection
         this.closeHandler = closeHandler;
         this.handle = handle;
         this.logger = logger;
+        CrossedCall = crossedCall;
     }
 
     public Stream Stream => stream;
+
+    public Task CrossedCall { get; }
 
     public async ValueTask DisposeAsync()
     {

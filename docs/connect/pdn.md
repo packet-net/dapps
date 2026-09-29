@@ -81,5 +81,5 @@ If the neighbour is a BPQ node, set `link: dial: v20` on that port, as pdn's own
 
 ## Good to know
 
-- **When both nodes call each other at once**, pdn joins the two calls into one link. DAPPS can't see that over RHPv2, so each end waits 10 s for a greeting before carrying on. Nothing is lost; it just takes 10 s longer.
+- **When both nodes call each other at once**, pdn joins the two calls into one link. pdn node-v0.57.0 and later tell DAPPS when that happens (from the DAPPS release after 0.42.0), so it carries straight on and a crossed call finishes about 10 s sooner. With older pdn each end waits 10 s for a greeting first. Nothing is lost either way.
 - **Linking pdn to a BPQ node over AXIP:** give BPQ one `MAP` line for pdn's address, for the DAPPS callsign. With two lines for the same address (the node's callsign as well), BPQ sends every frame twice and the link never comes up ([packet.net#842](https://github.com/packet-net/packet.net/issues/842)).

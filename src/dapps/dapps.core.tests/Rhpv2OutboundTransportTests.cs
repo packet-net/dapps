@@ -237,11 +237,38 @@ public sealed class Rhpv2OutboundTransportTests
         (await ReadTextAsync(conn.Stream, ct)).Should().BeEmpty("the node closed the handle, so the stream ends");
     }
 
+    // pdn (0.57.0 on) puts "crossed": true on the open reply when the peer
+    // was calling us as we called it, or the link was already up: no prompt
+    // is coming then. Without the key, as from XRouter, the session waits
+    // for a prompt as before.
+
+    [Fact]
+    public async Task CrossedCall_Completes_WhenTheOpenReplySaysTheCallsCrossed()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var node = ScriptedNode.Start(open => [Reply(open, crossed: true)], ct);
+        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct);
+
+        conn.CrossedCall.IsCompleted.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task CrossedCall_NeverCompletes_WhenTheOpenReplyHasNoCrossedKey()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var node = ScriptedNode.Start(open => [Reply(open), Prompt], ct);
+        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct);
+
+        (await ReadTextAsync(conn.Stream, ct)).Should().Be("DAPPSv1>\n");
+        conn.CrossedCall.IsCompleted.Should().BeFalse("the node didn't say, so a prompt may be coming");
+    }
+
     private const int OpenedHandle = 101;
 
     private static RecvMessage Prompt => new() { Handle = OpenedHandle, Data = RhpDataEncoding.ToWireString("DAPPSv1>\n"u8) };
 
-    private static OpenReplyMessage Reply(OpenMessage open) => new() { Id = open.Id, Handle = OpenedHandle, ErrText = "Ok" };
+    private static OpenReplyMessage Reply(OpenMessage open, bool crossed = false) =>
+        new() { Id = open.Id, Handle = OpenedHandle, ErrText = "Ok", Crossed = crossed ? true : null };
 
     private static async Task<string> ReadTextAsync(Stream stream, CancellationToken ct)
     {
