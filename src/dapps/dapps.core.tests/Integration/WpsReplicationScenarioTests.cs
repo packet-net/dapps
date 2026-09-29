@@ -335,10 +335,10 @@ public sealed class WpsReplicationScenarioQpsk3600Tests(NetSimQpsk3600Fixture fi
 // crossed, so neither daemon waits 10 s for a prompt. On node-v0.59.0, 3
 // runs each: 34.6 to 34.7 s at AFSK 1200, always on 1 connection, and
 // 19.9 to 26.0 s at QPSK 3600, on 1 or 2 (47.5 s and 29 s, on 2, with
-// node-v0.55.2, which couldn't say). At QPSK B's dial often still sends
-// its own SABME onto the link, so 2 connections is normal there and the
-// class allows 3, for a lost SABM or UA, until packet.net#862 and #867
-// are fixed.
+// node-v0.55.2, which couldn't say). At QPSK the two SABMEs still cross on
+// the air in some runs (1 of 3 on node-v0.62.0, both sent before either
+// node had heard the other's), which no pdn fix removes, so 2 connections
+// is a normal run there and the class allows 3, for a lost SABM or UA.
 [Collection("net-sim pdn AFSK 1200")]
 [Trait("Category", "Integration")]
 public sealed class WpsReplicationScenarioPdnAfsk1200Tests(NetSimPdnAfsk1200Fixture fixture) : WpsReplicationScenarioTests(fixture)

@@ -19,10 +19,10 @@ namespace dapps.core.tests.Integration;
 /// </summary>
 internal static class PdnNode
 {
-    /// <summary>ghcr.io/packet-net/packet.net at node-v0.59.0, pinned so a new
+    /// <summary>ghcr.io/packet-net/packet.net at node-v0.62.0, pinned so a new
     /// build can't change results unnoticed. Refresh: pull the image at the
     /// release tag and take its digest.</summary>
-    public const string Image = "ghcr.io/packet-net/packet.net@sha256:4d272c036c1338e300012811c60569d0d2bd9717cb1577ee4cdc93182bfd1792";
+    public const string Image = "ghcr.io/packet-net/packet.net@sha256:a8d8c80ce3eee6ac1e85ea3b02fea807ae5837f355e1a87eb441f4a25e41ca1c";
 
     /// <summary>
     /// The node's seed config. <paramref name="portYaml"/> is one entry of

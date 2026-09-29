@@ -103,13 +103,14 @@ jobs:
   # real regression and must block it. The one exception is the simulated-radio scenarios
   # on net-sim: they run in CI on every PR, but they still fail now and then for reasons
   # outside DAPPS. The pinned images carry the fixes for linbpq's start-up crash (#201,
-  # M0LTE/linbpq#71, in master-edcc798) and for pdn's link reset on a repeated SABM
-  # (packet.net#856, in node-v0.59.0). What keeps them out now is pdn: a dial overtaken
-  # by the peer's SABME never completes, and the peer's data on that link is acknowledged
-  # and dropped (packet.net#867), so about one pdn crossed-call run in five fails; a dial
-  # on a link that is already up resets it (packet.net#862). The patterns below cover the
-  # BPQ and pdn classes alike. Put them back here once those are fixed and CI shows them
-  # reliable.
+  # M0LTE/linbpq#71, in master-edcc798), pdn's link reset on a repeated SABM
+  # (packet.net#856, in node-v0.59.0) and pdn's dial that never completed (packet.net#867,
+  # in node-v0.62.0). What keeps them out now is pdn: a dial that keeps resending its
+  # SABME after it has returned, taken as a repeat at the other end, after which the two
+  # ends disagree and the link stalls with data outstanding (1 pdn crossed-call round in
+  # 40 on node-v0.62.0); and a dial on a link that is already up resets it
+  # (packet.net#862). The patterns below cover the BPQ and pdn classes alike.
+  # Put them back here once those are fixed and CI shows them reliable.
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 75   # three attempts, each with the pdn tests over AXUDP

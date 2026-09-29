@@ -358,10 +358,10 @@ public sealed class CrossedCallScenarioQpsk3600Tests(NetSimQpsk3600Fixture fixtu
 // at QPSK 3600 in 5 runs each on node-v0.59.0 (21 to 27 s and 17 to 29 s
 // when every round paid the 10 s wait). The limits are BPQ's: the checks
 // that no round waits out the prompt and every crossing is spotted are
-// what show the signal working, and a slower runner needs the room. One
-// round at each speed failed on a pdn dial that never completed
-// (packet.net#867); see "What pdn showed" in
-// docs-internal/end-to-end-tests.md.
+// what show the signal working, and a slower runner needs the room. On
+// node-v0.62.0 1 round of 40 failed, a cold round at QPSK where one pdn
+// kept resending its dial's SABME after the dial had returned; see "What
+// pdn showed" in docs-internal/end-to-end-tests.md.
 [Collection("net-sim pdn AFSK 1200")]
 [Trait("Category", "Integration")]
 public sealed class CrossedCallScenarioPdnAfsk1200Tests(NetSimPdnAfsk1200Fixture fixture) : CrossedCallScenarioTests(fixture)
