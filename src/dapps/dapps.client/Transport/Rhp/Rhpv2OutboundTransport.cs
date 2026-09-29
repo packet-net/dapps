@@ -169,7 +169,7 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
             var crossed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             if (reply.Crossed == true)
             {
-                logger.LogInformation("RHP: the node says {remote} was calling us as we called it: the calls crossed", remoteCallsign);
+                logger.LogInformation("RHP: the node says {remote} was calling us too, or the link was already up: the calls crossed", remoteCallsign);
                 crossed.TrySetResult();
             }
 
