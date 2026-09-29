@@ -354,11 +354,11 @@ public sealed class CrossedCallScenarioQpsk3600Tests(NetSimQpsk3600Fixture fixtu
 
 // On pdn the two calls make one link, so the default 2 dials, and pdn's
 // open reply says the calls crossed (node-v0.57.0 on), so no round waits
-// out the prompt: 11.6 to 16.5 s a round at AFSK 1200 and 7.4 to 11.1 s
-// at QPSK 3600 in 3 runs each (21 to 27 s and 17 to 29 s when every round
-// paid the 10 s wait), so about twice that. One round at each speed lost
-// data to a link reset when one pdn was still dialling; see "What pdn
-// showed" in docs-internal/end-to-end-tests.md.
+// out the prompt: 10.8 to 25.2 s a round at AFSK 1200 and 7.7 to 15.2 s
+// at QPSK 3600 in 5 runs each on node-v0.59.0 (21 to 27 s and 17 to 29 s
+// when every round paid the 10 s wait). One round at each speed failed on
+// a pdn dial that never completed; see "What pdn showed" in
+// docs-internal/end-to-end-tests.md.
 [Collection("net-sim pdn AFSK 1200")]
 [Trait("Category", "Integration")]
 public sealed class CrossedCallScenarioPdnAfsk1200Tests(NetSimPdnAfsk1200Fixture fixture) : CrossedCallScenarioTests(fixture)
