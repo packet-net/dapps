@@ -258,6 +258,27 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ThePeerHangingUpDuringTheHold_EndsIt_AndNothingIsSentWhenOurDialThenFails()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
+        var bpq = await h.StartAsync(ct);
+        var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Port)!;
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        await h.Logs.WaitForAsync("holding the prompt", ct);
+
+        await bpq.WriteAsync(ct, FakeAgwSocket.Disconnect(Remote, Local, Port));
+        await h.Logs.WaitForAsync("hung up while we held the prompt", ct);
+        dialling.Dispose();
+
+        var sent = await bpq.DrainAsync(ct, TimeSpan.FromMilliseconds(500));
+        sent.Should().NotContain(f => f.Kind == 'D', "a prompt to a pair that has hung up would reach nothing, or a newer session");
+        sent.Should().NotContain(f => f.Kind == 'd', "the peer closed it; a 'd' from us could only find a newer session");
+        h.Logs.Any("Inbound session from").Should().BeFalse();
+    }
+
+    [Fact]
     public async Task OurDialNotConnectingInTime_TheHeldInboundSessionAnswersAnyway()
     {
         // By then the peer has given up waiting for a prompt; holding on

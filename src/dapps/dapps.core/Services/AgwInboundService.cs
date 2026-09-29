@@ -482,7 +482,7 @@ public sealed class AgwInboundService(
                 stoppingTokenSource.Token, lease?.Retired ?? CancellationToken.None);
             try
             {
-                if (await HoldForOwnCallAsync(ownCall, remote, session.Token)) await handler.Handle(session.Token);
+                if (await HoldForOwnCallAsync(ownCall, remote, stream.RemoteClosed, session.Token)) await handler.Handle(session.Token);
             }
             catch (Exception ex)
             {
@@ -505,26 +505,34 @@ public sealed class AgwInboundService(
     /// <summary>
     /// Waits for our own call to the peer to connect or give up before
     /// this session answers (see <see cref="OwnCallHold"/>). False when
-    /// the session was retired meanwhile, our call having connected, or
-    /// the service is stopping: then it never answers.
+    /// the session was retired meanwhile, our call having connected, when
+    /// the peer hung up (<paramref name="hungUp"/>), or when the service is
+    /// stopping: then it never answers.
     /// </summary>
-    private async Task<bool> HoldForOwnCallAsync(Task ownCall, string remote, CancellationToken ct)
+    private async Task<bool> HoldForOwnCallAsync(Task ownCall, string remote, CancellationToken hungUp, CancellationToken ct)
     {
         if (ownCall.IsCompleted) return !ct.IsCancellationRequested;
         logger.LogInformation("AGW inbound: our own call to {0} is on its way; holding the prompt until it connects", remote);
+        using var holding = CancellationTokenSource.CreateLinkedTokenSource(ct, hungUp);
         try
         {
-            await ownCall.WaitAsync(OwnCallHold, timeProvider, ct);
+            await ownCall.WaitAsync(OwnCallHold, timeProvider, holding.Token);
         }
         catch (TimeoutException)
         {
             logger.LogInformation("AGW inbound: our call to {0} hasn't connected after {1:F0}s; answering its call",
                 remote, OwnCallHold.TotalSeconds);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (holding.IsCancellationRequested)
         {
         }
-        return !ct.IsCancellationRequested;
+        if (ct.IsCancellationRequested) return false;
+        if (hungUp.IsCancellationRequested)
+        {
+            logger.LogInformation("AGW inbound: {0} hung up while we held the prompt; not answering", remote);
+            return false;
+        }
+        return true;
     }
 
     /// <summary>

@@ -290,7 +290,7 @@ public sealed class CrossedCallScenarioAfsk1200Tests(NetSimAfsk1200Fixture fixtu
     // collide. The second node's call can land just as the first node's
     // connects; the first node now holds its prompt until its own call has
     // connected, so that is an ordinary crossing too (#205: it was 5 dials
-    // and about 70 s). The cold round meets that timing nearly every time.
+    // and about 70 s). The cold round met that timing in 3 of 5 runs.
     protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(45);
 }
 
