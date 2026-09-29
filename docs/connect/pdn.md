@@ -4,7 +4,7 @@
 
 ## Run DAPPS as a pdn app
 
-This is the easy way.
+**Check the version first.** pdn's built-in app catalogue installs DAPPS 0.34.3 (as of pdn node-v0.55.2). That's older than DAPPS 0.40, which brought the exchange between nodes, and older than the fix that keeps DAPPS from losing the other node's greeting on pdn (in the release after 0.42.0). Until the catalogue is updated, put a current DAPPS in place by hand (step 2 below), or [run DAPPS on its own](#run-dapps-on-its-own-against-pdn).
 
 **1. Turn on pdn's RHPv2 server.** It's off by default. Add this to pdn's config (the control panel's **Config** screen, or `packetnet config export` / `import`):
 
@@ -15,7 +15,17 @@ rhp:
 
 That listens on `127.0.0.1:9000`, which is all DAPPS needs when it runs on the node.
 
-**2. Install and enable DAPPS** from the control panel's **Apps** screen. pdn gives it your node's callsign with a free SSID. To choose the callsign yourself, add it to pdn's `apps:` block:
+**2. Install DAPPS.** From the control panel's **Apps** screen you get the catalogue's 0.34.3. For a current release, put its pdn package in `/var/lib/packetnet/apps/dapps/` yourself (use `dapps-linux-x64` on a PC, `dapps-linux-arm` on 32-bit Raspberry Pi OS); this also replaces a catalogue install:
+
+```sh
+sudo -u packetnet mkdir -p /var/lib/packetnet/apps/dapps
+cd /var/lib/packetnet/apps/dapps
+sudo -u packetnet curl -fsSLO https://github.com/packet-net/dapps/releases/latest/download/pdn-app.yaml
+sudo -u packetnet curl -fsSL -o dapps https://github.com/packet-net/dapps/releases/latest/download/dapps-linux-arm64
+sudo chmod 755 dapps
+```
+
+Then enable it on the **Apps** screen. pdn gives it your node's callsign with a free SSID. To choose the callsign yourself, add it to pdn's `apps:` block:
 
 ```yaml
 apps:
@@ -35,13 +45,13 @@ If you installed DAPPS separately (say from the [apt repo](../install/index.md))
 | Node bearer | **RHPv2** |
 | Node host | pdn's host (`localhost` if it's the same machine) |
 | RHPv2 port | `9000`, or whatever pdn's `rhp.port` says |
-| Default bearer port | `0` for pdn's first port, `1` for its second, and so on |
+| Default bearer port | `0`, for the pdn port named `1` (see below) |
 
 If DAPPS is on another machine, pdn's `rhp.bind` has to be an address that machine can reach. RHPv2 has no encryption, so keep it on a network you trust. If you set `requireAuth: true`, give DAPPS a pdn username and password as its RHPv2 user and password.
 
-## Name your first port `1` (for now)
+## Name your port `1` (for now)
 
-DAPPS asks pdn for a port by number, but current pdn releases only accept a port's name (its `id`). Until that's fixed ([packet.net#841](https://github.com/packet-net/packet.net/issues/841)), name the port DAPPS uses `1`:
+DAPPS asks pdn for a port by number, one more than its bearer port (bearer port `0` asks for port `1`), but current pdn releases only accept a port's name (its `id`). Until that's fixed ([packet.net#841](https://github.com/packet-net/packet.net/issues/841)), name the port DAPPS uses `1`, or `2` if you set DAPPS's bearer port to `1`, and so on:
 
 ```yaml
 ports:

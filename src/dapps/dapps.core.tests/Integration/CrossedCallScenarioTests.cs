@@ -94,11 +94,14 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         results.Should().AllSatisfy(r => r.Complete.Should().BeTrue($"round {r.Round}'s messages should all arrive within {RoundLimit.TotalSeconds:F0}s\n{report}\n{Diagnostics()}"));
         duplicates.Should().Be(0, "every message should arrive exactly once\n" + report);
         results.Should().AllSatisfy(r => r.Dials.Should().BeLessThanOrEqualTo(MaxDials, $"round {r.Round}: {MaxDials} dials at most\n{report}"));
+        // A round that needed more than one call each went through BPQ's
+        // link reset, where waiting out the prompt is the way back. Over
+        // RHPv2 a round where both nodes dialled waits it out too, as the
+        // crossing can't be spotted; a round with one dial never should.
+        var noPromptWaitUpTo = SpotsCrossings ? 2 : 1;
+        results.Where(r => r.Dials <= noPromptWaitUpTo).Should().AllSatisfy(r => r.Fallbacks.Should().Be(0, $"round {r.Round}: no session should have had to wait out the prompt\n{report}"));
         if (SpotsCrossings)
         {
-            // A round that needed more than one call each went through BPQ's
-            // link reset, where waiting out the prompt is the way back.
-            results.Where(r => r.Dials <= 2).Should().AllSatisfy(r => r.Fallbacks.Should().Be(0, $"round {r.Round}: no session should have had to wait out the prompt\n{report}"));
             results.Where(r => r.Dials == 2).Should().AllSatisfy(r => r.Spotted.Should().BePositive(
                 $"round {r.Round}: both nodes dialled, so one of them should have seen the calls cross or the link already up\n{report}"));
         }
@@ -325,17 +328,20 @@ public sealed class CrossedCallScenarioQpsk3600Tests(NetSimQpsk3600Fixture fixtu
     protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(30);
 }
 
+// On pdn the two calls always make one link, with no reset, so the default
+// 2 dials. Each round pays the 10 s prompt wait (RHPv2 can't spot the
+// crossing): 21 to 27 s a round at AFSK 1200 and 17 to 29 s at QPSK 3600
+// in 3 runs each, so about 45 s leaves room for a slower runner.
 [Collection("net-sim pdn AFSK 1200")]
 [Trait("Category", "Integration")]
 public sealed class CrossedCallScenarioPdnAfsk1200Tests(NetSimPdnAfsk1200Fixture fixture) : CrossedCallScenarioTests(fixture)
 {
-    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(100);
-    protected override int MaxDials => 6;
+    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(45);
 }
 
 [Collection("net-sim pdn QPSK 3600")]
 [Trait("Category", "Integration")]
 public sealed class CrossedCallScenarioPdnQpsk3600Tests(NetSimPdnQpsk3600Fixture fixture) : CrossedCallScenarioTests(fixture)
 {
-    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(30);
+    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(45);
 }

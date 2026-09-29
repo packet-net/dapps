@@ -14,7 +14,10 @@ namespace dapps.core.tests.Integration;
 /// </summary>
 [Collection("pdn two-instance")]
 [Trait("Category", "Integration")]
-public sealed class PdnEndToEndTests(TwoPdnFixture fixture) : DappsExchangeTests(fixture);
+public sealed class PdnEndToEndTests(TwoPdnFixture fixture) : DappsExchangeTests(fixture)
+{
+    protected override bool EitherEndMayHangUp => true;
+}
 
 /// <summary>
 /// Crossed calls between two DAPPS daemons on two pdn nodes over AXUDP:
@@ -42,7 +45,10 @@ public sealed class PdnCrossedCallAxudpTests(TwoPdnFixture fixture) : CrossedCal
 /// </summary>
 [Collection("pdn and BPQ")]
 [Trait("Category", "Integration")]
-public sealed class PdnBpqEndToEndTests(PdnBpqFixture fixture) : DappsExchangeTests(fixture);
+public sealed class PdnBpqEndToEndTests(PdnBpqFixture fixture) : DappsExchangeTests(fixture)
+{
+    protected override bool EitherEndMayHangUp => true;
+}
 
 /// <summary>
 /// <see cref="PdnBpqEndToEndTests"/> with the sides swapped: DAPPS on BPQ
@@ -50,4 +56,7 @@ public sealed class PdnBpqEndToEndTests(PdnBpqFixture fixture) : DappsExchangeTe
 /// </summary>
 [Collection("pdn and BPQ")]
 [Trait("Category", "Integration")]
-public sealed class BpqPdnEndToEndTests(PdnBpqFixture fixture) : DappsExchangeTests(new SwappedPair(fixture));
+public sealed class BpqPdnEndToEndTests(PdnBpqFixture fixture) : DappsExchangeTests(new SwappedPair(fixture))
+{
+    protected override bool EitherEndMayHangUp => true;
+}

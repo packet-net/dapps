@@ -29,8 +29,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     # The simulated-radio scenarios run in real time. One attempt takes about 30
-    # minutes with the pdn tests, so 90 leaves room for the retries below.
-    timeout-minutes: 90
+    # minutes with the pdn tests, so 110 leaves room for the pulls, the build and
+    # all three attempts below.
+    timeout-minutes: 110
     steps:
       - uses: actions/checkout@v6
 

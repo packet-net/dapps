@@ -17,7 +17,8 @@ namespace dapps.core.tests.Integration;
 ///
 /// BPQ maps only DAPPS's callsign on pdn, not pdn's node callsign as well:
 /// with two MAP lines for one address BPQ sends every frame twice, and a
-/// second UA puts pdn into a loop of link resets (packet.net#842).
+/// second UA puts pdn into a loop of link resets (packet.net#842). A
+/// workaround: map the node callsign too once packet.net#842 is fixed.
 ///
 /// pdn's port dials plain v2.0 (<c>link: dial: v20</c>), as pdn's docs say
 /// for a BPQ neighbour: many BPQ builds ignore a v2.2 SABME rather than
@@ -117,6 +118,8 @@ public sealed class PdnBpqFixture : IDappsNodePair, IAsyncLifetime
          QUALITY=0
          CONFIG
          UDP {AxipBpq}
+         ; Workaround for packet.net#842: remove once it is fixed, and map
+         ; pdn's node callsign ({CallsignA}) here as well.
          MAP {ApplCallA} 127.0.0.1 UDP {AxudpPdn}
         ENDPORT
 

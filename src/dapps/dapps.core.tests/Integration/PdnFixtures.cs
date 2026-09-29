@@ -33,7 +33,8 @@ internal static class PdnNode
     /// The one port's id is <see cref="PortId"/>, "1": DAPPS asks RHPv2 for
     /// a port by number, 1 for the first, as XRouter numbers them, and pdn
     /// since node-v0.36.2 only takes a port's id (packet.net#841). Naming the
-    /// port "1" works either way.
+    /// port "1" works either way. A workaround: remove it once packet.net#841
+    /// is fixed.
     /// </remarks>
     public static string Config(string callsign, string alias, string portYaml, int httpPort, int rhpPort) => $"""
         schemaVersion: 2
@@ -58,7 +59,9 @@ internal static class PdnNode
 
         """;
 
-    /// <summary>The id every test node's one port has; see <see cref="Config"/>.</summary>
+    /// <summary>The id every test node's one port has; see <see cref="Config"/>.
+    /// Workaround for packet.net#841: remove once it is fixed, and give the
+    /// ports ordinary names.</summary>
     public const string PortId = "1";
 
     private static string Indent(string yaml, int spaces) =>
