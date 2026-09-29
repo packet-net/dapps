@@ -40,20 +40,31 @@ internal sealed class DappsDaemon : IAsyncDisposable
         Http = http;
     }
 
-    /// <summary>A neighbour row to seed: its callsign and the node port (AGW port byte) that reaches it.</summary>
+    /// <summary>A neighbour row to seed: its callsign and the node port (AGW port byte) that reaches it.
+    /// <paramref name="UdpEndpoint"/> switches this neighbour to the UDP datagram
+    /// backhaul (<c>host:port</c>); <paramref name="BearerPort"/> is then unused.</summary>
     public sealed record Neighbour(
         string Callsign, int BearerPort, bool? CompressionEnabled = null, int? SessionTailSeconds = null,
-        dapps.client.ConnectScript? Script = null);
+        dapps.client.ConnectScript? Script = null, string? UdpEndpoint = null);
+
+    /// <summary>A route hint row to seed: forward for <paramref name="Destination"/>
+    /// (a base callsign, or "*") goes via the neighbour named <paramref name="NextHop"/>,
+    /// which must also be seeded as a <see cref="Neighbour"/>.</summary>
+    public sealed record RouteHint(string Destination, string NextHop);
+
+    public int MqttPort { get; private set; }
 
     public static Task<DappsDaemon> StartAsync(
         string name, string callsign, string agwHost, int agwPort, int bearerPort,
-        IEnumerable<Neighbour> neighbours, IReadOnlyDictionary<string, string>? settings, CancellationToken ct) =>
-        StartAsync(name, callsign, NodeAttachment.Agw(agwHost, agwPort, bearerPort), neighbours, settings, ct);
+        IEnumerable<Neighbour> neighbours, IReadOnlyDictionary<string, string>? settings, CancellationToken ct,
+        IEnumerable<RouteHint>? routeHints = null) =>
+        StartAsync(name, callsign, NodeAttachment.Agw(agwHost, agwPort, bearerPort), neighbours, settings, ct, routeHints);
 
     /// <summary>Start a daemon on its node, over AGW or RHPv2 as <paramref name="node"/> says.</summary>
     public static async Task<DappsDaemon> StartAsync(
         string name, string callsign, NodeAttachment node,
-        IEnumerable<Neighbour> neighbours, IReadOnlyDictionary<string, string>? settings, CancellationToken ct)
+        IEnumerable<Neighbour> neighbours, IReadOnlyDictionary<string, string>? settings, CancellationToken ct,
+        IEnumerable<RouteHint>? routeHints = null)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"dapps-e2e-{name}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(Path.Combine(directory, "data"));
@@ -64,14 +75,23 @@ internal sealed class DappsDaemon : IAsyncDisposable
             {
                 db.Insert(new DbNeighbour
                 {
-                    Callsign = n.Callsign, BearerPort = n.BearerPort,
+                    Callsign = n.Callsign, BearerPort = n.BearerPort, UdpEndpoint = n.UdpEndpoint,
                     CompressionEnabled = n.CompressionEnabled, SessionTailSeconds = n.SessionTailSeconds,
                     ConnectScriptJson = n.Script?.ToJson(),
                 });
             }
+            if (routeHints is not null)
+            {
+                db.CreateTable<DbRouteHint>();
+                foreach (var h in routeHints)
+                {
+                    db.Insert(new DbRouteHint { Destination = h.Destination, NextHop = h.NextHop });
+                }
+            }
         }
 
         var httpPort = FreeTcpPort();
+        var mqttPort = FreeTcpPort();
         var start = new ProcessStartInfo("dotnet")
         {
             WorkingDirectory = directory,
@@ -88,7 +108,7 @@ internal sealed class DappsDaemon : IAsyncDisposable
             ["DAPPS_CALLSIGN"] = callsign,
             ["DAPPS_NODE_HOST"] = node.Host,
             ["DAPPS_DEFAULT_BEARER_PORT"] = node.BearerPort.ToString(),
-            ["DAPPS_MQTT_PORT"] = FreeTcpPort().ToString(),
+            ["DAPPS_MQTT_PORT"] = mqttPort.ToString(),
             ["DAPPS_UDP_LISTEN_PORT"] = "0",
             ["DAPPS_AUTH_REQUIRED"] = "false",
             ["DAPPS_UPDATE_CHECK_ENABLED"] = "false",
@@ -114,7 +134,10 @@ internal sealed class DappsDaemon : IAsyncDisposable
             BaseAddress = new Uri($"http://127.0.0.1:{httpPort}/"),
             Timeout = TimeSpan.FromSeconds(60),
         };
-        var daemon = new DappsDaemon(name, callsign, directory, node, new Process { StartInfo = start, EnableRaisingEvents = true }, http);
+        var daemon = new DappsDaemon(name, callsign, directory, node, new Process { StartInfo = start, EnableRaisingEvents = true }, http)
+        {
+            MqttPort = mqttPort,
+        };
         try
         {
             await daemon.LaunchAsync(ct);
@@ -151,6 +174,32 @@ internal sealed class DappsDaemon : IAsyncDisposable
         process = new Process { StartInfo = start, EnableRaisingEvents = true };
         await LaunchAsync(ct);
         return killed;
+    }
+
+    /// <summary>
+    /// Kill the daemon outright (SIGKILL, no graceful shutdown) and start
+    /// a fresh process on the same database, as a crash mid-transfer
+    /// followed by a service restart would. Unlike <see cref="RestartAsync"/>,
+    /// there's no SIGTERM: whatever the process was doing (a link held
+    /// open, a message half-stored) stops dead, on purpose - this is what
+    /// proves the received-message ledger (#195) actually holds up.
+    /// </summary>
+    public async Task KillAsync(CancellationToken ct)
+    {
+        bool running;
+        try { running = !process.HasExited; }
+        catch (InvalidOperationException) { running = false; } // never started
+        if (running)
+        {
+            if (!OperatingSystem.IsWindows()) _ = kill(process.Id, 9);
+            else process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync(ct);
+        }
+        Append($"--- killed (SIGKILL) by the test at {DateTime.UtcNow:HH:mm:ss.fff} ---");
+        var start = process.StartInfo;
+        process.Dispose();
+        process = new Process { StartInfo = start, EnableRaisingEvents = true };
+        await LaunchAsync(ct);
     }
 
     /// <summary>Messages this daemon still has to forward.</summary>

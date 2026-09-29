@@ -79,6 +79,12 @@ That check originally ran once, early in the forwarder tick - before the link-se
 
 There is a narrower variant neither check can see coming: both nodes dial within the same round trip, so neither has an inbound session yet when it decides to dial. Both links come up, but each BPQ attaches its link to its own outgoing session, so neither DAPPS is handed an inbound connect and neither sends `DAPPSv1>`. On a monitor this looks like a connect that succeeds and then goes quiet. DAPPS copes with this. On AGW each node watches its BPQ's monitor while its call is on the way, and on seeing the other's connect request (`<C C P>`) sends its `exchange` line at once (log lines `the calls crossed` and `Our call to <peer> crossed its call to us`). Otherwise, after 10 seconds of silence, it sends it anyway (`Nothing from <peer> for 10s after connecting: assuming it dialled us at the same moment`). From then on the session works as any other, with traffic both ways.
 
+### "Out of step with <peer>" on a weak link (BPQ AGW)
+
+Your log shows `Out of step with <peer>: ... Ending the session so the next link starts afresh`. After a run of lost and resent frames, BPQ can occasionally hand DAPPS an old copy of a frame in place of the new one, so what arrives no longer makes sense: a message that fails its check, or a line that isn't DAPPS. DAPPS never delivers a damaged message. It ends the session, and whatever was on its way goes again on the next one. If the same message arrives damaged twice, or two sessions in a row end this way, DAPPS treats it as a fault on the link and waits a while before trying again.
+
+Now and then on a marginal link, that's expected. If you see it often, the link is too weak for your settings: see [Your node's radio port](tune.md#your-nodes-radio-port).
+
 ### Inbound sessions never arrive (XRouter RHPv2)
 
 A remote node can `c <your-callsign>` and lands at the XRouter node prompt, but not at the `DAPPSv1>` prompt. Check:
