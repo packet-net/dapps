@@ -331,11 +331,14 @@ public sealed class WpsReplicationScenarioQpsk3600Tests(NetSimQpsk3600Fixture fi
 
 // pdn sends an XID and waits for the answer before its SABME, so A's call
 // is still on its way when B's first post comes, 4 s in, and B dials too.
-// pdn makes one link of the two calls, since node-v0.57.0 often without a
-// second SABME, and its open reply says they crossed, so neither daemon
-// waits 10 s for a prompt: 34.7 s at AFSK 1200 and 20.6 to 22.4 s at QPSK
-// 3600 in 3 runs each, on 1 or 2 connections (47.5 s and 29 s, on 2, with
-// node-v0.55.2, which couldn't say).
+// pdn makes one link of the two calls, and its open reply says they
+// crossed, so neither daemon waits 10 s for a prompt. On node-v0.59.0, 3
+// runs each: 34.6 to 34.7 s at AFSK 1200, always on 1 connection, and
+// 19.9 to 26.0 s at QPSK 3600, on 1 or 2 (47.5 s and 29 s, on 2, with
+// node-v0.55.2, which couldn't say). At QPSK B's dial often still sends
+// its own SABME onto the link, so 2 connections is normal there and the
+// class allows 3, for a lost SABM or UA, until packet.net#862 and #867
+// are fixed.
 [Collection("net-sim pdn AFSK 1200")]
 [Trait("Category", "Integration")]
 public sealed class WpsReplicationScenarioPdnAfsk1200Tests(NetSimPdnAfsk1200Fixture fixture) : WpsReplicationScenarioTests(fixture)
@@ -349,5 +352,6 @@ public sealed class WpsReplicationScenarioPdnAfsk1200Tests(NetSimPdnAfsk1200Fixt
 public sealed class WpsReplicationScenarioPdnQpsk3600Tests(NetSimPdnQpsk3600Fixture fixture) : WpsReplicationScenarioTests(fixture)
 {
     protected override int FramesPerMessage => 6;
+    protected override int MaxConnections => 3;
     protected override TimeSpan TimeLimit => TimeSpan.FromSeconds(45);
 }

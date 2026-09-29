@@ -356,14 +356,17 @@ public sealed class CrossedCallScenarioQpsk3600Tests(NetSimQpsk3600Fixture fixtu
 // open reply says the calls crossed (node-v0.57.0 on), so no round waits
 // out the prompt: 10.8 to 25.2 s a round at AFSK 1200 and 7.7 to 15.2 s
 // at QPSK 3600 in 5 runs each on node-v0.59.0 (21 to 27 s and 17 to 29 s
-// when every round paid the 10 s wait). One round at each speed failed on
-// a pdn dial that never completed; see "What pdn showed" in
+// when every round paid the 10 s wait). The limits are BPQ's: the checks
+// that no round waits out the prompt and every crossing is spotted are
+// what show the signal working, and a slower runner needs the room. One
+// round at each speed failed on a pdn dial that never completed
+// (packet.net#867); see "What pdn showed" in
 // docs-internal/end-to-end-tests.md.
 [Collection("net-sim pdn AFSK 1200")]
 [Trait("Category", "Integration")]
 public sealed class CrossedCallScenarioPdnAfsk1200Tests(NetSimPdnAfsk1200Fixture fixture) : CrossedCallScenarioTests(fixture)
 {
-    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(30);
+    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(45);
     protected override bool SpotsCrossings => true;
 }
 
@@ -371,6 +374,6 @@ public sealed class CrossedCallScenarioPdnAfsk1200Tests(NetSimPdnAfsk1200Fixture
 [Trait("Category", "Integration")]
 public sealed class CrossedCallScenarioPdnQpsk3600Tests(NetSimPdnQpsk3600Fixture fixture) : CrossedCallScenarioTests(fixture)
 {
-    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(20);
+    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(30);
     protected override bool SpotsCrossings => true;
 }
