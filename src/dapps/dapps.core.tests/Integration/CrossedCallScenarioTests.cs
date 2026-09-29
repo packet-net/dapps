@@ -94,9 +94,10 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         results.Should().AllSatisfy(r => r.Complete.Should().BeTrue($"round {r.Round}'s messages should all arrive within {RoundLimit.TotalSeconds:F0}s\n{report}\n{Diagnostics()}"));
         duplicates.Should().Be(0, "every message should arrive exactly once\n" + report);
         results.Should().AllSatisfy(r => r.Dials.Should().BeLessThanOrEqualTo(MaxDials, $"round {r.Round}: {MaxDials} dials at most\n{report}"));
-        // Over AGW no round should wait out the prompt. Over RHPv2 a round
-        // where both nodes dialled waits it out, as the crossing can't be
-        // spotted; a round with one dial never should.
+        // Where the node tells DAPPS of a crossing (AGW, or pdn over RHPv2)
+        // no round should wait out the prompt. Elsewhere a round where both
+        // nodes dialled waits it out, as the crossing can't be spotted; a
+        // round with one dial never should.
         results.Where(r => SpotsCrossings || r.Dials <= 1).Should().AllSatisfy(r => r.Fallbacks.Should().Be(0, $"round {r.Round}: no session should have had to wait out the prompt\n{report}"));
         if (SpotsCrossings)
         {
@@ -179,12 +180,14 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
 
     /// <summary>
     /// Whether a node can tell its call crossed the other's: over AGW it
-    /// sees the peer's SABM on the node's monitor. RHPv2 has no monitor
-    /// for it, so there both calls just connect (the node makes one link
+    /// sees the peer's SABM on the node's monitor. RHPv2 has no monitor,
+    /// so there it's up to the node to say, in its open reply: pdn does
+    /// (node-v0.57.0 on) and its classes turn this on; XRouter doesn't.
+    /// Where nobody says, both calls just connect (the node makes one link
     /// of them, as BPQ does), neither end sends a prompt, and each waits
     /// 10 s for one before sending its exchange anyway.
     /// </summary>
-    private bool SpotsCrossings => !fixture.NodeA.IsRhp;
+    protected virtual bool SpotsCrossings => !fixture.NodeA.IsRhp;
 
     private static int Count(DappsDaemon a, DappsDaemon b, string text) =>
         System.Text.RegularExpressions.Regex.Count(a.Log + b.Log, System.Text.RegularExpressions.Regex.Escape(text));
@@ -324,20 +327,25 @@ public sealed class CrossedCallScenarioQpsk3600Tests(NetSimQpsk3600Fixture fixtu
     protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(30);
 }
 
-// On pdn the two calls always make one link, with no reset, so the default
-// 2 dials. Each round pays the 10 s prompt wait (RHPv2 can't spot the
-// crossing): 21 to 27 s a round at AFSK 1200 and 17 to 29 s at QPSK 3600
-// in 3 runs each, so about 45 s leaves room for a slower runner.
+// On pdn the two calls make one link, so the default 2 dials, and pdn's
+// open reply says the calls crossed (node-v0.57.0 on), so no round waits
+// out the prompt: 11.6 to 16.5 s a round at AFSK 1200 and 7.4 to 11.1 s
+// at QPSK 3600 in 3 runs each (21 to 27 s and 17 to 29 s when every round
+// paid the 10 s wait), so about twice that. One round at each speed lost
+// data to a link reset when one pdn was still dialling; see "What pdn
+// showed" in docs-internal/end-to-end-tests.md.
 [Collection("net-sim pdn AFSK 1200")]
 [Trait("Category", "Integration")]
 public sealed class CrossedCallScenarioPdnAfsk1200Tests(NetSimPdnAfsk1200Fixture fixture) : CrossedCallScenarioTests(fixture)
 {
-    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(45);
+    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(30);
+    protected override bool SpotsCrossings => true;
 }
 
 [Collection("net-sim pdn QPSK 3600")]
 [Trait("Category", "Integration")]
 public sealed class CrossedCallScenarioPdnQpsk3600Tests(NetSimPdnQpsk3600Fixture fixture) : CrossedCallScenarioTests(fixture)
 {
-    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(45);
+    protected override TimeSpan RoundLimit => TimeSpan.FromSeconds(20);
+    protected override bool SpotsCrossings => true;
 }

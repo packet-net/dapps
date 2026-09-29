@@ -127,7 +127,7 @@ Phase 3 of `docs-internal/exchange-plan.md`, on net-sim v0.4.0; the numbers are 
 
 ## On pdn (packet.net)
 
-The same tests run with pdn, packet.net's node, in place of BPQ. DAPPS attaches over RHPv2 (`DAPPS_NODE_BEARER=rhpv2`), as it does when it runs as a pdn app. The image is `ghcr.io/packet-net/packet.net`, pinned by digest in `PdnFixtures.cs` (node-v0.55.2); CI pulls whatever that pins. Each node's config is seeded from `/etc/packetnet/packetnet.yaml` on first boot: one port, the RHPv2 server on 0.0.0.0 (a container needs that; pdn's default is loopback), the panel's login off, telnet off. NET/ROM broadcasts and ID beacons are off by default, so only DAPPS's traffic goes on air. The air record is each node's frame feed (`/api/v1/events`), received frames only, written out in BPQ's monitor style so the same assertions read both.
+The same tests run with pdn, packet.net's node, in place of BPQ. DAPPS attaches over RHPv2 (`DAPPS_NODE_BEARER=rhpv2`), as it does when it runs as a pdn app. The image is `ghcr.io/packet-net/packet.net`, pinned by digest in `PdnFixtures.cs` (node-v0.57.0); CI pulls whatever that pins. Each node's config is seeded from `/etc/packetnet/packetnet.yaml` on first boot: one port, the RHPv2 server on 0.0.0.0 (a container needs that; pdn's default is loopback), the panel's login off, telnet off. NET/ROM broadcasts and ID beacons are off by default, so only DAPPS's traffic goes on air. The air record is each node's frame feed (`/api/v1/events`), received frames only, written out in BPQ's monitor style so the same assertions read both.
 
 ```
 app -> DAPPS A -RHPv2- pdn-A -AXUDP- pdn-B -RHPv2- DAPPS B -> app
@@ -167,33 +167,33 @@ No ACKMODE: Dire Wolf doesn't do it, and the BPQ runs didn't use it at QPSK. Ove
 
 ### pdn against BPQ
 
-On the same net-sim image. BPQ's numbers are phase 3's in `docs-internal/exchange-plan.md` "Results"; medians with ranges.
+On the same net-sim image. BPQ's numbers are phase 3's in `docs-internal/exchange-plan.md` "Results"; medians with ranges. pdn node-v0.55.2 couldn't tell DAPPS that calls crossed; node-v0.57.0 can (below).
 
 Kevin's WPS replication:
 
-| | BPQ (4 runs) | pdn (4 runs) |
-|---|---|---|
-| AFSK 1200: first post to last ack | 44 s (42-46) | 47.5 s (47.5-47.7) |
-| AFSK 1200: connections | 1 | 2 |
-| AFSK 1200: frames | 63 (60-65) | 57 |
-| AFSK 1200: transmissions | 26 (25-28) | 14 |
-| AFSK 1200: post delivered, median | 20 s (19-21) | 27 s |
-| QPSK 3600: first post to last ack | 22 s (22-27) | 29 s (18-34) |
-| QPSK 3600: connections | | 2 (1-3) |
-| QPSK 3600: frames | 36 (35-37) | 30 (25-37) |
-| QPSK 3600: transmissions | 18 (16-19) | 16 (12-20) |
-| QPSK 3600: post delivered, median | 10 s (10-12) | 21 s (8.5-22) |
+| | BPQ (4 runs) | pdn node-v0.55.2 (4 runs) | pdn node-v0.57.0 (3 runs) |
+|---|---|---|---|
+| AFSK 1200: first post to last ack | 44 s (42-46) | 47.5 s (47.5-47.7) | 34.7 s |
+| AFSK 1200: connections | 1 | 2 | 1 |
+| AFSK 1200: frames | 63 (60-65) | 57 | 45 (45-46) |
+| AFSK 1200: transmissions | 26 (25-28) | 14 | 13 |
+| AFSK 1200: post delivered, median | 20 s (19-21) | 27 s | 17 s |
+| QPSK 3600: first post to last ack | 22 s (22-27) | 29 s (18-34) | 22 s (20.6-22.4) |
+| QPSK 3600: connections | | 2 (1-3) | 2 (1-2) |
+| QPSK 3600: frames | 36 (35-37) | 30 (25-37) | 31 (26-37) |
+| QPSK 3600: transmissions | 18 (16-19) | 16 (12-20) | 13 (10-19) |
+| QPSK 3600: post delivered, median | 10 s (10-12) | 21 s (8.5-22) | 14 s (10-15.4) |
 
-pdn is steadier (its four AFSK runs are frame for frame the same), fits more into each transmission, and loses about 10 s to one thing: both nodes dial, in every AFSK run and three of the four at QPSK (below). The one QPSK run where only one node dialled took 18.4 s, with posts delivered in 8.5 s, quicker than any BPQ run.
+pdn is steadier (its AFSK runs are frame for frame the same) and fits more into each transmission. Both nodes dial in nearly every run, as pdn's XID before the SABME keeps A's call on its way past B's first post. On node-v0.55.2 that cost about 10 s, the prompt wait; on node-v0.57.0 the callers are told the calls crossed and carry straight on, and at AFSK pdn joins B's call to A's link without a second SABME, which makes pdn 9 s quicker than BPQ there.
 
 Crossed calls, 3 runs of 3 rounds each, plus each run's cold round:
 
-| | BPQ | pdn |
-|---|---|---|
-| AFSK 1200 | usually 1 or 2 dials and 14 to 19 s; 2 rounds of 8 took 5 dials and about 70 s (BPQ's link reset) | always 2 dials, 21 to 27 s; cold rounds 26 s |
-| QPSK 3600 | 1 or 2 dials, 10 to 19 s | always 2 dials, 17 to 29 s; cold rounds 20 s |
+| | BPQ | pdn node-v0.55.2 | pdn node-v0.57.0 |
+|---|---|---|---|
+| AFSK 1200 | usually 1 or 2 dials and 14 to 19 s; 2 rounds of 8 took 5 dials and about 70 s (BPQ's link reset) | always 2 dials, 21 to 27 s; cold rounds 26 s | 2 dials, 11.6 to 16.5 s, every crossing spotted; cold rounds 12.5 to 13.6 s; 1 round of 9 took 3 dials and 46 s (a link reset, below) |
+| QPSK 3600 | 1 or 2 dials, 10 to 19 s | always 2 dials, 17 to 29 s; cold rounds 20 s | 2 dials, 7.4 to 11.1 s, every crossing spotted; cold rounds 8.6 to 16.2 s; 1 round of 9 stalled after a link reset (below) |
 
-On pdn the two calls always make one link, never a reset; every round pays the 10 s prompt wait instead. Over AXUDP the first round took one dial and 3 s (the other node's mail went on the first link), later rounds 2 dials and 10.5 s.
+On pdn the two calls make one link. On node-v0.55.2 every round paid the 10 s prompt wait. With DAPPS ignoring the new key on node-v0.57.0 (3 runs at each speed, as a control) rounds took 21 to 26 s at AFSK and 17 to 31 s at QPSK, much as before, and none failed. Over AXUDP the first round takes one dial and 3 s (the other node's mail goes on the first link); later rounds took 2 dials and 10.5 s on node-v0.55.2, and on node-v0.57.0 under a second, with the crossing spotted when both dialled.
 
 The soak, 12 minutes of the same traffic (seed 187) on the same link:
 
@@ -210,7 +210,8 @@ No duplicates or corrupt messages in either pdn run. pdn's links are v2.2, and i
 ### What pdn showed
 
 - **DAPPS lost the peer's prompt (fixed).** pdn answers an RHPv2 `open` once the far end's UA is in (its deviation D4; XRouter answers at once), so a quick peer's `DAPPSv1>` prompt can follow the open reply in the same read. RhpClient raised that `recv` before DAPPS had attached its handler, and the prompt was dropped: the caller waited 10 s, sent its exchange, heard nothing more (the peer had sent its rules already) and hung up 30 s later. Over AXUDP it broke about one test in four. `Rhpv2OutboundTransport` now listens from before the open.
-- **Crossed calls over RHPv2 are handled, never spotted.** When both nodes dial, pdn makes one link of the two calls, as BPQ does: each node's `open` succeeds, neither listener gets an `accept`, so neither end sends a prompt. Over RHPv2 DAPPS has no monitor (pdn doesn't serve `trace` sockets), so it can't see the peer's SABM, and each end waits 10 s before sending its exchange. The crossed-call scenario only asks for crossings to be spotted over AGW; over RHPv2 it still requires that a round with one dial never waits out the prompt, and on pdn it allows the default 2 dials and 45 s a round at both speeds. In the WPS scenario it happens nearly every time on pdn: pdn's XID before the SABME adds a turnaround, so A's call isn't up at B until after B's first post, 4 s in. So the pdn WPS classes allow 3 connections, not 2.
+- **Crossed calls over RHPv2, spotted since node-v0.57.0.** When both nodes dial, pdn makes one link of the two calls, as BPQ does: each node's `open` succeeds, neither listener gets an `accept`, so neither end sends a prompt. Over RHPv2 DAPPS has no monitor (pdn doesn't serve `trace` sockets), so up to node-v0.55.2 each end waited 10 s before sending its exchange. From node-v0.57.0 pdn's `openReply` carries `"crossed": true` when the peer's SABM or SABME arrived during the dial, or the link was already up, and DAPPS sends its exchange at once, as over AGW. The crossed-call scenario now asks for that on pdn too: no round may wait out the prompt, and a round where both nodes dialled must be spotted. It happens nearly every time in the WPS scenario on pdn: pdn's XID before the SABME adds a turnaround, so A's call isn't up at B until after B's first post, 4 s in. node-v0.57.0 also keeps a link the peer brings up during its XID, so the pdn WPS classes allow 2 connections again, not 3.
+- **A crossing can still reset the link (open, in pdn).** In 2 of 24 rounds, one at each speed, one pdn was still dialling after the other's dial had returned, and it sent another SABME onto the link that was up; the far pdn took that as a link reset and silently dropped what DAPPS had just sent. At AFSK B's pdn hadn't had a UA for its own SABME: A's exchange reached B while B was still waiting, was dropped, and B's retry reset A's end, so B took A's mail but never had A's rules, and its own mail went on a third call (46 s). At QPSK A's pdn sent three SABMEs for one call, and B's mail, sent between the second and the third, never reached A's DAPPS; it waited minutes on a session neither end knew was broken. Both times the frame the reset lost was the exchange or mail that DAPPS now sends at once; in the control, which sends it 10 s later, after the extra SABMEs, no round failed. The fix is pdn's: a node that is dialling and gets the peer's SABM or SABME should take the link as up and stop dialling, or, as BPQ does, answer a SABM(E) on a link it has had no I-frame on as a repeat, not a reset. Until then `CrossedCallScenarioPdn*` fail about one run in three.
 - **Who hangs up.** After `quit` and `bye` both ends let go; BPQ's caller usually sends the DISC first, but with pdn answering, pdn does. The exchange tests accept a clean hang-up from either end where a pdn node is in the pair; between two BPQs, A's is still required.
 - **An open that races a teardown of the same link (packet.net#844).** In the first soak B's daemon restarted while holding A's call. The old handle's DISC waited for the channel, and the new daemon's `open` to A came in meanwhile: pdn failed it (errCode 15) but went on to connect anyway, so A's prompt arrived on a link no handle owned, and the pair spent 7 minutes on stalled sessions before a fresh call cleared it.
 - **A DISC straight after the UA never reaches the open handle (packet.net#843).** Found by hand, not in a test: when the far node answers a call and hangs up at once (as pdn does for an app callsign nobody has bound), the caller's handle stays open, and DAPPS only gives up on its own timeouts.
@@ -219,7 +220,6 @@ No duplicates or corrupt messages in either pdn run. pdn's links are v2.2, and i
 
 - The link reset with DAPPS at both ends (one node's call goes over a link the other has already heard from): the experiment shows what BPQ does and the unit tests cover each side's part, but no scenario forces it. The crossed-call scenario's cold round met the timing in three of five runs since the held prompt, which kept the reset from happening each time.
 - XRouter. RHPv2 runs on pdn (above).
-- A crossed call over RHPv2 being spotted rather than waited out: RHPv2 gives DAPPS no way to see it.
 - The MeshCore bearer, which needs hardware.
 
 ## The linbpq image
