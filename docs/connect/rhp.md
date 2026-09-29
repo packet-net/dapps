@@ -4,6 +4,8 @@
 
 [XRouter](xrouter.md) supports RHPv2 natively, and **RHPv2 is required for DAPPS-on-XRouter** - XRouter's AGW emulator is not usable as a DAPPS bearer because XRouter scopes the AGW callsign claim per-TCP-connection, which collides with DAPPS's per-outbound-fresh-connection pattern. The XRouter operator guide is at [Connect via XRouter (RHPv2)](xrouter.md).
 
+[pdn](pdn.md), the packet.net node, serves RHPv2 too, and DAPPS runs on it as an app.
+
 Mainline BPQ does not yet ship RHPv2; when it does, DAPPS will work over it without code changes.
 
 ## Why RHPv2
@@ -47,3 +49,5 @@ Everything above the bearer seam - the protocol, the app interface, the discover
 ## Testing
 
 `scripts/sim-mixed-bearer.sh` brings up a 4-node BPQ+XRouter mesh (two BPQ, two XRouter) with DAPPS daemons attached - the BPQ-side daemons use AGW, the XRouter-side daemons use RHPv2. End-to-end exercise covers all five paths including the 3-hop XR->BPQ->BPQ->XR mixed-bearer route. The XRouter integration in CI stays on AGW (single-container frame-format coverage); the mixed-bearer four-container run is operator-driven on a workstation where the XRouter image is already pulled.
+
+The RHPv2 bearer itself runs end to end in CI on [pdn](pdn.md) nodes: two pdn nodes over AXUDP, pdn with a BPQ node, and two pdn nodes on a simulated radio channel.
