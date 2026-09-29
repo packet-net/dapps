@@ -75,19 +75,25 @@ internal static class PdnNode
     /// </summary>
     public static async Task<IContainer> StartAsync(string config, string? networkOf, IEnumerable<int> publish)
     {
+        var container = Build(config, networkOf, publish);
+        await container.StartAsync();
+        return container;
+    }
+
+    /// <summary>A node as <see cref="StartAsync"/> starts it, not started yet.</summary>
+    public static IContainer Build(string config, string? networkOf, IEnumerable<int> publish)
+    {
         var builder = new ContainerBuilder()
             .WithImage(Image)
             .WithResourceMapping(Encoding.UTF8.GetBytes(config), "/etc/packetnet/packetnet.yaml");
         if (networkOf is not null) builder = builder.WithCreateParameterModifier(p => p.HostConfig.NetworkMode = $"container:{networkOf}");
         foreach (var port in publish) builder = builder.WithPortBinding(port, assignRandomHostPort: true);
-        var container = builder.Build();
-        await container.StartAsync();
-        return container;
+        return builder.Build();
     }
 
     /// <summary>Wait until the node answers and (unless <paramref name="portsUp"/>
     /// is false) every port it has is up.</summary>
-    public static async Task WaitUntilUpAsync(string host, int httpPort, string name, TimeSpan limit, bool portsUp = true)
+    public static async Task WaitUntilUpAsync(string host, int httpPort, string name, TimeSpan limit, bool portsUp = true, CancellationToken ct = default)
     {
         using var http = new HttpClient { BaseAddress = new Uri($"http://{host}:{httpPort}/"), Timeout = TimeSpan.FromSeconds(5) };
         var deadline = DateTime.UtcNow + limit;
@@ -96,16 +102,16 @@ internal static class PdnNode
         {
             try
             {
-                var ports = await http.GetFromJsonAsync<JsonElement>("api/v1/ports");
+                var ports = await http.GetFromJsonAsync<JsonElement>("api/v1/ports", ct);
                 var states = ports.EnumerateArray().Select(p => p.GetProperty("state").GetString()).ToList();
                 if (!portsUp || (states.Count > 0 && states.All(s => s == "up"))) return;
                 last = "ports " + string.Join(", ", states);
             }
-            catch (Exception e) when (e is HttpRequestException or TaskCanceledException or JsonException)
+            catch (Exception e) when (e is HttpRequestException or TaskCanceledException or JsonException && !ct.IsCancellationRequested)
             {
                 last = e.Message;
             }
-            await Task.Delay(500);
+            await Task.Delay(500, ct);
         }
         throw new TimeoutException($"pdn node {name} wasn't up within {limit.TotalSeconds:F0}s ({last}).");
     }
@@ -115,10 +121,11 @@ internal static class PdnNode
     /// the other node hears one: the first can transmit and the second
     /// receive. The frames go out through the node's RHPv2 datagram socket.
     /// </summary>
-    public static async Task WaitUntilHeardAsync(string host, int fromRhpPort, string fromCall, int toHttpPort, string what)
+    public static async Task WaitUntilHeardAsync(string host, int fromRhpPort, string fromCall, int toHttpPort, string what, CancellationToken ct = default)
     {
         var limit = TimeSpan.FromMinutes(2);
-        using var cts = new CancellationTokenSource(limit);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(limit);
         await using var heard = await AirMonitor.StartAsync([AirMonitor.Tap.PdnNode("B", host, toHttpPort)], cts.Token);
         try
         {
@@ -141,7 +148,7 @@ internal static class PdnNode
                 }
             }
         }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        catch (OperationCanceledException) when (cts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
             throw new TimeoutException(
                 $"{what}: sent UI frames from {fromCall} for {limit.TotalMinutes:F0} minutes and the other pdn node never heard them.");
@@ -303,6 +310,12 @@ public sealed class TwoPdnFixture : IDappsScenarioBed, IAsyncLifetime
         await PdnNode.WaitUntilUpAsync(Host, HttpPortA, CallsignA, TimeSpan.FromMinutes(1), portsUp: false);
         await PdnNode.WaitUntilUpAsync(Host, HttpPortB, CallsignB, TimeSpan.FromMinutes(1), portsUp: false);
     }
+
+    /// <summary>Not watched: the containers that have been seen to die are
+    /// linbpq's, on the simulated channel (<see cref="NetSimTwoNodeFixture"/>).</summary>
+    public string? Died => null;
+
+    public Task ThrowIfDiedAsync(string? detail = null) => Task.CompletedTask;
 
     public async Task WaitUntilReadyAsync()
     {

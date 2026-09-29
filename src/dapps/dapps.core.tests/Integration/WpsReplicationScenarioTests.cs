@@ -48,6 +48,8 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoNodeFixture fixture) 
         if (air is not null) await air.DisposeAsync();
         if (channel is not null) await channel.DisposeAsync();
         await Task.Delay(3000);
+        // A node that died is replaced for the next test.
+        if (fixture.Died is not null) await fixture.WaitUntilReadyAsync();
     }
 
     [Fact]
@@ -76,7 +78,7 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoNodeFixture fixture) 
         Exception? failure = null;
         try
         {
-            while (clock.Elapsed < Deadline && !(sideA.Complete && sideB.Complete) && !pumps.Any(p => p.IsFaulted))
+            while (clock.Elapsed < Deadline && !(sideA.Complete && sideB.Complete) && !pumps.Any(p => p.IsFaulted) && fixture.Died is null)
             {
                 await Task.Delay(200, ct);
             }
@@ -99,6 +101,7 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoNodeFixture fixture) 
         var report = Report(sideA, sideB, elapsed, channel!.Summarise(started, started + elapsed), channel!.Timeline(started, started + elapsed));
         WriteReport(report);
 
+        await fixture.ThrowIfDiedAsync($"{report}\n{Diagnostics()}");
         failure.Should().BeNull($"the test's own posting and inbox reading should work\n{report}\n{Diagnostics()}");
         sideA.Complete.Should().BeTrue($"everything should arrive within {Deadline.TotalMinutes:F0} minutes\n{report}\n{Diagnostics()}");
         sideB.Complete.Should().BeTrue($"{report}\n{Diagnostics()}");
@@ -125,10 +128,10 @@ public abstract class WpsReplicationScenarioTests(NetSimTwoNodeFixture fixture) 
     protected abstract TimeSpan TimeLimit { get; }
 
     /// <summary>Wait (up to a minute) until neither daemon has anything left to send, then a few seconds more.</summary>
-    private static async Task SettleAsync(DappsDaemon[] nodes, CancellationToken ct)
+    private async Task SettleAsync(DappsDaemon[] nodes, CancellationToken ct)
     {
         var until = DateTime.UtcNow + TimeSpan.FromMinutes(1);
-        while (DateTime.UtcNow < until)
+        while (DateTime.UtcNow < until && fixture.Died is null)
         {
             var pending = 0;
             foreach (var n in nodes) pending += await n.PendingOutboundAsync(ct);

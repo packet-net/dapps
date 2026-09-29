@@ -1,5 +1,3 @@
-using DotNet.Testcontainers.Containers;
-
 namespace dapps.core.tests.Integration;
 
 /// <summary>
@@ -21,8 +19,8 @@ public abstract class NetSimTwoPdnFixture : NetSimTwoNodeFixture
     private const int InsideHttpA = 18301, InsideHttpB = 18302;
     private const int InsideRhpA = 18401, InsideRhpB = 18402;
 
-    private IContainer? pdnA;
-    private IContainer? pdnB;
+    private WatchedContainer? pdnA;
+    private WatchedContainer? pdnB;
 
     public int HttpPortA => MappedPort(InsideHttpA);
     public int HttpPortB => MappedPort(InsideHttpB);
@@ -48,10 +46,19 @@ public abstract class NetSimTwoPdnFixture : NetSimTwoNodeFixture
     public override async Task<IAirMonitor> StartAirMonitorAsync(CancellationToken ct) =>
         await AirMonitor.StartAsync([AirMonitor.Tap.PdnNode("A", Host, HttpPortA), AirMonitor.Tap.PdnNode("B", Host, HttpPortB)], ct);
 
+    private protected override IEnumerable<WatchedContainer?> NodeContainers => [pdnA, pdnB];
+
     protected override async Task StartNodesAsync()
     {
-        pdnA = await PdnNode.StartAsync(PdnNode.Config(CallsignA, "AAA", RadioPort(KissPortA), InsideHttpA, InsideRhpA), NetSimId, []);
-        pdnB = await PdnNode.StartAsync(PdnNode.Config(CallsignB, "BBB", RadioPort(KissPortB), InsideHttpB, InsideRhpB), NetSimId, []);
+        pdnA = await StartPdnAsync(CallsignA, "AAA", KissPortA, InsideHttpA, InsideRhpA);
+        pdnB = await StartPdnAsync(CallsignB, "BBB", KissPortB, InsideHttpB, InsideRhpB);
+    }
+
+    private async Task<WatchedContainer> StartPdnAsync(string callsign, string alias, int kissPort, int httpPort, int rhpPort)
+    {
+        var pdn = new WatchedContainer($"pdn {callsign}", PdnNode.Build(PdnNode.Config(callsign, alias, RadioPort(kissPort), httpPort, rhpPort), NetSimId, []));
+        await pdn.StartAsync();
+        return pdn;
     }
 
     private string RadioPort(int kissPort) => $"""
@@ -82,12 +89,12 @@ public abstract class NetSimTwoPdnFixture : NetSimTwoNodeFixture
     }
 
     /// <summary>Wait until both nodes' radio ports are up and each has heard the other.</summary>
-    public override async Task WaitUntilReadyAsync()
+    protected override async Task WaitUntilEachHearsTheOtherAsync(CancellationToken ct)
     {
-        await PdnNode.WaitUntilUpAsync(Host, HttpPortA, CallsignA, TimeSpan.FromMinutes(1));
-        await PdnNode.WaitUntilUpAsync(Host, HttpPortB, CallsignB, TimeSpan.FromMinutes(1));
-        await PdnNode.WaitUntilHeardAsync(Host, RhpPortA, CallsignA + "-15", HttpPortB, ChannelName);
-        await PdnNode.WaitUntilHeardAsync(Host, RhpPortB, CallsignB + "-15", HttpPortA, ChannelName);
+        await PdnNode.WaitUntilUpAsync(Host, HttpPortA, CallsignA, TimeSpan.FromMinutes(1), ct: ct);
+        await PdnNode.WaitUntilUpAsync(Host, HttpPortB, CallsignB, TimeSpan.FromMinutes(1), ct: ct);
+        await PdnNode.WaitUntilHeardAsync(Host, RhpPortA, CallsignA + "-15", HttpPortB, ChannelName, ct);
+        await PdnNode.WaitUntilHeardAsync(Host, RhpPortB, CallsignB + "-15", HttpPortA, ChannelName, ct);
     }
 }
 

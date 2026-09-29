@@ -56,6 +56,14 @@ public interface IDappsScenarioBed : IDappsNodePair
 
     /// <summary>Wait until each node has been heard by the other.</summary>
     Task WaitUntilReadyAsync();
+
+    /// <summary>Which of the pair's containers has stopped by itself, or
+    /// null while all are running (or when they aren't watched).</summary>
+    string? Died { get; }
+
+    /// <summary>Throws, with the containers' logs and <paramref name="detail"/>,
+    /// if one of them has stopped by itself.</summary>
+    Task ThrowIfDiedAsync(string? detail = null);
 }
 
 /// <summary>

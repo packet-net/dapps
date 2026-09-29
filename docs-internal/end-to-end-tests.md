@@ -74,7 +74,9 @@ It runs on AFSK 1200 (Dire Wolf) and QPSK 3600 (pdn-soundmodem, 7200 bps). It ch
 
 The fixtures use the BPQ radio-port settings `docs/tune.md` recommends. To try others without a rebuild, set `DAPPS_NETSIM_RADIO`, e.g. `DAPPS_NETSIM_RADIO=PERSIST=255,SLOTTIME=10,MAXFRAME=7` (it also takes `ACKMODE=1`, for `KISSOPTIONS=ACKMODE`), and to try another path loss, `DAPPS_NETSIM_PATH_LOSS`, e.g. `DAPPS_NETSIM_PATH_LOSS=156`.
 
-The fixture waits until each BPQ has been heard by the other before any test starts, and fails with a message saying which one wasn't heard if that takes over 2 minutes. Until its KISS link to the simulator is up, BPQ holds a connect request for about 8 s; a test's first call then went out late enough for the other side to dial as well, and the calls crossed (seen once in the WPS scenario at 1200 baud, with three SABMs for one link). Every node goes through that after a reboot, so one crossed-call test starts from cold BPQs on purpose (below).
+The fixture waits until each BPQ has been heard by the other before any test starts. Until its KISS link to the simulator is up, BPQ holds a connect request, and linbpq only dials its KISS port 10 s after it starts (`ConnecttoTCPThread` in `kiss.c` waits that long before its first try). A test's first call then went out late enough for the other side to dial as well, and the calls crossed (seen once in the WPS scenario at 1200 baud, with three SABMs for one link). Every node goes through that after a reboot, so one crossed-call test starts from cold BPQs on purpose (below).
+
+The fixtures also watch every container from when it starts, because linbpq sometimes exits by itself about 10 s after starting (#201, below). If a container stops, or the two nodes haven't heard each other within 2 minutes, the fixture writes the containers' logs to `scenario-reports/fixture-*-retried-*.log`, recreates all three containers and tries once more; only a second failure fails the tests, with both sets of logs. A scenario waiting for traffic stops as soon as a container stops, and fails with the containers' logs: the exit code, and linbpq's own output, which ends in a backtrace if it died of SIGSEGV or SIGABRT (also in `fixture-*-died-*.log`). The next test gets new containers. The cold crossed-call round, which starts just when linbpq has been seen to die, runs once more on new containers if a node dies. The pdn fixtures on net-sim are watched the same way, though no pdn node has been seen to stop.
 
 ### Crossed calls
 
@@ -224,4 +226,4 @@ No duplicates or corrupt messages in either pdn run. pdn's links are v2.2, and i
 
 ## The linbpq image
 
-`m0lte/linbpq:latest` is built from the `patched` branch of M0LTE/linbpq by its `docker-publish` workflow. It was last built on 26 May 2026, before John's 6.0.25.40.
+`m0lte/linbpq:latest` is built from the `patched` branch of M0LTE/linbpq by its `docker-publish` workflow. It was last built on 29 September 2026, from 6.0.25.41 (revision 391f7b6c), with debug information and without `_FORTIFY_SOURCE`. When linbpq dies of SIGSEGV or SIGABRT its own handler writes the signal and a backtrace to its output and exits with code 1, so the fixtures' logs (above) show it.
