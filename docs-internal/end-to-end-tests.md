@@ -130,7 +130,7 @@ Phase 3 of `docs-internal/exchange-plan.md`, on net-sim v0.4.0; the numbers are 
 
 ## On pdn (packet.net)
 
-The same tests run with pdn, packet.net's node, in place of BPQ. DAPPS attaches over RHPv2 (`DAPPS_NODE_BEARER=rhpv2`), as it does when it runs as a pdn app. The image is `ghcr.io/packet-net/packet.net`, pinned by digest in `PdnFixtures.cs` (node-v0.62.0); CI pulls whatever that pins. Each node's config is seeded from `/etc/packetnet/packetnet.yaml` on first boot: one port, the RHPv2 server on 0.0.0.0 (a container needs that; pdn's default is loopback), the panel's login off, telnet off. NET/ROM broadcasts and ID beacons are off by default, so only DAPPS's traffic goes on air. The air record is each node's frame feed (`/api/v1/events`), received frames only, written out in BPQ's monitor style so the same assertions read both.
+The same tests run with pdn, packet.net's node, in place of BPQ. DAPPS attaches over RHPv2 (`DAPPS_NODE_BEARER=rhpv2`), as it does when it runs as a pdn app. The image is `ghcr.io/packet-net/packet.net`, pinned by digest in `PdnFixtures.cs` (node-v0.65.0, the multi-arch index digest, since 2026-09-30; node-v0.62.0 before); CI pulls whatever that pins. Each node's config is seeded from `/etc/packetnet/packetnet.yaml` on first boot: one port, the RHPv2 server on 0.0.0.0 (a container needs that; pdn's default is loopback), the panel's login off, telnet off. NET/ROM broadcasts and ID beacons are off by default, so only DAPPS's traffic goes on air. The air record is each node's frame feed (`/api/v1/events`), received frames only, written out in BPQ's monitor style so the same assertions read both.
 
 ```
 app -> DAPPS A -RHPv2- pdn-A -AXUDP- pdn-B -RHPv2- DAPPS B -> app
@@ -189,7 +189,7 @@ Kevin's WPS replication:
 
 pdn is steadier (its AFSK runs are frame for frame the same) and fits more into each transmission. Both nodes dial in nearly every run, as pdn's XID before the SABME keeps A's call on its way past B's first post. On node-v0.55.2 that cost about 10 s, the prompt wait; on node-v0.57.0 the callers are told the calls crossed and carry straight on, and at AFSK pdn joins B's call to A's link without a second SABME, which makes pdn 9 s quicker than BPQ there.
 
-Crossed calls, runs of 3 rounds each plus a cold round (3 runs, 5 on node-v0.59.0). On node-v0.62.0, 5 runs at each speed: every crossing spotted, AFSK 1200 11.5 to 25.3 s with none failed, QPSK 3600 7.3 to 21.2 s with 1 cold round of 5 failed (a dial that keeps resending its SABME, below). The WPS runs on node-v0.62.0 took 34.5 to 34.9 s at AFSK on 1 connection and 21.6 to 26.8 s at QPSK on 1 or 2, and the AXUDP crossed calls passed 3 times of 3.
+Crossed calls, runs of 3 rounds each plus a cold round (3 runs, 5 on node-v0.59.0). On node-v0.65.0 (packet.net#862 and #885 fixed: a dial on a live link takes it or is refused, and a reset that loses frames ends the stream), 1 run at each speed on 2026-09-30: every crossing spotted, 2 dials a round, QPSK 3600 9.0 to 18.1 s and AFSK 1200 12.9 to 15.1 s to last delivery, none failed, no round reset. On node-v0.62.0, 5 runs at each speed: every crossing spotted, AFSK 1200 11.5 to 25.3 s with none failed, QPSK 3600 7.3 to 21.2 s with 1 cold round of 5 failed (a dial that keeps resending its SABME, below). The WPS runs on node-v0.62.0 took 34.5 to 34.9 s at AFSK on 1 connection and 21.6 to 26.8 s at QPSK on 1 or 2, and the AXUDP crossed calls passed 3 times of 3.
 
 | | BPQ | pdn node-v0.55.2 | pdn node-v0.57.0 | pdn node-v0.59.0 |
 |---|---|---|---|---|
