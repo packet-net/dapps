@@ -56,6 +56,7 @@ In the dashboard's **Add / update neighbour** form (or `POST /Neighbours`):
 - **Connect script**: one step per line, `SEND|EXPECT[|TIMEOUT_SECONDS]`:
 
 ```
+C G0NODE2|Connected
 C G0NODE3|Connected to G0NODE3
 C G0NODE4|Connected to G0NODE4
 C C|Connected to C
@@ -67,7 +68,8 @@ Notes:
 - Each `SEND` is transmitted with a `\r` line terminator (BPQ-style node prompts use CR, not LF).
 - Each `EXPECT` is a substring match against the inbound bytes; case-sensitive. Pick something distinctive enough that earlier banner text won't accidentally match.
 - `TIMEOUT_SECONDS` is per-step; default 30s. The final step that lands on `DAPPSv1>` may want longer because the application command takes a moment to dispatch on the far-end node.
-- The first step is *not* "C G0NODE2" - that's the regular AGW connect, handled by the bearer port. The script picks up after the AGW connection lands at G0NODE2's prompt.
+- The first step, `C G0NODE2`, names the node the daemon dials over AGW. It has to be a bare `C <CALL>` (or `CONNECT <CALL>`) with no port number. The daemon dials that callsign itself instead of typing the line, and a successful AGW connect counts as the step passing, so its expect text is not checked. The rest of the script is played from G0NODE2's prompt.
+- If the first step isn't a bare `C <CALL>`, for example `C 14 G0NODE3` with a port number, the daemon dials the neighbour's own callsign and plays the whole script over that connection.
 - The script's last step **must** end on a substring containing `DAPPSv1>`; the protocol client takes over from there.
 
 Lines beginning with `#` are comments. Blank lines are ignored.
@@ -77,8 +79,8 @@ Lines beginning with `#` are comments. Blank lines are ignored.
 When the outbound forwarder picks a message destined for C:
 
 1. Resolves the route to the C-neighbour row, which has the connect-script attached.
-2. Opens an AGW connection to the *first hop* (G0NODE2) via the configured bearer port.
-3. Plays the script: send line, wait for substring, send line, wait, ... until `DAPPSv1>`.
+2. Opens an AGW connection to the *first hop* named by the script's first step (G0NODE2) via the configured bearer port.
+3. Plays the rest of the script: send line, wait for substring, send line, wait, ... until `DAPPSv1>`.
 4. Falls into the regular exchange: route gossip pull (subject to staleness gate), then traffic both ways.
 5. On success, all the usual things happen: messages acked, anything the far end has for us collected on the same session, audit log entry.
 

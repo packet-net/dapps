@@ -52,11 +52,13 @@ public sealed class NodePoller(
         ConnectScript? connectScript = null)
     {
         var at = timeProvider.GetUtcNow().UtcDateTime;
+        // A connect-script can name the first hop; dial that, not the peer.
+        (var dialCallsign, connectScript) = ConnectScript.ResolveFirstHop(remoteCallsign, connectScript);
         try
         {
             await using var connection = await transport.ConnectAsync(
                 localCallsign: localCallsign,
-                remoteCallsign: remoteCallsign,
+                remoteCallsign: dialCallsign,
                 bearerPort: bearerPort,
                 stoppingToken: ct);
             using var stream = new PumpedReadStream(connection.Stream);

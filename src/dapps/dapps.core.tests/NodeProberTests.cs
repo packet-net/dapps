@@ -100,17 +100,57 @@ public sealed class NodeProberTests
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
+    [Fact]
+    public async Task ProbeAsync_ScriptNamingFirstHop_DialsFirstHopAndPlaysTheRest()
+    {
+        // The leading "C GB7BDH" names the node to dial; the daemon must
+        // not dial the far-end peer it can't hear.
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(
+            "GB7BDH node\r\nBDH:GB7BDH} Connected to GB7AGM-3\r\nDAPPSv1>\n"));
+        var prober = MakeProber(transport);
+        var script = dapps.client.ConnectScript.ParseLines(
+            "C GB7BDH|Connected\nC 14 GB7AGM-3|Connected\nDAPPS|DAPPSv1>");
+
+        var result = await prober.ProbeAsync("N0US", "GB7AGM-3", 1, CancellationToken.None, connectScript: script);
+
+        result.Success.Should().BeTrue(result.Error);
+        result.Callsign.Should().Be("GB7AGM-3");
+        transport.DialledCallsign.Should().Be("GB7BDH");
+        Encoding.UTF8.GetString(transport.Stream!.WriteCapture.ToArray())
+            .Should().StartWith("C 14 GB7AGM-3\rDAPPS\r");
+    }
+
+    [Fact]
+    public async Task ProbeAsync_ScriptWithoutFirstHop_DialsTheTarget()
+    {
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes("DAPPSv1>\n"));
+        var prober = MakeProber(transport);
+        var script = dapps.client.ConnectScript.ParseLines("DAPPS|DAPPSv1>");
+
+        var result = await prober.ProbeAsync("N0US", "N0THEM-9", 1, CancellationToken.None, connectScript: script);
+
+        result.Success.Should().BeTrue(result.Error);
+        transport.DialledCallsign.Should().Be("N0THEM-9");
+    }
+
     private static NodeProber MakeProber(IDappsOutboundTransport transport)
         => new(transport, TimeProvider.System, NullLoggerFactory.Instance, NullLogger<NodeProber>.Instance);
 
     private sealed class FakeOutboundTransport(byte[] cannedReceiverBytes) : IDappsOutboundTransport
     {
+        public string? DialledCallsign { get; private set; }
+        public FakeDuplexStream? Stream { get; private set; }
+
         public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken)
+        {
             // FakeDuplexStream rather than a bare MemoryStream - the
             // prober may write back ("peers\n" on Phase 2 fetch-peers
             // probes), which would otherwise overwrite the canned read
             // buffer if read and write shared one stream.
-            => Task.FromResult<IDappsConnection>(new FakeConnection(new FakeDuplexStream(cannedReceiverBytes)));
+            DialledCallsign = remoteCallsign;
+            Stream = new FakeDuplexStream(cannedReceiverBytes);
+            return Task.FromResult<IDappsConnection>(new FakeConnection(Stream));
+        }
 
         private sealed class FakeConnection(Stream stream) : IDappsConnection
         {

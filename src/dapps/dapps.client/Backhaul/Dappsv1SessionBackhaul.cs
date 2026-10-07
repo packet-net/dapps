@@ -154,12 +154,14 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         if (first is null) return;
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
+        // A connect-script can name the first hop; dial that, not the peer.
+        var (dialCallsign, script) = ConnectScript.ResolveFirstHop(route.Callsign, route.ConnectScript);
         IDappsConnection connection;
         try
         {
             connection = await transport.ConnectAsync(
                 localCallsign: localCallsign,
-                remoteCallsign: route.Callsign,
+                remoteCallsign: dialCallsign,
                 bearerPort: route.BearerPort ?? 0,
                 stoppingToken: ct);
         }
@@ -192,7 +194,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             // Connect-script: the script drives a chain of connects through
             // intermediate non-DAPPS packet nodes and reads the final
             // DAPPSv1> prompt itself.
-            if (route.ConnectScript is { } script)
+            if (script is not null)
             {
                 await ConnectScriptRunner.RunAsync(stream, script, logger, ct);
             }
@@ -203,7 +205,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                 PromptWait = PromptWait,
                 MinQuiet = MinQuiet,
                 MaxLength = MaxHold,
-                PromptConsumed = route.ConnectScript is not null,
+                PromptConsumed = script is not null,
                 CrossedCall = connection.CrossedCall,
                 RouteGossip = routeGossip,
                 Opened = s => OnOpened(route, s),
