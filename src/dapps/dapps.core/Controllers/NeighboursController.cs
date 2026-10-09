@@ -31,7 +31,8 @@ public class NeighboursController(Database database) : ControllerBase
                 ConnectScript: script?.ToLines(),
                 ConnectScriptStepCount: script?.Steps.Count ?? 0,
                 CompressionEnabled: n.CompressionEnabled,
-                SessionTailSeconds: n.SessionTailSeconds);
+                SessionTailSeconds: n.SessionTailSeconds,
+                ConnectVia: n.ConnectVia);
         });
     }
 
@@ -54,13 +55,19 @@ public class NeighboursController(Database database) : ControllerBase
             }
             scriptJson = parsed?.ToJson();
         }
+        var connectVia = string.IsNullOrWhiteSpace(neighbour.ConnectVia) ? null : neighbour.ConnectVia.Trim().ToUpperInvariant();
+        if (connectVia is not null && scriptJson is null)
+        {
+            return BadRequest("Connect via needs a connect script: DAPPS lands at that node's prompt, and the script is what reaches the peer from there");
+        }
         await database.UpsertNeighbour(
             neighbour.Callsign.Trim().ToUpperInvariant(),
             neighbour.BearerPort,
             string.IsNullOrWhiteSpace(neighbour.UdpEndpoint) ? null : neighbour.UdpEndpoint.Trim(),
             connectScriptJson: scriptJson,
             compressionEnabled: neighbour.CompressionEnabled,
-            sessionTailSeconds: neighbour.SessionTailSeconds is { } tail ? Math.Clamp(tail, 0, 600) : null);
+            sessionTailSeconds: neighbour.SessionTailSeconds is { } tail ? Math.Clamp(tail, 0, 600) : null,
+            connectVia: connectVia);
         return NoContent();
     }
 
@@ -105,6 +112,12 @@ public class NeighboursController(Database database) : ControllerBase
 /// to this neighbour after a session, otherwise the number of idle
 /// seconds to hold it for. Clamped 0-600 on upsert.
 /// </para>
+///
+/// <para>
+/// <see cref="ConnectVia"/> is the node DAPPS dials first when the peer
+/// (<see cref="Callsign"/>) is reached through it; the connect-script is
+/// played at its prompt. Null dials the peer itself. Needs a script.
+/// </para>
 /// </summary>
 public sealed record NeighbourModel(
     string Callsign,
@@ -113,4 +126,5 @@ public sealed record NeighbourModel(
     string? ConnectScript = null,
     int ConnectScriptStepCount = 0,
     bool? CompressionEnabled = null,
-    int? SessionTailSeconds = null);
+    int? SessionTailSeconds = null,
+    string? ConnectVia = null);

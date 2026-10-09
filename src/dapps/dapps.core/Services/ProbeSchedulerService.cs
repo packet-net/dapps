@@ -278,10 +278,12 @@ public sealed class ProbeSchedulerService(
         // The probe replays the same chain the forwarder would, so a
         // green probe accurately reflects forwarder reachability.
         dapps.client.ConnectScript? connectScript = null;
+        string? connectVia = null;
         if (!useNodePrompt)
         {
             var nb = await database.GetNeighbour(remoteCallsign);
             connectScript = dapps.client.ConnectScript.FromJson(nb?.ConnectScriptJson);
+            if (connectScript is not null) connectVia = nb?.ConnectVia;
         }
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -290,7 +292,7 @@ public sealed class ProbeSchedulerService(
                 applicationCommand: options.CurrentValue.NodePromptApplicationCommand,
                 fetchPeers: fetchPeers)
             : await prober.ProbeAsync(localCallsign, remoteCallsign, bearerPort, ct, fetchPeers,
-                connectScript: connectScript);
+                connectScript: connectScript, connectVia: connectVia);
         sw.Stop();
         var row = await RecordResultAsync(result);
         if (result.Success && result.DiscoveredPeers.Count > 0)

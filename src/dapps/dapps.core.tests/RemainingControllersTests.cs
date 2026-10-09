@@ -90,6 +90,22 @@ public sealed class RemainingControllersTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task NeighboursController_ConnectVia_RoundTrips_AndNeedsAScript()
+    {
+        var ctrl = new NeighboursController(database);
+
+        (await ctrl.Upsert(new NeighbourModel("g7xyz-3", BearerPort: 1, ConnectVia: "g7xyz")))
+            .Should().BeOfType<BadRequestObjectResult>("without a script DAPPS would sit at the node's prompt");
+
+        (await ctrl.Upsert(new NeighbourModel("g7xyz-3", BearerPort: 1, ConnectScript: "DAPPS|DAPPSv1>", ConnectVia: " g7xyz ")))
+            .Should().BeOfType<NoContentResult>();
+        (await ctrl.List()).Single().ConnectVia.Should().Be("G7XYZ");
+
+        await ctrl.Upsert(new NeighbourModel("g7xyz-3", BearerPort: 1, ConnectScript: "DAPPS|DAPPSv1>", ConnectVia: ""));
+        (await ctrl.List()).Single().ConnectVia.Should().BeNull("a blank Connect via dials the Callsign itself");
+    }
+
+    [Fact]
     public async Task NeighboursController_DeleteAbsent_NotFound()
     {
         var ctrl = new NeighboursController(database);

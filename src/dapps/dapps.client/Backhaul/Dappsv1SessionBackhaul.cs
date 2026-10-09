@@ -159,7 +159,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         {
             connection = await transport.ConnectAsync(
                 localCallsign: localCallsign,
-                remoteCallsign: route.Callsign,
+                remoteCallsign: route.DialCallsign,
                 bearerPort: route.BearerPort ?? 0,
                 stoppingToken: ct);
         }

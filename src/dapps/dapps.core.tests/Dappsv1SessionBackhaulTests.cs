@@ -73,6 +73,26 @@ public sealed class Dappsv1SessionBackhaulTests
     }
 
     [Fact]
+    public async Task SendAsync_ConnectVia_DialsThatNode_ThenPlaysTheScriptThere()
+    {
+        // The peer is N0DEST-3, behind its node N0DEST: dial the node, type
+        // the application command at its prompt, and carry on with the peer.
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(Hello + "ack mid0001\n"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
+        var script = new ConnectScript([new ConnectScriptStep("DAPPS", "DAPPSv1>")]);
+
+        var result = await sb.SendAsync(
+            new BackhaulMessage("mid0001", "app@N0DEST", Salt: 1L, Ttl: 60, Payload: "hi"u8.ToArray()),
+            new BackhaulRoute("N0DEST-3", BearerPort: 1, ConnectScript: script, ConnectVia: "N0DEST"),
+            "N0SRC",
+            CancellationToken.None);
+
+        result.Accepted.Should().BeTrue(result.Error);
+        transport.Dialled.Should().Equal("N0DEST");
+        Encoding.UTF8.GetString(transport.WriteCapture).Should().StartWith("DAPPS\rexchange id=");
+    }
+
+    [Fact]
     public async Task SendAsync_NoPromptFromRemote_ReturnsFail()
     {
         var transport = new FakeOutboundTransport(
@@ -680,12 +700,14 @@ public sealed class Dappsv1SessionBackhaulTests
     {
         public byte[] WriteCapture => _stream?.WriteCapture.ToArray() ?? [];
         public int Connects { get; private set; }
+        public List<string> Dialled { get; } = [];
 
         private CapturingStream? _stream;
 
         public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken)
         {
             Connects++;
+            Dialled.Add(remoteCallsign);
             _stream = new CapturingStream(cannedReceiverBytes, endOfStream);
             return Task.FromResult<IDappsConnection>(new FakeConnection(_stream));
         }

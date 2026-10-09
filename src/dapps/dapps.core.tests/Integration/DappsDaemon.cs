@@ -45,7 +45,7 @@ internal sealed class DappsDaemon : IAsyncDisposable
     /// backhaul (<c>host:port</c>); <paramref name="BearerPort"/> is then unused.</summary>
     public sealed record Neighbour(
         string Callsign, int BearerPort, bool? CompressionEnabled = null, int? SessionTailSeconds = null,
-        dapps.client.ConnectScript? Script = null, string? UdpEndpoint = null);
+        dapps.client.ConnectScript? Script = null, string? UdpEndpoint = null, string? ConnectVia = null);
 
     /// <summary>A route hint row to seed: forward for <paramref name="Destination"/>
     /// (a base callsign, or "*") goes via the neighbour named <paramref name="NextHop"/>,
@@ -77,7 +77,7 @@ internal sealed class DappsDaemon : IAsyncDisposable
                 {
                     Callsign = n.Callsign, BearerPort = n.BearerPort, UdpEndpoint = n.UdpEndpoint,
                     CompressionEnabled = n.CompressionEnabled, SessionTailSeconds = n.SessionTailSeconds,
-                    ConnectScriptJson = n.Script?.ToJson(),
+                    ConnectScriptJson = n.Script?.ToJson(), ConnectVia = n.ConnectVia,
                 });
             }
             if (routeHints is not null)

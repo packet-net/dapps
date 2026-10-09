@@ -574,6 +574,7 @@ public class OutboundMessageManager(
                 && x.BearerPort == y.BearerPort
                 && x.UdpEndpoint == y.UdpEndpoint
                 && x.MeshCoreChannel == y.MeshCoreChannel
+                && string.Equals(x.ConnectVia, y.ConnectVia, StringComparison.OrdinalIgnoreCase)
                 && (x.ConnectScript?.Steps ?? []).SequenceEqual(y.ConnectScript?.Steps ?? []);
         }
 
