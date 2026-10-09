@@ -49,14 +49,15 @@ public sealed class NodePoller(
         string remoteCallsign,
         int bearerPort,
         CancellationToken ct,
-        ConnectScript? connectScript = null)
+        ConnectScript? connectScript = null,
+        string? connectVia = null)
     {
         var at = timeProvider.GetUtcNow().UtcDateTime;
         try
         {
             await using var connection = await transport.ConnectAsync(
                 localCallsign: localCallsign,
-                remoteCallsign: remoteCallsign,
+                remoteCallsign: connectVia ?? remoteCallsign,
                 bearerPort: bearerPort,
                 stoppingToken: ct);
             using var stream = new PumpedReadStream(connection.Stream);

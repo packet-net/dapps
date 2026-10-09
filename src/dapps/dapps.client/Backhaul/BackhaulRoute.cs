@@ -16,4 +16,13 @@ public sealed record BackhaulRoute(
     int? BearerPort = null,
     string? UdpEndpoint = null,
     ConnectScript? ConnectScript = null,
-    string? MeshCoreChannel = null);
+    string? MeshCoreChannel = null,
+    string? ConnectVia = null)
+{
+    /// <summary>
+    /// The callsign the node bearer dials: <see cref="ConnectVia"/> when
+    /// the peer is reached through another node (whose prompt the
+    /// <see cref="ConnectScript"/> is played at), otherwise the peer itself.
+    /// </summary>
+    public string DialCallsign => ConnectVia ?? Callsign;
+}

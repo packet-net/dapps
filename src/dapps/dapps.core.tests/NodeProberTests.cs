@@ -33,6 +33,21 @@ public sealed class NodeProberTests
     }
 
     [Fact]
+    public async Task ProbeAsync_WithConnectVia_DialsThatNode_AndReportsThePeer()
+    {
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes("Connected to N0THEM\rDAPPSv1>\n"));
+        var prober = MakeProber(transport);
+        var script = new dapps.client.ConnectScript([new dapps.client.ConnectScriptStep("DAPPS", "DAPPSv1>")]);
+
+        var result = await prober.ProbeAsync("N0US", "N0THEM-3", bearerPort: 1, CancellationToken.None,
+            connectScript: script, connectVia: "N0THEM");
+
+        result.Success.Should().BeTrue(result.Error);
+        result.Callsign.Should().Be("N0THEM-3");
+        transport.Dialled.Should().Equal("N0THEM");
+    }
+
+    [Fact]
     public async Task ProbeAsync_TheExchangeLineAfterThePrompt_IsIgnored()
     {
         // A DAPPS node sends its rules straight after the prompt. A probe
@@ -105,12 +120,17 @@ public sealed class NodeProberTests
 
     private sealed class FakeOutboundTransport(byte[] cannedReceiverBytes) : IDappsOutboundTransport
     {
+        public List<string> Dialled { get; } = [];
+
         public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken)
+        {
+            Dialled.Add(remoteCallsign);
             // FakeDuplexStream rather than a bare MemoryStream - the
             // prober may write back ("peers\n" on Phase 2 fetch-peers
             // probes), which would otherwise overwrite the canned read
             // buffer if read and write shared one stream.
-            => Task.FromResult<IDappsConnection>(new FakeConnection(new FakeDuplexStream(cannedReceiverBytes)));
+            return Task.FromResult<IDappsConnection>(new FakeConnection(new FakeDuplexStream(cannedReceiverBytes)));
+        }
 
         private sealed class FakeConnection(Stream stream) : IDappsConnection
         {
