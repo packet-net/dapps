@@ -90,8 +90,8 @@ public sealed class TopologyTests(LoggedInWebAppFixture app, PlaywrightFixture p
         await page.GotoAsync($"{app.BaseUrl}/Topology?tab=neighbours");
 
         const string testCallsign = "TEST-SCR";
-        const string script = "C G0NODE2|Connected\nDAPPS|DAPPSv1>|60";
-        const string edited = "C G0NODE2|Connected\nC 14 G0NODE9|Connected to G0NODE9\nDAPPS|DAPPSv1>|60";
+        const string script = "C G0NODE3|Connected to G0NODE3\nDAPPS|DAPPSv1>|60";
+        const string edited = "C 14 G0NODE9|Connected to G0NODE9\nDAPPS|DAPPSv1>|60";
 
         page.Dialog += async (_, dlg) =>
         {
@@ -105,6 +105,7 @@ public sealed class TopologyTests(LoggedInWebAppFixture app, PlaywrightFixture p
         {
             await page.FillAsync("#neigh-form input[name='callsign']", testCallsign);
             await page.FillAsync("#neigh-form input[name='bearerPort']", "0");
+            await page.FillAsync("#neigh-form input[name='connectVia']", "G0NODE2");
             await page.FillAsync("#neigh-form textarea[name='connectScript']", script);
             await page.ClickAsync("#neigh-form button[type='submit']");
             await page.WaitForURLAsync("**/Topology?tab=neighbours",
@@ -112,10 +113,13 @@ public sealed class TopologyTests(LoggedInWebAppFixture app, PlaywrightFixture p
 
             var row = page.Locator($"#neigh-body tr:has-text('{testCallsign}')");
             await row.Locator("pre.connect-script").WaitForAsync(new LocatorWaitForOptions { Timeout = 30_000 });
-            (await row.Locator("pre.connect-script").InnerTextAsync()).Should().Contain("C G0NODE2|Connected");
+            (await row.Locator("pre.connect-script").InnerTextAsync()).Should().Contain("C G0NODE3|Connected to G0NODE3");
+            (await row.InnerTextAsync()).Should().Contain("via G0NODE2");
 
             await row.Locator("button:has-text('edit')").ClickAsync();
             (await page.InputValueAsync("#neigh-form textarea[name='connectScript']")).Should().Be(script);
+            (await page.InputValueAsync("#neigh-form input[name='connectVia']")).Should().Be("G0NODE2",
+                "saving the edit without it would drop the row's Connect via");
             (await page.InputValueAsync("#neigh-form input[name='bearerPort']")).Should().Be("0");
             (await page.Locator("#neigh-form input[name='callsign']").GetAttributeAsync("readonly")).Should().NotBeNull();
 
@@ -124,7 +128,7 @@ public sealed class TopologyTests(LoggedInWebAppFixture app, PlaywrightFixture p
             await page.WaitForURLAsync("**/Topology?tab=neighbours",
                 new PageWaitForURLOptions { Timeout = 5_000 });
             await page.WaitForFunctionAsync(
-                "() => { const el = document.querySelector('#neigh-body'); return el && el.textContent.includes('C 14 G0NODE9'); }",
+                "() => { const el = document.querySelector('#neigh-body'); return el && el.textContent.includes('C 14 G0NODE9') && el.textContent.includes('via G0NODE2'); }",
                 null,
                 new PageWaitForFunctionOptions { Timeout = 30_000 });
         }

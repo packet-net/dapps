@@ -393,14 +393,14 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : Dapps
     [Fact]
     public async Task AConnectScript_ReachesThePeerThroughItsNode()
     {
-        // A's route to B goes via B's node: dial the node, then type B's
-        // application command at its prompt, as for a peer beyond a node
-        // that doesn't speak DAPPS.
+        // A's neighbour is B itself, reached via B's node: dial the node,
+        // then type B's application command at its prompt, as for a peer
+        // beyond a node that doesn't speak DAPPS.
         var ct = TestContext.Current.CancellationToken;
         var script = new dapps.client.ConnectScript([new dapps.client.ConnectScriptStep("APPLB", "DAPPSv1>", 30)]);
         var b = await StartNodeAsync("b", fixture.ApplCallB, fixture.NodeB, [new(fixture.ApplCallA, fixture.AxipPortIndex)], tail: 0, ct);
         var a = await StartNodeAsync("a", fixture.ApplCallA, fixture.NodeA,
-            [new(fixture.CallsignB, fixture.AxipPortIndex, Script: script)], tail: 0, ct);
+            [new(fixture.ApplCallB, fixture.AxipPortIndex, Script: script, ConnectVia: fixture.CallsignB)], tail: 0, ct);
 
         var payload = "via the node"u8.ToArray();
         await a.SubmitAsync("chat", b.Callsign, payload, ct);

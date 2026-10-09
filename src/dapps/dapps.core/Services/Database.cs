@@ -456,7 +456,7 @@ public class Database(
     /// exists for the same callsign. Idempotent: callers can re-POST
     /// the same neighbour without checking for prior existence.
     /// </summary>
-    internal async Task UpsertNeighbour(string callsign, int? bearerPort, string? udpEndpoint = null, string? connectScriptJson = null, bool? compressionEnabled = null, int? sessionTailSeconds = null)
+    internal async Task UpsertNeighbour(string callsign, int? bearerPort, string? udpEndpoint = null, string? connectScriptJson = null, bool? compressionEnabled = null, int? sessionTailSeconds = null, string? connectVia = null)
     {
         var connection = DbInfo.GetAsyncConnection();
         var existing = await connection.FindWithQueryAsync<DbNeighbour>(
@@ -469,6 +469,7 @@ public class Database(
                 BearerPort = bearerPort,
                 UdpEndpoint = udpEndpoint,
                 ConnectScriptJson = connectScriptJson,
+                ConnectVia = connectVia,
                 CompressionEnabled = compressionEnabled,
                 SessionTailSeconds = sessionTailSeconds,
             });
@@ -478,6 +479,7 @@ public class Database(
             existing.BearerPort = bearerPort;
             existing.UdpEndpoint = udpEndpoint;
             existing.ConnectScriptJson = connectScriptJson;
+            existing.ConnectVia = connectVia;
             existing.CompressionEnabled = compressionEnabled;
             existing.SessionTailSeconds = sessionTailSeconds;
             await connection.UpdateAsync(existing);

@@ -45,6 +45,15 @@ public class DbNeighbour
     public string? ConnectScriptJson { get; set; }
 
     /// <summary>
+    /// Optional callsign of the node to dial first when this neighbour
+    /// is reached through it: the connect-script is played at that
+    /// node's prompt. Null = dial <see cref="Callsign"/> itself. Only
+    /// meaningful with a connect-script. (sqlite-net adds this column
+    /// on upgrade.)
+    /// </summary>
+    public string? ConnectVia { get; set; }
+
+    /// <summary>
     /// Optional MeshCore channel name. When set, this neighbour is reachable over
     /// the MeshCore bearer (#154): the backhaul broadcasts on the configured
     /// private channel and this neighbour self-selects by destination callsign.

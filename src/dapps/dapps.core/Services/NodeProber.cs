@@ -63,7 +63,8 @@ public sealed class NodeProber(
         int bearerPort,
         CancellationToken ct,
         bool fetchPeers = false,
-        ConnectScript? connectScript = null)
+        ConnectScript? connectScript = null,
+        string? connectVia = null)
     {
         var at = timeProvider.GetUtcNow().UtcDateTime;
         IReadOnlyList<DappsProtocolClient.DiscoveredPeerInfo> peers = [];
@@ -71,7 +72,7 @@ public sealed class NodeProber(
         {
             await using var connection = await transport.ConnectAsync(
                 localCallsign: localCallsign,
-                remoteCallsign: remoteCallsign,
+                remoteCallsign: connectVia ?? remoteCallsign,
                 bearerPort: bearerPort,
                 stoppingToken: ct);
 

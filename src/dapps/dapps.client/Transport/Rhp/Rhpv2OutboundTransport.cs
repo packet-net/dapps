@@ -45,6 +45,21 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
     private readonly ILogger logger;
     private readonly IDappsTxGate txGate;
 
+    /// <summary>
+    /// The longest to wait for the node to say the link is up after it
+    /// has answered the open. XRouter answers an active open at once and
+    /// reports the link with a status message once the far end's UA is
+    /// in, or closes the handle when its connect retries run out, which
+    /// on a slow channel takes minutes. This only bounds a node that does
+    /// neither.
+    /// </summary>
+    public TimeSpan LinkUpWait { get; init; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>How long to wait for an answer to the status query that
+    /// follows the open. A node that doesn't answer it is taken to have
+    /// answered the open only once the link was up, as before.</summary>
+    public TimeSpan StatusQueryWait { get; init; } = TimeSpan.FromSeconds(5);
+
     public Rhpv2OutboundTransport(
         string host, int port,
         ILogger<Rhpv2OutboundTransport> logger,
@@ -119,7 +134,12 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
             // the peer's prompt. So what arrives before the handle is
             // known is held, then handed over in order.
             var early = new List<(int Handle, byte[]? Data)>();   // Data null: the node closed it
+            var earlyStatus = new List<(int Handle, StatusFlags Flags)>();
             int? opened = null;
+            // Whether the link came up: true once the node says it's
+            // connected or the far end's data arrives, false if the node
+            // closes the handle first.
+            var linkUp = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             EventHandler<RhpReceivedEventArgs> recvHandler = (_, e) =>
             {
                 var bytes = RhpDataEncoding.FromWireString(e.Message.Data);
@@ -128,7 +148,11 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
                     if (opened is null) early.Add((e.Message.Handle, bytes));
                     // Fire-and-forget: PushIncoming awaits the pipe write,
                     // which is bounded only by the consumer's read pace.
-                    else if (e.Message.Handle == opened) _ = stream.PushIncoming(bytes, CancellationToken.None);
+                    else if (e.Message.Handle == opened)
+                    {
+                        linkUp.TrySetResult(true);
+                        _ = stream.PushIncoming(bytes, CancellationToken.None);
+                    }
                 }
             };
             EventHandler<RhpClosedEventArgs> closeHandler = (_, e) =>
@@ -136,11 +160,25 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
                 lock (early)
                 {
                     if (opened is null) early.Add((e.Handle, null));
-                    else if (e.Handle == opened) stream.SignalRemoteDisconnect();
+                    else if (e.Handle == opened)
+                    {
+                        linkUp.TrySetResult(false);
+                        stream.SignalRemoteDisconnect();
+                    }
+                }
+            };
+            EventHandler<RhpStatusEventArgs> statusHandler = (_, e) =>
+            {
+                var flags = (StatusFlags)(e.Message.Flags ?? 0);
+                lock (early)
+                {
+                    if (opened is null) earlyStatus.Add((e.Message.Handle, flags));
+                    else if (e.Message.Handle == opened && flags.HasFlag(StatusFlags.Connected)) linkUp.TrySetResult(true);
                 }
             };
             rhp.Received += recvHandler;
             rhp.Closed += closeHandler;
+            rhp.StatusChanged += statusHandler;
 
             logger.LogInformation("RHP: open active {local}->{remote} on port {p}", localCallsign, remoteCallsign, portName);
             var reply = await rhp.OpenWithReplyAsync(
@@ -156,12 +194,22 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
             lock (early)
             {
                 opened = handle;
+                if (earlyStatus.Any(x => x.Handle == handle && x.Flags.HasFlag(StatusFlags.Connected))) linkUp.TrySetResult(true);
                 foreach (var (_, data) in early.Where(x => x.Handle == handle))
                 {
-                    if (data is null) stream.SignalRemoteDisconnect();
-                    else _ = stream.PushIncoming(data, CancellationToken.None);
+                    if (data is null)
+                    {
+                        linkUp.TrySetResult(false);
+                        stream.SignalRemoteDisconnect();
+                    }
+                    else
+                    {
+                        linkUp.TrySetResult(true);
+                        _ = stream.PushIncoming(data, CancellationToken.None);
+                    }
                 }
                 early.Clear();
+                earlyStatus.Clear();
             }
 
             // pdn's word that the peer was calling us too (see the class
@@ -173,6 +221,20 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
                 crossed.TrySetResult();
             }
 
+            if (reply.Crossed != true)
+            {
+                try
+                {
+                    await WaitForLinkAsync(rhp, handle, localCallsign, remoteCallsign, portName, linkUp, stoppingToken);
+                }
+                catch
+                {
+                    try { await rhp.CloseAsync(handle, CancellationToken.None); } catch { /* already gone */ }
+                    throw;
+                }
+            }
+            rhp.StatusChanged -= statusHandler;
+
             return new Rhpv2Connection(rhp, stream, recvHandler, closeHandler, handle, logger, crossed.Task);
         }
         catch
@@ -181,7 +243,66 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
             throw;
         }
     }
+
+    /// <summary>
+    /// Return once the link the open asked for is up. XRouter answers an
+    /// active open straight away, while it is still sending SABMs: a
+    /// session that started its prompt wait then would give up on a link
+    /// that hadn't come up yet, and close a handle the node was still
+    /// connecting, which leaves a redial refused with "Duplicate socket"
+    /// until the node's retries run out. So ask the node, and if the link
+    /// isn't up, wait for it to say so (or for the far end's data), or
+    /// for it to close the handle when nobody answers. A node that can't
+    /// answer the query (pdn answers the open only once the link is up)
+    /// is taken at its word, as before.
+    /// </summary>
+    private async Task WaitForLinkAsync(
+        RhpClient rhp, int handle, string localCallsign, string remoteCallsign, string portName,
+        TaskCompletionSource<bool> linkUp, CancellationToken ct)
+    {
+        if (!linkUp.Task.IsCompleted)
+        {
+            // Raced with the link's own news: the far end's prompt can
+            // land before the answer to the query does.
+            var query = rhp.QueryStatusAsync(handle, StatusQueryWait, ct);
+            _ = query.ContinueWith(t => t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+            if (await Task.WhenAny(query, linkUp.Task) == query)
+            {
+                StatusFlags? status = null;
+                try
+                {
+                    status = await query;
+                }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    logger.LogDebug(ex, "RHP: no status for handle {h}; taking the open as the link being up", handle);
+                }
+                if (status is null || status.Value.HasFlag(StatusFlags.Connected)) linkUp.TrySetResult(true);
+                else logger.LogInformation("RHP: waiting for {remote} to answer on port {p}", remoteCallsign, portName);
+            }
+        }
+
+        bool up;
+        try
+        {
+            up = await linkUp.Task.WaitAsync(LinkUpWait, ct);
+        }
+        catch (TimeoutException)
+        {
+            throw new RhpLinkFailedException(
+                $"RHP: {remoteCallsign} didn't answer on port {portName} within {LinkUpWait.TotalSeconds:F0}s");
+        }
+        if (!up)
+        {
+            throw new RhpLinkFailedException(
+                $"RHP: {remoteCallsign} didn't answer on port {portName}: the node gave up connecting {localCallsign}->{remoteCallsign}");
+        }
+    }
 }
+
+/// <summary>The node couldn't bring up the AX.25 link: the far end never
+/// answered the connect.</summary>
+public sealed class RhpLinkFailedException(string message) : IOException(message);
 
 internal sealed class Rhpv2Connection : IDappsConnection
 {

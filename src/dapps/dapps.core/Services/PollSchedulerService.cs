@@ -108,7 +108,8 @@ public sealed class PollSchedulerService(
         // gets the same chained-connect treatment for poll as for push.
         var nb = await database.GetNeighbour(remoteCallsign);
         var connectScript = dapps.client.ConnectScript.FromJson(nb?.ConnectScriptJson);
-        var result = await poller.PollAsync(localCallsign, remoteCallsign, bearerPort, ct, connectScript);
+        var result = await poller.PollAsync(localCallsign, remoteCallsign, bearerPort, ct, connectScript,
+            connectVia: connectScript is null ? null : nb?.ConnectVia);
         sw.Stop();
         var row = await RecordResultAsync(result);
         if (transmissionAudit is { } ta)

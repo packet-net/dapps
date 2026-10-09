@@ -20,9 +20,12 @@
 {
     <div class="panel">
         <h3>Manual neighbours</h3>
-        <p class="panel-sub">Callsigns this node will forward through. Use <strong>edit</strong> on a row to change it. Connect-script lets you reach a peer through a chain of intermediate non-DAPPS nodes (one <code>send|expect</code> step per line, final expect must contain <code>DAPPSv1&gt;</code>).</p>
+        <p class="panel-sub">Callsigns this node will forward through. Use <strong>edit</strong> on a row to change it. Connect-script lets you reach a peer through a chain of intermediate non-DAPPS nodes: DAPPS first connects to Connect via (or the Callsign, if blank) on the Radio port, then plays the script at that node's prompt (one <code>send|expect</code> step per line, final expect must contain <code>DAPPSv1&gt;</code>).</p>
         <form id="neigh-form" class="row-form" onsubmit="dappsAddNeighbour(event)" style="margin-bottom: 1rem;">
-            <div class="field"><label>Callsign</label><input name="callsign" placeholder="GB7XYZ" required /></div>
+            <div class="field"><label>Callsign</label><input name="callsign" placeholder="GB7XYZ-3" required /></div>
+            <div class="field"><label>Connect via (optional)</label><input name="connectVia" placeholder="GB7XYZ" />
+                <span class="hint">node to dial first; the script runs at its prompt</span>
+            </div>
             <div class="field" data-port-picker="bearerPort">
                 <label>Radio port</label>
                 <select name="bearerPort">
@@ -45,8 +48,8 @@
             </div>
             <div class="field" style="grid-column: 1 / -1;">
                 <label>Connect script (optional)</label>
-                <textarea name="connectScript" rows="3" placeholder="C G0NODE2|Connected to G0NODE2&#10;C G0NODE3|Connected to G0NODE3&#10;DAPPS|DAPPSv1>|60"></textarea>
-                <span class="hint">One step per line: <code>send|expect</code> or <code>send|expect|timeoutSeconds</code>. Empty box clears the script.</span>
+                <textarea name="connectScript" rows="3" placeholder="C G0NODE3|Connected to G0NODE3&#10;DAPPS|DAPPSv1>|60"></textarea>
+                <span class="hint">Typed at the prompt of the node DAPPS connected to (Connect via, or the Callsign), not at your own node. One step per line: <code>send|expect</code> or <code>send|expect|timeoutSeconds</code>. Empty box clears the script.</span>
             </div>
             <div style="grid-column: -2 / -1; justify-self: end; display: flex; gap: 0.5rem;">
                 <button class="btn ghost" type="button" id="neigh-cancel" onclick="dappsCancelEditNeighbour()" style="display: none;">Cancel</button>
@@ -233,6 +236,7 @@ else
             BearerPort: f.bearerPort.value === '' ? null : parseInt(f.bearerPort.value, 10),
             UdpEndpoint: f.udpEndpoint.value || null,
             ConnectScript: f.connectScript.value || null,
+            ConnectVia: f.connectVia.value || null,
             CompressionEnabled: compression,
             SessionTailSeconds: f.sessionTail.value === '' ? null : parseInt(f.sessionTail.value, 10),
         };
@@ -260,6 +264,7 @@ else
         f.compression.value = n.compressionEnabled == null ? '' : (n.compressionEnabled ? 'on' : 'off');
         f.sessionTail.value = n.sessionTailSeconds == null ? '' : String(n.sessionTailSeconds);
         f.connectScript.value = connectScriptLines(n.connectScriptJson);
+        f.connectVia.value = n.connectVia || '';
         // The port picker may still be filling from BPQ (or swapping to a
         // text input); wait for it so the saved port can be selected.
         await loadAgwPorts();
@@ -362,7 +367,7 @@ else
             if (r.error) {
                 wrap.innerHTML = `<label>Radio port</label>
                     <input name="bearerPort" type="number" min="0" max="255" placeholder="0" />
-                    <span class="hint">couldn't query BPQ: ${escape(r.error)}. Type a 0-indexed port number.</span>`;
+                    <span class="hint">couldn't query BPQ: ${escape(r.error)}. Type a 0-indexed port number (on RHPv2/XRouter, 0 is PORT=1).</span>`;
                 return;
             }
             for (const p of r.ports) {
@@ -448,7 +453,8 @@ else
                     <td>${fmtCompression(n.compressionEnabled)}</td>
                     <td>${fmtHold(n.sessionTailSeconds)}</td>
                     <td>${n.connectScriptJson
-                        ? '<pre class="connect-script" style="margin: 0; font-size: 0.8rem; white-space: pre;">' + escape(connectScriptLines(n.connectScriptJson)) + '</pre>'
+                        ? (n.connectVia ? '<div>via <code>' + escape(n.connectVia) + '</code></div>' : '')
+                          + '<pre class="connect-script" style="margin: 0; font-size: 0.8rem; white-space: pre;">' + escape(connectScriptLines(n.connectScriptJson)) + '</pre>'
                         : '<span class="muted">-</span>'}</td>
                     <td><div class="actions">
                         <button class="link-btn" onclick="dappsEditNeighbour('${escape(n.callsign)}')">edit</button>
