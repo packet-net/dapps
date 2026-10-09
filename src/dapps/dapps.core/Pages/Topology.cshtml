@@ -349,7 +349,7 @@ else
                 const r = await loadAgwPorts();
                 if (r.error) {
                     wrap.innerHTML = `<input name="channelKey" type="number" min="0" max="255" required placeholder="0" />`;
-                    hint.textContent = `couldn't query BPQ: ${r.error}. Type a 0-indexed port number (on RHPv2/XRouter, 0 is PORT=1).`;
+                    hint.textContent = `couldn't query BPQ: ${r.error}. Type a 0-indexed port number.`;
                     return;
                 }
                 const opts = r.ports.map(p =>
