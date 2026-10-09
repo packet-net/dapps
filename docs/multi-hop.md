@@ -33,17 +33,19 @@ A (DAPPS)  ←RF→  G0NODE2  ←RF→  G0NODE3  ←RF→  G0NODE4  ←RF→  C 
 A and C can't hear each other. G0NODE2/3/4 are bare packet nodes that don't speak DAPPS. The operator's manual chain is:
 
 ```
-A: connect to G0NODE2 (AGW)
-   "Connected to G0NODE2"
-A types: C G0NODE3
-   "Connected to G0NODE3"
-A types: C G0NODE4
-   "Connected to G0NODE4"
-A types: C G0DPC-3
+A: connect to G0NODE2
+A types: C 1 G0NODE3
+   "Connected to ND3:G0NODE3"
+A types: C 1 G0NODE4
+   "Connected to ND4:G0NODE4"
+A types: C 1 G0DPC-3
+   "Connected to G0DPC-3"
    "DAPPSv1>"
 ```
 
 The last connect goes straight to C's DAPPS callsign. That callsign is always a real callsign on C's node (a BPQ application callsign, an XRouter registration, a pdn listen), so connecting to it lands on DAPPS, which answers with its `DAPPSv1>` prompt at once. Don't follow it with the application command: that would be typed into the DAPPS session.
+
+The `1`s are port numbers, each node's own (its `PORTS` command lists them). At a BPQ prompt, a connect to a callsign that isn't in the node table needs one: `C G0NODE3` alone is refused with "Downlink connect needs port number".
 
 That sequence becomes a connect-script.
 
@@ -58,16 +60,18 @@ If you can connect to the peer's node on one of your ports, you can connect to t
 
 #### Example: a peer only reachable over NET/ROM
 
-The application command is for one case: the last node reaches the peer's node over NET/ROM, and the peer's DAPPS callsign isn't in its node table (BPQ only advertises an application callsign given an `APPLQUAL`). Then connect to the peer's node, and type the command that node gives DAPPS:
+The application command is for one case: the last node reaches the peer's node over NET/ROM, and the peer's DAPPS callsign isn't in its node table (BPQ only advertises an application callsign given an `APPLQUAL`). Then connect to the peer's node by NET/ROM, and type the command that node gives DAPPS:
 
 - Callsign: `MB7NPW-3`
 - Connect via: `GB7BDH` (your first node)
 - Connect script:
 
 ```
-C MB7NPW|Connected to MB7NPW
+C MB7NPW|Connected
 DAPPS|DAPPSv1>|60
 ```
+
+If the peer's node does give its DAPPS application a NET/ROM quality (`APPL1QUAL=200` on BPQ), the DAPPS callsign is in the node table, and `C MB7NPW-3|DAPPSv1>|60` reaches it directly instead.
 
 #### The general case
 
@@ -79,15 +83,15 @@ In the dashboard's **Add / update neighbour** form (or `POST /Neighbours`):
 - **Connect script**: what you'd type once connected to that node, one step per line, `SEND|EXPECT[|TIMEOUT_SECONDS]`:
 
 ```
-C G0NODE3|Connected to G0NODE3
-C G0NODE4|Connected to G0NODE4
-C G0DPC-3|DAPPSv1>|60
+C 1 G0NODE3|Connected
+C 1 G0NODE4|Connected
+C 1 G0DPC-3|DAPPSv1>|60
 ```
 
 Notes:
 
 - Each `SEND` is transmitted with a `\r` line terminator (BPQ-style node prompts use CR, not LF).
-- Each `EXPECT` is a substring match against the inbound bytes; case-sensitive. Pick something distinctive enough that earlier banner text won't accidentally match.
+- Each `EXPECT` is a substring match against the inbound bytes; case-sensitive. Pick something distinctive enough that earlier banner text won't accidentally match, but don't copy a node's whole reply: nodes word it their own way (BPQ says `Connected to NPWNOD:MB7NPW`, with the node's alias, for `C MB7NPW`), so `Connected` is the safe expect for a connect to a node.
 - `TIMEOUT_SECONDS` is per-step; default 30s. The final step that lands on `DAPPSv1>` may want longer: it waits for a connect over the last link, which can take several tries on a busy or marginal channel.
 - The first step is *not* "C G0NODE2" - DAPPS has already connected to it (Connect via). The script picks up at G0NODE2's prompt.
 - The script never starts at your own node's prompt: steps such as `SWITCH` or `C 2 G0NODE2` typed at your own node won't be answered. Put the first node you'd connect to in Connect via, and its port in Radio port.
