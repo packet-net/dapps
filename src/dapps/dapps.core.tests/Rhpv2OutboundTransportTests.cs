@@ -263,6 +263,69 @@ public sealed class Rhpv2OutboundTransportTests
         conn.CrossedCall.IsCompleted.Should().BeFalse("the node didn't say, so a prompt may be coming");
     }
 
+    // XRouter answers an active open at once and reports the link once the
+    // far end's UA is in (or closes the handle when its retries run out).
+    // A session started before then waits for a prompt that can't come yet,
+    // and closing that handle mid-connect leaves a redial refused with
+    // "Duplicate socket".
+
+    [Fact]
+    public async Task ConnectAsync_WaitsForTheNodeToSayTheLinkIsUp()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var node = ScriptedNode.Start(open => [Reply(open)], ct,
+            onStatus: q => [StatusReply(q), Status(StatusFlags.None)]);
+
+        var connecting = node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct);
+        await Task.Delay(300, ct);
+        connecting.IsCompleted.Should().BeFalse("the node hasn't said the link is up");
+
+        await node.PushAsync([Status(StatusFlags.ConOk | StatusFlags.Connected), Prompt], ct);
+        await using var conn = await connecting.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        (await ReadTextAsync(conn.Stream, ct)).Should().Be("DAPPSv1>\n");
+    }
+
+    [Fact]
+    public async Task ConnectAsync_Fails_WhenTheNodeGivesUpConnecting()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var node = ScriptedNode.Start(open => [Reply(open)], ct,
+            onStatus: q => [StatusReply(q), Status(StatusFlags.None)]);
+
+        var connecting = node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct);
+        await Task.Delay(300, ct);
+        await node.PushAsync([Status(StatusFlags.None), new CloseMessage { Handle = OpenedHandle }], ct);
+
+        var act = () => connecting.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        await act.Should().ThrowAsync<RhpLinkFailedException>().WithMessage("*G0DPB-1 didn't answer*");
+    }
+
+    [Fact]
+    public async Task ConnectAsync_Fails_WhenTheLinkNeverComesUp()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var node = ScriptedNode.Start(open => [Reply(open)], ct,
+            onStatus: q => [StatusReply(q), Status(StatusFlags.None)], linkUpWait: TimeSpan.FromMilliseconds(500));
+
+        var act = () => node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct).WaitAsync(TimeSpan.FromSeconds(5), ct);
+        await act.Should().ThrowAsync<RhpLinkFailedException>();
+        node.Closes.Should().Be(1, "the half-open handle is closed, not left with the node");
+    }
+
+    [Fact]
+    public async Task ConnectAsync_TakesTheOpenAsTheLink_WhenTheNodeSaysItsConnected()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var node = ScriptedNode.Start(open => [Reply(open)], ct,
+            onStatus: q => [StatusReply(q), Status(StatusFlags.ConOk | StatusFlags.Connected)]);
+
+        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct).WaitAsync(TimeSpan.FromSeconds(2), ct);
+    }
+
+    private static StatusReplyMessage StatusReply(StatusMessage q) => new() { Id = q.Id, Handle = q.Handle, ErrText = "Ok" };
+
+    private static StatusMessage Status(StatusFlags flags) => new() { Handle = OpenedHandle, Flags = (int)flags };
+
     private const int OpenedHandle = 101;
 
     private static RecvMessage Prompt => new() { Handle = OpenedHandle, Data = RhpDataEncoding.ToWireString("DAPPSv1>\n"u8) };
@@ -286,34 +349,64 @@ public sealed class Rhpv2OutboundTransportTests
     {
         private readonly System.Net.Sockets.TcpListener listener = new(System.Net.IPAddress.Loopback, 0);
         private Task serving = Task.CompletedTask;
+        private System.Net.Sockets.NetworkStream? client;
+        private readonly SemaphoreSlim writing = new(1, 1);
+
+        public int Closes { get; private set; }
+
+        /// <summary>Send the client messages of the node's own accord.</summary>
+        public async Task PushAsync(RhpMessage[] messages, CancellationToken ct)
+        {
+            while (client is null) await Task.Delay(10, ct);
+            await WriteAsync(client, messages, ct);
+        }
+
+        private async Task WriteAsync(Stream s, RhpMessage[] messages, CancellationToken ct)
+        {
+            var write = new MemoryStream();
+            foreach (var m in messages) RhpFraming.WriteFrame(write, RhpJson.Serialize(m));
+            await writing.WaitAsync(ct);
+            try { await s.WriteAsync(write.ToArray(), ct); }
+            finally { writing.Release(); }
+        }
 
         public Rhpv2OutboundTransport Transport { get; private set; } = null!;
 
-        public static ScriptedNode Start(Func<OpenMessage, RhpMessage[]> onOpen, CancellationToken ct)
+        public static ScriptedNode Start(Func<OpenMessage, RhpMessage[]> onOpen, CancellationToken ct,
+            Func<StatusMessage, RhpMessage[]>? onStatus = null, TimeSpan? linkUpWait = null)
         {
             var node = new ScriptedNode();
             node.listener.Start();
             node.Transport = new Rhpv2OutboundTransport(
                 "127.0.0.1", ((System.Net.IPEndPoint)node.listener.LocalEndpoint).Port,
-                NullLogger<Rhpv2OutboundTransport>.Instance);
+                NullLogger<Rhpv2OutboundTransport>.Instance)
+            {
+                LinkUpWait = linkUpWait ?? TimeSpan.FromMinutes(5),
+            };
             node.serving = Task.Run(async () =>
             {
                 using var tcp = await node.listener.AcceptTcpClientAsync(ct);
                 var s = tcp.GetStream();
+                node.client = s;
                 while (await RhpFraming.ReadFrameAsync(s, ct) is { } frame)
                 {
                     var messages = RhpJson.Deserialize(frame) switch
                     {
                         OpenMessage open => onOpen(open),
-                        CloseMessage close => [new CloseReplyMessage { Id = close.Id, Handle = close.Handle, ErrText = "Ok" }],
+                        StatusMessage status when onStatus is not null => onStatus(status),
+                        CloseMessage close when close.Id is not null => node.Closed(close),
                         _ => [],
                     };
-                    var write = new MemoryStream();
-                    foreach (var m in messages) RhpFraming.WriteFrame(write, RhpJson.Serialize(m));
-                    await s.WriteAsync(write.ToArray(), ct);
+                    await node.WriteAsync(s, messages, ct);
                 }
             }, ct);
             return node;
+        }
+
+        private RhpMessage[] Closed(CloseMessage close)
+        {
+            Closes++;
+            return [new CloseReplyMessage { Id = close.Id, Handle = close.Handle, ErrText = "Ok" }];
         }
 
         public async ValueTask DisposeAsync()
