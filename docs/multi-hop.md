@@ -83,6 +83,7 @@ Notes:
 - `TIMEOUT_SECONDS` is per-step; default 30s. The final step that lands on `DAPPSv1>` may want longer because the application command takes a moment to dispatch on the far-end node.
 - The first step is *not* "C G0NODE2" - DAPPS has already connected to it (Connect via). The script picks up at G0NODE2's prompt.
 - The script never starts at your own node's prompt: steps such as `SWITCH` or `C 2 G0NODE2` typed at your own node won't be answered. Put the first node you'd connect to in Connect via, and its port in Radio port.
+- If you leave Connect via blank and write the script the way you'd type it, starting with the connect to the first node (`C GB7BDH|Connected`), DAPPS takes that line off and stores `GB7BDH` as Connect via when you save. Only a bare `C <CALL>` or `CONNECT <CALL>` is taken: a line with a port number (`C 2 GB7BDH`) or digipeaters is typed at the prompt like any other.
 - The script's last step **must** end on a substring containing `DAPPSv1>`; the protocol client takes over from there.
 
 Lines beginning with `#` are comments. Blank lines are ignored.
