@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace dapps.client;
 
@@ -125,6 +126,41 @@ public sealed record ConnectScript(IReadOnlyList<ConnectScriptStep> Steps)
         }
         return steps.Count == 0 ? null : new ConnectScript(steps);
     }
+
+    /// <summary>
+    /// Work out which callsign to dial and which steps are left to play.
+    /// A script whose first step is a bare <c>C &lt;CALL&gt;</c> (no port
+    /// number, e.g. <c>C GB7BDH|Connected</c>) names the first hop: the
+    /// node to dial, whose prompt the rest of the script is played at. The
+    /// neighbours API stores it as the row's Connect via. Any other script
+    /// is left as it is, played over a connection to
+    /// <paramref name="target"/>.
+    ///
+    /// <para>
+    /// The remaining script is null when the first step was the only one.
+    /// The returned script is the same instance when nothing was taken off.
+    /// </para>
+    /// </summary>
+    public static (string DialCallsign, ConnectScript? Script) ResolveFirstHop(
+        string target, ConnectScript? script)
+    {
+        if (script is null || script.Steps.Count == 0) return (target, script);
+        var first = script.Steps[0];
+        // A first step that already lands on the prompt has to be played,
+        // or nothing would be left to consume it.
+        if (first.Expect.Contains(DappsPrompt, StringComparison.Ordinal)) return (target, script);
+        var match = FirstHopPattern.Match(first.Send.Trim());
+        if (!match.Success) return (target, script);
+        var rest = script.Steps.Skip(1).ToList();
+        return (match.Groups[1].Value.ToUpperInvariant(), rest.Count == 0 ? null : new ConnectScript(rest));
+    }
+
+    // C or CONNECT followed by a single callsign with optional SSID. A
+    // port number ("C 14 G0XYZ") means a connect from a node prompt, not
+    // something the daemon can dial.
+    private static readonly Regex FirstHopPattern = new(
+        @"^C(?:ONNECT)?\s+([A-Z0-9]{1,6}(?:-(?:[0-9]|1[0-5]))?)$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>Reverse of <see cref="ParseLines"/> - render the script
     /// back out as the same human-friendly text form for the dashboard

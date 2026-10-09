@@ -43,6 +43,8 @@ public class NeighboursController(Database database) : ControllerBase
         {
             return BadRequest("Callsign is required");
         }
+        var callsign = neighbour.Callsign.Trim().ToUpperInvariant();
+        var connectVia = string.IsNullOrWhiteSpace(neighbour.ConnectVia) ? null : neighbour.ConnectVia.Trim().ToUpperInvariant();
         string? scriptJson = null;
         if (!string.IsNullOrWhiteSpace(neighbour.ConnectScript))
         {
@@ -53,15 +55,26 @@ public class NeighboursController(Database database) : ControllerBase
             {
                 return BadRequest("Connect script: final step's expect must contain 'DAPPSv1>' (the DAPPS prompt is what the protocol client takes over from)");
             }
+            // A script written the way it's typed by hand starts with the
+            // connect to the first node ("C GB7BDH"). DAPPS makes that
+            // connect itself, so it becomes the row's Connect via.
+            if (connectVia is null && parsed is not null)
+            {
+                var (dial, rest) = ConnectScript.ResolveFirstHop(callsign, parsed);
+                if (!ReferenceEquals(rest, parsed))
+                {
+                    if (!string.Equals(dial, callsign, StringComparison.OrdinalIgnoreCase)) connectVia = dial;
+                    parsed = rest;
+                }
+            }
             scriptJson = parsed?.ToJson();
         }
-        var connectVia = string.IsNullOrWhiteSpace(neighbour.ConnectVia) ? null : neighbour.ConnectVia.Trim().ToUpperInvariant();
         if (connectVia is not null && scriptJson is null)
         {
             return BadRequest("Connect via needs a connect script: DAPPS lands at that node's prompt, and the script is what reaches the peer from there");
         }
         await database.UpsertNeighbour(
-            neighbour.Callsign.Trim().ToUpperInvariant(),
+            callsign,
             neighbour.BearerPort,
             string.IsNullOrWhiteSpace(neighbour.UdpEndpoint) ? null : neighbour.UdpEndpoint.Trim(),
             connectScriptJson: scriptJson,
@@ -116,7 +129,9 @@ public class NeighboursController(Database database) : ControllerBase
 /// <para>
 /// <see cref="ConnectVia"/> is the node DAPPS dials first when the peer
 /// (<see cref="Callsign"/>) is reached through it; the connect-script is
-/// played at its prompt. Null dials the peer itself. Needs a script.
+/// played at its prompt. Null dials the peer itself. Needs a script. Left
+/// blank, a script whose first step is a bare <c>C &lt;CALL&gt;</c> has
+/// that step taken off and <c>CALL</c> stored here instead.
 /// </para>
 /// </summary>
 public sealed record NeighbourModel(

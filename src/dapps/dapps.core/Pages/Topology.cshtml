@@ -49,7 +49,7 @@
             <div class="field" style="grid-column: 1 / -1;">
                 <label>Connect script (optional)</label>
                 <textarea name="connectScript" rows="3" placeholder="C G0NODE3|Connected to G0NODE3&#10;DAPPS|DAPPSv1>|60"></textarea>
-                <span class="hint">Typed at the prompt of the node DAPPS connected to (Connect via, or the Callsign), not at your own node. One step per line: <code>send|expect</code> or <code>send|expect|timeoutSeconds</code>. Empty box clears the script.</span>
+                <span class="hint">Typed at the prompt of the node DAPPS connected to (Connect via, or the Callsign), not at your own node. With Connect via blank, a first line <code>C &lt;CALL&gt;</code> becomes Connect via. One step per line: <code>send|expect</code> or <code>send|expect|timeoutSeconds</code>. Empty box clears the script.</span>
             </div>
             <div style="grid-column: -2 / -1; justify-self: end; display: flex; gap: 0.5rem;">
                 <button class="btn ghost" type="button" id="neigh-cancel" onclick="dappsCancelEditNeighbour()" style="display: none;">Cancel</button>

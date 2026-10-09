@@ -71,6 +71,67 @@ public class ConnectScriptTests
     }
 
     [Fact]
+    public void ResolveFirstHop_LeadingBareConnect_DialsThatNodeAndDropsTheStep()
+    {
+        var script = ConnectScript.ParseLines("C GB7BDH|Connected\nC 14 GB7AGM-3|Connected\nDAPPS|DAPPSv1>");
+
+        var (dial, rest) = ConnectScript.ResolveFirstHop("GB7AGM-3", script);
+
+        dial.Should().Be("GB7BDH");
+        rest!.ToLines().Should().Be("C 14 GB7AGM-3|Connected\nDAPPS|DAPPSv1>");
+    }
+
+    [Theory]
+    [InlineData("connect gb7bdh-7", "GB7BDH-7")]
+    [InlineData("  C   G0NODE  ", "G0NODE")]
+    public void ResolveFirstHop_AcceptsConnectSpellingsAndSsids(string send, string expected)
+    {
+        var script = new ConnectScript([new(send, "Connected"), new("DAPPS", "DAPPSv1>")]);
+
+        ConnectScript.ResolveFirstHop("N0THEM", script).DialCallsign.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("C 14 GB7AGM-3")] // a port number: typed at a node prompt
+    [InlineData("DAPPS")]
+    [InlineData("C G0NODE2 V G0DIGI")] // via digipeaters: not a plain dial
+    [InlineData("C G0NODE2")] // seven characters: not a callsign
+    public void ResolveFirstHop_OtherFirstSteps_DialTheTargetAndKeepTheScript(string send)
+    {
+        var script = new ConnectScript([new(send, "Connected"), new("DAPPS", "DAPPSv1>")]);
+
+        var (dial, rest) = ConnectScript.ResolveFirstHop("N0THEM", script);
+
+        dial.Should().Be("N0THEM");
+        rest.Should().BeSameAs(script);
+    }
+
+    [Fact]
+    public void ResolveFirstHop_FirstStepExpectingThePrompt_IsKept()
+    {
+        var script = new ConnectScript([new("C G0NODE2", "DAPPSv1>")]);
+
+        var (dial, rest) = ConnectScript.ResolveFirstHop("N0THEM", script);
+
+        dial.Should().Be("N0THEM");
+        rest.Should().BeSameAs(script);
+    }
+
+    [Fact]
+    public void ResolveFirstHop_OnlyStep_LeavesNoScript()
+    {
+        var script = new ConnectScript([new("C G0NODE", "Connected")]);
+
+        ConnectScript.ResolveFirstHop("N0THEM", script).Should().Be(("G0NODE", (ConnectScript?)null));
+    }
+
+    [Fact]
+    public void ResolveFirstHop_NoScript_DialsTheTarget()
+    {
+        ConnectScript.ResolveFirstHop("N0THEM", null).Should().Be(("N0THEM", (ConnectScript?)null));
+    }
+
+    [Fact]
     public async Task Runner_HappyPath_PlaysAllStepsAndReturnsTranscript()
     {
         var script = new ConnectScript([

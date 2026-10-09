@@ -105,6 +105,64 @@ public sealed class RemainingControllersTests : IAsyncLifetime
         (await ctrl.List()).Single().ConnectVia.Should().BeNull("a blank Connect via dials the Callsign itself");
     }
 
+    // A script typed the way it's typed by hand starts with the connect to
+    // the first node. DAPPS makes that connect itself (#220), so it's
+    // stored as Connect via.
+
+    [Fact]
+    public async Task NeighboursController_ScriptStartingAtTheFirstHop_BecomesConnectVia()
+    {
+        var ctrl = new NeighboursController(database);
+
+        (await ctrl.Upsert(new NeighbourModel("gb7agm-3", BearerPort: 1,
+            ConnectScript: "C GB7BDH|Connected\nC 14 GB7AGM-3|Connected\nDAPPS|DAPPSv1>")))
+            .Should().BeOfType<NoContentResult>();
+
+        var row = (await ctrl.List()).Single();
+        row.ConnectVia.Should().Be("GB7BDH");
+        row.ConnectScript.Should().Be("C 14 GB7AGM-3|Connected\nDAPPS|DAPPSv1>");
+    }
+
+    [Fact]
+    public async Task NeighboursController_ExplicitConnectVia_LeavesTheScriptAlone()
+    {
+        var ctrl = new NeighboursController(database);
+
+        await ctrl.Upsert(new NeighbourModel("gb7agm-3", BearerPort: 1, ConnectVia: "GB7BDH",
+            ConnectScript: "C G0NODE3|Connected\nDAPPS|DAPPSv1>"));
+
+        var row = (await ctrl.List()).Single();
+        row.ConnectVia.Should().Be("GB7BDH");
+        row.ConnectScript.Should().Be("C G0NODE3|Connected\nDAPPS|DAPPSv1>",
+            "with Connect via given, a C line is typed at that node's prompt");
+    }
+
+    [Theory]
+    [InlineData("C 2 MB7NPW|Connected\nDAPPS|DAPPSv1>")] // a port number: typed at a node prompt
+    [InlineData("SWITCH|SWITCH\nDAPPS|DAPPSv1>")]
+    public async Task NeighboursController_OtherFirstSteps_AreKept(string script)
+    {
+        var ctrl = new NeighboursController(database);
+
+        await ctrl.Upsert(new NeighbourModel("mb7npw-3", BearerPort: 1, ConnectScript: script));
+
+        var row = (await ctrl.List()).Single();
+        row.ConnectVia.Should().BeNull();
+        row.ConnectScript.Should().Be(script);
+    }
+
+    [Fact]
+    public async Task NeighboursController_FirstStepConnectingToThePeer_IsDropped()
+    {
+        var ctrl = new NeighboursController(database);
+
+        await ctrl.Upsert(new NeighbourModel("mb7npw", BearerPort: 1, ConnectScript: "C MB7NPW|Connected\nDAPPS|DAPPSv1>"));
+
+        var row = (await ctrl.List()).Single();
+        row.ConnectVia.Should().BeNull("the peer is dialled anyway");
+        row.ConnectScript.Should().Be("DAPPS|DAPPSv1>");
+    }
+
     [Fact]
     public async Task NeighboursController_DeleteAbsent_NotFound()
     {
