@@ -49,7 +49,11 @@ public sealed class EventsController(
             Latest: latest?.Tag,
             ReleaseUrl: latest?.Url,
             IsAvailable: updateChecker.UpdateAvailable,
-            FetchedAt: latest?.FetchedAt);
+            FetchedAt: latest?.FetchedAt,
+            Install: updateChecker.InstallName,
+            CanApply: updateChecker.CanApply,
+            UpgradeCommand: updateChecker.UpgradeCommand,
+            DownloadUrl: updateChecker.DownloadUrl);
     }
 
     /// <summary>
@@ -248,7 +252,15 @@ public sealed record VersionStatus(
     string? Latest,
     string? ReleaseUrl,
     bool IsAvailable,
-    DateTime? FetchedAt);
+    DateTime? FetchedAt,
+    // How DAPPS was installed: "apt" (from packet-net's apt repo), "deb" (a .deb installed by hand) or "other".
+    string Install = "other",
+    // Whether the self-updater's Apply applies; false on a .deb install, where apt owns the upgrade.
+    bool CanApply = true,
+    // On a .deb install with a newer version ready, the command that upgrades it.
+    string? UpgradeCommand = null,
+    // On a hand-installed .deb with a newer version ready, the new .deb's download.
+    string? DownloadUrl = null);
 
 public sealed record PayloadPreview(
     string Id,

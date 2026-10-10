@@ -93,7 +93,7 @@ The admin password (for the dashboard cookie) is set on `/Setup` first-run flow,
 
 | Name                  | Env var                       | Default | What it does                                                              |
 |-----------------------|-------------------------------|---------|---------------------------------------------------------------------------|
-| Update check enabled  | `DAPPS_UPDATE_CHECK_ENABLED`  | `true`  | Periodically poll GitHub Releases. Powers the dashboard banner.           |
+| Update check enabled  | `DAPPS_UPDATE_CHECK_ENABLED`  | `true`  | Periodically check for a newer release (the apt repository on an apt install, GitHub Releases otherwise). Powers the dashboard banner. |
 
 ### Heartbeat
 

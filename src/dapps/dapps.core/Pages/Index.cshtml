@@ -91,7 +91,7 @@
         <div class="sub" id="hero-update-sub" style="display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: baseline;">
             <a href="#" id="hero-update-action" class="link-btn" style="display:none;">Apply update</a>
             <a href="#" id="hero-update-check" class="link-btn">Check now</a>
-            <span id="hero-update-meta" class="muted">checking GitHub</span>
+            <span id="hero-update-meta" class="muted">checking for updates</span>
         </div>
     </div>
 </div>
@@ -304,7 +304,9 @@
             const upd = s.tables?.update;
             if (upd && upd.isAvailable && upd.latest && !upd.isDevBuild) {
                 out.push({ tone: 'info', title: `Update available: v${upd.latest}`,
-                          body: 'Apply from the build chip on the top bar or from Overview hero.' });
+                          body: upd.canApply === false
+                              ? `Upgrade with apt on this machine: ${upd.upgradeCommand ?? 'sudo apt update && sudo apt upgrade'}`
+                              : 'Apply from the build chip on the top bar or from Overview hero.' });
             }
             return out;
         }
@@ -410,6 +412,8 @@
             //   1. dev build         -> "dev" pill, no action
             //   2. up to date        -> "current" pill, no action
             //   3. available         -> "available" pill, "Apply update" link
+            //                           (a .deb install: no link; the layout's
+            //                           banner gives the apt command)
             //   4. apply in progress -> "applying" pill, phase text in meta
             //   5. terminal          -> "updated" / "failed" / "rolled back"
             //
@@ -494,6 +498,13 @@
                     } else if (updAction) {
                         updAction.style.display = 'none';
                     }
+                } else if (upd.isAvailable && upd.latest && upd.canApply === false) {
+                    // A .deb install: apt owns the upgrade, and the banner
+                    // at the top of the page carries the command.
+                    set('hero-update-v', `v${upd.current} -> v${upd.latest}`);
+                    setPill('warn', 'available');
+                    set('hero-update-meta', 'upgrade with apt - the command is at the top of the page');
+                    if (updAction) updAction.style.display = 'none';
                 } else if (upd.isAvailable && upd.latest) {
                     set('hero-update-v', `v${upd.current} -> v${upd.latest}`);
                     setPill('warn', 'available');
@@ -561,7 +572,7 @@
                         // their click registered, regardless of the
                         // /Update/check round-trip latency.
                         const previousMeta = document.getElementById('hero-update-meta')?.textContent ?? '';
-                        set('hero-update-meta', 'checking GitHub...');
+                        set('hero-update-meta', 'checking...');
                         updCheck.style.display = 'none';
                         try {
                             const res = await fetch('@Url.Content("~/Update/check")', { method: 'POST' });

@@ -28,7 +28,7 @@ Then open `http://<node>:5000/`. The first request lands on `/Setup` - a two-ste
 sudo apt update && sudo apt upgrade
 ```
 
-The package restarts the service for you. There is no `dapps-updater` unit in the apt install and the hourly update check is seeded off, because apt is the update path here - see [Update](../update.md).
+The package restarts the service for you. The dashboard checks the apt repository every six hours and, when a newer version is there, shows a banner with this command; there is no `dapps-updater` unit or Apply button in the apt install, because apt is the update path here - see [Update](../update.md).
 
 ### Configuration
 

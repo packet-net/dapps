@@ -28,4 +28,9 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- packet-net's real apt index, for the apt update check's tests. -->
+    <None Include="Apt\Packages-2026-10-06" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
