@@ -21,9 +21,11 @@
     <div class="panel">
         <h3>Manual neighbours</h3>
         <p class="panel-sub">Callsigns this node will forward through. Use <strong>edit</strong> on a row to change it. Connect-script lets you reach a peer through a chain of intermediate non-DAPPS nodes: DAPPS first connects to Connect via (or the Callsign, if blank) on the Radio port, then plays the script at that node's prompt (one <code>send|expect</code> step per line, final expect must contain <code>DAPPSv1&gt;</code>).</p>
-        <form id="neigh-form" class="row-form" onsubmit="dappsAddNeighbour(event)" style="margin-bottom: 1rem;">
-            <div class="field"><label>Callsign</label><input name="callsign" placeholder="GB7XYZ-3" required /></div>
-            <div class="field"><label>Connect via (optional)</label><input name="connectVia" placeholder="GB7XYZ" />
+        <form id="neigh-form" class="row-form neigh-form" onsubmit="dappsAddNeighbour(event)" style="margin-bottom: 1rem;">
+            <div class="field"><label>Callsign</label><input name="callsign" placeholder="GB7XYZ-3" required />
+                <span class="hint">the peer's DAPPS callsign</span>
+            </div>
+            <div class="field"><label>Connect via (optional)</label><input name="connectVia" placeholder="GB7ABC" />
                 <span class="hint">node to dial first; the script runs at its prompt</span>
             </div>
             <div class="field" data-port-picker="bearerPort">
@@ -33,25 +35,27 @@
                 </select>
                 <span class="hint" data-port-picker-hint>loading from BPQ...</span>
             </div>
-            <div class="field"><label>UDP endpoint (optional)</label><input name="udpEndpoint" placeholder="host:port" /></div>
+            <div class="field span-all">
+                <label>Connect script (optional)</label>
+                <textarea name="connectScript" rows="3" placeholder="C 4 GB7XYZ-3|DAPPSv1>|60"></textarea>
+                <span class="hint">Typed at the prompt of the node DAPPS dialled (Connect via, or the Callsign), not at your own node. One step per line: <code>send|expect</code> or <code>send|expect|timeoutSeconds</code>. With Connect via blank, a first line <code>C &lt;CALL&gt;</code> becomes Connect via. Empty box clears the script.</span>
+            </div>
+            <div class="field"><label>UDP endpoint (optional)</label><input name="udpEndpoint" placeholder="host:port" />
+                <span class="hint">instead of the radio, for a peer on UDP</span>
+            </div>
             <div class="field"><label>Compression</label>
                 <select name="compression">
                     <option value="">Default</option>
                     <option value="off">Off</option>
                     <option value="on">On</option>
                 </select>
-                <span class="hint">overrides the system-wide setting for this neighbour</span>
+                <span class="hint">overrides the system-wide setting</span>
             </div>
             <div class="field"><label>Link hold (s)</label>
                 <input name="sessionTail" type="number" min="0" max="600" placeholder="default" />
                 <span class="hint">blank = system setting, 0 = off</span>
             </div>
-            <div class="field" style="grid-column: 1 / -1;">
-                <label>Connect script (optional)</label>
-                <textarea name="connectScript" rows="3" placeholder="C G0NODE3|Connected to G0NODE3&#10;DAPPS|DAPPSv1>|60"></textarea>
-                <span class="hint">Typed at the prompt of the node DAPPS connected to (Connect via, or the Callsign), not at your own node. With Connect via blank, a first line <code>C &lt;CALL&gt;</code> becomes Connect via. One step per line: <code>send|expect</code> or <code>send|expect|timeoutSeconds</code>. Empty box clears the script.</span>
-            </div>
-            <div style="grid-column: -2 / -1; justify-self: end; display: flex; gap: 0.5rem;">
+            <div class="span-all neigh-actions">
                 <button class="btn ghost" type="button" id="neigh-cancel" onclick="dappsCancelEditNeighbour()" style="display: none;">Cancel</button>
                 <button class="btn" type="submit">Add / update</button>
             </div>
@@ -367,7 +371,9 @@ else
             if (r.error) {
                 wrap.innerHTML = `<label>Radio port</label>
                     <input name="bearerPort" type="number" min="0" max="255" placeholder="0" />
-                    <span class="hint">couldn't query BPQ: ${escape(r.error)}. Type a 0-indexed port number (on RHPv2/XRouter, 0 is PORT=1).</span>`;
+                    <span class="hint">${/not AGW/.test(r.error)
+                        ? 'XRouter port, counted from 0: 0 is PORT=1, 1 is PORT=2.'
+                        : `couldn't query BPQ: ${escape(r.error)}. Type a 0-indexed port number.`}</span>`;
                 return;
             }
             for (const p of r.ports) {

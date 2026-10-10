@@ -737,6 +737,19 @@
             align-items: end;
         }
         .row-form button { grid-column: -2 / -1; justify-self: end; }
+        /* The neighbour form: three columns, labels aligned at the top
+           whatever the hints below them; the script spans the row. */
+        .row-form.neigh-form {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            align-items: start;
+            gap: 0.9rem 1rem;
+        }
+        .neigh-form .span-all { grid-column: 1 / -1; }
+        .neigh-form .neigh-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+        .neigh-form .neigh-actions button { grid-column: auto; }
+        @@media (max-width: 720px) {
+            .row-form.neigh-form { grid-template-columns: 1fr; }
+        }
 
         /* Activity ticker (used on Overview) */
         .ticker {
