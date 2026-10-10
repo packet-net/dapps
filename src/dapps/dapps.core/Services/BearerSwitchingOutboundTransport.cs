@@ -76,7 +76,7 @@ public sealed class BearerSwitchingOutboundTransport(
         var wait = settle.PendingWait(key);
         if (wait > TimeSpan.Zero)
         {
-            logger.LogDebug(
+            logger.LogInformation(
                 "Outbound: waiting {0}ms before redialling {1} - the previous session's teardown may not have reached the remote node yet",
                 (int)wait.TotalMilliseconds, key);
         }

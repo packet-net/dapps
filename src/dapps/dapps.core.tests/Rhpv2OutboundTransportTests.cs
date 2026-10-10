@@ -1,5 +1,6 @@
 using System.Text;
 using AwesomeAssertions;
+using dapps.client.Transport;
 using dapps.client.Transport.Rhp;
 using Microsoft.Extensions.Logging.Abstractions;
 using RhpV2.Client.Protocol;
@@ -325,6 +326,35 @@ public sealed class Rhpv2OutboundTransportTests
     private static StatusReplyMessage StatusReply(StatusMessage q) => new() { Id = q.Id, Handle = q.Handle, ErrText = "Ok" };
 
     private static StatusMessage Status(StatusFlags flags) => new() { Handle = OpenedHandle, Flags = (int)flags };
+
+    // XRouter refuses a new open while it still has a link for the same pair
+    // (the last session's, still being disconnected): 9 "Duplicate socket",
+    // or 4 "No memory" from older builds. That's not a failed route.
+
+    [Theory]
+    [InlineData(9, "Duplicate socket")]
+    [InlineData(4, "No memory")]
+    public async Task ConnectAsync_RefusedForALinkStillThere_SaysTheLinkIsClosing(int code, string text)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var node = ScriptedNode.Start(open => [new OpenReplyMessage { Id = open.Id, Handle = 0, ErrCode = code, ErrText = text }], ct);
+
+        var act = () => node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 1, ct);
+
+        (await act.Should().ThrowAsync<PeerLinkClosingException>())
+            .Which.Message.Should().Contain("G0DPA-1->G0DPB-1 on port 2").And.Contain(text);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_OtherRefusals_StayErrors()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var node = ScriptedNode.Start(open => [new OpenReplyMessage { Id = open.Id, Handle = 0, ErrCode = 10, ErrText = "No such port" }], ct);
+
+        var act = () => node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 7, ct);
+
+        await act.Should().ThrowAsync<RhpV2.Client.RhpServerException>();
+    }
 
     private const int OpenedHandle = 101;
 
