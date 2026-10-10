@@ -53,10 +53,17 @@ That sequence becomes a connect-script.
 
 #### Example: a peer in radio range
 
-If you can connect to the peer's node on one of your ports, you can connect to the peer's DAPPS callsign on that port too: it's on the same node and radio. No script is needed. For `MB7NPW-3`, a DAPPS node on the BPQ node `MB7NPW` that you reach on your XRouter's `PORT=2`:
+If you can connect to the peer's node on one of your ports, you can usually connect to the peer's DAPPS callsign on that port too: it's on the same node and radio. No script is needed. For `MB7NPW-3`, a DAPPS node on the BPQ node `MB7NPW` that you reach on your XRouter's `PORT=2`:
 
 - Callsign: `MB7NPW-3`
 - Radio port: `1`
+
+Check it by hand first, from your node's prompt: `C 2 MB7NPW-3` should answer `DAPPSv1>` straight after "Connected". Not every node hands a connect to its DAPPS callsign straight to DAPPS: on some, the connect is accepted ("Connected to MB7NPW-3") but nothing follows, and DAPPS is only reached through the node's command. If that's what you see, connect via the node instead:
+
+- Callsign: `MB7NPW-3`
+- Connect via: `MB7NPW`
+- Radio port: `1`
+- Connect script: `DAPPS|DAPPSv1>|60` (the command the node gives DAPPS)
 
 #### Example: a peer only reachable over NET/ROM
 
