@@ -219,6 +219,8 @@ public static class DbStartup
             SeedOrApplyEnv(db, options, key, defaultValue, logger);
         }
 
+        TurnOnUpdateCheckForDeb(db, options, UpdateInstall.IsDebPayload(AppContext.BaseDirectory), logger);
+
         // Node-owned-callsign contract: when the pdn host names the
         // exact callsign to bind (PDN_APP_CALLSIGN), it is the authority -
         // applied verbatim over the stored Callsign row at EVERY start,
@@ -231,6 +233,44 @@ public static class DbStartup
         ValidateRequiredConfig(db, logger);
 
         logger?.LogInformation("DB schema refreshed");
+    }
+
+    /// <summary>Marks that <see cref="TurnOnUpdateCheckForDeb"/> has run on this database.</summary>
+    public const string DebUpdateCheckDefaultedKey = "UpdateCheckDebDefaulted";
+
+    /// <summary>
+    /// Up to 0.45, the .deb's dapps.env seeded <c>UpdateCheckEnabled=false</c>,
+    /// because the only check then was GitHub's, feeding an Apply button
+    /// an apt install can't use. The check now reads the apt repository
+    /// and gives the apt command, so on a .deb install a stored "false"
+    /// that predates this start (<paramref name="before"/>, the rows read
+    /// before seeding) is the package's old default, not the operator's:
+    /// turn it on, once. The marker row keeps it from running again, so
+    /// an operator who turns the check off afterwards keeps it off; a
+    /// fresh install seeds the marker without touching what it seeded.
+    /// </summary>
+    internal static void TurnOnUpdateCheckForDeb(SQLiteConnection db, List<DbSystemOption> before, bool isDeb, ILogger? logger)
+    {
+        if (!isDeb || IsEnvManagedMode)
+        {
+            return;
+        }
+        var all = db.Query<DbSystemOption>("select * from systemoptions;");
+        if (all.Any(o => string.Equals(o.Option, DebUpdateCheckDefaultedKey, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+        var stored = all.FirstOrDefault(o => string.Equals(o.Option, "UpdateCheckEnabled", StringComparison.OrdinalIgnoreCase));
+        var predates = before.Any(o => string.Equals(o.Option, "UpdateCheckEnabled", StringComparison.OrdinalIgnoreCase));
+        if (stored is not null && predates && string.Equals(stored.Value, "false", StringComparison.OrdinalIgnoreCase))
+        {
+            stored.Value = "true";
+            db.Update(stored);
+            logger?.LogInformation(
+                "Update check turned on: it now reads packet-net's apt repository and shows the apt command " +
+                "when a newer version is ready. Turn it off in Settings if you don't want it.");
+        }
+        db.Insert(new DbSystemOption { Option = DebUpdateCheckDefaultedKey, Value = "true" });
     }
 
     private static void SeedOrApplyEnv(SQLiteConnection db, List<DbSystemOption> options, string key, string defaultValue, ILogger? logger)

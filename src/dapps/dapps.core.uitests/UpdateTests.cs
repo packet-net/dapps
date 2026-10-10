@@ -467,6 +467,73 @@ public sealed class UpdateTests(LoggedInWebAppFixture app, PlaywrightFixture pw)
     /// checkbox. Toggle it off, save, reload, verify the persisted
     /// state - and restore so the rest of the suite isn't perturbed.
     /// </summary>
+    private const string AptCommand = "sudo apt update && sudo apt install --only-upgrade dapps";
+
+    [Fact]
+    public async Task Apt_Install_Update_Available_Shows_Banner_With_Command_And_No_Apply()
+    {
+        await using var ctx = await pw.Browser.NewLoggedInContextAsync(app);
+        var page = await ctx.NewPageAsync();
+        await StubOperationalAsync(page, new UpdateFields(CurrentVersion, IsDevBuild: false, IsAvailable: true,
+            Latest: LatestVersion, ReleaseUrl: $"https://github.com/packet-net/dapps/releases/tag/v{LatestVersion}",
+            Install: "apt", CanApply: false, UpgradeCommand: AptCommand));
+
+        await page.GotoAsync(app.BaseUrl);
+        await page.Locator("#upgrade-banner").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
+        (await page.Locator("#upgrade-title").InnerTextAsync()).Should()
+            .Be($"DAPPS v{LatestVersion} is available (you have v{CurrentVersion}).");
+        (await page.Locator("#upgrade-cmd").InnerTextAsync()).Should().Be(AptCommand);
+        (await page.Locator("#upgrade-notes").GetAttributeAsync("href")).Should()
+            .Be($"https://github.com/packet-net/dapps/releases/tag/v{LatestVersion}");
+
+        await WaitTextAsync(page, "#hero-update-pill", "available");
+        (await page.Locator("#hero-update-action").IsVisibleAsync()).Should().BeFalse(
+            "apt owns the upgrade on a .deb install; there is no self-updater to apply it");
+        (await page.Locator("#hero-update-meta").InnerTextAsync()).Should().Contain("apt");
+    }
+
+    [Fact]
+    public async Task Apt_Install_Banner_Shows_On_Every_Page()
+    {
+        await using var ctx = await pw.Browser.NewLoggedInContextAsync(app);
+        var page = await ctx.NewPageAsync();
+        await StubOperationalAsync(page, new UpdateFields(CurrentVersion, IsDevBuild: false, IsAvailable: true,
+            Latest: LatestVersion, Install: "apt", CanApply: false, UpgradeCommand: AptCommand));
+
+        await page.GotoAsync(app.BaseUrl + "/Topology");
+        await page.Locator("#upgrade-banner").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
+    }
+
+    [Fact]
+    public async Task Hand_Installed_Deb_Banner_Links_The_New_Deb()
+    {
+        const string url = $"https://github.com/packet-net/dapps/releases/download/v{LatestVersion}/dapps_{LatestVersion}_amd64.deb";
+        await using var ctx = await pw.Browser.NewLoggedInContextAsync(app);
+        var page = await ctx.NewPageAsync();
+        await StubOperationalAsync(page, new UpdateFields(CurrentVersion, IsDevBuild: false, IsAvailable: true,
+            Latest: LatestVersion, Install: "deb", CanApply: false,
+            UpgradeCommand: $"sudo apt install ./dapps_{LatestVersion}_amd64.deb", DownloadUrl: url));
+
+        await page.GotoAsync(app.BaseUrl);
+        await page.Locator("#upgrade-banner").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 10_000 });
+        (await page.Locator("#upgrade-what a").GetAttributeAsync("href")).Should().Be(url);
+        (await page.Locator("#upgrade-cmd").InnerTextAsync()).Should().Be($"sudo apt install ./dapps_{LatestVersion}_amd64.deb");
+    }
+
+    [Fact]
+    public async Task Upgrade_Banner_Hidden_When_Up_To_Date_Or_Self_Updating()
+    {
+        await using var ctx = await pw.Browser.NewLoggedInContextAsync(app);
+        var page = await ctx.NewPageAsync();
+        // A one-liner install with an update: the Apply button, not the banner.
+        await StubOperationalAsync(page, new UpdateFields(CurrentVersion, IsDevBuild: false, IsAvailable: true, Latest: LatestVersion));
+
+        await page.GotoAsync(app.BaseUrl);
+        await WaitTextAsync(page, "#hero-update-pill", "available");
+        (await page.Locator("#upgrade-banner").IsVisibleAsync()).Should().BeFalse();
+        (await page.Locator("#hero-update-action").IsVisibleAsync()).Should().BeTrue();
+    }
+
     [Fact]
     public async Task Settings_UpdateCheckEnabled_Toggle_Persists()
     {
@@ -519,7 +586,11 @@ public sealed class UpdateTests(LoggedInWebAppFixture app, PlaywrightFixture pw)
         string? FromVersion = null,
         string? ToVersion = null,
         DateTime? LastRunUpdatedAt = null,
-        string? LastRunError = null);
+        string? LastRunError = null,
+        string Install = "other",
+        bool CanApply = true,
+        string? UpgradeCommand = null,
+        string? DownloadUrl = null);
 
     /// <summary>
     /// Stub the layout's <c>/Operational?full=true</c> poll with a
@@ -605,6 +676,10 @@ public sealed class UpdateTests(LoggedInWebAppFixture app, PlaywrightFixture pw)
                     isAvailable = fields.IsAvailable,
                     fetchedAt = fields.FetchedAt,
                     requestPending = fields.RequestPending,
+                    install = fields.Install,
+                    canApply = fields.CanApply,
+                    upgradeCommand = fields.UpgradeCommand,
+                    downloadUrl = fields.DownloadUrl,
                     lastRun = fields.Phase is null ? null : (object)new
                     {
                         phase = fields.Phase,

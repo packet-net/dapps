@@ -182,7 +182,7 @@
         <h3>Updates</h3>
         <div class="field-grid">
             <label class="field-checkbox"><input name="UpdateCheckEnabled" type="checkbox" @(Model.Options.UpdateCheckEnabled ? "checked" : "") />
-                <span>Auto-check GitHub for new releases<br/><span class="hint">background poll runs ~once an hour. Use the button below for an immediate poll.</span></span></label>
+                <span>Check for new releases<br/><span class="hint">An apt install reads packet-net's apt repository every 6 hours and shows the apt command when a newer version is there; any other install asks GitHub hourly. Use the button below to check now.</span></span></label>
             <div class="field" style="grid-column: 1 / -1; align-items: flex-start;">
                 <button type="button" class="btn ghost sm" id="check-updates-btn" style="margin-top: 0.4rem;">Check for updates now</button>
                 <span class="hint" id="check-updates-status" style="margin-top: 0.5rem; min-height: 1em;"></span>
@@ -347,7 +347,7 @@ async function dappsRotatePassword(ev) {
 })();
 
 // --- Check for updates ---
-// POST /Update/check makes the daemon hit GitHub once and returns the
+// POST /Update/check makes the daemon check once (the apt repository or GitHub) and returns the
 // fresh status. Surface the outcome in plain English so the operator
 // knows whether they're up to date without having to look elsewhere.
 (function () {
@@ -356,7 +356,7 @@ async function dappsRotatePassword(ev) {
     if (!btn || !status) return;
     btn.addEventListener('click', async () => {
         btn.disabled = true;
-        status.textContent = 'checking GitHub...';
+        status.textContent = 'checking...';
         try {
             const res = await fetch('@Url.Content("~/Update/check")', { method: 'POST' });
             if (!res.ok) {
@@ -367,7 +367,9 @@ async function dappsRotatePassword(ev) {
             if (j.isDevBuild) {
                 status.textContent = `running dev build ${j.current} - no upstream comparison`;
             } else if (j.isAvailable && j.latest) {
-                status.textContent = `update available: v${j.current} -> v${j.latest}. Apply from the Overview hero or the topbar build chip.`;
+                status.textContent = j.canApply === false
+                    ? `update available: v${j.current} -> v${j.latest}. Upgrade on this machine with: ${j.upgradeCommand}`
+                    : `update available: v${j.current} -> v${j.latest}. Apply from the Overview hero or the topbar build chip.`;
             } else {
                 status.textContent = `up to date - v${j.current}`;
             }

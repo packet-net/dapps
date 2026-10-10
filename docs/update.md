@@ -8,9 +8,21 @@ How a node updates depends on how it was installed.
 sudo apt update && sudo apt upgrade
 ```
 
-That is the whole story. The package stops the old daemon, replaces the payload under `/usr/lib/dapps`, and restarts the service; `/etc/dapps/dapps.env` and the database in `/var/lib/dapps` are left alone.
+That is the upgrade. The package stops the old daemon, replaces the payload under `/usr/lib/dapps`, and restarts the service; `/etc/dapps/dapps.env` and the database in `/var/lib/dapps` are left alone.
 
-The `.deb` deliberately ships **no** `dapps-updater` unit and seeds `DAPPS_UPDATE_CHECK_ENABLED=false`. Two reasons. The self-updater swaps a binary at `/opt/dapps/dapps`, which an apt install does not have and dpkg would not expect to change under it; and a banner announcing a release that `apt upgrade` is already bringing is a nag with nothing behind it - the dashboard's **Apply update** button has no updater to trigger. If you would rather see new upstream releases appear on the dashboard anyway, set `DAPPS_UPDATE_CHECK_ENABLED=true` in `/etc/dapps/dapps.env` and restart; the update itself still arrives through apt.
+### Knowing there is one
+
+The dashboard tells you. Every six hours (and when you press **Check now**) DAPPS reads the apt repository's package list - one small GET of `https://packet-net.github.io/apt/Packages`, nothing downloaded or installed - and finds the newest `dapps` for this machine's architecture, compared the way apt compares versions. When it is newer than what is running, a banner across the top of every page says so, links the release notes, and gives the command to run on the machine, with a Copy button:
+
+```bash
+sudo apt update && sudo apt install --only-upgrade dapps
+```
+
+`sudo apt update && sudo apt upgrade` does the same and upgrades everything else too. If the `.deb` was installed by hand rather than from the repository, the banner links the new `.deb` and gives `sudo apt install ./dapps_<version>_<arch>.deb` instead. When the check can't reach the repository it shows nothing and says why in the log, once.
+
+The `.deb` ships **no** `dapps-updater` unit, so there is no **Apply update** button: the self-updater swaps a binary at `/opt/dapps/dapps`, which an apt install does not have and dpkg would not expect to change under it. apt does the upgrade.
+
+Versions up to 0.45 seeded the check off on apt installs, because the only check then was GitHub's and it fed that Apply button. 0.46 turns it on once, on the first start after the upgrade; untick **Check for new releases** in Settings if you don't want it, and it stays off.
 
 A release reaches the apt repository within about a minute of the tag: the release workflow tells [packet-net/apt](https://github.com/packet-net/apt) to reindex as its last step, and a nightly rebuild catches anything that dispatch missed.
 
@@ -102,7 +114,7 @@ To force an immediate re-poll without waiting an hour:
 
 ## Disabling the update check
 
-Set `DAPPS_UPDATE_CHECK_ENABLED=false` if your node has no internet access (or you really, really want to know about new versions some other way). The daemon will stop polling; the banner will go quiet. **Recommended only for offline deployments** - the cost is one HTTPS request per hour, the benefit is knowing about fixes. The apt package seeds it off for a different reason, covered at the top of this page.
+Untick **Check for new releases** in Settings (or seed `DAPPS_UPDATE_CHECK_ENABLED=false` on first start) if your node has no internet access (or you really, really want to know about new versions some other way). The daemon will stop polling; the banner will go quiet. **Recommended only for offline deployments** - the cost is one HTTPS request per hour (every six hours on an apt install), the benefit is knowing about fixes.
 
 ## Dev builds
 

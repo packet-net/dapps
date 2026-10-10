@@ -132,6 +132,7 @@ builder.Services.AddMcpServer()
     .WithTools<dapps.core.Mcp.DappsUpdateTools>()
     .WithTools<dapps.core.Mcp.DappsAuditTools>();
 
+builder.Services.AddSingleton(UpdateInstall.Detect());
 builder.Services.AddSingleton<UpdateChecker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<UpdateChecker>());
 

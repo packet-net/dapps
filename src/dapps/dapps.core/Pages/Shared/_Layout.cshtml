@@ -552,6 +552,12 @@
         .ok-banner   { background: var(--signal-soft); border-color: color-mix(in srgb, var(--signal) 25%, transparent); color: var(--signal); }
         .err-banner  { background: var(--err-soft);    border-color: color-mix(in srgb, var(--err) 25%, transparent);    color: var(--err); }
         .info-banner { background: var(--info-soft);   border-color: color-mix(in srgb, var(--info) 25%, transparent);   color: var(--info); }
+        /* "A newer version is ready" on a .deb install: the apt command to run. */
+        .upgrade-banner[hidden] { display: none; }
+        .upgrade-banner p { margin: 0.25rem 0 0; color: var(--text); }
+        .upgrade-banner a { color: inherit; text-decoration: underline; }
+        .upgrade-banner .upgrade-cmd { display: flex; gap: 0.5rem; align-items: stretch; flex-wrap: wrap; margin-top: 0.5rem; }
+        .upgrade-banner code { flex: 1 1 18rem; min-width: 0; padding: 0.4rem 0.6rem; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); color: var(--text); overflow-wrap: anywhere; font-size: 0.82rem; }
 
         /* ========================================================
            Forms
@@ -1002,7 +1008,7 @@
                     <span class="gauge"><span class="bar"><span class="fill"></span></span></span>
                     <span class="v" id="ts-air-v">0%</span>
                 </span>
-                <span class="status-chip optional" id="ts-version" title="release vs latest on GitHub">
+                <span class="status-chip optional" id="ts-version" title="running version vs the newest release">
                     <span class="lbl">Build</span>
                     <span class="v" id="ts-version-v">-</span>
                 </span>
@@ -1066,6 +1072,15 @@
                 </div>
             </aside>
             <main>
+                <div class="info-banner upgrade-banner" id="upgrade-banner" role="status" hidden>
+                    <strong id="upgrade-title"></strong>
+                    <a id="upgrade-notes" href="#" target="_blank" rel="noopener">release notes</a>
+                    <p id="upgrade-what"></p>
+                    <div class="upgrade-cmd">
+                        <code id="upgrade-cmd"></code>
+                        <button type="button" class="btn ghost sm" id="upgrade-copy">Copy</button>
+                    </div>
+                </div>
                 @if (!string.IsNullOrEmpty(pageTitle))
                 {
                     <div class="page-head">
@@ -1233,6 +1248,32 @@
                             led(tsVer, null);
                         }
 
+                        // Upgrade banner - a .deb install with a newer
+                        // version ready. apt owns the upgrade there, so
+                        // the page gives the command instead of an
+                        // Apply button.
+                        const ub = document.getElementById('upgrade-banner');
+                        if (ub) {
+                            const showUb = !!(upd && upd.isAvailable && upd.latest && upd.upgradeCommand && !upd.isDevBuild);
+                            ub.hidden = !showUb;
+                            if (showUb) {
+                                set('upgrade-title', `DAPPS v${upd.latest} is available (you have v${upd.current}).`);
+                                const what = document.getElementById('upgrade-what');
+                                if (upd.downloadUrl) {
+                                    what.replaceChildren('Download ',
+                                        Object.assign(document.createElement('a'), { href: upd.downloadUrl, textContent: upd.downloadUrl.split('/').pop() }),
+                                        ', then install it on this machine:');
+                                } else {
+                                    what.textContent = 'Upgrade it from apt, on this machine:';
+                                }
+                                const cmd = document.getElementById('upgrade-cmd');
+                                if (cmd.textContent !== upd.upgradeCommand) cmd.textContent = upd.upgradeCommand;
+                                const notes = document.getElementById('upgrade-notes');
+                                notes.hidden = !upd.releaseUrl;
+                                if (upd.releaseUrl) notes.href = upd.releaseUrl;
+                            }
+                        }
+
                         // Hard-refresh on apply-update Success
                         // transition. We track the previous phase
                         // across snaps; when it flips from any non-
@@ -1263,6 +1304,25 @@
                 }
                 pull();
                 setInterval(pull, 5000);
+
+                // The dashboard is usually plain http on the LAN, where
+                // navigator.clipboard doesn't exist; fall back to a
+                // selected textarea and execCommand.
+                document.getElementById('upgrade-copy')?.addEventListener('click', async (ev) => {
+                    const btn = ev.currentTarget;
+                    const text = document.getElementById('upgrade-cmd')?.textContent ?? '';
+                    let ok = false;
+                    try { await navigator.clipboard.writeText(text); ok = true; } catch { }
+                    if (!ok) {
+                        const ta = Object.assign(document.createElement('textarea'), { value: text });
+                        ta.style.position = 'fixed'; ta.style.opacity = '0';
+                        document.body.appendChild(ta); ta.select();
+                        try { ok = document.execCommand('copy'); } catch { }
+                        ta.remove();
+                    }
+                    btn.textContent = ok ? 'Copied' : 'Select and copy it';
+                    setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+                });
                 window.dappsRefreshSnap = pull;
             })();
         </script>
