@@ -162,6 +162,11 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
                     if (opened is null) early.Add((e.Handle, null));
                     else if (e.Handle == opened)
                     {
+                        if (linkUp.Task is { IsCompletedSuccessfully: true, Result: true })
+                        {
+                            logger.LogInformation("RHP: the node closed handle {h} ({local}->{remote}): the link went down",
+                                opened, localCallsign, remoteCallsign);
+                        }
                         linkUp.TrySetResult(false);
                         stream.SignalRemoteDisconnect();
                     }
@@ -181,15 +186,31 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
             rhp.StatusChanged += statusHandler;
 
             logger.LogInformation("RHP: open active {local}->{remote} on port {p}", localCallsign, remoteCallsign, portName);
-            var reply = await rhp.OpenWithReplyAsync(
-                family: ProtocolFamily.Ax25,
-                mode: SocketMode.Stream,
-                port: portName,
-                local: localCallsign,
-                remote: remoteCallsign,
-                flags: OpenFlags.Active,
-                ct: stoppingToken);
+            var openedAt = Environment.TickCount64;
+            OpenReplyMessage reply;
+            try
+            {
+                reply = await rhp.OpenWithReplyAsync(
+                    family: ProtocolFamily.Ax25,
+                    mode: SocketMode.Stream,
+                    port: portName,
+                    local: localCallsign,
+                    remote: remoteCallsign,
+                    flags: OpenFlags.Active,
+                    ct: stoppingToken);
+            }
+            catch (RhpServerException ex) when (ex.ErrorCode is RhpErrorCode.DuplicateSocket or RhpErrorCode.NoMemory)
+            {
+                // The node still has a link for this pair: XRouter answers 9
+                // "Duplicate socket" (4 "No memory" from older builds) while
+                // it's still disconnecting the last one.
+                logger.LogInformation(
+                    "RHP: the node refused {local}->{remote} on port {p} (error {code} '{text}'): it still has a link for that pair, most likely the last session's, still closing",
+                    localCallsign, remoteCallsign, portName, ex.ErrorCode, ex.ErrorText);
+                throw new PeerLinkClosingException(localCallsign, remoteCallsign, portName, ex.ErrorCode, ex.ErrorText);
+            }
             handle = reply.Handle;
+            logger.LogInformation("RHP: handle {h} is {local}->{remote} on port {p}", handle, localCallsign, remoteCallsign, portName);
 
             lock (early)
             {
@@ -226,6 +247,8 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
                 try
                 {
                     await WaitForLinkAsync(rhp, handle, localCallsign, remoteCallsign, portName, linkUp, stoppingToken);
+                    logger.LogInformation("RHP: link {local}->{remote} on port {p} is up (handle {h}, {ms} ms after the open)",
+                        localCallsign, remoteCallsign, portName, handle, Environment.TickCount64 - openedAt);
                 }
                 catch
                 {
@@ -235,7 +258,8 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
             }
             rhp.StatusChanged -= statusHandler;
 
-            return new Rhpv2Connection(rhp, stream, recvHandler, closeHandler, handle, logger, crossed.Task);
+            return new Rhpv2Connection(rhp, stream, recvHandler, closeHandler, handle, logger, crossed.Task,
+                $"{localCallsign}->{remoteCallsign} on port {portName}");
         }
         catch
         {
@@ -312,6 +336,8 @@ internal sealed class Rhpv2Connection : IDappsConnection
     private readonly EventHandler<RhpClosedEventArgs> closeHandler;
     private readonly int handle;
     private readonly ILogger logger;
+    private readonly string link;
+    private readonly long openedAt = Environment.TickCount64;
     private bool disposed;
 
     public Rhpv2Connection(
@@ -321,8 +347,10 @@ internal sealed class Rhpv2Connection : IDappsConnection
         EventHandler<RhpClosedEventArgs> closeHandler,
         int handle,
         ILogger logger,
-        Task crossedCall)
+        Task crossedCall,
+        string link)
     {
+        this.link = link;
         this.rhp = rhp;
         this.stream = stream;
         this.recvHandler = recvHandler;
@@ -342,6 +370,11 @@ internal sealed class Rhpv2Connection : IDappsConnection
         disposed = true;
         try { rhp.Received -= recvHandler; } catch { }
         try { rhp.Closed -= closeHandler; } catch { }
+        // The node disconnects the link after this, which takes it a moment
+        // on air, longer if a frame is lost; until then a new open for the
+        // same pair is refused (PeerLinkClosingException).
+        logger.LogInformation("RHP: closing handle {h} ({link}) after {s:F0}s; the node now disconnects the link",
+            handle, link, (Environment.TickCount64 - openedAt) / 1000.0);
         try { await rhp.CloseAsync(handle, CancellationToken.None); }
         catch (Exception ex) { logger.LogDebug(ex, "RHP: close({h}) failed (may have already closed)", handle); }
         await stream.DisposeAsync();

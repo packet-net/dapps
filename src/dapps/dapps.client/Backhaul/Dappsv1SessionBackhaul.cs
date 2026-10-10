@@ -41,6 +41,15 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     /// <summary>Sessions we dialled that are established, by peer callsign.</summary>
     private readonly ConcurrentDictionary<string, OpenSession> open = new(StringComparer.OrdinalIgnoreCase);
 
+    // When the node first refused a dial because its last link to the peer
+    // was still closing; cleared when a dial gets through.
+    private readonly ConcurrentDictionary<string, DateTimeOffset> closingSince = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>How long the node may go on refusing a dial for a link
+    /// that's still closing before that's logged as a warning. A lost
+    /// disconnect costs a few retries of the node's; this is well past them.</summary>
+    public TimeSpan ClosingLinkWarnAfter { get; init; } = TimeSpan.FromMinutes(3);
+
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 
     /// <summary>Longest a session stays up, however busy (<see cref="ExchangeSession.MaxLength"/>).</summary>
@@ -162,6 +171,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                 remoteCallsign: route.DialCallsign,
                 bearerPort: route.BearerPort ?? 0,
                 stoppingToken: ct);
+            closingSince.TryRemove(route.DialCallsign, out _);
         }
         catch (PeerSessionBusyException ex)
         {
@@ -174,6 +184,27 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                 first.Id, ex.PeerCallsign, ex.OpenDirection);
             await batch.CompleteAsync(first, BackhaulSendResult.Defer(
                 $"{ex.PeerCallsign} already has an {ex.OpenDirection} session open"), sw.Elapsed, ct);
+            return;
+        }
+        catch (PeerLinkClosingException ex)
+        {
+            // The node still has the last link to this peer up, or is still
+            // disconnecting it: nothing went on air and nothing failed. The
+            // message waits for the next run, by when the link should be gone.
+            var since = closingSince.GetOrAdd(route.DialCallsign, _ => TimeProvider.GetUtcNow());
+            var stuckFor = TimeProvider.GetUtcNow() - since;
+            if (stuckFor >= ClosingLinkWarnAfter)
+            {
+                logger.LogWarning(
+                    "Deferring {0}: {1}. The node has refused {2}->{3} for {4:F0}s now; a link that doesn't clear may be held by something else on the node (its LINKS command lists them)",
+                    first.Id, ex.Message, ex.LocalCallsign, ex.PeerCallsign, stuckFor.TotalSeconds);
+            }
+            else
+            {
+                logger.LogInformation("Deferring {0}: {1}; it goes on the next run", first.Id, ex.Message);
+            }
+            await batch.CompleteAsync(first, BackhaulSendResult.Defer(
+                $"the last link to {route.DialCallsign} is still closing"), sw.Elapsed, ct);
             return;
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)

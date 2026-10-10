@@ -93,6 +93,29 @@ public sealed class Dappsv1SessionBackhaulTests
     }
 
     [Fact]
+    public async Task SendAsync_TheLastLinkStillClosing_DefersWithoutAFailure()
+    {
+        // The node refused the dial because its last link to the peer is
+        // still being disconnected: nothing went on air, nothing failed.
+        var sb = new Dappsv1SessionBackhaul(new ClosingLinkTransport(), NullLoggerFactory.Instance);
+
+        var result = await sb.SendAsync(
+            new BackhaulMessage("mid0001", "app@N0DEST", null, null, "hi"u8.ToArray()),
+            new BackhaulRoute("N0DEST-3", BearerPort: 1),
+            "N0SRC",
+            CancellationToken.None);
+
+        result.Accepted.Should().BeFalse();
+        result.Deferred.Should().BeTrue("a link still closing is no reason to back off from the peer");
+    }
+
+    private sealed class ClosingLinkTransport : IDappsOutboundTransport
+    {
+        public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken) =>
+            Task.FromException<IDappsConnection>(new PeerLinkClosingException(localCallsign, remoteCallsign, "2", 9, "Duplicate socket"));
+    }
+
+    [Fact]
     public async Task SendAsync_NoPromptFromRemote_ReturnsFail()
     {
         var transport = new FakeOutboundTransport(

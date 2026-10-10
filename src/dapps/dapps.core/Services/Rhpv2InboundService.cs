@@ -240,6 +240,7 @@ public sealed class Rhpv2InboundService(
                 settingsFor: exchangePolicy is null ? null : exchangePolicy.ForPeerAsync,
             directory: openSessions);
 
+            var acceptedAt = Environment.TickCount64;
             _ = Task.Run(async () =>
             {
                 try { await handler.Handle(stoppingToken); }
@@ -250,6 +251,10 @@ public sealed class Rhpv2InboundService(
                     {
                         try { await s.DisposeAsync(); } catch { }
                     }
+                    // The node disconnects the link after this; until it's
+                    // done, a dial back to this peer is refused.
+                    logger.LogInformation("RHP inbound: closing child {child} from {remote} after {s:F0}s; the node now disconnects the link",
+                        child, remote, (Environment.TickCount64 - acceptedAt) / 1000.0);
                     try { await rhp.CloseAsync(child, CancellationToken.None); } catch { }
                     lease?.Dispose();
                 }
@@ -269,6 +274,7 @@ public sealed class Rhpv2InboundService(
         {
             if (sessions.TryGetValue(e.Handle, out var stream))
             {
+                logger.LogInformation("RHP inbound: the node closed child {child}: the link went down", e.Handle);
                 stream.SignalRemoteDisconnect();
             }
         };
