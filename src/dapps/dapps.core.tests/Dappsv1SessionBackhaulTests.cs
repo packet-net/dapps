@@ -13,8 +13,10 @@ namespace dapps.core.tests;
 /// over AXIP-UDP, but those need Docker. These drive the session
 /// directly with a fake transport that hands back canned receiver bytes
 /// - fast, hermetic, covers each rejection path explicitly. The canned
-/// answers are all there from the start; the session reads a line at a
-/// time and sends as soon as it can, so they land on what it sent.
+/// answers are all there from the start, and the session reads all of
+/// them before it writes anything, so a message can be answered before
+/// it has gone. A test reads what the session wrote once it has closed
+/// the link (#216).
 /// </summary>
 public sealed class Dappsv1SessionBackhaulTests
 {
@@ -65,7 +67,7 @@ public sealed class Dappsv1SessionBackhaulTests
             CancellationToken.None);
 
         result.Accepted.Should().BeTrue();
-        var written = Encoding.UTF8.GetString(transport.WriteCapture);
+        var written = Encoding.UTF8.GetString(await transport.WrittenAsync());
         written.Should().StartWith("exchange id=");
         written.Should().Contain("msg mid0001 ");
         written.Should().Contain("ttl=60");
@@ -89,7 +91,7 @@ public sealed class Dappsv1SessionBackhaulTests
 
         result.Accepted.Should().BeTrue(result.Error);
         transport.Dialled.Should().Equal("N0DEST");
-        Encoding.UTF8.GetString(transport.WriteCapture).Should().StartWith("DAPPS\rexchange id=");
+        Encoding.UTF8.GetString(await transport.WrittenAsync()).Should().StartWith("DAPPS\rexchange id=");
     }
 
     [Fact]
@@ -186,7 +188,7 @@ public sealed class Dappsv1SessionBackhaulTests
 
         result.Accepted.Should().BeFalse();
         result.Error.Should().Contain("DAPPSv1>");
-        Encoding.UTF8.GetString(transport.WriteCapture).Should().BeEmpty();
+        Encoding.UTF8.GetString(await transport.WrittenAsync()).Should().BeEmpty();
     }
 
     [Fact]
@@ -240,7 +242,7 @@ public sealed class Dappsv1SessionBackhaulTests
         transport.Connects.Should().Be(1);
         batch.Outcomes.Select(o => (o.Id, o.Result.Accepted)).Should().Equal(
             ("msg0001", true), ("msg0002", true), ("msg0003", true));
-        var written = Encoding.UTF8.GetString(transport.WriteCapture);
+        var written = Encoding.UTF8.GetString(await transport.WrittenAsync());
         written.Should().Contain("msg msg0001").And.Contain("msg msg0002").And.Contain("msg msg0003");
     }
 
@@ -258,7 +260,7 @@ public sealed class Dappsv1SessionBackhaulTests
 
         batch.Outcomes.Select(o => (o.Id, o.Result.Accepted)).Should().Equal(("msg0001", true), ("msg0002", false), ("msg0003", true));
         batch.Outcomes[1].Result.Error.Should().Contain("offer rejected");
-        System.Text.RegularExpressions.Regex.Count(Encoding.UTF8.GetString(transport.WriteCapture), "msg msg0002 ")
+        System.Text.RegularExpressions.Regex.Count(Encoding.UTF8.GetString(await transport.WrittenAsync()), "msg msg0002 ")
             .Should().Be(2, "one more go after the first error, then it fails for this session");
     }
 
@@ -598,7 +600,7 @@ public sealed class Dappsv1SessionBackhaulTests
 
         result.Accepted.Should().BeTrue();
         transport.Connects.Should().Be(1);
-        var written = Encoding.Latin1.GetString(transport.WriteCapture);
+        var written = Encoding.Latin1.GetString(await transport.WrittenAsync());
         written.IndexOf(" fmt=z1 ", StringComparison.Ordinal).Should().BeLessThan(
             written.IndexOf(" fmt=p ", StringComparison.Ordinal), "compressed first, then plain after the refusal");
         written.Should().EndWith(Encoding.UTF8.GetString(payload), "what went after the refusal is the readable payload");
@@ -616,7 +618,7 @@ public sealed class Dappsv1SessionBackhaulTests
         var result = await sb.SendAsync(WpsMsg("wps0001"), new BackhaulRoute("N0DEST"), "N0SRC", TestContext.Current.CancellationToken);
 
         result.Accepted.Should().BeTrue();
-        var written = Encoding.Latin1.GetString(transport.WriteCapture);
+        var written = Encoding.Latin1.GetString(await transport.WrittenAsync());
         written.IndexOf(" fmt=z1 ", StringComparison.Ordinal).Should().BeLessThan(written.IndexOf(" fmt=p ", StringComparison.Ordinal));
     }
 
@@ -634,7 +636,7 @@ public sealed class Dappsv1SessionBackhaulTests
         await sb.SendBatchAsync(new BackhaulRoute("N0DEST"), "N0SRC", batch, TestContext.Current.CancellationToken);
 
         batch.Outcomes.Where(o => o.Id != "wps0003").Should().AllSatisfy(o => o.Result.Accepted.Should().BeTrue());
-        var written = Encoding.Latin1.GetString(transport.WriteCapture);
+        var written = Encoding.Latin1.GetString(await transport.WrittenAsync());
         System.Text.RegularExpressions.Regex.Count(written, "msg wps0002 len=[0-9]+ fmt=z1").Should().Be(1);
         System.Text.RegularExpressions.Regex.Count(written, "msg wps0002 len=[0-9]+ fmt=p").Should().Be(1,
             "its second go is plain, like the rest of the session");
@@ -760,26 +762,41 @@ public sealed class Dappsv1SessionBackhaulTests
     /// and silent.</summary>
     private sealed class FakeOutboundTransport(byte[] cannedReceiverBytes, bool endOfStream = true) : IDappsOutboundTransport
     {
-        public byte[] WriteCapture => _stream?.WriteCapture.ToArray() ?? [];
+        private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private CapturingStream? _stream;
+
         public int Connects { get; private set; }
         public List<string> Dialled { get; } = [];
 
-        private CapturingStream? _stream;
+        /// <summary>
+        /// Everything the session wrote, once it has closed the link. Not
+        /// before: it reads the canned answers in one go and writes after,
+        /// so the answer to a message can come, and the send return, while
+        /// what it wrote for that message is still to go. Reading then
+        /// found neither offer, now and then (#216).
+        /// </summary>
+        public async Task<byte[]> WrittenAsync()
+        {
+            if (_stream is null) return [];
+            await closed.Task.WaitAsync(ExchangeTestKit.Patience, TestContext.Current.CancellationToken);
+            return _stream.WriteCapture.ToArray();
+        }
 
         public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken)
         {
             Connects++;
             Dialled.Add(remoteCallsign);
             _stream = new CapturingStream(cannedReceiverBytes, endOfStream);
-            return Task.FromResult<IDappsConnection>(new FakeConnection(_stream));
+            return Task.FromResult<IDappsConnection>(new FakeConnection(_stream, closed));
         }
 
-        private sealed class FakeConnection(Stream stream) : IDappsConnection
+        private sealed class FakeConnection(Stream stream, TaskCompletionSource closed) : IDappsConnection
         {
             public Stream Stream { get; } = stream;
             public ValueTask DisposeAsync()
             {
                 Stream.Dispose();
+                closed.TrySetResult();
                 return ValueTask.CompletedTask;
             }
         }
