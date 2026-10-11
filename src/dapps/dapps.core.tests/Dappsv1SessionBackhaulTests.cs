@@ -109,6 +109,25 @@ public sealed class Dappsv1SessionBackhaulTests
         result.Deferred.Should().BeTrue("a link still closing is no reason to back off from the peer");
     }
 
+    [Fact]
+    public async Task SendAsync_ThePeersCallHoldsTheLink_DefersWithoutAFailure()
+    {
+        // pdn refused the dial (its error 18) because the peer's call to us
+        // already holds the link: the calls crossed, and the message goes on
+        // the session that call opened. Nothing went on air, nothing failed.
+        var sb = new Dappsv1SessionBackhaul(
+            new ThrowingTransport(new PeerLinkAlreadyUpException("N0SRC", "N0DEST-3", "2")), NullLoggerFactory.Instance);
+
+        var result = await sb.SendAsync(
+            new BackhaulMessage("mid0001", "app@N0DEST", null, null, "hi"u8.ToArray()),
+            new BackhaulRoute("N0DEST-3", BearerPort: 1),
+            "N0SRC",
+            CancellationToken.None);
+
+        result.Accepted.Should().BeFalse();
+        result.Deferred.Should().BeTrue("a crossed call is no reason to back off from the peer");
+    }
+
     private sealed class ClosingLinkTransport : IDappsOutboundTransport
     {
         public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken) =>

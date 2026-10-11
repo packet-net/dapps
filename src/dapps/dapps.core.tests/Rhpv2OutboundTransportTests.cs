@@ -2,6 +2,7 @@ using System.Text;
 using AwesomeAssertions;
 using dapps.client.Transport;
 using dapps.client.Transport.Rhp;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RhpV2.Client.Protocol;
 using RhpV2.Client.Testing;
@@ -345,6 +346,28 @@ public sealed class Rhpv2OutboundTransportTests
             .Which.Message.Should().Contain("G0DPA-1->G0DPB-1 on port 2").And.Contain(text);
     }
 
+    // pdn (0.65.0 on) refuses an open to a peer whose call to us already
+    // holds the link with its own error 18, "Already connected", rather
+    // than reset that link (packet.net#862). Both ends dialled: the calls
+    // crossed, and the mail goes on the session the peer's call opened.
+
+    [Fact]
+    public async Task ConnectAsync_RefusedBecauseThePeersCallHoldsTheLink_SaysTheCallsCrossed()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var logs = new CapturingLoggerFactory();
+        await using var node = ScriptedNode.Start(open => [new OpenReplyMessage
+        {
+            Id = open.Id, Handle = 0, ErrCode = 18, ErrText = "Already connected to G0DPB-1 from G0DPA-1.",
+        }], ct, loggerFactory: logs);
+
+        var act = () => node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 1, ct);
+
+        (await act.Should().ThrowAsync<PeerLinkAlreadyUpException>())
+            .Which.PeerCallsign.Should().Be("G0DPB-1");
+        logs.Any("the calls crossed").Should().BeTrue("a crossing is recorded as one, as for an open reply that says crossed");
+    }
+
     [Fact]
     public async Task ConnectAsync_OtherRefusals_StayErrors()
     {
@@ -403,13 +426,14 @@ public sealed class Rhpv2OutboundTransportTests
         public Rhpv2OutboundTransport Transport { get; private set; } = null!;
 
         public static ScriptedNode Start(Func<OpenMessage, RhpMessage[]> onOpen, CancellationToken ct,
-            Func<StatusMessage, RhpMessage[]>? onStatus = null, TimeSpan? linkUpWait = null)
+            Func<StatusMessage, RhpMessage[]>? onStatus = null, TimeSpan? linkUpWait = null,
+            ILoggerFactory? loggerFactory = null)
         {
             var node = new ScriptedNode();
             node.listener.Start();
             node.Transport = new Rhpv2OutboundTransport(
                 "127.0.0.1", ((System.Net.IPEndPoint)node.listener.LocalEndpoint).Port,
-                NullLogger<Rhpv2OutboundTransport>.Instance)
+                loggerFactory is null ? NullLogger<Rhpv2OutboundTransport>.Instance : new Logger<Rhpv2OutboundTransport>(loggerFactory))
             {
                 LinkUpWait = linkUpWait ?? TimeSpan.FromMinutes(5),
             };
