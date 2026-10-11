@@ -207,14 +207,15 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                 $"the last link to {route.DialCallsign} is still closing"), sw.Elapsed, ct);
             return;
         }
-        catch (PeerLinkAlreadyUpException ex)
+        catch (PeerLinkAlreadyUpException ex) when (ex.HeldByPeersCall == true)
         {
             // The calls crossed: the peer's call to us already holds the
             // link, so the node refused ours rather than reset it. Nothing
             // went on air and nothing failed. The message stays queued, with
             // no cooldown, and the forwarder hands it to the session the
             // peer's call opened once that session is established, which
-            // wakes it.
+            // wakes it. Held by anything else (a console, another app, or
+            // nobody has looked), it's a failed dial like any other, below.
             logger.LogInformation("Deferring {0}: {1}; it goes on that session", first.Id, ex.Message);
             await batch.CompleteAsync(first, BackhaulSendResult.Defer(ex.Message), sw.Elapsed, ct);
             return;

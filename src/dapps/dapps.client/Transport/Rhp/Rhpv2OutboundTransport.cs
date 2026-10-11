@@ -35,10 +35,11 @@ namespace dapps.client.Transport.Rhp;
 /// dialling, or the link was already up. Then no prompt is coming, and
 /// <see cref="IDappsConnection.CrossedCall"/> says so. XRouter never
 /// sends the key, and without it the session waits for a prompt as before.
-/// When the peer's call had already brought the link up before our open
-/// got there, pdn (0.65.0 on) refuses the open with its error 18 instead,
-/// and the connect throws <see cref="PeerLinkAlreadyUpException"/>: the
-/// calls crossed, and the mail goes on the session the peer's call opened.
+/// When something at the node already holds the link to the peer as our
+/// open gets there, pdn (0.65.0 on) refuses the open with its error 18
+/// instead, and the connect throws <see cref="PeerLinkAlreadyUpException"/>.
+/// That may be the peer's call to us (the calls crossed) or a console or
+/// another app; this transport can't tell, and leaves it to the caller.
 /// </summary>
 public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
 {
@@ -225,12 +226,12 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
             {
                 // pdn's own error: the link to the peer was already up when
                 // the open got there, held by an accept (the peer's call to
-                // us) or a console, so it refuses rather than reset it. Both
-                // ends dialled: the calls crossed, and our mail goes on the
-                // session the peer's call opened.
+                // us) or a console (a sysop, or another app on this
+                // callsign), so it refuses rather than reset it. Which one,
+                // only the caller can tell: it knows DAPPS's own sessions.
                 logger.LogInformation(
-                    "RHP: the node refused {local}->{remote} on port {p} (error {code} '{text}'): the link was already up, held by {remote}'s call to us, so the calls crossed; our mail goes on that session",
-                    localCallsign, remoteCallsign, portName, ex.ErrorCode, ex.ErrorText, remoteCallsign);
+                    "RHP: the node refused {local}->{remote} on port {p} (error {code} '{text}'): it has the link up already, held by something other than this call",
+                    localCallsign, remoteCallsign, portName, ex.ErrorCode, ex.ErrorText);
                 throw new PeerLinkAlreadyUpException(localCallsign, remoteCallsign, portName);
             }
             handle = reply.Handle;

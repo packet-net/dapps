@@ -346,13 +346,13 @@ public sealed class Rhpv2OutboundTransportTests
             .Which.Message.Should().Contain("G0DPA-1->G0DPB-1 on port 2").And.Contain(text);
     }
 
-    // pdn (0.65.0 on) refuses an open to a peer whose call to us already
-    // holds the link with its own error 18, "Already connected", rather
-    // than reset that link (packet.net#862). Both ends dialled: the calls
-    // crossed, and the mail goes on the session the peer's call opened.
+    // pdn (0.65.0 on) refuses an open with its own error 18, "Already
+    // connected", when something at the node already holds the link to the
+    // peer: the peer's call to us (the calls crossed), or a console or
+    // another app. This transport can't tell which, so it says neither.
 
     [Fact]
-    public async Task ConnectAsync_RefusedBecauseThePeersCallHoldsTheLink_SaysTheCallsCrossed()
+    public async Task ConnectAsync_RefusedAsAlreadyConnected_SaysTheLinkIsHeld_WithoutClaimingACrossing()
     {
         var ct = TestContext.Current.CancellationToken;
         var logs = new CapturingLoggerFactory();
@@ -363,9 +363,10 @@ public sealed class Rhpv2OutboundTransportTests
 
         var act = () => node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 1, ct);
 
-        (await act.Should().ThrowAsync<PeerLinkAlreadyUpException>())
-            .Which.PeerCallsign.Should().Be("G0DPB-1");
-        logs.Any("the calls crossed").Should().BeTrue("a crossing is recorded as one, as for an open reply that says crossed");
+        var thrown = (await act.Should().ThrowAsync<PeerLinkAlreadyUpException>()).Which;
+        thrown.PeerCallsign.Should().Be("G0DPB-1");
+        thrown.HeldByPeersCall.Should().BeNull("only the caller knows whether the peer's call reached DAPPS");
+        logs.Any("the calls crossed").Should().BeFalse("it may be a console or another app holding the link");
     }
 
     [Fact]

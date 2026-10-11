@@ -112,11 +112,11 @@ public sealed class Dappsv1SessionBackhaulTests
     [Fact]
     public async Task SendAsync_ThePeersCallHoldsTheLink_DefersWithoutAFailure()
     {
-        // pdn refused the dial (its error 18) because the peer's call to us
-        // already holds the link: the calls crossed, and the message goes on
-        // the session that call opened. Nothing went on air, nothing failed.
+        // The node refused the dial (pdn's error 18) because the peer's call
+        // to us already holds the link: the calls crossed, and the message
+        // goes on the session that call opened. Nothing failed.
         var sb = new Dappsv1SessionBackhaul(
-            new ThrowingTransport(new PeerLinkAlreadyUpException("N0SRC", "N0DEST-3", "2")), NullLoggerFactory.Instance);
+            new ThrowingTransport(new PeerLinkAlreadyUpException("N0SRC", "N0DEST-3", "2", heldByPeersCall: true)), NullLoggerFactory.Instance);
 
         var result = await sb.SendAsync(
             new BackhaulMessage("mid0001", "app@N0DEST", null, null, "hi"u8.ToArray()),
@@ -126,6 +126,26 @@ public sealed class Dappsv1SessionBackhaulTests
 
         result.Accepted.Should().BeFalse();
         result.Deferred.Should().BeTrue("a crossed call is no reason to back off from the peer");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(null)]
+    public async Task SendAsync_TheLinkHeldBySomethingElse_IsAFailedDial(bool? heldByPeersCall)
+    {
+        // A console or another app holds the link (or nobody has looked): no
+        // session of ours will take the message, so it's an ordinary failure.
+        var sb = new Dappsv1SessionBackhaul(
+            new ThrowingTransport(new PeerLinkAlreadyUpException("N0SRC", "N0DEST-3", "2", heldByPeersCall)), NullLoggerFactory.Instance);
+
+        var result = await sb.SendAsync(
+            new BackhaulMessage("mid0001", "app@N0DEST", null, null, "hi"u8.ToArray()),
+            new BackhaulRoute("N0DEST-3", BearerPort: 1),
+            "N0SRC",
+            CancellationToken.None);
+
+        result.Accepted.Should().BeFalse();
+        result.Deferred.Should().BeFalse("the failure counts against the route and starts a cooldown");
     }
 
     private sealed class ClosingLinkTransport : IDappsOutboundTransport

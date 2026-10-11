@@ -968,6 +968,74 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         (await database.GetPendingOutboundMessages()).Should().BeEmpty();
     }
 
+    // pdn refuses a dial with "Already connected" (its RHPv2 error 18) when
+    // something at the node already holds the link to the peer: the peer's
+    // own call to us, when the calls crossed, or a console or another app.
+    // Only the first is a crossing; the second is a failed dial.
+
+    [Fact]
+    public async Task DoRun_AlreadyConnected_AndThePeersCallReachesUs_IsACrossing_SoNoCooldownStarts()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        var backoff = new OutboundDestinationBackoff();
+        await using var node = new AlreadyConnectedRhpNode();
+        // The peer's call reaches our listener a moment after the refusal.
+        var accepted = new TaskCompletionSource<PeerSessionLease>(TaskCreationOptions.RunContinuationsAsynchronously);
+        node.OnOpen = open => _ = Task.Run(async () =>
+        {
+            await Task.Delay(200, ct);
+            accepted.SetResult(peers.Acquire("N0DEST", "inbound"));
+        }, ct);
+        var m = MakeManager(RhpBackhaul(node, peers, TimeSpan.FromSeconds(5)), backoff, peers);
+        InsertMessage(id: "cross18", ttl: null, createdAt: DateTime.UtcNow);
+
+        await m.DoRun(ct);
+
+        node.Opens.Should().Be(1);
+        (await database.GetPendingOutboundMessages()).Should().ContainSingle(x => x.Id == "cross18",
+            "it waits for the peer's session, which takes it");
+        backoff.IsInCooldown("N0DEST", out _).Should().BeFalse("the calls crossed: nothing failed");
+        (await accepted.Task).Dispose();
+    }
+
+    [Fact]
+    public async Task DoRun_AlreadyConnected_AndNoSessionReachesUs_IsAFailedDial_WithACooldown_AndNoRedialBeforeIt()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        var backoff = new OutboundDestinationBackoff();
+        await using var node = new AlreadyConnectedRhpNode();
+        var m = MakeManager(RhpBackhaul(node, peers, TimeSpan.FromMilliseconds(300)), backoff, peers);
+        InsertMessage(id: "held18", ttl: null, createdAt: DateTime.UtcNow);
+
+        await m.DoRun(ct);
+
+        backoff.IsInCooldown("N0DEST", out _).Should().BeTrue("a console or another app holds the link, so the dial failed");
+        (await database.GetPendingOutboundMessages()).Should().ContainSingle(x => x.Id == "held18");
+
+        await m.DoRun(ct);
+
+        node.Opens.Should().Be(1, "nothing redials the peer before its cooldown is out");
+    }
+
+    /// <summary>The real session backhaul, dialling over RHPv2 through the
+    /// real outbound transport to <paramref name="node"/>.</summary>
+    private static Dappsv1SessionBackhaul RhpBackhaul(AlreadyConnectedRhpNode node, PeerSessionRegistry peers, TimeSpan peersCallWait)
+    {
+        var options = new StaticOptionsMonitor<SystemOptions>(new SystemOptions
+        {
+            Callsign = "N0CALL",
+            NodeBearer = "rhpv2",
+            NodeHost = "127.0.0.1",
+            RhpPort = node.Port,
+        });
+        var transport = new BearerSwitchingOutboundTransport(
+            options, NullLoggerFactory.Instance, dapps.client.Tx.AlwaysOpenTxGate.Instance, TimeProvider.System,
+            linkSettleDelay: TimeSpan.Zero, peerSessions: peers, linkSettleSpread: TimeSpan.Zero, peersCallWait: peersCallWait);
+        return new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
+    }
+
     private OutboundMessageManager MakeManager(PeerSessionRegistry peers, OutboundDestinationBackoff? backoff = null) =>
         new(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
             destinationBackoff: backoff, peerSessions: peers);

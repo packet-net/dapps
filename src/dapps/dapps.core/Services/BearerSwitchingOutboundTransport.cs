@@ -30,8 +30,18 @@ public sealed class BearerSwitchingOutboundTransport(
     TimeProvider timeProvider,
     TimeSpan? linkSettleDelay = null,
     PeerSessionRegistry? peerSessions = null,
-    TimeSpan? linkSettleSpread = null) : IDappsOutboundTransport
+    TimeSpan? linkSettleSpread = null,
+    TimeSpan? peersCallWait = null) : IDappsOutboundTransport
 {
+    /// <summary>
+    /// How long to wait, after the node refuses a dial because something
+    /// already holds the link to the peer (pdn's "Already connected"), for
+    /// the peer's own call to reach our listener. The accept and the
+    /// refusal reach DAPPS within a few hundred ms of each other, in either
+    /// order; a link a console or another app holds never brings one.
+    /// </summary>
+    public static readonly TimeSpan DefaultPeersCallWait = TimeSpan.FromSeconds(5);
+
     /// <summary>
     /// Minimum gap between releasing a link to a given (bearer, local,
     /// remote, port) and dialling it again.
@@ -124,6 +134,39 @@ public sealed class BearerSwitchingOutboundTransport(
                 var agw = new AgwOutboundTransport(opts.NodeHost, opts.AgwPort, loggerFactory, txGate);
                 inner = await agw.ConnectAsync(localCallsign, remoteCallsign, bearerPort, stoppingToken);
             }
+        }
+        catch (PeerLinkAlreadyUpException ex) when (ex.HeldByPeersCall is null)
+        {
+            // The node already has the link to the peer up, held by
+            // something other than our call. If that's the peer's own call
+            // to us, its session reaches our listener about now: the calls
+            // crossed, and the mail goes on that session. If nothing comes,
+            // a console or another app holds the link, and this is an
+            // ordinary failed dial.
+            bool peersCall;
+            try
+            {
+                peersCall = peerSessions is not null
+                    && await peerSessions.WaitForInboundAsync(remoteCallsign, peersCallWait ?? DefaultPeersCallWait, timeProvider, stoppingToken);
+            }
+            finally
+            {
+                lease?.Dispose();
+                settle.RecordRelease(key);
+            }
+            if (peersCall)
+            {
+                logger.LogInformation(
+                    "Outbound: the link to {peer} is already up, held by its call to us: the calls crossed; our mail goes on that session",
+                    remoteCallsign);
+            }
+            else
+            {
+                logger.LogWarning(
+                    "Outbound: the node says the link to {peer} is already up, but not to DAPPS (a console or another app holds it)",
+                    remoteCallsign);
+            }
+            throw new PeerLinkAlreadyUpException(ex.LocalCallsign, ex.PeerCallsign, ex.Port, heldByPeersCall: peersCall);
         }
         catch
         {

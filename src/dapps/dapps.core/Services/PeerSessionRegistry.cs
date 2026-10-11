@@ -199,6 +199,41 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null)
         }
     }
 
+    /// <summary>
+    /// True once a session the peer opened with us (an inbound lease) is
+    /// open, at once if one already is; false if none is by the time
+    /// <paramref name="within"/> has passed.
+    ///
+    /// Why: pdn refuses our dial with "Already connected" (its RHPv2 error
+    /// 18) when something at the node already holds the link to the peer.
+    /// When that is the peer's own call to us, the calls crossed, and the
+    /// accept reaches our listener around the same moment as the refusal
+    /// reaches the dial, in either order. When it is a console or another
+    /// app, no session ever reaches us.
+    /// </summary>
+    public async Task<bool> WaitForInboundAsync(string peerCallsign, TimeSpan within, TimeProvider timeProvider, CancellationToken ct)
+    {
+        using var timeout = new CancellationTokenSource(within, timeProvider);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+        while (true)
+        {
+            Task next;
+            lock (gate)
+            {
+                if (open.TryGetValue(peerCallsign, out var leases) && leases.Any(l => l.Direction == "inbound")) return true;
+                next = changed.Task;
+            }
+            try
+            {
+                await next.WaitAsync(linked.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                return false;
+            }
+        }
+    }
+
     /// <summary>Completes once no session with the peer is open;
     /// immediately if none is. Exposed for tests, which otherwise have
     /// no sleep-free way to wait for a handler's teardown to release
