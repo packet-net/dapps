@@ -19,10 +19,10 @@ namespace dapps.core.tests.Integration;
 /// </summary>
 internal static class PdnNode
 {
-    /// <summary>ghcr.io/packet-net/packet.net at node-v0.65.0 (the multi-arch index digest), pinned so a new
+    /// <summary>ghcr.io/packet-net/packet.net at node-v0.67.0 (the multi-arch index digest), pinned so a new
     /// build can't change results unnoticed. Refresh: pull the image at the
     /// release tag and take its digest.</summary>
-    public const string Image = "ghcr.io/packet-net/packet.net@sha256:18485d48a174cc05f453e8ad94e03140fba5b50ae2cf8fb00db2cc75b07652e9";
+    public const string Image = "ghcr.io/packet-net/packet.net@sha256:f44d2b2666ba7f2718a332ed7cd865a511e300bb17bcd3f59fde95f124fd32d9";
 
     /// <summary>
     /// The node's seed config. <paramref name="portYaml"/> is one entry of
