@@ -6,7 +6,7 @@ How a change on master becomes a release that nodes install. `.github/workflows/
 2. **Merge it, then tag the merge commit:** `git tag v0.x.y && git push origin v0.x.y`. The tag must match the props file, or the release workflow's `version` job fails.
 3. **The tag runs release.yml.** It tests, builds the binaries and the `.deb`s, creates the GitHub Release, and tells packet-net/apt to reindex.
    - If the test step fails three attempts running for reasons outside DAPPS, re-run the failed job (`gh run rerun <id> --failed`) rather than skipping tests.
-   - The simulated-radio scenarios are left out of this gate while the comment in release.yml says so.
+   - The gate runs the whole suite, the simulated-radio scenarios on net-sim included, as CI does on every PR, so a test run takes about 30 minutes an attempt. They were left out from 2026-09-28 until pdn's crossed-call fixes and DAPPS's handling of pdn's "Already connected" were in.
 4. **Replace the generated release notes** with written ones (`gh release edit v0.x.y --notes-file ...`). Lead with what users notice, say whether every node has to upgrade together, and list known issues.
 5. **Check apt** carries the new version: `curl -s https://packet-net.github.io/apt/Packages`, under `Package: dapps`.
 6. **Re-pin pdn's app catalogue.** pdn's built-in list of installable apps pins DAPPS by version and checksum, in packet-net/packet.net `catalog/apps.yaml`.

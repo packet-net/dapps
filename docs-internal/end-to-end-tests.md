@@ -56,7 +56,7 @@ The tests above use AXIP, so frames cost no airtime. `NetSimTwoBpqFixture` puts 
 DAPPS A -AGW- BPQ-A -KISS- [net-sim: modem ~ radio ~ channel ~ radio ~ modem] -KISS- BPQ-B -AGW- DAPPS B
 ```
 
-Frames take real airtime, with TX delay, turnarounds and a shared channel. The radios are half duplex: while one transmits it hears nothing, so when both ends transmit at once, both transmissions are lost. The image is pinned by digest in `NetSimFixtures.cs` (net-sim v0.4.0, pdn-soundmodem 0.80.0); CI pulls whatever that pins.
+Frames take real airtime, with TX delay, turnarounds and a shared channel. The radios are half duplex: while one transmits it hears nothing, so when both ends transmit at once, both transmissions are lost. The image is pinned by digest in `NetSimFixtures.cs` (net-sim v0.4.0, pdn-soundmodem 0.80.0); CI pulls whatever that pins. CI runs these scenarios on every PR, and the release gate runs them too. They were left out of the gate from 2026-09-28 to 2026-10-11, while linbpq's start-up crash and pdn's crossed-call bugs were open (below); the soaks and the BPQ experiments skip themselves there, as everywhere, unless asked for.
 
 `ChannelLog` records when each radio is on air, to about 10 ms, from what each simulated receiver hears. On v0.4.0 that is still real airtime: a single 136-byte frame at 1200 baud with 150 ms of TX delay shows as 1.20 s, which is its 0.96 s of data, the TX delay and the TNC's 0.1 s tail. The reports now list every transmission, with the quiet before it or how far it overlapped the other side's.
 
