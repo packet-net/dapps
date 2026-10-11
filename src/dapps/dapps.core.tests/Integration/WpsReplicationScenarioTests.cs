@@ -338,7 +338,12 @@ public sealed class WpsReplicationScenarioQpsk3600Tests(NetSimQpsk3600Fixture fi
 // node-v0.55.2, which couldn't say). At QPSK the two SABMEs still cross on
 // the air in some runs (1 of 3 on node-v0.62.0, both sent before either
 // node had heard the other's), which no pdn fix removes, so 2 connections
-// is a normal run there and the class allows 3, for a lost SABM or UA.
+// is a normal run there. The class allowed 3 while a dial could miss or
+// reset a link that was already up (packet.net#862 and #867); the one CI
+// run that took 3 was that, on node-v0.57.0. From node-v0.65.0 on, in 20
+// CI runs and 3 on node-v0.67.0, it took 1 connection in 20 and 2 in 3
+// (SABMEs crossing on the air, or lost to collisions), never 3, so it
+// allows 2 like the other classes.
 [Collection("net-sim pdn AFSK 1200")]
 [Trait("Category", "Integration")]
 public sealed class WpsReplicationScenarioPdnAfsk1200Tests(NetSimPdnAfsk1200Fixture fixture) : WpsReplicationScenarioTests(fixture)
@@ -352,6 +357,5 @@ public sealed class WpsReplicationScenarioPdnAfsk1200Tests(NetSimPdnAfsk1200Fixt
 public sealed class WpsReplicationScenarioPdnQpsk3600Tests(NetSimPdnQpsk3600Fixture fixture) : WpsReplicationScenarioTests(fixture)
 {
     protected override int FramesPerMessage => 6;
-    protected override int MaxConnections => 3;
     protected override TimeSpan TimeLimit => TimeSpan.FromSeconds(45);
 }
