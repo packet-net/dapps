@@ -86,8 +86,11 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         // frame it received from us. After a keepalive that is 0.
         await bpq.WriteAsync(ct, FakeAgwSocket.Disconnect(Remote, Local, port: 0));
         await h.Logs.WaitForAsync("session closed", ct);
-        h.Logs.Any("carried port 0 but the session was on port 1").Should().BeTrue(
-            "the port fallback is logged so a field log shows which rule matched");
+        // The port fallback is logged so a field log shows which rule
+        // matched. The service writes that line just after "session
+        // closed", on its own thread, so wait for it too: checking at once
+        // raced the service on a slow runner (3 to 6 runs in 50 under load).
+        await h.Logs.WaitForAsync("carried port 0 but the session was on port 1", ct);
 
         // The pair is free again: the redial is a clean new session, not
         // a stale-entry rescue.
