@@ -127,6 +127,8 @@ In 0.43.0: #209 to #212, #214, #215 and #217, the follow-ups to the exchange. #2
 
 In 0.46.1: #230. Over RHPv2, pdn refuses a dial with errCode 18 ("Already connected") when something at the node already holds the link to that peer. If the peer's own call reaches DAPPS's listener within 5 s, the calls crossed, and the message goes on that session with no cooldown, as for any spotted crossing; otherwise a console or another app holds the link, and the dial is an ordinary failure with a cooldown. Before, DAPPS logged a failed send and, in the console case, redialled every forwarder tick until the message expired. Also: the simulated-radio scenarios are back in the release gate (pdn 0.67.0, linbpq master-edcc798), XRouter is pinned by digest because the image published after 10 October stopped answering the AGW version handshake (#231), and a racing seam test waits for the line it checks.
 
+In 0.46.2: #232. The `.deb` now installs on Ubuntu 26.04. It named ICU packages only up to libicu76, and 26.04 ships libicu78, so apt refused it with no installable choice. The list now runs to libicu80, ahead of what any distro ships, and CI installs the package into clean Debian 12 and 13 and Ubuntu 22.04, 24.04 and 26.04 images and starts the daemon in each. No code change; nodes that installed fine need not upgrade.
+
 ### A7. AGW for both directions *(done)*
 
 Replaces the BPQ Apps Interface (HOST/CMDPORT TCP-bridge) inbound path with AGW dispatch. dapps now uses one BPQ surface - AGW - for both inbound and outbound, multiplexed over a single TCP connection.

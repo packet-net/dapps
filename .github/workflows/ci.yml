@@ -194,6 +194,35 @@ jobs:
           dpkg-deb --info ./artifacts/*.deb
           dpkg-deb --contents ./artifacts/*.deb | sed -n '1,40p'
 
+      - name: Install it on every distro in scope
+        # The runner is one Ubuntu release; operators run several. Depends names ICU by
+        # versioned package, and when a new distro moved past the list apt refused the
+        # package outright (#232, Ubuntu 26.04 and libicu78). So install into each clean
+        # image and start the daemon there. `dapps --version` alone proves nothing here: it
+        # exits before .NET loads ICU, so this waits for /Health to answer instead.
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' src/dapps/Directory.Build.props | head -1)"
+          for image in debian:bookworm debian:trixie ubuntu:22.04 ubuntu:24.04 ubuntu:26.04; do
+            echo "::group::$image"
+            docker run --rm -v "$PWD/artifacts:/a:ro" -e version="$version" "$image" bash -euc '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq "/a/dapps_${version}_amd64.deb" curl >/dev/null
+              dpkg -l | grep -o "libicu[0-9]*" | sort -u
+              cd /tmp
+              /usr/bin/dapps >/tmp/run.log 2>&1 &
+              for i in $(seq 1 60); do
+                curl -sS -o /tmp/health.json http://127.0.0.1:5000/Health 2>/dev/null && break
+                sleep 1
+              done
+              grep -qF "$version" /tmp/health.json || { cat /tmp/run.log; exit 1; }
+              cat /tmp/health.json; echo
+            ' || { echo "::error::the package does not install and start on $image"; exit 1; }
+            echo "::endgroup::"
+          done
+
       - name: Install it and check it boots
         # Same smoke test release.yml runs, minus the version assertion against a tag.
         timeout-minutes: 5

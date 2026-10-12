@@ -200,7 +200,14 @@ echo "floors for $ARCH: libc6 >= $GLIBC_MIN, libstdc++6 >= $STDCXX_MIN (GLIBCXX_
 # them newest-first: bookworm resolves libicu72, bullseye falls through to libicu67, and a
 # machine that already has any of them (almost all do - ICU is pulled in very widely) sees
 # the dependency as already satisfied and installs nothing.
-ICU_DEP="libicu76 | libicu74 | libicu72 | libicu71 | libicu70 | libicu69 | libicu68 | libicu67 | libicu66 | libicu63"
+#
+# The list runs AHEAD of what any distro ships today. Ubuntu 26.04 moved to libicu78, and
+# a list that stopped at 76 left apt with no installable choice at all (#232). Naming a
+# package that does not exist yet costs nothing - apt skips it - and .NET probes ICU
+# sonames newest-first well past these, so the next couple of distro releases install
+# without a DAPPS release of their own. The CI deb job installs into the newest images to
+# catch the day this runs out again.
+ICU_DEP="libicu80 | libicu79 | libicu78 | libicu77 | libicu76 | libicu74 | libicu72 | libicu71 | libicu70 | libicu69 | libicu68 | libicu67 | libicu66 | libicu63"
 # libssl3t64 is the time_t-64 rename carried by trixie and noble; libssl3 is bookworm,
 # libssl1.1 bullseye and focal.
 SSL_DEP="libssl3t64 | libssl3 | libssl1.1"
