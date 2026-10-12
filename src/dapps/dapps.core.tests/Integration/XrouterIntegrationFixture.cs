@@ -35,7 +35,11 @@ namespace dapps.core.tests.Integration;
 /// </summary>
 public sealed class XrouterIntegrationFixture : IAsyncLifetime
 {
-    private const string Image = "ghcr.io/packethacking/xrouter:latest";
+    // Pinned by digest, like the other test images, so the tests only move
+    // to a new XRouter on purpose. This is the image CI used up to
+    // 10 October 2026; the one published after it stopped answering the
+    // AGW version handshake (see docs-internal/end-to-end-tests.md).
+    private const string Image = "ghcr.io/packethacking/xrouter@sha256:6a885470e19d5c8ee3033d224a30a8675d5b1957428a832aa89746f37ec0b611";
     private const int InsideAgwPort = 8000;
 
     public string Host => "127.0.0.1";

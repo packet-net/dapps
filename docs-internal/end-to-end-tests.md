@@ -231,3 +231,7 @@ No duplicates or corrupt messages in either pdn run. pdn's links are v2.2, and i
 ## The linbpq image
 
 `m0lte/linbpq` is built from M0LTE/linbpq by its `docker-publish` workflow. The tests pin it by digest in `LinbpqIntegrationFixture.cs`, which CI pulls: `master-edcc798`, built on 29 September 2026 from the fork's master at edcc798, which is 6.0.25.41 with the fix for the start-up crash (#201, M0LTE/linbpq#71). Before that they pinned 6.0.25.41 as built from the `patched` branch (revision 391f7b6c, with debug information and without `_FORTIFY_SOURCE`), and before that took `:latest`, last built in May from 6.0.25.28. When linbpq dies of SIGSEGV or SIGABRT its own handler writes the signal and a backtrace to its output and exits with code 1, so the fixtures' logs (above) show it.
+
+## The XRouter image
+
+`ghcr.io/packethacking/xrouter` is pinned by digest (XrouterIntegrationFixture), like linbpq, net-sim and pdn. Until 10 October 2026 the tests pulled `:latest`. The image published after that (`sha256:13894554...`) never answered the AGW version handshake within the test's 15 s, so `XrouterAgwIntegrationTests` failed every CI attempt on master from 11 October. The pin is the last image that passed (`sha256:6a885470...`). Moving to a newer XRouter means checking what changed in its AGW handshake first.
