@@ -270,7 +270,9 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
         // the next hop knows we've been visited.
         var nextTraversed = traversed.Concat([ctx.LocalCallsign]).ToList();
 
-        var routes = await BuildFloodRoutesAsync(ctx, nextTraversed, ct);
+        // The originator isn't in the traversal record (each transit node
+        // adds itself), so it is kept from the flood separately.
+        var routes = await BuildFloodRoutesAsync(ctx, [.. nextTraversed, message.OriginatorCallsign], ct);
         if (routes.Count == 0)
         {
             logger.LogDebug(
@@ -327,9 +329,10 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
     }
 
     /// <summary>Build the list of neighbours to re-flood to,
-    /// excluding the neighbour each hop in <paramref name="traversed"/>
-    /// resolves to (so the message doesn't loop back to a node it's
-    /// already visited). A hop is the exact call+SSID of a node that
+    /// excluding the neighbour each callsign in <paramref name="traversed"/>
+    /// (the hops so far, and for a flood in transit its originator)
+    /// resolves to, so the message doesn't loop back to a node it's
+    /// already visited. A hop is the exact call+SSID of a node that
     /// passed the flood on, so another SSID of its callsign still gets
     /// it (#242); a neighbour row entered without the right SSID stands
     /// in for it, as in routing. Local callsign is also implicitly
@@ -339,6 +342,7 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
     {
         var neighbours = await ctx.GetNeighboursAsync(ct);
         var visited = traversed
+            .Where(h => !string.IsNullOrWhiteSpace(h))
             .Select(h => CallsignMatch.Best(neighbours, n => n.Callsign, h, ctx.LocalCallsign))
             .OfType<DbNeighbour>()
             .ToHashSet();

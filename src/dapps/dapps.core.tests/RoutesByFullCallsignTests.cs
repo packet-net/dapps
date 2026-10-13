@@ -175,16 +175,17 @@ public sealed class RoutesByFullCallsignTests : IAsyncLifetime
     [Fact]
     public async Task Learning_SkipsOnlyASingleHopFromTheExactStation()
     {
-        // G6FCI-8 handed us mail G6FCI-7 wrote: that is a route to G6FCI-7
-        // through G6FCI-8, not a single hop.
+        // G6FCI-8 handed us mail G6FCI-5 wrote: that is a route to G6FCI-5
+        // through G6FCI-8, not a single hop. (Not G6FCI-7: 7 and 8 are
+        // also how BPQ presents each other, which the next tests cover.)
         await database.UpsertNeighbour(Eight, bearerPort: 1);
         var passive = Passive();
 
         await passive.ObserveInboundAsync(From(Eight), Eight, context, ct);
-        await passive.ObserveInboundAsync(From(Seven), Eight, context, ct);
+        await passive.ObserveInboundAsync(From("G6FCI-5"), Eight, context, ct);
 
         (await database.GetLearnedRoutesAsync()).Select(r => (r.DestinationCallsign, r.NextHopCallsign))
-            .Should().Equal((Seven, Eight));
+            .Should().Equal(("G6FCI-5", Eight));
     }
 
     [Fact]
@@ -212,6 +213,22 @@ public sealed class RoutesByFullCallsignTests : IAsyncLifetime
         await database.UpsertNeighbour(Eight, bearerPort: 1);
 
         await Passive().ObserveInboundAsync(From("G0FAR-7"), "G6FCI-6", context, ct);
+
+        (await database.GetLearnedRoutesAsync()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Learning_AtARelay_TakesASsidInvertedLinkSourceAsTheOriginatorItself()
+    {
+        // The relay has G6FCI-7 as a neighbour but not G6FCI-8. G6FCI-8
+        // calls through a BPQ node, which inverts its SSID (15 - 8 = 7), so
+        // its own mail arrives from "G6FCI-7". That is a single hop from
+        // G6FCI-8, not a route to it via G6FCI-7: learning (and gossiping)
+        // one would send G6FCI-8's mail to G6FCI-7 and back, as a repeat.
+        await database.UpsertNeighbour(Seven, bearerPort: 1);
+        var passive = Passive();
+
+        await passive.ObserveInboundAsync(From(Eight), Seven, context, ct);
 
         (await database.GetLearnedRoutesAsync()).Should().BeEmpty();
     }
@@ -296,6 +313,39 @@ public sealed class RoutesByFullCallsignTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Flood_FromASibling_ThroughABpqNode_IsNotSentBackToIt()
+    {
+        // G6FCI-8's flood reaches us, G6FCI-7, through a BPQ node, which
+        // inverts its SSID: the link source is our own callsign. The flood
+        // still mustn't go back to its originator.
+        options.CurrentValue.Callsign = Seven;
+        await database.UpsertNeighbour(Eight, bearerPort: 1);
+        await database.UpsertNeighbour("M0OTH-1", bearerPort: 1);
+        var flood = new FloodFallbackAlgorithm(Passive(), NullLogger<FloodFallbackAlgorithm>.Instance);
+
+        var decision = await flood.ResolveAsync(InFlood("chat@M0FAR-1", linkSource: Seven, originator: Eight), context, ct);
+
+        decision.Should().BeOfType<RouteDecision.FloodToNeighbours>()
+            .Which.Routes.Select(r => r.Callsign).Should().Equal("M0OTH-1");
+    }
+
+    [Fact]
+    public async Task MeshCoreFlood_IsNotSentBackToItsOriginator()
+    {
+        // The originator starts a flood with nothing traversed, so the first
+        // node it reaches has only the originator to keep it from.
+        options.CurrentValue.Callsign = Seven;
+        await database.UpsertNeighbour(Eight, bearerPort: 1);
+        await database.UpsertNeighbour("M0OTH-1", bearerPort: 1);
+
+        var decision = await MeshCore().ResolveAsync(
+            InFlood("chat@M0FAR-1", linkSource: Seven, traversed: "", originator: Eight), context, ct);
+
+        decision.Should().BeOfType<RouteDecision.FloodToNeighbours>()
+            .Which.Routes.Select(r => r.Callsign).Should().Equal("M0OTH-1");
+    }
+
+    [Fact]
     public async Task MeshCoreFlood_ThroughG6fci7_IsPassedOnToG6fci8()
     {
         await database.UpsertNeighbour(Seven, bearerPort: 1);
@@ -356,9 +406,10 @@ public sealed class RoutesByFullCallsignTests : IAsyncLifetime
     private static BackhaulMessage From(string originator) =>
         new("abcdef0", "chat@M0US-1", 1L, 600, "x"u8.ToArray(), Originator: originator);
 
-    private static DbMessage InFlood(string destination, string linkSource, string? traversed = null) => new()
+    private static DbMessage InFlood(string destination, string linkSource, string? traversed = null, string originator = "") => new()
     {
         TraversedHopsCsv = traversed,
+        OriginatorCallsign = originator,
         Id = "f100d01",
         Destination = destination,
         Payload = "x"u8.ToArray(),

@@ -52,7 +52,7 @@ public sealed class FloodFallbackAlgorithm(
                 return new RouteDecision.Unreachable();
             }
 
-            var routes = await BuildFloodRoutesAsync(ctx, excludeCallsign: message.SourceCallsign, ct);
+            var routes = await BuildFloodRoutesAsync(ctx, [message.SourceCallsign, message.OriginatorCallsign], ct);
             if (routes.Count == 0)
             {
                 logger.LogDebug("Flood for {0} dropped at this node: no neighbours to re-flood to", message.Id);
@@ -72,7 +72,7 @@ public sealed class FloodFallbackAlgorithm(
             return innerDecision;
         }
 
-        var floodRoutes = await BuildFloodRoutesAsync(ctx, excludeCallsign: null, ct);
+        var floodRoutes = await BuildFloodRoutesAsync(ctx, [], ct);
         if (floodRoutes.Count == 0)
         {
             logger.LogWarning("No route AND no neighbours to flood for {0}; leaving in queue", message.Id);
@@ -98,22 +98,26 @@ public sealed class FloodFallbackAlgorithm(
         => inner.RunAsync(ctx, ct);
 
     /// <summary>Build the list of flood routes from the local
-    /// neighbours table. Optionally skip the neighbour a flood came
-    /// from, to avoid bouncing it straight back to the upstream peer.
-    /// That's the neighbour row the link source maps to as routing picks
-    /// one: the exact call+SSID, so another SSID of the same callsign
-    /// still gets the flood (#242), else a row under the same callsign
-    /// (one entered with another SSID, or a caller that came through a
-    /// BPQ node, which inverts the SSID).</summary>
+    /// neighbours table, skipping the neighbours a flood came from: the
+    /// link source, so it doesn't bounce straight back upstream, and the
+    /// originator. Each is the neighbour row the callsign maps to as
+    /// routing picks one: the exact call+SSID, so another SSID of the
+    /// same callsign still gets the flood (#242), else a row under the
+    /// same callsign (one entered with another SSID, or a caller that
+    /// came through a BPQ node, which inverts the SSID). The originator
+    /// counts on its own because that inversion can make the link
+    /// source our own callsign, which maps to no row at all.</summary>
     private static async Task<IReadOnlyList<BackhaulRoute>> BuildFloodRoutesAsync(
-        IRoutingContext ctx, string? excludeCallsign, CancellationToken ct)
+        IRoutingContext ctx, IReadOnlyList<string> excludeCallsigns, CancellationToken ct)
     {
         var neighbours = await ctx.GetNeighboursAsync(ct);
-        var upstream = excludeCallsign is null
-            ? null
-            : CallsignMatch.Best(neighbours, n => n.Callsign, excludeCallsign, ctx.LocalCallsign);
+        var upstream = excludeCallsigns
+            .Where(c => !string.IsNullOrWhiteSpace(c))
+            .Select(c => CallsignMatch.Best(neighbours, n => n.Callsign, c, ctx.LocalCallsign))
+            .OfType<DbNeighbour>()
+            .ToHashSet();
         return neighbours
-            .Where(n => !ReferenceEquals(n, upstream))
+            .Where(n => !upstream.Contains(n))
             .Select(n => RouteBuilder.FromNeighbour(n, ctx.DefaultBearerPort))
             .ToList();
     }

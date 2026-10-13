@@ -104,6 +104,13 @@ public sealed class PassiveLearningAlgorithm(
         if (string.IsNullOrEmpty(message.Originator)) return;
         if (DestinationParser.SameStation(message.Originator, ctx.LocalCallsign)) return;
         if (DestinationParser.SameStation(message.Originator, linkSourceCallsign)) return;
+        // A link source that is the originator's own callsign with the SSID
+        // inverted is the originator calling through a BPQ node: a single
+        // hop too. Even when a neighbour row has exactly that callsign (on
+        // a relay that knows G6FCI-7 but not G6FCI-8, mail from G6FCI-8
+        // arrives "from G6FCI-7"), a route via that row would send the
+        // originator's mail to the wrong station, and gossip spreads it.
+        if (CallsignMatch.SsidInverted(message.Originator, linkSourceCallsign)) return;
 
         var nextHopNeighbour = CallsignMatch.Best(
             await ctx.GetNeighboursAsync(ct), n => n.Callsign, linkSourceCallsign, ctx.LocalCallsign);
