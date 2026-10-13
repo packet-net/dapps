@@ -1,3 +1,4 @@
+using dapps.core.Routing;
 using System.Collections.Concurrent;
 using dapps.client.Backhaul;
 
@@ -27,16 +28,17 @@ public sealed class SessionDirectory(ForwarderWakeup? forwarderWakeup = null)
 
     /// <summary>
     /// The peer with an established session whose callsign is the one
-    /// <paramref name="destination"/> (<c>app@CALL</c>) is addressed to,
-    /// SSIDs aside; null when there is none. Mail for a node that has
-    /// called us can go on its session even when we have no route to it.
+    /// <paramref name="destination"/> (<c>app@CALL</c>) is addressed to:
+    /// the exact call+SSID if it has a session, else one under the same
+    /// base callsign that isn't a sibling of ours (#239); null when there
+    /// is none. Mail for a node that has called us can go on its session
+    /// even when we have no route to it.
     /// </summary>
-    public string? CallerFor(string destination)
+    public string? CallerFor(string destination, string ourCallsign)
     {
         var at = destination.LastIndexOf('@');
         if (at < 0 || at == destination.Length - 1) return null;
-        var baseCall = destination[(at + 1)..].Split('-')[0];
-        return sessions.Keys.FirstOrDefault(peer => string.Equals(peer.Split('-')[0], baseCall, StringComparison.OrdinalIgnoreCase));
+        return CallsignMatch.Best(sessions.Keys, peer => peer, destination[(at + 1)..], ourCallsign);
     }
 
     /// <summary>

@@ -24,11 +24,14 @@ public class Database(
         var connection = DbInfo.GetAsyncConnection();
         // Outbound = destined for a remote node and not yet forwarded.
         // "Local" is our own callsign, SSID included (DestinationParser.IsLocal).
+        // A row an app here has acked never goes: before 0.46.3 mail for
+        // another SSID of ours was taken as local (#239), and that old,
+        // already delivered mail must not start moving after an upgrade.
         // Oldest first, so a batch for one neighbour goes out in the order
         // its messages were queued.
         var (local, local0) = DestinationParser.LocalLikePatterns(options.CurrentValue.Callsign);
         var rows = await connection.QueryAsync<DbMessage>(
-            "select * from messages where forwarded=0 and not (destination like ? escape '\\' or destination like ? escape '\\') order by CreatedAt asc;",
+            "select * from messages where forwarded=0 and locallydelivered=0 and not (destination like ? escape '\\' or destination like ? escape '\\') order by CreatedAt asc;",
             local, local0);
         return rows;
     }
@@ -56,7 +59,7 @@ public class Database(
         var connection = DbInfo.GetAsyncConnection();
         var (local, local0) = DestinationParser.LocalLikePatterns(options.CurrentValue.Callsign);
         var rows = await connection.QueryAsync<DbMessage>(
-            "select * from messages where forwarded=0 and CreatedAt >= ? and not (destination like ? escape '\\' or destination like ? escape '\\') order by CreatedAt asc;",
+            "select * from messages where forwarded=0 and locallydelivered=0 and CreatedAt >= ? and not (destination like ? escape '\\' or destination like ? escape '\\') order by CreatedAt asc;",
             since, local, local0);
         return rows;
     }
@@ -349,7 +352,7 @@ public class Database(
         var connection = DbInfo.GetAsyncConnection();
         var (local, local0) = DestinationParser.LocalLikePatterns(options.CurrentValue.Callsign);
         return await connection.ExecuteScalarAsync<int>(
-            "select count(*) from messages where forwarded=0 and not (destination like ? escape '\\' or destination like ? escape '\\');",
+            "select count(*) from messages where forwarded=0 and locallydelivered=0 and not (destination like ? escape '\\' or destination like ? escape '\\');",
             local, local0);
     }
 

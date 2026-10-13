@@ -20,9 +20,11 @@ public static class DestinationParser
     /// </summary>
     public static bool IsLocal(string destination, string localCallsign)
     {
-        var (_, dst) = Parse(destination);
-        if (dst.Length == 0) return false;
-        return SameStation(dst, localCallsign);
+        // The callsign follows the last '@', as the queue's SQL patterns
+        // (LocalLikePatterns) read it, so the two always agree.
+        var at = destination.LastIndexOf('@');
+        if (at < 0 || at == destination.Length - 1) return false;
+        return SameStation(destination[(at + 1)..], localCallsign.Trim());
     }
 
     /// <summary>True when two callsigns name the same station: same call,
@@ -39,7 +41,7 @@ public static class DestinationParser
     /// </summary>
     public static (string, string) LocalLikePatterns(string localCallsign, string? app = null)
     {
-        var call = EscapeLike(Normalise(localCallsign));
+        var call = EscapeLike(Normalise(localCallsign.Trim()));
         var prefix = app is null ? "%@" : EscapeLike(app) + "@";
         return call.Contains('-')
             ? (prefix + call, prefix + call)
@@ -47,10 +49,7 @@ public static class DestinationParser
     }
 
     private static string Normalise(string callsign)
-    {
-        var c = callsign.Trim();
-        return c.EndsWith("-0", StringComparison.Ordinal) ? c[..^2] : c;
-    }
+        => callsign.EndsWith("-0", StringComparison.Ordinal) ? callsign[..^2] : callsign;
 
     private static string EscapeLike(string s)
         => s.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");

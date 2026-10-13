@@ -1,4 +1,5 @@
 using AwesomeAssertions;
+using dapps.client.Backhaul;
 using dapps.core.Controllers;
 using dapps.core.Models;
 using dapps.core.Routing;
@@ -154,6 +155,93 @@ public sealed class SameBaseCallsignTests : IAsyncLifetime
 
         decision.Should().BeOfType<RouteDecision.NextHop>().Which.Route.Callsign.Should().Be(Sibling);
     }
+
+    [Theory]
+    [InlineData("chat@G6FCI-9")]
+    [InlineData("chat@G6FCI")]
+    public async Task Routing_NeverFallsBackToASiblingOfOurs(string destination)
+    {
+        // G6FCI-8 stood in for G6FCI-9 would hand it straight back to us
+        // under the same rule, and the mail would die as a repeat.
+        await database.UpsertNeighbour(Sibling, bearerPort: 1);
+        var algorithm = new StaticRoutingAlgorithm(NullLogger<StaticRoutingAlgorithm>.Instance);
+        var context = new DatabaseRoutingContext(database, options);
+
+        var decision = await algorithm.ResolveAsync(
+            new DbMessage { Id = "0000002", Destination = destination, Payload = "x"u8.ToArray() },
+            context, TestContext.Current.CancellationToken);
+
+        decision.Should().BeOfType<RouteDecision.Unreachable>();
+    }
+
+    [Fact]
+    public async Task Routing_StillFallsBackToAnotherSsidOfSomeoneElse()
+    {
+        await database.UpsertNeighbour("M0ABC-1", bearerPort: 1);
+        var algorithm = new StaticRoutingAlgorithm(NullLogger<StaticRoutingAlgorithm>.Instance);
+        var context = new DatabaseRoutingContext(database, options);
+
+        var decision = await algorithm.ResolveAsync(
+            new DbMessage { Id = "0000003", Destination = "chat@M0ABC-7", Payload = "x"u8.ToArray() },
+            context, TestContext.Current.CancellationToken);
+
+        decision.Should().BeOfType<RouteDecision.NextHop>().Which.Route.Callsign.Should().Be("M0ABC-1");
+    }
+
+    [Fact]
+    public void ASessionFromTheExactStation_IsPreferred_AndASiblingOfOursIsNeverUsed()
+    {
+        var sessions = new SessionDirectory();
+        sessions.Register("G6FCI-9", Session("G6FCI-9"));
+        sessions.Register(Sibling, Session(Sibling));
+
+        sessions.CallerFor($"chat@{Sibling}", Us).Should().Be(Sibling);
+        sessions.CallerFor("chat@G6FCI-5", Us).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task MailAnAppHereAlreadyTook_NeverGoesOut()
+    {
+        // Before 0.46.3 mail for G6FCI-8 counted as ours; an app here may
+        // have acked it. It must not start moving after the upgrade.
+        var id = await database.SubmitOutboundMessage("chat", Sibling, "old"u8.ToArray());
+        await database.MarkLocallyDelivered(id);
+
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+        (await database.CountPendingOutbound()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TheSqlAndIsLocal_ReadTheCallsignAfterTheLastAt()
+    {
+        var id = await database.SubmitOutboundMessage("a@b", Us, "x"u8.ToArray());
+
+        DestinationParser.IsLocal($"a@b@{Us}", Us).Should().BeTrue();
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+        (await database.GetUnacknowledgedLocalMessagesForApp("a@b")).Select(m => m.Id).Should().Equal(id);
+    }
+
+    [Fact]
+    public async Task OurCallsignWrittenWithSsidZero_TakesMailForTheBareCall()
+    {
+        options.CurrentValue.Callsign = "G6FCI-0";
+        var id = await database.SubmitOutboundMessage("chat", "G6FCI", "x"u8.ToArray());
+
+        (await database.GetUnacknowledgedLocalMessagesForApp("chat")).Select(m => m.Id).Should().Equal(id);
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AnUnderscoreInAnAppName_IsNotAWildcard()
+    {
+        await database.SubmitOutboundMessage("wpsXrepl", Us, "x"u8.ToArray());
+        var id = await database.SubmitOutboundMessage("wps_repl", Us, "x"u8.ToArray());
+
+        (await database.GetUnacknowledgedLocalMessagesForApp("wps_repl")).Select(m => m.Id).Should().Equal(id);
+    }
+
+    private static ExchangeSession Session(string peer)
+        => new(new MemoryStream(), peer, dialled: false, new ExchangeSettings(), new RecordingInbox(), NullLoggerFactory.Instance);
 
     private sealed class NoopHttpClientFactory : IHttpClientFactory
     {

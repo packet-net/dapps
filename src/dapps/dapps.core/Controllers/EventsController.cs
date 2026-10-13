@@ -99,7 +99,7 @@ public sealed class EventsController(
             Ttl: m.Ttl,
             AgeSeconds: (int)Math.Max(0, (DateTime.UtcNow - m.CreatedAt).TotalSeconds));
 
-        var outbound = recent.Where(m => !m.Forwarded && !IsLocal(m)).Select(m => Row(m)).ToList();
+        var outbound = recent.Where(m => !m.Forwarded && !m.LocallyDelivered && !IsLocal(m)).Select(m => Row(m)).ToList();
         var inbox = recent.Where(m => !m.LocallyDelivered && IsLocal(m))
             .Select(m => Row(m, m.Destination.Split('@')[0]))
             .ToList();

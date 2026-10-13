@@ -236,7 +236,7 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
             // entries may differ in SSID. Fall back to a base-match
             // scan before declaring the source route broken.
             var neighbours = await ctx.GetNeighboursAsync(ct);
-            nextHop = CallsignMatch.Best(neighbours, n => n.Callsign, nextHopCallsign);
+            nextHop = CallsignMatch.Best(neighbours, n => n.Callsign, nextHopCallsign, ctx.LocalCallsign);
             if (nextHop is null)
             {
                 logger.LogWarning(
@@ -304,7 +304,7 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
         if (nextHop is null)
         {
             var neighbours = await ctx.GetNeighboursAsync(ct);
-            nextHop = CallsignMatch.Best(neighbours, n => n.Callsign, nextHopCallsign);
+            nextHop = CallsignMatch.Best(neighbours, n => n.Callsign, nextHopCallsign, ctx.LocalCallsign);
         }
         if (nextHop is null)
         {

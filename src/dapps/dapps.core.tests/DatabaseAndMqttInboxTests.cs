@@ -161,6 +161,19 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DeliverAsync_ForAnotherSsidOfOurCallsign_IsKeptToForward()
+    {
+        // We are N0CALL (SSID 0); N0CALL-3 is another node (#239).
+        var ct = TestContext.Current.CancellationToken;
+        var bm = new BackhaulMessage(Id: "sib0001", Destination: "myapp@N0CALL-3", Salt: 3L, Ttl: 600, Payload: "pass it on"u8.ToArray());
+
+        await inbox.DeliverAsync(bm, sourceCallsign: "G7XYZ-3", ct);
+
+        (await database.GetPendingOutboundMessages()).Select(m => m.Id).Should().Contain("sib0001");
+        (await database.GetUnacknowledgedLocalMessagesForApp("myapp")).Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task DeliverAsync_TheSameMessageAgain_AfterTheAppTookIt_IsNotDeliveredAgain()
     {
         // The sender restarted before seeing our ack, and offers it again.

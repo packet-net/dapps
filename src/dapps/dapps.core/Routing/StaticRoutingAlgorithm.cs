@@ -40,7 +40,7 @@ public sealed class StaticRoutingAlgorithm(ILogger<StaticRoutingAlgorithm> logge
         // 1. Manual operator-configured neighbour wins. Lets a sysop
         //    pin a specific route even if discovery would suggest a
         //    different (and possibly cheaper) channel.
-        var manual = CallsignMatch.Best(neighbours, n => n.Callsign, destCall);
+        var manual = CallsignMatch.Best(neighbours, n => n.Callsign, destCall, ctx.LocalCallsign);
         if (manual is not null)
         {
             return new RouteDecision.NextHop(RouteBuilder.FromNeighbour(manual, ctx.DefaultBearerPort));
@@ -50,7 +50,8 @@ public sealed class StaticRoutingAlgorithm(ILogger<StaticRoutingAlgorithm> logge
         //    The exact call+SSID first, then the cheapest fresh channel.
         var now = DateTime.UtcNow;
         var freshPeer = peers
-            .Where(p => CallsignMatch.SameBase(p.Callsign, destCall))
+            .Where(p => DestinationParser.SameStation(p.Callsign, destCall)
+                || CallsignMatch.StandsIn(p.Callsign, destCall, ctx.LocalCallsign))
             .Where(p => (now - p.LastSeen).TotalSeconds <= p.TtlSeconds)
             .OrderBy(p => DestinationParser.SameStation(p.Callsign, destCall) ? 0 : 1)
             .ThenBy(p => p.CostHint)

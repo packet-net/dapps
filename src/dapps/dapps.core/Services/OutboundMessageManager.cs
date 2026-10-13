@@ -194,7 +194,7 @@ public class OutboundMessageManager(
                     work.Add(new PendingFlood(message, flood));
                     break;
 
-                case RouteDecision.Unreachable when openSessions?.CallerFor(message.Destination) is { } caller:
+                case RouteDecision.Unreachable when openSessions?.CallerFor(message.Destination, options.CurrentValue.Callsign) is { } caller:
                     // No route, but the node it's for has a session open
                     // with us: it goes on that session (what `rev` used to
                     // collect), and nowhere else. We have no route to dial.

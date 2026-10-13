@@ -88,7 +88,7 @@ public sealed class OperationalSnapshotBuilder(
                 Bytes: m.Payload.Length,
                 Ttl: m.Ttl,
                 AgeSeconds: (int)Math.Max(0, (timeProvider.GetUtcNow().UtcDateTime - m.CreatedAt).TotalSeconds));
-            var outbound = recent.Where(m => !m.Forwarded && !IsLocal(m)).Select(m => Row(m)).ToList();
+            var outbound = recent.Where(m => !m.Forwarded && !m.LocallyDelivered && !IsLocal(m)).Select(m => Row(m)).ToList();
             var inbox = recent.Where(m => !m.LocallyDelivered && IsLocal(m))
                 .Select(m => Row(m, m.Destination.Split('@')[0]))
                 .ToList();
