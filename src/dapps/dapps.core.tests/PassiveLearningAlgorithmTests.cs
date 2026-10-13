@@ -27,11 +27,8 @@ public sealed class PassiveLearningAlgorithmTests : IAsyncLifetime
     private PassiveLearningAlgorithm algorithm = null!;
 
     private const string OurCallsign = "G0US-1";
-    private const string OurBaseCallsign = "G0US";
     private const string DirectNeighbour = "G0NB-1";          // direct neighbour
-    private const string DirectNeighbourBase = "G0NB";
     private const string DistantOriginator = "G0OR-1";        // multi-hop away from us
-    private const string DistantOriginatorBase = "G0OR";
 
     public ValueTask InitializeAsync()
     {
@@ -85,10 +82,10 @@ public sealed class PassiveLearningAlgorithmTests : IAsyncLifetime
         Payload: "x"u8.ToArray(),
         Originator: originator);
 
-    private static DbMessage OutboundFor(string destinationBaseCallsign) => new()
+    private static DbMessage OutboundFor(string destinationCallsign) => new()
     {
         Id = "0000002",
-        Destination = $"chat@{destinationBaseCallsign}-1",
+        Destination = $"chat@{destinationCallsign}",
         Payload = "x"u8.ToArray(),
     };
 
@@ -100,7 +97,7 @@ public sealed class PassiveLearningAlgorithmTests : IAsyncLifetime
         await algorithm.ObserveInboundAsync(
             InboundFrom(DistantOriginator), DirectNeighbour, context, TestContext.Current.CancellationToken);
 
-        var learned = await context.GetLearnedRouteAsync(DistantOriginatorBase, TestContext.Current.CancellationToken);
+        var learned = await context.GetLearnedRouteAsync(DistantOriginator, TestContext.Current.CancellationToken);
         learned.Should().NotBeNull();
         learned!.NextHopCallsign.Should().Be(DirectNeighbour);
     }
@@ -161,8 +158,8 @@ public sealed class PassiveLearningAlgorithmTests : IAsyncLifetime
         // Initial learn sets up the route, then we record some failures.
         await algorithm.ObserveInboundAsync(
             InboundFrom(DistantOriginator), DirectNeighbour, context, TestContext.Current.CancellationToken);
-        await context.RecordLearnedRouteFailureAsync(DistantOriginatorBase, invalidationThreshold: 99, TestContext.Current.CancellationToken);
-        (await context.GetLearnedRouteAsync(DistantOriginatorBase, TestContext.Current.CancellationToken))!
+        await context.RecordLearnedRouteFailureAsync(DistantOriginator, invalidationThreshold: 99, TestContext.Current.CancellationToken);
+        (await context.GetLearnedRouteAsync(DistantOriginator, TestContext.Current.CancellationToken))!
             .ConsecutiveFailures.Should().Be(1);
 
         // Add a second direct neighbour, then observe an inbound from
@@ -175,7 +172,7 @@ public sealed class PassiveLearningAlgorithmTests : IAsyncLifetime
         await algorithm.ObserveInboundAsync(
             InboundFrom(DistantOriginator), newNeighbour, context, TestContext.Current.CancellationToken);
 
-        var refreshed = await context.GetLearnedRouteAsync(DistantOriginatorBase, TestContext.Current.CancellationToken);
+        var refreshed = await context.GetLearnedRouteAsync(DistantOriginator, TestContext.Current.CancellationToken);
         refreshed!.NextHopCallsign.Should().Be(newNeighbour);
         refreshed.ConsecutiveFailures.Should().Be(0,
             "a fresh path observation is fresh evidence of liveness; the old path's failure history is irrelevant to the new one");
@@ -190,14 +187,13 @@ public sealed class PassiveLearningAlgorithmTests : IAsyncLifetime
         // route. The manual entry must win - operator override beats
         // anything we inferred.
         const string explicitCallsign = "G0EX-1";
-        const string explicitBase = "G0EX";
         using (var c = DbInfo.GetConnection())
         {
             c.Insert(new DbNeighbour { Callsign = explicitCallsign, UdpEndpoint = "127.0.0.1:65532" });
         }
-        await context.UpsertLearnedRouteAsync(explicitBase, DirectNeighbour, TestContext.Current.CancellationToken);
+        await context.UpsertLearnedRouteAsync(explicitCallsign, DirectNeighbour, TestContext.Current.CancellationToken);
 
-        var decision = await algorithm.ResolveAsync(OutboundFor(explicitBase), context, TestContext.Current.CancellationToken);
+        var decision = await algorithm.ResolveAsync(OutboundFor(explicitCallsign), context, TestContext.Current.CancellationToken);
 
         decision.Should().BeOfType<RouteDecision.NextHop>();
         ((RouteDecision.NextHop)decision).Route.Callsign.Should().Be(explicitCallsign,
@@ -209,9 +205,9 @@ public sealed class PassiveLearningAlgorithmTests : IAsyncLifetime
     {
         // No manual neighbour, no discovered peer, no hint - just a
         // learned route. The fallback should kick in.
-        await context.UpsertLearnedRouteAsync(DistantOriginatorBase, DirectNeighbour, TestContext.Current.CancellationToken);
+        await context.UpsertLearnedRouteAsync(DistantOriginator, DirectNeighbour, TestContext.Current.CancellationToken);
 
-        var decision = await algorithm.ResolveAsync(OutboundFor(DistantOriginatorBase), context, TestContext.Current.CancellationToken);
+        var decision = await algorithm.ResolveAsync(OutboundFor(DistantOriginator), context, TestContext.Current.CancellationToken);
 
         var nh = decision.Should().BeOfType<RouteDecision.NextHop>().Subject;
         nh.Route.Callsign.Should().Be(DirectNeighbour);
@@ -223,14 +219,14 @@ public sealed class PassiveLearningAlgorithmTests : IAsyncLifetime
         // Learned a route to a callsign whose next-hop neighbour has
         // since been removed. Algorithm should NOT return a route
         // pointing at a phantom neighbour - drop and report Unreachable.
-        await context.UpsertLearnedRouteAsync(DistantOriginatorBase, "G0GONE-1", TestContext.Current.CancellationToken);
+        await context.UpsertLearnedRouteAsync(DistantOriginator, "G0GONE-1", TestContext.Current.CancellationToken);
 
-        var decision = await algorithm.ResolveAsync(OutboundFor(DistantOriginatorBase), context, TestContext.Current.CancellationToken);
+        var decision = await algorithm.ResolveAsync(OutboundFor(DistantOriginator), context, TestContext.Current.CancellationToken);
 
         decision.Should().BeOfType<RouteDecision.Unreachable>();
         // The dangling row gets cleaned up so it doesn't keep
         // misleading the resolver on subsequent calls.
-        (await context.GetLearnedRouteAsync(DistantOriginatorBase, TestContext.Current.CancellationToken))
+        (await context.GetLearnedRouteAsync(DistantOriginator, TestContext.Current.CancellationToken))
             .Should().BeNull();
     }
 
@@ -238,7 +234,7 @@ public sealed class PassiveLearningAlgorithmTests : IAsyncLifetime
     public async Task Resolve_NoStaticAndNoLearnedRoute_ReturnsUnreachable()
     {
         var decision = await algorithm.ResolveAsync(
-            OutboundFor("G0XYZ"), context, TestContext.Current.CancellationToken);
+            OutboundFor("G0XYZ-1"), context, TestContext.Current.CancellationToken);
 
         decision.Should().BeOfType<RouteDecision.Unreachable>();
     }
@@ -248,36 +244,36 @@ public sealed class PassiveLearningAlgorithmTests : IAsyncLifetime
     [Fact]
     public async Task ObserveForwardOutcome_SuccessResetsFailureCounter_ForLearnedRoute()
     {
-        await context.UpsertLearnedRouteAsync(DistantOriginatorBase, DirectNeighbour, TestContext.Current.CancellationToken);
-        await context.RecordLearnedRouteFailureAsync(DistantOriginatorBase, 99, TestContext.Current.CancellationToken);
-        await context.RecordLearnedRouteFailureAsync(DistantOriginatorBase, 99, TestContext.Current.CancellationToken);
+        await context.UpsertLearnedRouteAsync(DistantOriginator, DirectNeighbour, TestContext.Current.CancellationToken);
+        await context.RecordLearnedRouteFailureAsync(DistantOriginator, 99, TestContext.Current.CancellationToken);
+        await context.RecordLearnedRouteFailureAsync(DistantOriginator, 99, TestContext.Current.CancellationToken);
 
         await algorithm.ObserveForwardOutcomeAsync(
-            OutboundFor(DistantOriginatorBase),
+            OutboundFor(DistantOriginator),
             new BackhaulRoute(DirectNeighbour, UdpEndpoint: "127.0.0.1:65535"),
             BackhaulSendResult.Ok(),
             context, TestContext.Current.CancellationToken);
 
-        (await context.GetLearnedRouteAsync(DistantOriginatorBase, TestContext.Current.CancellationToken))!
+        (await context.GetLearnedRouteAsync(DistantOriginator, TestContext.Current.CancellationToken))!
             .ConsecutiveFailures.Should().Be(0);
     }
 
     [Fact]
     public async Task ObserveForwardOutcome_FailureCountIncrements_AndInvalidatesAtThreshold()
     {
-        await context.UpsertLearnedRouteAsync(DistantOriginatorBase, DirectNeighbour, TestContext.Current.CancellationToken);
+        await context.UpsertLearnedRouteAsync(DistantOriginator, DirectNeighbour, TestContext.Current.CancellationToken);
 
         for (var i = 1; i <= PassiveLearningAlgorithm.InvalidationThreshold; i++)
         {
             await algorithm.ObserveForwardOutcomeAsync(
-                OutboundFor(DistantOriginatorBase),
+                OutboundFor(DistantOriginator),
                 new BackhaulRoute(DirectNeighbour, UdpEndpoint: "127.0.0.1:65535"),
                 BackhaulSendResult.Fail("timeout"),
                 context, TestContext.Current.CancellationToken);
         }
 
         // Threshold hit on the third failure - row deleted.
-        (await context.GetLearnedRouteAsync(DistantOriginatorBase, TestContext.Current.CancellationToken))
+        (await context.GetLearnedRouteAsync(DistantOriginator, TestContext.Current.CancellationToken))
             .Should().BeNull();
     }
 
@@ -288,15 +284,15 @@ public sealed class PassiveLearningAlgorithmTests : IAsyncLifetime
         // manual neighbour with the same destination base callsign).
         // The learned-route entry shouldn't get penalised for someone
         // else's failure.
-        await context.UpsertLearnedRouteAsync(DistantOriginatorBase, DirectNeighbour, TestContext.Current.CancellationToken);
+        await context.UpsertLearnedRouteAsync(DistantOriginator, DirectNeighbour, TestContext.Current.CancellationToken);
 
         await algorithm.ObserveForwardOutcomeAsync(
-            OutboundFor(DistantOriginatorBase),
+            OutboundFor(DistantOriginator),
             new BackhaulRoute("G0OTHER-1", UdpEndpoint: "127.0.0.1:65530"),
             BackhaulSendResult.Fail("not via learned path"),
             context, TestContext.Current.CancellationToken);
 
-        (await context.GetLearnedRouteAsync(DistantOriginatorBase, TestContext.Current.CancellationToken))!
+        (await context.GetLearnedRouteAsync(DistantOriginator, TestContext.Current.CancellationToken))!
             .ConsecutiveFailures.Should().Be(0);
     }
 
@@ -317,11 +313,11 @@ public sealed class PassiveLearningAlgorithmTests : IAsyncLifetime
         await algorithm.ObserveProbeOutcomeAsync(
             DirectNeighbour, peers, context, TestContext.Current.CancellationToken);
 
-        var learnedDistant = await context.GetLearnedRouteAsync(DistantOriginatorBase, TestContext.Current.CancellationToken);
+        var learnedDistant = await context.GetLearnedRouteAsync(DistantOriginator, TestContext.Current.CancellationToken);
         learnedDistant.Should().NotBeNull();
         learnedDistant!.NextHopCallsign.Should().Be(DirectNeighbour);
 
-        var learnedOther = await context.GetLearnedRouteAsync("G0OTH", TestContext.Current.CancellationToken);
+        var learnedOther = await context.GetLearnedRouteAsync("G0OTH-7", TestContext.Current.CancellationToken);
         learnedOther.Should().NotBeNull();
         learnedOther!.NextHopCallsign.Should().Be(DirectNeighbour);
     }
@@ -358,8 +354,7 @@ public sealed class PassiveLearningAlgorithmTests : IAsyncLifetime
     [Fact]
     public async Task ObserveProbeOutcome_SkipsPeerThatIsTheAskedPeer()
     {
-        // Peer's base callsign matches the asked peer's base. Single-
-        // hop self-loop - the direct-neighbour entry already covers
+        // The peer is the asked peer itself. Single-hop self-loop - the direct-neighbour entry already covers
         // this; learned-route would just duplicate.
         await algorithm.ObserveProbeOutcomeAsync(
             DirectNeighbour,
@@ -400,7 +395,7 @@ public sealed class PassiveLearningAlgorithmTests : IAsyncLifetime
             new[] { Peer(DistantOriginator) },
             context, TestContext.Current.CancellationToken);
 
-        var learned = await context.GetLearnedRouteAsync(DistantOriginatorBase, TestContext.Current.CancellationToken);
+        var learned = await context.GetLearnedRouteAsync(DistantOriginator, TestContext.Current.CancellationToken);
         learned!.NextHopCallsign.Should().Be(DirectNeighbour,
             "an active probe is fresher evidence than a passive observation; the next-hop should switch");
     }

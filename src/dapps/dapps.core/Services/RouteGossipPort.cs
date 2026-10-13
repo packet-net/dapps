@@ -34,12 +34,12 @@ public sealed class RouteGossipPort(
         {
             try
             {
-                await database.UpsertGossipedRouteAsync(r.DestinationBaseCallsign, advertiserCallsign, now);
+                await database.UpsertGossipedRouteAsync(r.DestinationCallsign, advertiserCallsign, now);
                 imported++;
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Gossip import failed for {0} via {1}", r.DestinationBaseCallsign, advertiserCallsign);
+                logger.LogWarning(ex, "Gossip import failed for {0} via {1}", r.DestinationCallsign, advertiserCallsign);
             }
         }
         if (imported > 0)

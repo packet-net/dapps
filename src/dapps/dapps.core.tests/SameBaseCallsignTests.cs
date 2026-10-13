@@ -202,7 +202,7 @@ public sealed class SameBaseCallsignTests : IAsyncLifetime
     [Fact]
     public async Task MailAnAppHereAlreadyTook_NeverGoesOut()
     {
-        // Before 0.46.3 mail for G6FCI-8 counted as ours; an app here may
+        // Before 0.47.0 mail for G6FCI-8 counted as ours; an app here may
         // have acked it. It must not start moving after the upgrade.
         var id = await database.SubmitOutboundMessage("chat", Sibling, "old"u8.ToArray());
         await database.MarkLocallyDelivered(id);

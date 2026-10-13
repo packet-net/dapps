@@ -99,7 +99,7 @@ public sealed class RouteGossipTests : IAsyncLifetime
 
         var routes = await database.GetLearnedRoutesAsync();
         routes.Should().ContainSingle();
-        routes[0].DestinationBaseCallsign.Should().Be("G0FAR");
+        routes[0].DestinationCallsign.Should().Be("G0FAR");
         routes[0].NextHopCallsign.Should().Be("G0PEER");
         routes[0].Source.Should().Be("gossip");
     }

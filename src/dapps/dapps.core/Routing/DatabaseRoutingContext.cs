@@ -25,10 +25,9 @@ public sealed class DatabaseRoutingContext(
     public async Task<IReadOnlyList<DbDiscoveredPeer>> GetDiscoveredPeersAsync(CancellationToken ct)
         => await database.GetDiscoveredPeers();
 
-    public async Task<DbNeighbour?> ResolveRouteHintAsync(string destinationBaseCallsign, CancellationToken ct)
+    public async Task<DbNeighbour?> ResolveRouteHintAsync(string destinationCallsign, CancellationToken ct)
     {
-        var hint = await database.GetRouteHint(destinationBaseCallsign)
-            ?? await database.GetRouteHint("*");
+        var hint = await database.GetRouteHintFor(destinationCallsign);
         if (hint is null) return null;
         return await database.GetNeighbour(hint.NextHop);
     }
@@ -36,7 +35,7 @@ public sealed class DatabaseRoutingContext(
     public async Task<DbNeighbour?> GetNeighbourByCallsignAsync(string callsign, CancellationToken ct)
         => await database.GetNeighbour(callsign);
 
-    public async Task UpsertLearnedRouteAsync(string destinationBaseCallsign, string nextHopCallsign, CancellationToken ct)
+    public async Task UpsertLearnedRouteAsync(string destinationCallsign, string nextHopCallsign, CancellationToken ct)
     {
         // Pre-check whether the row is a refresh or a real change. Skip
         // the metrics event on refreshes - every successful inbound
@@ -44,21 +43,21 @@ public sealed class DatabaseRoutingContext(
         // drowning the journal in noise. Two queries on the learning
         // hot path is fine (it's per-inbound-message at most, not per-
         // tick).
-        var existing = await database.GetLearnedRouteAsync(destinationBaseCallsign);
+        var existing = await database.GetLearnedRouteAsync(destinationCallsign);
         var significant = existing is null
             || !string.Equals(existing.NextHopCallsign, nextHopCallsign, StringComparison.OrdinalIgnoreCase);
-        await database.UpsertLearnedRouteAsync(destinationBaseCallsign, nextHopCallsign, DateTime.UtcNow);
-        if (significant) metrics?.RecordRouteLearned(destinationBaseCallsign, nextHopCallsign);
+        await database.UpsertLearnedRouteAsync(destinationCallsign, nextHopCallsign, DateTime.UtcNow);
+        if (significant) metrics?.RecordRouteLearned(destinationCallsign, nextHopCallsign);
     }
 
-    public Task<DbLearnedRoute?> GetLearnedRouteAsync(string destinationBaseCallsign, CancellationToken ct)
-        => database.GetLearnedRouteAsync(destinationBaseCallsign);
+    public Task<DbLearnedRoute?> GetLearnedRouteAsync(string destinationCallsign, CancellationToken ct)
+        => database.GetLearnedRouteAsync(destinationCallsign);
 
-    public Task RecordLearnedRouteSuccessAsync(string destinationBaseCallsign, CancellationToken ct)
-        => database.RecordLearnedRouteSuccessAsync(destinationBaseCallsign, DateTime.UtcNow);
+    public Task RecordLearnedRouteSuccessAsync(string destinationCallsign, CancellationToken ct)
+        => database.RecordLearnedRouteSuccessAsync(destinationCallsign, DateTime.UtcNow);
 
-    public Task<int> RecordLearnedRouteFailureAsync(string destinationBaseCallsign, int invalidationThreshold, CancellationToken ct)
-        => database.RecordLearnedRouteFailureAsync(destinationBaseCallsign, invalidationThreshold);
+    public Task<int> RecordLearnedRouteFailureAsync(string destinationCallsign, int invalidationThreshold, CancellationToken ct)
+        => database.RecordLearnedRouteFailureAsync(destinationCallsign, invalidationThreshold);
 
     public Task<bool> HasSeenFloodAsync(string messageId, string linkSourceCallsign, CancellationToken ct)
         => database.HasSeenFloodAsync(messageId, linkSourceCallsign);
@@ -66,29 +65,29 @@ public sealed class DatabaseRoutingContext(
     public Task RecordFloodSeenAsync(string messageId, string linkSourceCallsign, CancellationToken ct)
         => database.RecordFloodSeenAsync(messageId, linkSourceCallsign, DateTime.UtcNow);
 
-    public async Task UpsertDiscoveredPathAsync(string destinationBaseCallsign, IReadOnlyList<string> intermediates, CancellationToken ct)
+    public async Task UpsertDiscoveredPathAsync(string destinationCallsign, IReadOnlyList<string> intermediates, CancellationToken ct)
     {
         // Same diff-then-record shape as UpsertLearnedRouteAsync - only
         // emit `route.learned` on a new path or a path-shape change,
         // not on every refresh tick.
-        var existing = await database.GetDiscoveredPathAsync(destinationBaseCallsign);
+        var existing = await database.GetDiscoveredPathAsync(destinationCallsign);
         var newCsv = Models.DbDiscoveredPath.ToCsv(intermediates);
         var significant = existing is null
             || !string.Equals(existing.IntermediatesCsv, newCsv, StringComparison.OrdinalIgnoreCase);
-        await database.UpsertDiscoveredPathAsync(destinationBaseCallsign, intermediates, DateTime.UtcNow);
+        await database.UpsertDiscoveredPathAsync(destinationCallsign, intermediates, DateTime.UtcNow);
         if (significant)
         {
             var summary = intermediates.Count == 0 ? "(direct)" : string.Join("->", intermediates);
-            metrics?.RecordRouteLearned(destinationBaseCallsign, summary);
+            metrics?.RecordRouteLearned(destinationCallsign, summary);
         }
     }
 
-    public Task<DbDiscoveredPath?> GetDiscoveredPathAsync(string destinationBaseCallsign, CancellationToken ct)
-        => database.GetDiscoveredPathAsync(destinationBaseCallsign);
+    public Task<DbDiscoveredPath?> GetDiscoveredPathAsync(string destinationCallsign, CancellationToken ct)
+        => database.GetDiscoveredPathAsync(destinationCallsign);
 
-    public Task RecordDiscoveredPathSuccessAsync(string destinationBaseCallsign, CancellationToken ct)
-        => database.RecordDiscoveredPathSuccessAsync(destinationBaseCallsign, DateTime.UtcNow);
+    public Task RecordDiscoveredPathSuccessAsync(string destinationCallsign, CancellationToken ct)
+        => database.RecordDiscoveredPathSuccessAsync(destinationCallsign, DateTime.UtcNow);
 
-    public Task<int> RecordDiscoveredPathFailureAsync(string destinationBaseCallsign, int invalidationThreshold, CancellationToken ct)
-        => database.RecordDiscoveredPathFailureAsync(destinationBaseCallsign, invalidationThreshold);
+    public Task<int> RecordDiscoveredPathFailureAsync(string destinationCallsign, int invalidationThreshold, CancellationToken ct)
+        => database.RecordDiscoveredPathFailureAsync(destinationCallsign, invalidationThreshold);
 }

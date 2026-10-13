@@ -8,11 +8,11 @@ namespace dapps.core.Models;
 /// the MeshCore-flavoured equivalent of <see cref="DbLearnedRoute"/>,
 /// but storing the full ordered intermediate-hop list rather than
 /// just the next hop. When this node later wants to send to
-/// <see cref="DestinationBaseCallsign"/>, the intermediates can be
+/// <see cref="DestinationCallsign"/>, the intermediates can be
 /// embedded in the outbound <c>BackhaulMessage.SourceRoute</c>,
 /// avoiding a fresh flood per destination.
 ///
-/// One row per destination base callsign; new observations overwrite
+/// One row per destination station, SSID included; new observations overwrite
 /// the previous path. As with <see cref="DbLearnedRoute"/>, future
 /// work could maintain a candidate set with weighting; today the
 /// most-recent flood wins.
@@ -20,12 +20,13 @@ namespace dapps.core.Models;
 [Table("discoveredpaths")]
 public class DbDiscoveredPath
 {
-    /// <summary>Base callsign (no SSID) - keyed this way so messages
-    /// to <c>chat@G0FOO-1</c> and <c>mail@G0FOO-9</c> share the same
-    /// discovered path. SSID-specific routing is rare in practice and
-    /// handled by manual neighbours when needed.</summary>
+    /// <summary>The destination's full callsign, SSID included, in
+    /// <see cref="dapps.core.Services.DestinationParser.StationKey"/> form
+    /// (upper case, no "-0"): G0FOO-1 and G0FOO-9 are two stations and
+    /// keep a path each (#242). Before 0.47.0 this was the base
+    /// callsign, and DbStartup drops a table keyed that way.</summary>
     [PrimaryKey]
-    public string DestinationBaseCallsign { get; set; } = "";
+    public string DestinationCallsign { get; set; } = "";
 
     /// <summary>Ordered list of full intermediate-hop callsigns
     /// between us and the destination, comma-separated. Empty string

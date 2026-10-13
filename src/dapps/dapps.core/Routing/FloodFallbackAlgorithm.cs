@@ -98,16 +98,22 @@ public sealed class FloodFallbackAlgorithm(
         => inner.RunAsync(ctx, ct);
 
     /// <summary>Build the list of flood routes from the local
-    /// neighbours table. Optionally skip a specific callsign to
-    /// avoid bouncing a flood straight back to the upstream peer.</summary>
+    /// neighbours table. Optionally skip the neighbour a flood came
+    /// from, to avoid bouncing it straight back to the upstream peer.
+    /// That's the neighbour row the link source maps to as routing picks
+    /// one: the exact call+SSID, so another SSID of the same callsign
+    /// still gets the flood (#242), else a row under the same callsign
+    /// (one entered with another SSID, or a caller that came through a
+    /// BPQ node, which inverts the SSID).</summary>
     private static async Task<IReadOnlyList<BackhaulRoute>> BuildFloodRoutesAsync(
         IRoutingContext ctx, string? excludeCallsign, CancellationToken ct)
     {
         var neighbours = await ctx.GetNeighboursAsync(ct);
-        var excludeBase = excludeCallsign?.Split('-')[0];
+        var upstream = excludeCallsign is null
+            ? null
+            : CallsignMatch.Best(neighbours, n => n.Callsign, excludeCallsign, ctx.LocalCallsign);
         return neighbours
-            .Where(n => excludeBase is null
-                || !n.Callsign.Split('-')[0].Equals(excludeBase, StringComparison.OrdinalIgnoreCase))
+            .Where(n => !ReferenceEquals(n, upstream))
             .Select(n => RouteBuilder.FromNeighbour(n, ctx.DefaultBearerPort))
             .ToList();
     }

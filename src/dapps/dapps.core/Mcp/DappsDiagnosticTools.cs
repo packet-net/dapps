@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text;
 using dapps.core.Models;
+using dapps.core.Routing;
 using dapps.core.Services;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Server;
@@ -74,8 +75,7 @@ public sealed class DappsDiagnosticTools(
                          "entries) are still in the systemd journal: try `journalctl -u dapps -g '" + id + "'`.");
         }
 
-        var destBase = destination.Split('@').Last().Split('-')[0];
-        var routeFinding = await ResolveRouteAsync(destBase);
+        var routeFinding = await ResolveRouteAsync(DestinationParser.StationOf(destination));
 
         var sb = new StringBuilder();
         sb.Append($"Message {id} for {destination}: {state}.");
@@ -237,12 +237,9 @@ public sealed class DappsDiagnosticTools(
         "peer (direct) -> manual neighbour. Returns the chosen next hop + which surface it came from + " +
         "freshness info, or 'no path' when nothing matches (a flood would be the fallback in that case).")]
     public async Task<RouteFinding> FindPathToAsync(
-        [Description("Destination callsign (case-insensitive). The base callsign without SSID is what gets resolved against the routing tables.")]
+        [Description("Destination callsign (case-insensitive), with its SSID: no SSID means SSID 0. Routing tables are kept per call+SSID.")]
         string destination)
-    {
-        var destBase = destination.Trim().Split('-')[0].ToUpperInvariant();
-        return await ResolveRouteAsync(destBase);
-    }
+        => await ResolveRouteAsync(destination);
 
     [McpServerTool(Name = "propose_topology_changes")]
     [Description(
@@ -256,12 +253,11 @@ public sealed class DappsDiagnosticTools(
         var neighbours = (await database.GetNeighbours()).ToList();
         var peers = (await database.GetDiscoveredPeers()).ToList();
         var probed = (await database.GetProbedNodes()).ToList();
-        var ourBase = options.CurrentValue.Callsign.Split('-')[0];
 
         var configuredCallsigns = neighbours.Select(n => n.Callsign).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var heardNotConfigured = peers
             .Where(p => !configuredCallsigns.Contains(p.Callsign))
-            .Where(p => !p.Callsign.StartsWith(ourBase, StringComparison.OrdinalIgnoreCase))   // skip self
+            .Where(p => !DestinationParser.SameStation(p.Callsign, options.CurrentValue.Callsign))   // skip self
             .GroupBy(p => p.Callsign, StringComparer.OrdinalIgnoreCase)
             .Select(g => g.OrderBy(x => x.CostHint).First())
             .ToList();
@@ -312,80 +308,78 @@ public sealed class DappsDiagnosticTools(
             Summary: sb.ToString());
     }
 
-    private async Task<RouteFinding> ResolveRouteAsync(string destinationBaseCallsign)
+    /// <summary>What the routing tables hold for one station, looked up
+    /// by its full callsign, SSID included, as routing does (#242).</summary>
+    private async Task<RouteFinding> ResolveRouteAsync(string destination)
     {
-        var hints = await database.GetRouteHintsAsync();
-        var hint = hints.FirstOrDefault(h =>
-            string.Equals(h.Destination, destinationBaseCallsign, StringComparison.OrdinalIgnoreCase));
+        var destinationCallsign = DestinationParser.StationKey(destination);
+        var ours = options.CurrentValue.Callsign;
+        var hint = CallsignMatch.RouteHint(await database.GetRouteHintsAsync(), destinationCallsign);
         if (hint is not null)
         {
             return new RouteFinding(
-                Destination: destinationBaseCallsign,
+                Destination: destinationCallsign,
                 NextHop: hint.NextHop,
                 Source: "route_hint",
                 AgeSummary: null,
-                Summary: $"{destinationBaseCallsign}: would forward via manual route hint to {hint.NextHop}.");
+                Summary: $"{destinationCallsign}: would forward via manual route hint to {hint.NextHop}.");
         }
 
-        var learned = await database.GetLearnedRouteAsync(destinationBaseCallsign);
+        var learned = await database.GetLearnedRouteAsync(destinationCallsign);
         if (learned is not null)
         {
             var age = Format(DateTime.UtcNow - learned.LastSeenAt);
             return new RouteFinding(
-                Destination: destinationBaseCallsign,
+                Destination: destinationCallsign,
                 NextHop: learned.NextHopCallsign,
                 Source: "learned_route",
                 AgeSummary: age,
-                Summary: $"{destinationBaseCallsign}: would forward via learned next-hop {learned.NextHopCallsign} (last seen {age} ago, {learned.ConsecutiveFailures} failure(s)).");
+                Summary: $"{destinationCallsign}: would forward via learned next-hop {learned.NextHopCallsign} (last seen {age} ago, {learned.ConsecutiveFailures} failure(s)).");
         }
 
-        var path = await database.GetDiscoveredPathAsync(destinationBaseCallsign);
+        var path = await database.GetDiscoveredPathAsync(destinationCallsign);
         if (path is not null && !string.IsNullOrEmpty(path.IntermediatesCsv))
         {
             var first = path.IntermediatesCsv.Split(',').First();
             return new RouteFinding(
-                Destination: destinationBaseCallsign,
+                Destination: destinationCallsign,
                 NextHop: first,
                 Source: "discovered_path",
                 AgeSummary: Format(DateTime.UtcNow - path.LastSeenAt),
-                Summary: $"{destinationBaseCallsign}: would source-route via [{path.IntermediatesCsv}] (MeshCore-style; first hop {first}).");
+                Summary: $"{destinationCallsign}: would source-route via [{path.IntermediatesCsv}] (MeshCore-style; first hop {first}).");
         }
 
         var peers = await database.GetDiscoveredPeers();
-        var direct = peers.FirstOrDefault(p =>
-            string.Equals(p.Callsign, destinationBaseCallsign, StringComparison.OrdinalIgnoreCase)
-            || p.Callsign.StartsWith(destinationBaseCallsign + "-", StringComparison.OrdinalIgnoreCase));
+        var direct = CallsignMatch.Best(peers, p => p.Callsign, destinationCallsign, ours);
         if (direct is not null)
         {
             return new RouteFinding(
-                Destination: destinationBaseCallsign,
+                Destination: destinationCallsign,
                 NextHop: direct.Callsign,
                 Source: "discovered_peer",
                 AgeSummary: Format(DateTime.UtcNow - direct.LastSeen),
-                Summary: $"{destinationBaseCallsign}: directly heard as {direct.Callsign} via {direct.Bearer}/{direct.ChannelKey} (last seen {Format(DateTime.UtcNow - direct.LastSeen)} ago).");
+                Summary: $"{destinationCallsign}: directly heard as {direct.Callsign} via {direct.Bearer}/{direct.ChannelKey} (last seen {Format(DateTime.UtcNow - direct.LastSeen)} ago).");
         }
 
         var neighbours = await database.GetNeighbours();
-        var matchingNeighbour = neighbours.FirstOrDefault(n =>
-            string.Equals(n.Callsign, destinationBaseCallsign, StringComparison.OrdinalIgnoreCase)
-            || n.Callsign.StartsWith(destinationBaseCallsign + "-", StringComparison.OrdinalIgnoreCase));
+        var matchingNeighbour = CallsignMatch.Best(neighbours, n => n.Callsign, destinationCallsign, ours);
         if (matchingNeighbour is not null)
         {
             var via = matchingNeighbour.UdpEndpoint is not null ? $"UDP {matchingNeighbour.UdpEndpoint}" : $"AGW port {matchingNeighbour.BearerPort}";
             return new RouteFinding(
-                Destination: destinationBaseCallsign,
+                Destination: destinationCallsign,
                 NextHop: matchingNeighbour.Callsign,
                 Source: "neighbour",
                 AgeSummary: null,
-                Summary: $"{destinationBaseCallsign}: configured as a manual neighbour ({via}); would forward directly.");
+                Summary: $"{destinationCallsign}: configured as a manual neighbour ({via}); would forward directly.");
         }
 
         return new RouteFinding(
-            Destination: destinationBaseCallsign,
+            Destination: destinationCallsign,
             NextHop: null,
             Source: null,
             AgeSummary: null,
-            Summary: $"{destinationBaseCallsign}: no path known. The bounded-flood fallback would carry the first message, then a learned route would form.");
+            Summary: $"{destinationCallsign}: no path known. The bounded-flood fallback would carry the first message, then a learned route would form.");
     }
 
     private static string Format(TimeSpan span)

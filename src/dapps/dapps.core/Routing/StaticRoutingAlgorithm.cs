@@ -10,12 +10,13 @@ namespace dapps.core.Routing;
 /// Precedence (first match wins):
 ///
 /// <list type="number">
-/// <item>Manual <see cref="DbNeighbour"/> with matching base callsign
-///   - explicit operator override.</item>
-/// <item>Fresh <see cref="DbDiscoveredPeer"/> rows for that base
-///   callsign, sorted by <c>CostHint</c> ascending then <c>Hops</c>
-///   ascending - pick the cheapest fresh channel the peer's been
-///   heard on.</item>
+/// <item>Manual <see cref="DbNeighbour"/> for the destination's call+SSID,
+///   or failing that one under its base callsign - explicit operator
+///   override.</item>
+/// <item>Fresh <see cref="DbDiscoveredPeer"/> rows for that station (or
+///   its base callsign), sorted by <c>CostHint</c> ascending then
+///   <c>Hops</c> ascending - pick the cheapest fresh channel the peer's
+///   been heard on.</item>
 /// <item>Hand-maintained <see cref="DbRouteHint"/> next-hop fallback.</item>
 /// <item>None of the above → <see cref="RouteDecision.Unreachable"/>.</item>
 /// </list>
@@ -34,8 +35,7 @@ public sealed class StaticRoutingAlgorithm(ILogger<StaticRoutingAlgorithm> logge
         // Destinations are `app@call[-ssid]`. A neighbour with the exact
         // call+SSID wins; failing that, SSID mismatches between configured
         // route and destination are tolerated.
-        var destCall = message.Destination.Split('@').Last();
-        var destBaseCall = destCall.Split('-')[0];
+        var destCall = DestinationParser.StationOf(message.Destination);
 
         // 1. Manual operator-configured neighbour wins. Lets a sysop
         //    pin a specific route even if discovery would suggest a
@@ -75,7 +75,9 @@ public sealed class StaticRoutingAlgorithm(ILogger<StaticRoutingAlgorithm> logge
         //    X is reachable via my neighbour Y" without a discovery
         //    record. Phase B5 (flood-and-learn) may eventually obsolete
         //    this, but it stays useful for explicit operator overrides.
-        var hintNeighbour = await ctx.ResolveRouteHintAsync(destBaseCall, ct);
+        //    A hint for the exact call+SSID beats one written without an
+        //    SSID, which covers every SSID of its callsign.
+        var hintNeighbour = await ctx.ResolveRouteHintAsync(destCall, ct);
         if (hintNeighbour is not null)
         {
             logger.LogInformation("Routing {0} for {1} via route-hint next-hop {2}",

@@ -18,7 +18,7 @@ public sealed class DappsRoutingTools(Database database)
     [McpServerTool(Name = "list_learned_routes")]
     [Description(
         "Per-destination next-hop routes learned passively from inbound F1 src= traffic (B5 PR-B). One row per " +
-        "DestinationBaseCallsign with NextHopCallsign + LastSeenAt + ConsecutiveFailures. Three failed forwards " +
+        "DestinationCallsign (full callsign, SSID included) with NextHopCallsign + LastSeenAt + ConsecutiveFailures. Three failed forwards " +
         "invalidate; success resets the counter. The default (passive-flood) routing algorithm consults this " +
         "table first and falls back to bounded flood when no learned route exists.")]
     public async Task<IReadOnlyList<DbLearnedRoute>> ListLearnedRoutesAsync()

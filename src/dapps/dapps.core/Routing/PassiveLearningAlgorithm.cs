@@ -1,5 +1,6 @@
 using dapps.client.Backhaul;
 using dapps.core.Models;
+using dapps.core.Services;
 
 namespace dapps.core.Routing;
 
@@ -42,9 +43,9 @@ public sealed class PassiveLearningAlgorithm(
             return staticDecision;
         }
 
-        // Static gave up - try learned routes.
-        var destBaseCall = message.Destination.Split('@').Last().Split('-')[0];
-        var learned = await ctx.GetLearnedRouteAsync(destBaseCall, ct);
+        // Static gave up - try learned routes, kept per call+SSID (#242).
+        var destCall = DestinationParser.StationOf(message.Destination);
+        var learned = await ctx.GetLearnedRouteAsync(destCall, ct);
         if (learned is null) return new RouteDecision.Unreachable();
 
         // Resolve the next-hop callsign back to the actual neighbour
@@ -58,8 +59,8 @@ public sealed class PassiveLearningAlgorithm(
         {
             logger.LogInformation(
                 "Learned route for {0} -> {1} discarded: next-hop neighbour no longer exists",
-                destBaseCall, learned.NextHopCallsign);
-            await ctx.RecordLearnedRouteFailureAsync(destBaseCall, invalidationThreshold: 1, ct);
+                destCall, learned.NextHopCallsign);
+            await ctx.RecordLearnedRouteFailureAsync(destCall, invalidationThreshold: 1, ct);
             return new RouteDecision.Unreachable();
         }
 
@@ -79,26 +80,33 @@ public sealed class PassiveLearningAlgorithm(
         //     pair isn't well-defined.
         //   - Originator IS us - message looped back somehow; learning
         //     would tell us "to reach myself, send via the loop"
-        //     which is wrong.
-        //   - Originator base-callsign IS the link source - single-hop
-        //     send; the learned route would just duplicate the
+        //     which is wrong. Our exact callsign only: another SSID of
+        //     ours is a station like any other (#242).
+        //   - Originator IS the neighbour the link came from - single-
+        //     hop send; the learned route would just duplicate the
         //     existing direct-neighbour entry. Static resolution
         //     handles direct neighbours already; no need to clutter.
+        //     The exact callsign again: G6FCI-8 passing on mail from
+        //     G6FCI-7 is a route to G6FCI-7.
         //   - Link source isn't actually one of our neighbours - we
         //     received from a station we didn't know about. Learning
         //     a route through an unknown next-hop would be unusable
         //     (the resolver re-checks the neighbour exists at use
         //     time, but it's cleaner to ignore at learn time too).
+        //
+        // The link source is the caller's callsign as the bearer saw it.
+        // Called straight, that's its DAPPS callsign; called through a
+        // BPQ node (a connect script), it's that callsign with the SSID
+        // inverted, M0ABC-9 arriving as M0ABC-6. So it maps to the
+        // neighbour row it came from as routing picks one: the exact
+        // call+SSID, else one under the same callsign that isn't a
+        // sibling of ours.
         if (string.IsNullOrEmpty(message.Originator)) return;
+        if (DestinationParser.SameStation(message.Originator, ctx.LocalCallsign)) return;
+        if (DestinationParser.SameStation(message.Originator, linkSourceCallsign)) return;
 
-        var ourBase = ctx.LocalCallsign.Split('-')[0];
-        var origBase = message.Originator.Split('-')[0];
-        var linkBase = linkSourceCallsign.Split('-')[0];
-
-        if (string.Equals(origBase, ourBase, StringComparison.OrdinalIgnoreCase)) return;
-        if (string.Equals(origBase, linkBase, StringComparison.OrdinalIgnoreCase)) return;
-
-        var nextHopNeighbour = await ctx.GetNeighbourByCallsignAsync(linkSourceCallsign, ct);
+        var nextHopNeighbour = CallsignMatch.Best(
+            await ctx.GetNeighboursAsync(ct), n => n.Callsign, linkSourceCallsign, ctx.LocalCallsign);
         if (nextHopNeighbour is null)
         {
             // The link source isn't in our neighbours table. This
@@ -106,15 +114,17 @@ public sealed class PassiveLearningAlgorithm(
             // configured neighbours - but if it does, skip.
             return;
         }
+        if (DestinationParser.SameStation(message.Originator, nextHopNeighbour.Callsign)) return;
 
-        await ctx.UpsertLearnedRouteAsync(origBase, linkSourceCallsign, ct);
-        logger.LogDebug("Learned route: {0} reachable via {1}", origBase, linkSourceCallsign);
+        await ctx.UpsertLearnedRouteAsync(message.Originator, nextHopNeighbour.Callsign, ct);
+        logger.LogDebug("Learned route: {0} reachable via {1} (link source {2})",
+            message.Originator, nextHopNeighbour.Callsign, linkSourceCallsign);
     }
 
     public async Task ObserveForwardOutcomeAsync(DbMessage message, BackhaulRoute attemptedRoute, BackhaulSendResult result, IRoutingContext ctx, CancellationToken ct)
     {
-        var destBaseCall = message.Destination.Split('@').Last().Split('-')[0];
-        var learned = await ctx.GetLearnedRouteAsync(destBaseCall, ct);
+        var destCall = DestinationParser.StationOf(message.Destination);
+        var learned = await ctx.GetLearnedRouteAsync(destCall, ct);
         if (learned is null) return;
 
         // Did this forward actually go via the learned route? If a
@@ -125,16 +135,16 @@ public sealed class PassiveLearningAlgorithm(
 
         if (result.Accepted)
         {
-            await ctx.RecordLearnedRouteSuccessAsync(destBaseCall, ct);
+            await ctx.RecordLearnedRouteSuccessAsync(destCall, ct);
         }
         else
         {
-            var newCount = await ctx.RecordLearnedRouteFailureAsync(destBaseCall, InvalidationThreshold, ct);
+            var newCount = await ctx.RecordLearnedRouteFailureAsync(destCall, InvalidationThreshold, ct);
             if (newCount < 0)
             {
                 logger.LogInformation(
                     "Learned route for {0} -> {1} invalidated after {2} consecutive failures",
-                    destBaseCall, learned.NextHopCallsign, InvalidationThreshold);
+                    destCall, learned.NextHopCallsign, InvalidationThreshold);
             }
         }
     }
@@ -148,9 +158,10 @@ public sealed class PassiveLearningAlgorithm(
     /// Filter set mirrors <see cref="ObserveInboundAsync"/>:
     /// <list type="bullet">
     /// <item>Skip Y == us (the asked peer always reports us as a peer
-    ///   since we just talked to them; that's noise).</item>
-    /// <item>Skip Y base == X base (single-hop self-loop - we'd just
-    ///   duplicate the direct-neighbour entry).</item>
+    ///   since we just talked to them; that's noise). Our exact
+    ///   callsign only: another SSID of ours is learned like anyone.</item>
+    /// <item>Skip Y == X (single-hop self-loop - we'd just duplicate the
+    ///   direct-neighbour entry).</item>
     /// <item>Require X to be a manual neighbour - the resolver re-checks
     ///   the next-hop in <see cref="DbNeighbour"/> at use-time, so a
     ///   learned route through a non-neighbour next-hop is dead weight.</item>
@@ -164,9 +175,6 @@ public sealed class PassiveLearningAlgorithm(
     {
         if (string.IsNullOrEmpty(askedPeerCallsign) || peers.Count == 0) return;
 
-        var ourBase = ctx.LocalCallsign.Split('-')[0];
-        var askedBase = askedPeerCallsign.Split('-')[0];
-
         // Resolver discards learned routes whose next-hop isn't a
         // neighbour. No point inserting in that case.
         var nextHopNeighbour = await ctx.GetNeighbourByCallsignAsync(askedPeerCallsign, ct);
@@ -175,14 +183,13 @@ public sealed class PassiveLearningAlgorithm(
         foreach (var peer in peers)
         {
             if (string.IsNullOrWhiteSpace(peer.Callsign)) continue;
-            var peerBase = peer.Callsign.Split('-')[0];
-            if (string.Equals(peerBase, ourBase, StringComparison.OrdinalIgnoreCase)) continue;
-            if (string.Equals(peerBase, askedBase, StringComparison.OrdinalIgnoreCase)) continue;
+            if (DestinationParser.SameStation(peer.Callsign, ctx.LocalCallsign)) continue;
+            if (DestinationParser.SameStation(peer.Callsign, askedPeerCallsign)) continue;
 
-            await ctx.UpsertLearnedRouteAsync(peerBase, askedPeerCallsign, ct);
+            await ctx.UpsertLearnedRouteAsync(peer.Callsign, askedPeerCallsign, ct);
             logger.LogDebug(
                 "Learned route from probe peers: {0} reachable via {1}",
-                peerBase, askedPeerCallsign);
+                peer.Callsign, askedPeerCallsign);
         }
     }
 

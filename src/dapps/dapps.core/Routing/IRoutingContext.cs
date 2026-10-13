@@ -31,11 +31,12 @@ public interface IRoutingContext
 
     Task<IReadOnlyList<DbDiscoveredPeer>> GetDiscoveredPeersAsync(CancellationToken ct);
 
-    /// <summary>Look up a manual route hint for the given base
-    /// callsign. Falls back to the wildcard <c>*</c> hint if no exact
-    /// match. Returns the next-hop neighbour (already resolved) or
+    /// <summary>Look up a manual route hint for the given destination
+    /// callsign, SSID included: a hint for that exact station, else one
+    /// written without an SSID for its callsign, else the wildcard
+    /// <c>*</c>. Returns the next-hop neighbour (already resolved) or
     /// null if no hint applies.</summary>
-    Task<DbNeighbour?> ResolveRouteHintAsync(string destinationBaseCallsign, CancellationToken ct);
+    Task<DbNeighbour?> ResolveRouteHintAsync(string destinationCallsign, CancellationToken ct);
 
     /// <summary>Look up the neighbour row for a callsign - used by
     /// passive-learning to resolve a learned-route's next-hop into a
@@ -44,21 +45,25 @@ public interface IRoutingContext
 
     // ── Passive-learning state (PR-B) ──────────────────────────────
     //
+    // Learned routes and discovered paths are keyed by the destination's
+    // full callsign, SSID included (#242); the store normalises case and
+    // a "-0", so callers pass the callsign as they have it.
+    //
     // Algorithms that need to PERSIST learned facts (not just read
     // existing ones) call these. Kept on the context interface rather
     // than handing the algorithm a Database directly: this way an
     // in-memory test context can stub the learning surface without
     // standing up SQLite.
 
-    Task UpsertLearnedRouteAsync(string destinationBaseCallsign, string nextHopCallsign, CancellationToken ct);
+    Task UpsertLearnedRouteAsync(string destinationCallsign, string nextHopCallsign, CancellationToken ct);
 
-    Task<DbLearnedRoute?> GetLearnedRouteAsync(string destinationBaseCallsign, CancellationToken ct);
+    Task<DbLearnedRoute?> GetLearnedRouteAsync(string destinationCallsign, CancellationToken ct);
 
-    Task RecordLearnedRouteSuccessAsync(string destinationBaseCallsign, CancellationToken ct);
+    Task RecordLearnedRouteSuccessAsync(string destinationCallsign, CancellationToken ct);
 
     /// <summary>Returns the new failure count, or -1 if the row was
     /// deleted (invalidation threshold hit).</summary>
-    Task<int> RecordLearnedRouteFailureAsync(string destinationBaseCallsign, int invalidationThreshold, CancellationToken ct);
+    Task<int> RecordLearnedRouteFailureAsync(string destinationCallsign, int invalidationThreshold, CancellationToken ct);
 
     // ── Flood-deduplication state (PR-C) ──────────────────────────
 
@@ -68,13 +73,13 @@ public interface IRoutingContext
 
     // ── Discovered paths (MeshCore-flavoured algorithm) ───────────
 
-    Task UpsertDiscoveredPathAsync(string destinationBaseCallsign, IReadOnlyList<string> intermediates, CancellationToken ct);
+    Task UpsertDiscoveredPathAsync(string destinationCallsign, IReadOnlyList<string> intermediates, CancellationToken ct);
 
-    Task<DbDiscoveredPath?> GetDiscoveredPathAsync(string destinationBaseCallsign, CancellationToken ct);
+    Task<DbDiscoveredPath?> GetDiscoveredPathAsync(string destinationCallsign, CancellationToken ct);
 
-    Task RecordDiscoveredPathSuccessAsync(string destinationBaseCallsign, CancellationToken ct);
+    Task RecordDiscoveredPathSuccessAsync(string destinationCallsign, CancellationToken ct);
 
     /// <summary>Returns the new failure count, or -1 if the row was
     /// deleted (invalidation threshold hit).</summary>
-    Task<int> RecordDiscoveredPathFailureAsync(string destinationBaseCallsign, int invalidationThreshold, CancellationToken ct);
+    Task<int> RecordDiscoveredPathFailureAsync(string destinationCallsign, int invalidationThreshold, CancellationToken ct);
 }

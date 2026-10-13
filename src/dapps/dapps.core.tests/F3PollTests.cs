@@ -152,7 +152,7 @@ public sealed class F3PollTests
 
         public Task ImportAsync(string advertiserCallsign, IReadOnlyList<DappsProtocolClient.GossipedRoute> routes, CancellationToken ct)
         {
-            Imported.AddRange(routes.Select(r => r.DestinationBaseCallsign));
+            Imported.AddRange(routes.Select(r => r.DestinationCallsign));
             return Task.CompletedTask;
         }
 

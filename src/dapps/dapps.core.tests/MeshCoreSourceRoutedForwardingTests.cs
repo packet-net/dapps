@@ -204,7 +204,7 @@ public sealed class MeshCoreSourceRoutedForwardingTests : IAsyncLifetime
 
         await inbox.DeliverAsync(inbound, "G0HOP1-1", TestContext.Current.CancellationToken);
 
-        var path = await database.GetDiscoveredPathAsync("G0SIA");
+        var path = await database.GetDiscoveredPathAsync(OriginatorCallsign);
         path.Should().NotBeNull(
             "the algorithm must observe inbound floods and store the reverse path");
         path!.GetIntermediates().Should().Equal(new[] { "G0HOP1-1" },

@@ -36,13 +36,9 @@ public sealed class MeshCoreLikeRoutingAlgorithmTests : IAsyncLifetime
     private MeshCoreLikeRoutingAlgorithm algorithm = null!;
 
     private const string OurCallsign = "G0US-1";
-    private const string OurBaseCallsign = "G0US";
     private const string DirectNeighbour1 = "G0NB1-1";
-    private const string DirectNeighbour1Base = "G0NB1";
     private const string DirectNeighbour2 = "G0NB2-1";
-    private const string DirectNeighbour2Base = "G0NB2";
     private const string DistantOriginator = "G0OR-1";
-    private const string DistantOriginatorBase = "G0OR";
 
     public ValueTask InitializeAsync()
     {
@@ -95,10 +91,10 @@ public sealed class MeshCoreLikeRoutingAlgorithmTests : IAsyncLifetime
         FloodHopsRemaining: hopsRemaining,
         TraversedHops: traversedHops);
 
-    private static DbMessage OutboundFor(string destinationBaseCallsign) => new()
+    private static DbMessage OutboundFor(string destinationCallsign) => new()
     {
         Id = "0000002",
-        Destination = $"chat@{destinationBaseCallsign}-1",
+        Destination = $"chat@{destinationCallsign}",
         Payload = "x"u8.ToArray(),
     };
 
@@ -111,13 +107,13 @@ public sealed class MeshCoreLikeRoutingAlgorithmTests : IAsyncLifetime
         // through G0HOP1 then G0HOP2. The reverse path back to G0OR
         // from us is [G0HOP2, G0HOP1, G0OR] in terms of forward
         // routing - so intermediates = [G0HOP2, G0HOP1] and the
-        // destination is G0OR.
+        // destination is G0OR-1.
         var traversed = new[] { "G0HOP1-1", "G0HOP2-1" };
         await algorithm.ObserveInboundAsync(
             InboundFlood(DistantOriginator, traversed),
             DirectNeighbour1, context, TestContext.Current.CancellationToken);
 
-        var path = await context.GetDiscoveredPathAsync(DistantOriginatorBase, TestContext.Current.CancellationToken);
+        var path = await context.GetDiscoveredPathAsync(DistantOriginator, TestContext.Current.CancellationToken);
         path.Should().NotBeNull();
         path!.GetIntermediates().Should().Equal("G0HOP2-1", "G0HOP1-1");
     }
@@ -132,7 +128,7 @@ public sealed class MeshCoreLikeRoutingAlgorithmTests : IAsyncLifetime
             InboundFlood(DirectNeighbour1, traversedHops: []),
             DirectNeighbour1, context, TestContext.Current.CancellationToken);
 
-        var path = await context.GetDiscoveredPathAsync(DirectNeighbour1Base, TestContext.Current.CancellationToken);
+        var path = await context.GetDiscoveredPathAsync(DirectNeighbour1, TestContext.Current.CancellationToken);
         path.Should().NotBeNull();
         path!.GetIntermediates().Should().BeEmpty();
     }
@@ -179,7 +175,7 @@ public sealed class MeshCoreLikeRoutingAlgorithmTests : IAsyncLifetime
             InboundFlood(DistantOriginator, traversed),
             DirectNeighbour1, context, TestContext.Current.CancellationToken);
 
-        var path = await context.GetDiscoveredPathAsync(DistantOriginatorBase, TestContext.Current.CancellationToken);
+        var path = await context.GetDiscoveredPathAsync(DistantOriginator, TestContext.Current.CancellationToken);
         path!.GetIntermediates().Should().Equal("G0HOP2-1", "G0HOP1-1");
     }
 
@@ -191,15 +187,14 @@ public sealed class MeshCoreLikeRoutingAlgorithmTests : IAsyncLifetime
         // Both a manual neighbour and a discovered path exist. The
         // manual entry must win - operator override beats inferred.
         const string explicitCallsign = "G0EX-1";
-        const string explicitBase = "G0EX";
         using (var c = DbInfo.GetConnection())
         {
             c.Insert(new DbNeighbour { Callsign = explicitCallsign, UdpEndpoint = "127.0.0.1:65532" });
         }
         await context.UpsertDiscoveredPathAsync(
-            explicitBase, new[] { DirectNeighbour1, "G0XX-1" }, TestContext.Current.CancellationToken);
+            explicitCallsign, new[] { DirectNeighbour1, "G0XX-1" }, TestContext.Current.CancellationToken);
 
-        var decision = await algorithm.ResolveAsync(OutboundFor(explicitBase), context, TestContext.Current.CancellationToken);
+        var decision = await algorithm.ResolveAsync(OutboundFor(explicitCallsign), context, TestContext.Current.CancellationToken);
 
         var nh = decision.Should().BeOfType<RouteDecision.NextHop>().Subject;
         nh.Route.Callsign.Should().Be(explicitCallsign);
@@ -213,11 +208,11 @@ public sealed class MeshCoreLikeRoutingAlgorithmTests : IAsyncLifetime
         // The next hop is G0NB1-1; the remaining-after-this-hop list
         // is [G0X-1].
         await context.UpsertDiscoveredPathAsync(
-            DistantOriginatorBase,
+            DistantOriginator,
             new[] { DirectNeighbour1, "G0X-1" },
             TestContext.Current.CancellationToken);
 
-        var decision = await algorithm.ResolveAsync(OutboundFor(DistantOriginatorBase), context, TestContext.Current.CancellationToken);
+        var decision = await algorithm.ResolveAsync(OutboundFor(DistantOriginator), context, TestContext.Current.CancellationToken);
 
         var nh = decision.Should().BeOfType<RouteDecision.NextHop>().Subject;
         nh.Route.Callsign.Should().Be(DirectNeighbour1);
@@ -232,9 +227,9 @@ public sealed class MeshCoreLikeRoutingAlgorithmTests : IAsyncLifetime
         // direct neighbour from the originator's perspective). When
         // we relay, the next hop IS the destination.
         await context.UpsertDiscoveredPathAsync(
-            DirectNeighbour1Base, intermediates: [], TestContext.Current.CancellationToken);
+            DirectNeighbour1, intermediates: [], TestContext.Current.CancellationToken);
 
-        var decision = await algorithm.ResolveAsync(OutboundFor(DirectNeighbour1Base), context, TestContext.Current.CancellationToken);
+        var decision = await algorithm.ResolveAsync(OutboundFor(DirectNeighbour1), context, TestContext.Current.CancellationToken);
 
         // Inner sees DirectNeighbour1 as a manual neighbour and wins
         // before discovered-path resolution kicks in. So the path
@@ -247,7 +242,7 @@ public sealed class MeshCoreLikeRoutingAlgorithmTests : IAsyncLifetime
     [Fact]
     public async Task Resolve_NoStaticAndNoPath_OriginatesFloodDiscovery()
     {
-        var decision = await algorithm.ResolveAsync(OutboundFor("G0XYZ"), context, TestContext.Current.CancellationToken);
+        var decision = await algorithm.ResolveAsync(OutboundFor("G0XYZ-1"), context, TestContext.Current.CancellationToken);
 
         var flood = decision.Should().BeOfType<RouteDecision.FloodToNeighbours>().Subject;
         flood.HopBudget.Should().Be(MeshCoreLikeRoutingAlgorithm.DefaultHopBudget);
@@ -265,9 +260,9 @@ public sealed class MeshCoreLikeRoutingAlgorithmTests : IAsyncLifetime
         // either fall through to flood or report Unreachable. With
         // direct neighbours present, we'll get a flood-discovery.
         await context.UpsertDiscoveredPathAsync(
-            DistantOriginatorBase, new[] { "G0GONE-1", "G0X-1" }, TestContext.Current.CancellationToken);
+            DistantOriginator, new[] { "G0GONE-1", "G0X-1" }, TestContext.Current.CancellationToken);
 
-        var decision = await algorithm.ResolveAsync(OutboundFor(DistantOriginatorBase), context, TestContext.Current.CancellationToken);
+        var decision = await algorithm.ResolveAsync(OutboundFor(DistantOriginator), context, TestContext.Current.CancellationToken);
 
         // The dangling path should be invalidated so it doesn't keep
         // misleading the resolver. We don't return Unreachable from
@@ -284,7 +279,7 @@ public sealed class MeshCoreLikeRoutingAlgorithmTests : IAsyncLifetime
         // Persisted message carries SourceRouteCsv = "G0NB1-1,G0X-1".
         // Algorithm pulls G0NB1-1 as next hop, leaves G0X-1 as the
         // remainder for the receiver to follow.
-        var msg = OutboundFor(DistantOriginatorBase);
+        var msg = OutboundFor(DistantOriginator);
         msg = new DbMessage
         {
             Id = msg.Id,
@@ -311,7 +306,7 @@ public sealed class MeshCoreLikeRoutingAlgorithmTests : IAsyncLifetime
         var msg = new DbMessage
         {
             Id = "0000002",
-            Destination = $"chat@{DirectNeighbour1Base}-1",
+            Destination = $"chat@{DirectNeighbour1}",
             Payload = "x"u8.ToArray(),
             SourceRouteCsv = "",
         };
@@ -429,17 +424,17 @@ public sealed class MeshCoreLikeRoutingAlgorithmTests : IAsyncLifetime
     public async Task ObserveForwardOutcome_SuccessAlongDiscoveredPath_ResetsFailureCounter()
     {
         await context.UpsertDiscoveredPathAsync(
-            DistantOriginatorBase, new[] { DirectNeighbour1, "G0X-1" }, TestContext.Current.CancellationToken);
-        await context.RecordDiscoveredPathFailureAsync(DistantOriginatorBase, 99, TestContext.Current.CancellationToken);
-        await context.RecordDiscoveredPathFailureAsync(DistantOriginatorBase, 99, TestContext.Current.CancellationToken);
+            DistantOriginator, new[] { DirectNeighbour1, "G0X-1" }, TestContext.Current.CancellationToken);
+        await context.RecordDiscoveredPathFailureAsync(DistantOriginator, 99, TestContext.Current.CancellationToken);
+        await context.RecordDiscoveredPathFailureAsync(DistantOriginator, 99, TestContext.Current.CancellationToken);
 
         await algorithm.ObserveForwardOutcomeAsync(
-            OutboundFor(DistantOriginatorBase),
+            OutboundFor(DistantOriginator),
             new BackhaulRoute(DirectNeighbour1, UdpEndpoint: "127.0.0.1:65535"),
             BackhaulSendResult.Ok(),
             context, TestContext.Current.CancellationToken);
 
-        (await context.GetDiscoveredPathAsync(DistantOriginatorBase, TestContext.Current.CancellationToken))!
+        (await context.GetDiscoveredPathAsync(DistantOriginator, TestContext.Current.CancellationToken))!
             .ConsecutiveFailures.Should().Be(0);
     }
 
@@ -447,18 +442,18 @@ public sealed class MeshCoreLikeRoutingAlgorithmTests : IAsyncLifetime
     public async Task ObserveForwardOutcome_FailuresInvalidatePathAtThreshold()
     {
         await context.UpsertDiscoveredPathAsync(
-            DistantOriginatorBase, new[] { DirectNeighbour1, "G0X-1" }, TestContext.Current.CancellationToken);
+            DistantOriginator, new[] { DirectNeighbour1, "G0X-1" }, TestContext.Current.CancellationToken);
 
         for (var i = 1; i <= MeshCoreLikeRoutingAlgorithm.InvalidationThreshold; i++)
         {
             await algorithm.ObserveForwardOutcomeAsync(
-                OutboundFor(DistantOriginatorBase),
+                OutboundFor(DistantOriginator),
                 new BackhaulRoute(DirectNeighbour1, UdpEndpoint: "127.0.0.1:65535"),
                 BackhaulSendResult.Fail("timeout"),
                 context, TestContext.Current.CancellationToken);
         }
 
-        (await context.GetDiscoveredPathAsync(DistantOriginatorBase, TestContext.Current.CancellationToken))
+        (await context.GetDiscoveredPathAsync(DistantOriginator, TestContext.Current.CancellationToken))
             .Should().BeNull();
     }
 
@@ -469,15 +464,15 @@ public sealed class MeshCoreLikeRoutingAlgorithmTests : IAsyncLifetime
         // routed through a manual neighbour). Discovered-path stats
         // shouldn't get penalised for someone else's failure.
         await context.UpsertDiscoveredPathAsync(
-            DistantOriginatorBase, new[] { DirectNeighbour1, "G0X-1" }, TestContext.Current.CancellationToken);
+            DistantOriginator, new[] { DirectNeighbour1, "G0X-1" }, TestContext.Current.CancellationToken);
 
         await algorithm.ObserveForwardOutcomeAsync(
-            OutboundFor(DistantOriginatorBase),
+            OutboundFor(DistantOriginator),
             new BackhaulRoute(DirectNeighbour2, UdpEndpoint: "127.0.0.1:65534"),
             BackhaulSendResult.Fail("not via discovered head"),
             context, TestContext.Current.CancellationToken);
 
-        (await context.GetDiscoveredPathAsync(DistantOriginatorBase, TestContext.Current.CancellationToken))!
+        (await context.GetDiscoveredPathAsync(DistantOriginator, TestContext.Current.CancellationToken))!
             .ConsecutiveFailures.Should().Be(0);
     }
 

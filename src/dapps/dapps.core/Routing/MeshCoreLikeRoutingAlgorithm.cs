@@ -1,5 +1,6 @@
 using dapps.client.Backhaul;
 using dapps.core.Models;
+using dapps.core.Services;
 
 namespace dapps.core.Routing;
 
@@ -92,11 +93,12 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
 
         // 4. Inner gave up. Try a discovered path; embed it as a
         //    source route on the outbound message.
-        var destBaseCall = message.Destination.Split('@').Last().Split('-')[0];
-        var path = await ctx.GetDiscoveredPathAsync(destBaseCall, ct);
+        //    Paths are kept per call+SSID (#242).
+        var destCall = DestinationParser.StationOf(message.Destination);
+        var path = await ctx.GetDiscoveredPathAsync(destCall, ct);
         if (path is not null)
         {
-            var embed = await BuildSourceRoutedNextHopAsync(message, path, destBaseCall, ctx, ct);
+            var embed = await BuildSourceRoutedNextHopAsync(message, path, destCall, ctx, ct);
             if (embed is not null) return embed;
         }
 
@@ -132,11 +134,9 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
         if (message.TraversedHops is null) return;
         if (string.IsNullOrEmpty(message.Originator)) return;
 
-        var ourBase = ctx.LocalCallsign.Split('-')[0];
-        var origBase = message.Originator.Split('-')[0];
-
-        // Don't learn a path back to ourselves.
-        if (string.Equals(origBase, ourBase, StringComparison.OrdinalIgnoreCase)) return;
+        // Don't learn a path back to ourselves. Our exact callsign only:
+        // a flood from another SSID of ours teaches a path to it (#242).
+        if (DestinationParser.SameStation(message.Originator, ctx.LocalCallsign)) return;
 
         // Reverse the traversed list to get the path FROM us back
         // to the originator. Filter out our own callsign defensively
@@ -144,13 +144,13 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
         // it and we'd loop.
         var reverse = message.TraversedHops
             .Reverse()
-            .Where(h => !h.Split('-')[0].Equals(ourBase, StringComparison.OrdinalIgnoreCase))
+            .Where(h => !DestinationParser.SameStation(h, ctx.LocalCallsign))
             .ToList();
 
-        await ctx.UpsertDiscoveredPathAsync(origBase, reverse, ct);
+        await ctx.UpsertDiscoveredPathAsync(message.Originator, reverse, ct);
         logger.LogDebug(
             "Discovered path: {0} reachable via [{1}] (link source: {2})",
-            origBase, string.Join(',', reverse), linkSourceCallsign);
+            message.Originator, string.Join(',', reverse), linkSourceCallsign);
     }
 
     public async Task ObserveForwardOutcomeAsync(DbMessage message, BackhaulRoute attemptedRoute, BackhaulSendResult result, IRoutingContext ctx, CancellationToken ct)
@@ -165,32 +165,32 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
         // arrived already source-routed and the head matches our
         // destination's first intermediate), the outcome reflects
         // path liveness.
-        var destBaseCall = message.Destination.Split('@').Last().Split('-')[0];
-        var path = await ctx.GetDiscoveredPathAsync(destBaseCall, ct);
+        var destCall = DestinationParser.StationOf(message.Destination);
+        var path = await ctx.GetDiscoveredPathAsync(destCall, ct);
         if (path is null) return;
 
-        // Heuristic: if the attempted-route's callsign is the first
-        // entry of our stored intermediates (or the destination
-        // itself when intermediates is empty), this forward is
-        // exercising the discovered path.
+        // Heuristic: if the attempted route went to the neighbour the
+        // path's first hop resolves to (the first of our stored
+        // intermediates, or the destination itself when there are
+        // none), this forward is exercising the discovered path.
         var intermediates = path.GetIntermediates();
-        var pathFirstHop = intermediates.Count > 0 ? intermediates[0] : destBaseCall;
-        if (!attemptedRoute.Callsign.Split('-')[0]
-                .Equals(pathFirstHop.Split('-')[0], StringComparison.OrdinalIgnoreCase))
+        var pathFirstHop = intermediates.Count > 0 ? intermediates[0] : destCall;
+        var firstHopNeighbour = CallsignMatch.Best(await ctx.GetNeighboursAsync(ct), n => n.Callsign, pathFirstHop, ctx.LocalCallsign);
+        if (firstHopNeighbour is null || !DestinationParser.SameStation(attemptedRoute.Callsign, firstHopNeighbour.Callsign))
             return;
 
         if (result.Accepted)
         {
-            await ctx.RecordDiscoveredPathSuccessAsync(destBaseCall, ct);
+            await ctx.RecordDiscoveredPathSuccessAsync(destCall, ct);
         }
         else
         {
-            var newCount = await ctx.RecordDiscoveredPathFailureAsync(destBaseCall, InvalidationThreshold, ct);
+            var newCount = await ctx.RecordDiscoveredPathFailureAsync(destCall, InvalidationThreshold, ct);
             if (newCount < 0)
             {
                 logger.LogInformation(
                     "Discovered path for {0} ([{1}]) invalidated after {2} consecutive failures",
-                    destBaseCall, string.Join(',', intermediates), InvalidationThreshold);
+                    destCall, string.Join(',', intermediates), InvalidationThreshold);
             }
         }
     }
@@ -214,12 +214,11 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
 
         // Head of the list is the next hop; if the list is empty
         // the destination is direct.
-        var destBaseCall = message.Destination.Split('@').Last().Split('-')[0];
         string nextHopCallsign;
         IReadOnlyList<string> downstream;
         if (remaining.Length == 0)
         {
-            nextHopCallsign = message.Destination.Split('@').Last();
+            nextHopCallsign = DestinationParser.StationOf(message.Destination);
             downstream = [];
         }
         else
@@ -284,14 +283,14 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
     }
 
     private async Task<RouteDecision?> BuildSourceRoutedNextHopAsync(
-        DbMessage message, DbDiscoveredPath path, string destBaseCall, IRoutingContext ctx, CancellationToken ct)
+        DbMessage message, DbDiscoveredPath path, string destCall, IRoutingContext ctx, CancellationToken ct)
     {
         var intermediates = path.GetIntermediates();
         string nextHopCallsign;
         IReadOnlyList<string> downstream;
         if (intermediates.Count == 0)
         {
-            nextHopCallsign = message.Destination.Split('@').Last();
+            nextHopCallsign = DestinationParser.StationOf(message.Destination);
             downstream = [];
         }
         else
@@ -312,8 +311,8 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
             // - drop the path and let the next tick re-flood.
             logger.LogInformation(
                 "Discovered path for {0} unusable: first hop {1} not in neighbours; discarding path",
-                destBaseCall, nextHopCallsign);
-            await ctx.RecordDiscoveredPathFailureAsync(destBaseCall, invalidationThreshold: 1, ct);
+                destCall, nextHopCallsign);
+            await ctx.RecordDiscoveredPathFailureAsync(destCall, invalidationThreshold: 1, ct);
             return null;
         }
 
@@ -328,20 +327,23 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
     }
 
     /// <summary>Build the list of neighbours to re-flood to,
-    /// excluding any whose base callsign appears in
-    /// <paramref name="traversed"/> (so the message doesn't loop
-    /// back to a node it's already visited). Local callsign is
-    /// also implicitly excluded - the local node never appears in
-    /// neighbours.</summary>
+    /// excluding the neighbour each hop in <paramref name="traversed"/>
+    /// resolves to (so the message doesn't loop back to a node it's
+    /// already visited). A hop is the exact call+SSID of a node that
+    /// passed the flood on, so another SSID of its callsign still gets
+    /// it (#242); a neighbour row entered without the right SSID stands
+    /// in for it, as in routing. Local callsign is also implicitly
+    /// excluded - the local node never appears in neighbours.</summary>
     private static async Task<IReadOnlyList<BackhaulRoute>> BuildFloodRoutesAsync(
         IRoutingContext ctx, IReadOnlyList<string> traversed, CancellationToken ct)
     {
         var neighbours = await ctx.GetNeighboursAsync(ct);
-        var traversedBases = traversed
-            .Select(h => h.Split('-')[0])
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var visited = traversed
+            .Select(h => CallsignMatch.Best(neighbours, n => n.Callsign, h, ctx.LocalCallsign))
+            .OfType<DbNeighbour>()
+            .ToHashSet();
         return neighbours
-            .Where(n => !traversedBases.Contains(n.Callsign.Split('-')[0]))
+            .Where(n => !visited.Contains(n))
             .Select(n => RouteBuilder.FromNeighbour(n, ctx.DefaultBearerPort))
             .ToList();
     }

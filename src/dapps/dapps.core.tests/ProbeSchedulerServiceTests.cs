@@ -575,17 +575,17 @@ public sealed class ProbeSchedulerServiceTests : IAsyncLifetime
         public Task<IReadOnlyList<DbDiscoveredPeer>> GetDiscoveredPeersAsync(CancellationToken ct)
             => Task.FromResult<IReadOnlyList<DbDiscoveredPeer>>(Array.Empty<DbDiscoveredPeer>());
 
-        public Task<DbNeighbour?> ResolveRouteHintAsync(string destinationBaseCallsign, CancellationToken ct) => Task.FromResult<DbNeighbour?>(null);
+        public Task<DbNeighbour?> ResolveRouteHintAsync(string destinationCallsign, CancellationToken ct) => Task.FromResult<DbNeighbour?>(null);
         public Task<DbNeighbour?> GetNeighbourByCallsignAsync(string callsign, CancellationToken ct) => Task.FromResult<DbNeighbour?>(null);
-        public Task UpsertLearnedRouteAsync(string destinationBaseCallsign, string nextHopCallsign, CancellationToken ct) => Task.CompletedTask;
-        public Task<DbLearnedRoute?> GetLearnedRouteAsync(string destinationBaseCallsign, CancellationToken ct) => Task.FromResult<DbLearnedRoute?>(null);
-        public Task RecordLearnedRouteSuccessAsync(string destinationBaseCallsign, CancellationToken ct) => Task.CompletedTask;
-        public Task<int> RecordLearnedRouteFailureAsync(string destinationBaseCallsign, int invalidationThreshold, CancellationToken ct) => Task.FromResult(0);
+        public Task UpsertLearnedRouteAsync(string destinationCallsign, string nextHopCallsign, CancellationToken ct) => Task.CompletedTask;
+        public Task<DbLearnedRoute?> GetLearnedRouteAsync(string destinationCallsign, CancellationToken ct) => Task.FromResult<DbLearnedRoute?>(null);
+        public Task RecordLearnedRouteSuccessAsync(string destinationCallsign, CancellationToken ct) => Task.CompletedTask;
+        public Task<int> RecordLearnedRouteFailureAsync(string destinationCallsign, int invalidationThreshold, CancellationToken ct) => Task.FromResult(0);
         public Task<bool> HasSeenFloodAsync(string messageId, string linkSourceCallsign, CancellationToken ct) => Task.FromResult(false);
         public Task RecordFloodSeenAsync(string messageId, string linkSourceCallsign, CancellationToken ct) => Task.CompletedTask;
-        public Task UpsertDiscoveredPathAsync(string destinationBaseCallsign, IReadOnlyList<string> intermediates, CancellationToken ct) => Task.CompletedTask;
-        public Task<DbDiscoveredPath?> GetDiscoveredPathAsync(string destinationBaseCallsign, CancellationToken ct) => Task.FromResult<DbDiscoveredPath?>(null);
-        public Task RecordDiscoveredPathSuccessAsync(string destinationBaseCallsign, CancellationToken ct) => Task.CompletedTask;
-        public Task<int> RecordDiscoveredPathFailureAsync(string destinationBaseCallsign, int invalidationThreshold, CancellationToken ct) => Task.FromResult(0);
+        public Task UpsertDiscoveredPathAsync(string destinationCallsign, IReadOnlyList<string> intermediates, CancellationToken ct) => Task.CompletedTask;
+        public Task<DbDiscoveredPath?> GetDiscoveredPathAsync(string destinationCallsign, CancellationToken ct) => Task.FromResult<DbDiscoveredPath?>(null);
+        public Task RecordDiscoveredPathSuccessAsync(string destinationCallsign, CancellationToken ct) => Task.CompletedTask;
+        public Task<int> RecordDiscoveredPathFailureAsync(string destinationCallsign, int invalidationThreshold, CancellationToken ct) => Task.FromResult(0);
     }
 }

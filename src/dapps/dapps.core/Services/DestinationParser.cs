@@ -30,7 +30,18 @@ public static class DestinationParser
     /// <summary>True when two callsigns name the same station: same call,
     /// same SSID, ignoring case, with no SSID meaning SSID 0.</summary>
     public static bool SameStation(string a, string b)
-        => string.Equals(Normalise(a), Normalise(b), StringComparison.OrdinalIgnoreCase);
+        => string.Equals(Normalise(a.Trim()), Normalise(b.Trim()), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The form a station's callsign is stored under in the
+    /// routing tables: trimmed, upper case, and "-0" dropped, so G6FCI,
+    /// g6fci and G6FCI-0 are one station and G6FCI-8 another (#242).</summary>
+    public static string StationKey(string callsign)
+        => Normalise(callsign.Trim().ToUpperInvariant());
+
+    /// <summary>The callsign part of a destination (<c>app@CALL</c>): what
+    /// follows the last '@', or the whole string when there is none.</summary>
+    public static string StationOf(string destination)
+        => destination[(destination.LastIndexOf('@') + 1)..];
 
     /// <summary>
     /// The SQL LIKE patterns (escaped with '\') that match a destination

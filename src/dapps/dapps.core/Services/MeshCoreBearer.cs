@@ -187,12 +187,13 @@ public sealed class MeshCoreBearer : IDappsBackhaul, IAsyncDisposable
     private async Task RecordPeerHeardAsync(string source, MeshCoreBearerOptions opts, CancellationToken ct)
     {
         // A repeater re-broadcasting our own frame would otherwise teach us a route to
-        // ourselves. Compare on the base callsign (SSID-insensitive), like the router.
+        // ourselves. Compare the whole callsign, SSID included, like the router (#242):
+        // another SSID of ours is a peer like any other.
         // Use the LIVE callsign, not the one captured at bearer start: outbound frames
         // are stamped with the current callsign, so after a runtime rename an echo of
         // our own frame must still be recognised as self.
         var localCallsign = _sysOpts.CurrentValue.Callsign ?? "";
-        if (string.Equals(source.Split('-')[0], localCallsign.Split('-')[0], StringComparison.OrdinalIgnoreCase))
+        if (DestinationParser.SameStation(source, localCallsign))
             return;
 
         var now = DateTime.UtcNow;

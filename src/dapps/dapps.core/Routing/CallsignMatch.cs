@@ -1,3 +1,4 @@
+using dapps.core.Models;
 using dapps.core.Services;
 
 namespace dapps.core.Routing;
@@ -24,6 +25,23 @@ internal static class CallsignMatch
     /// <paramref name="wanted"/>: the same base callsign, and not ours.</summary>
     public static bool StandsIn(string candidate, string wanted, string ourCallsign)
         => SameBase(candidate, wanted) && !SameBase(candidate, ourCallsign);
+
+    /// <summary>
+    /// The route hint for <paramref name="destinationCallsign"/> (#242):
+    /// one written for that exact call+SSID wins; failing that, one
+    /// written with no SSID covers every SSID of its callsign, as hints
+    /// always have; failing that, the "*" catch-all. Hints are the
+    /// operator's own configuration, so they are read as written and
+    /// never rewritten.
+    /// </summary>
+    public static DbRouteHint? RouteHint(IEnumerable<DbRouteHint> hints, string destinationCallsign)
+    {
+        var list = hints as IReadOnlyList<DbRouteHint> ?? hints.ToList();
+        static bool Wildcard(DbRouteHint h) => h.Destination.Trim() == "*";
+        return list.FirstOrDefault(h => !Wildcard(h) && DestinationParser.SameStation(h.Destination, destinationCallsign))
+            ?? list.FirstOrDefault(h => !Wildcard(h) && !h.Destination.Contains('-') && SameBase(h.Destination, destinationCallsign))
+            ?? list.FirstOrDefault(Wildcard);
+    }
 
     public static bool SameBase(string a, string b)
         => a.Split('-')[0].Trim().Equals(b.Split('-')[0].Trim(), StringComparison.OrdinalIgnoreCase);

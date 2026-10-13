@@ -1,5 +1,6 @@
 ﻿using dapps.client;
 using dapps.core.Models;
+using dapps.core.Routing;
 using Microsoft.Extensions.Options;
 using SQLite;
 using System.Text.Json;
@@ -24,7 +25,7 @@ public class Database(
         var connection = DbInfo.GetAsyncConnection();
         // Outbound = destined for a remote node and not yet forwarded.
         // "Local" is our own callsign, SSID included (DestinationParser.IsLocal).
-        // A row an app here has acked never goes: before 0.46.3 mail for
+        // A row an app here has acked never goes: before 0.47.0 mail for
         // another SSID of ours was taken as local (#239), and that old,
         // already delivered mail must not start moving after an upgrade.
         // Oldest first, so a batch for one neighbour goes out in the order
@@ -217,10 +218,12 @@ public class Database(
         forwarderWakeup?.Wake();
     }
 
-    internal async Task<DbRouteHint?> GetRouteHint(string destination)
-    {
-        return await DbInfo.GetAsyncConnection().FindAsync<DbRouteHint>(destination);
-    }
+    /// <summary>The route hint for a destination station (#242): one
+    /// written for that exact call+SSID, else one written without an SSID
+    /// for its callsign (which covers every SSID, as it always has), else
+    /// the "*" catch-all.</summary>
+    internal async Task<DbRouteHint?> GetRouteHintFor(string destinationCallsign)
+        => CallsignMatch.RouteHint(await GetRouteHintsAsync(), destinationCallsign);
 
     internal async Task<DbNeighbour> GetNeighbour(string callsign)
     {
@@ -332,8 +335,7 @@ public class Database(
     public async Task<DbMessage?> GetMessage(string id)
         => await DbInfo.GetAsyncConnection().FindAsync<DbMessage>(id);
 
-    /// <summary>Every manual route-hint row. Mirrors
-    /// <see cref="GetRouteHint(string)"/> but for the whole table.</summary>
+    /// <summary>Every manual route-hint row.</summary>
     public async Task<IReadOnlyList<DbRouteHint>> GetRouteHintsAsync()
         => await DbInfo.GetAsyncConnection().QueryAsync<DbRouteHint>(
             "select * from routehints order by Destination");
@@ -504,20 +506,21 @@ public class Database(
 
     /// <summary>
     /// Record (or refresh) a learned route for the given destination.
-    /// One row per destination base callsign - newer observations
-    /// overwrite older ones. <see cref="DbLearnedRoute.LastSeenAt"/>
+    /// One row per destination station, SSID included (#242) - newer
+    /// observations overwrite older ones. <see cref="DbLearnedRoute.LastSeenAt"/>
     /// always bumps to <c>now</c>; failure counter resets when the
     /// next-hop changes (a new path is fresh evidence of liveness).
     /// </summary>
-    internal async Task UpsertLearnedRouteAsync(string destinationBaseCallsign, string nextHopCallsign, DateTime now)
+    internal async Task UpsertLearnedRouteAsync(string destinationCallsign, string nextHopCallsign, DateTime now)
     {
         var connection = DbInfo.GetAsyncConnection();
-        var existing = await connection.FindAsync<DbLearnedRoute>(destinationBaseCallsign);
+        var key = DestinationParser.StationKey(destinationCallsign);
+        var existing = await connection.FindAsync<DbLearnedRoute>(key);
         if (existing is null)
         {
             await connection.InsertAsync(new DbLearnedRoute
             {
-                DestinationBaseCallsign = destinationBaseCallsign,
+                DestinationCallsign = key,
                 NextHopCallsign = nextHopCallsign,
                 LastSeenAt = now,
                 LastUsedAt = DateTime.MinValue,
@@ -536,14 +539,14 @@ public class Database(
     }
 
     /// <summary>Look up the current learned route, if any.</summary>
-    internal async Task<DbLearnedRoute?> GetLearnedRouteAsync(string destinationBaseCallsign)
-        => await DbInfo.GetAsyncConnection().FindAsync<DbLearnedRoute>(destinationBaseCallsign);
+    internal async Task<DbLearnedRoute?> GetLearnedRouteAsync(string destinationCallsign)
+        => await DbInfo.GetAsyncConnection().FindAsync<DbLearnedRoute>(DestinationParser.StationKey(destinationCallsign));
 
     /// <summary>Forward succeeded - reset failure counter, update <see cref="DbLearnedRoute.LastUsedAt"/>.</summary>
-    internal async Task RecordLearnedRouteSuccessAsync(string destinationBaseCallsign, DateTime now)
+    internal async Task RecordLearnedRouteSuccessAsync(string destinationCallsign, DateTime now)
     {
         var connection = DbInfo.GetAsyncConnection();
-        var row = await connection.FindAsync<DbLearnedRoute>(destinationBaseCallsign);
+        var row = await connection.FindAsync<DbLearnedRoute>(DestinationParser.StationKey(destinationCallsign));
         if (row is null) return;
         row.ConsecutiveFailures = 0;
         row.LastUsedAt = now;
@@ -553,15 +556,15 @@ public class Database(
     /// <summary>Forward failed - increment failure counter; delete the
     /// row if the threshold is hit. Returns the new failure count, or
     /// <c>-1</c> if the row was deleted (i.e. invalidated).</summary>
-    internal async Task<int> RecordLearnedRouteFailureAsync(string destinationBaseCallsign, int invalidationThreshold)
+    internal async Task<int> RecordLearnedRouteFailureAsync(string destinationCallsign, int invalidationThreshold)
     {
         var connection = DbInfo.GetAsyncConnection();
-        var row = await connection.FindAsync<DbLearnedRoute>(destinationBaseCallsign);
+        var row = await connection.FindAsync<DbLearnedRoute>(DestinationParser.StationKey(destinationCallsign));
         if (row is null) return 0;
         row.ConsecutiveFailures++;
         if (row.ConsecutiveFailures >= invalidationThreshold)
         {
-            await connection.DeleteAsync<DbLearnedRoute>(destinationBaseCallsign);
+            await connection.DeleteAsync<DbLearnedRoute>(row.DestinationCallsign);
             return -1;
         }
         await connection.UpdateAsync(row);
@@ -673,16 +676,17 @@ public class Database(
     /// the path itself changes (a different intermediate set is fresh
     /// evidence of liveness over the new path).
     /// </summary>
-    internal async Task UpsertDiscoveredPathAsync(string destinationBaseCallsign, IReadOnlyList<string> intermediates, DateTime now)
+    internal async Task UpsertDiscoveredPathAsync(string destinationCallsign, IReadOnlyList<string> intermediates, DateTime now)
     {
         var connection = DbInfo.GetAsyncConnection();
         var csv = DbDiscoveredPath.ToCsv(intermediates);
-        var existing = await connection.FindAsync<DbDiscoveredPath>(destinationBaseCallsign);
+        var key = DestinationParser.StationKey(destinationCallsign);
+        var existing = await connection.FindAsync<DbDiscoveredPath>(key);
         if (existing is null)
         {
             await connection.InsertAsync(new DbDiscoveredPath
             {
-                DestinationBaseCallsign = destinationBaseCallsign,
+                DestinationCallsign = key,
                 IntermediatesCsv = csv,
                 LastSeenAt = now,
                 LastUsedAt = DateTime.MinValue,
@@ -700,28 +704,28 @@ public class Database(
         await connection.UpdateAsync(existing);
     }
 
-    internal async Task<DbDiscoveredPath?> GetDiscoveredPathAsync(string destinationBaseCallsign)
-        => await DbInfo.GetAsyncConnection().FindAsync<DbDiscoveredPath>(destinationBaseCallsign);
+    internal async Task<DbDiscoveredPath?> GetDiscoveredPathAsync(string destinationCallsign)
+        => await DbInfo.GetAsyncConnection().FindAsync<DbDiscoveredPath>(DestinationParser.StationKey(destinationCallsign));
 
-    internal async Task RecordDiscoveredPathSuccessAsync(string destinationBaseCallsign, DateTime now)
+    internal async Task RecordDiscoveredPathSuccessAsync(string destinationCallsign, DateTime now)
     {
         var connection = DbInfo.GetAsyncConnection();
-        var row = await connection.FindAsync<DbDiscoveredPath>(destinationBaseCallsign);
+        var row = await connection.FindAsync<DbDiscoveredPath>(DestinationParser.StationKey(destinationCallsign));
         if (row is null) return;
         row.ConsecutiveFailures = 0;
         row.LastUsedAt = now;
         await connection.UpdateAsync(row);
     }
 
-    internal async Task<int> RecordDiscoveredPathFailureAsync(string destinationBaseCallsign, int invalidationThreshold)
+    internal async Task<int> RecordDiscoveredPathFailureAsync(string destinationCallsign, int invalidationThreshold)
     {
         var connection = DbInfo.GetAsyncConnection();
-        var row = await connection.FindAsync<DbDiscoveredPath>(destinationBaseCallsign);
+        var row = await connection.FindAsync<DbDiscoveredPath>(DestinationParser.StationKey(destinationCallsign));
         if (row is null) return 0;
         row.ConsecutiveFailures++;
         if (row.ConsecutiveFailures >= invalidationThreshold)
         {
-            await connection.DeleteAsync<DbDiscoveredPath>(destinationBaseCallsign);
+            await connection.DeleteAsync<DbDiscoveredPath>(row.DestinationCallsign);
             return -1;
         }
         await connection.UpdateAsync(row);
@@ -1025,17 +1029,21 @@ public class Database(
     /// observation outranks hearsay.
     /// </summary>
     internal async Task UpsertGossipedRouteAsync(
-        string destinationBaseCallsign, string advertiserCallsign, DateTime now)
+        string destinationCallsign, string advertiserCallsign, DateTime now)
     {
-        if (string.IsNullOrWhiteSpace(destinationBaseCallsign)) return;
+        if (string.IsNullOrWhiteSpace(destinationCallsign)) return;
         if (string.IsNullOrWhiteSpace(advertiserCallsign)) return;
-        // Don't import a route TO ourselves - the advertiser may know
-        // they can reach us, but we already know who we are.
-        var advertiserBase = advertiserCallsign.Split('-')[0];
-        if (string.Equals(destinationBaseCallsign, advertiserBase, StringComparison.OrdinalIgnoreCase)) return;
+        // Don't import a route to the advertiser itself - we already know
+        // the path is "via this peer", since it's the one we're talking to.
+        // Nor a route to us: we already know who we are. Both compared by
+        // the whole callsign, so a sibling of either is a route like any
+        // other (#242).
+        if (DestinationParser.SameStation(destinationCallsign, advertiserCallsign)) return;
+        if (DestinationParser.SameStation(destinationCallsign, options.CurrentValue.Callsign)) return;
+        var key = DestinationParser.StationKey(destinationCallsign);
 
         var connection = DbInfo.GetAsyncConnection();
-        var existing = await connection.FindAsync<DbLearnedRoute>(destinationBaseCallsign);
+        var existing = await connection.FindAsync<DbLearnedRoute>(key);
         if (existing is not null
             && !string.Equals(existing.Source, "gossip", StringComparison.OrdinalIgnoreCase))
         {
@@ -1047,7 +1055,7 @@ public class Database(
         {
             await connection.InsertAsync(new DbLearnedRoute
             {
-                DestinationBaseCallsign = destinationBaseCallsign,
+                DestinationCallsign = key,
                 NextHopCallsign = advertiserCallsign,
                 LastSeenAt = now,
                 LastUsedAt = DateTime.MinValue,

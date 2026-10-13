@@ -154,8 +154,9 @@ public class InboundConnectionHandler(
     }
 
     /// <summary>
-    /// Route gossip - emit one <c>route &lt;dest&gt;</c> line per
-    /// destination this node believes it can reach, then <c>end</c>.
+    /// Route gossip - emit one <c>route &lt;destCallsign&gt;</c> line per
+    /// destination this node believes it can reach, then <c>end</c>. The
+    /// destination is the full callsign, SSID included (#242).
     /// Receivers import each row as a learned route (with
     /// <c>Source = "gossip"</c>) and use the existing failure-counter
     /// invalidation if it turns out not to work.
@@ -178,12 +179,14 @@ public class InboundConnectionHandler(
         // by attempting forwards; a poisoned advert here is bounded by
         // their own ConsecutiveFailures threshold.
         var neighbours = await database.GetNeighbours();
+        // Each under its full callsign, SSID included (#242): G6FCI-7
+        // and G6FCI-8 are two stations and two lines.
         foreach (var n in neighbours)
         {
             if (string.IsNullOrWhiteSpace(n.Callsign)) continue;
-            var baseCall = n.Callsign.Split('-')[0];
-            if (!emitted.Add(baseCall)) continue;
-            sb.Append("route ").Append(baseCall).Append(" hops=1\n");
+            var call = DestinationParser.StationKey(n.Callsign);
+            if (!emitted.Add(call)) continue;
+            sb.Append("route ").Append(call).Append(" hops=1\n");
         }
 
         // Traffic-learned routes. Only export rows we ourselves trust:
@@ -196,10 +199,11 @@ public class InboundConnectionHandler(
             if (r.ConsecutiveFailures > 0) continue;
             if (string.Equals(r.Source, "gossip", StringComparison.OrdinalIgnoreCase)) continue;
             if (r.LastUsedAt == DateTime.MinValue) continue;
-            if (string.IsNullOrWhiteSpace(r.DestinationBaseCallsign)) continue;
-            if (!emitted.Add(r.DestinationBaseCallsign)) continue;
+            if (string.IsNullOrWhiteSpace(r.DestinationCallsign)) continue;
+            var call = DestinationParser.StationKey(r.DestinationCallsign);
+            if (!emitted.Add(call)) continue;
             var ageSeconds = (int)Math.Max(0, (now - r.LastSeenAt).TotalSeconds);
-            sb.Append("route ").Append(r.DestinationBaseCallsign)
+            sb.Append("route ").Append(call)
               .Append(" hops=2 ageSeconds=").Append(ageSeconds).Append('\n');
         }
 

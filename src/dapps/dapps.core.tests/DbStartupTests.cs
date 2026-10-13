@@ -575,4 +575,87 @@ public sealed class DbStartupTests : IAsyncLifetime
 
         act.Should().NotThrow();
     }
+    /// <summary>
+    /// Upgrading from 0.46 (#242): learned routes and discovered paths were
+    /// keyed by base callsign, and sqlite-net never changes an existing
+    /// table's primary key, so those two runtime tables are dropped and
+    /// relearned. Everything the operator configured stays exactly as it
+    /// was, and routes as it did.
+    /// </summary>
+    [Fact]
+    public async Task Upgrade_FromBaseCallsignRoutingTables_KeepsConfigAndRoutesAsBefore()
+    {
+        using (var c = DbInfo.GetConnection())
+        {
+            c.CreateTable<DbSystemOption>();
+            c.Insert(new DbSystemOption { Option = "Callsign", Value = "M0US-7" });
+            c.CreateTable<DbNeighbour>();
+            c.Insert(new DbNeighbour { Callsign = "M0RLY-1", BearerPort = 1 });
+            c.Insert(new DbNeighbour { Callsign = "M0ABC-9", BearerPort = 2 });
+            c.CreateTable<DbRouteHint>();
+            c.Insert(new DbRouteHint { Destination = "G6FCI", NextHop = "M0RLY-1" });
+            c.Insert(new DbRouteHint { Destination = "*", NextHop = "M0ABC-9" });
+            c.CreateTable<OldLearnedRoute>();
+            c.Insert(new OldLearnedRoute { DestinationBaseCallsign = "G0OLD", NextHopCallsign = "M0RLY-1", Source = "traffic" });
+            c.CreateTable<OldDiscoveredPath>();
+            c.Insert(new OldDiscoveredPath { DestinationBaseCallsign = "G0OLD", IntermediatesCsv = "M0RLY-1" });
+        }
+
+        DbStartup.EnsureSchemaAndSeed();
+        DbStartup.EnsureSchemaAndSeed();
+
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Table<DbRouteHint>().OrderBy(h => h.Destination).ToList().Select(h => (h.Destination, h.NextHop))
+                .Should().Equal(("*", "M0ABC-9"), ("G6FCI", "M0RLY-1"));
+            c.Table<DbNeighbour>().ToList().Select(n => n.Callsign).Should().BeEquivalentTo(["M0RLY-1", "M0ABC-9"]);
+            c.Table<DbLearnedRoute>().Count().Should().Be(0, "learned routes are runtime state and relearn");
+            c.Table<DbDiscoveredPath>().Count().Should().Be(0);
+        }
+
+        var options = new TestOptionsMonitor<SystemOptions>(new SystemOptions { Callsign = "M0US-7" });
+        var database = new Database(NullLogger<Database>.Instance, options);
+        var context = new dapps.core.Routing.DatabaseRoutingContext(database, options);
+        var algorithm = new dapps.core.Routing.FloodFallbackAlgorithm(
+            new dapps.core.Routing.PassiveLearningAlgorithm(
+                new dapps.core.Routing.StaticRoutingAlgorithm(NullLogger<dapps.core.Routing.StaticRoutingAlgorithm>.Instance),
+                NullLogger<dapps.core.Routing.PassiveLearningAlgorithm>.Instance),
+            NullLogger<dapps.core.Routing.FloodFallbackAlgorithm>.Instance);
+
+        async Task<string?> NextHop(string destination) =>
+            await algorithm.ResolveAsync(new DbMessage { Id = "0000001", Destination = destination, Payload = [1] },
+                context, TestContext.Current.CancellationToken) is dapps.core.Routing.RouteDecision.NextHop next
+                ? next.Route.Callsign : null;
+
+        (await NextHop("chat@G6FCI-8")).Should().Be("M0RLY-1", "a bare hint still covers every SSID");
+        (await NextHop("chat@G6FCI")).Should().Be("M0RLY-1");
+        (await NextHop("chat@M0ABC-9")).Should().Be("M0ABC-9", "a neighbour is still reached directly");
+        (await NextHop("chat@M0ABC-3")).Should().Be("M0ABC-9", "a neighbour still stands in for another SSID of its callsign");
+        (await NextHop("chat@G0ELSE-1")).Should().Be("M0ABC-9", "the wildcard hint still catches the rest");
+
+        // And the new tables take what is learned.
+        await database.UpsertLearnedRouteAsync("G0NEW-2", "M0RLY-1", DateTime.UtcNow);
+        (await database.GetLearnedRouteAsync("G0NEW-2"))!.NextHopCallsign.Should().Be("M0RLY-1");
+    }
+
+    [Table("learnedroutes")]
+    private sealed class OldLearnedRoute
+    {
+        [PrimaryKey] public string DestinationBaseCallsign { get; set; } = "";
+        public string NextHopCallsign { get; set; } = "";
+        public DateTime LastSeenAt { get; set; }
+        public DateTime LastUsedAt { get; set; }
+        public int ConsecutiveFailures { get; set; }
+        public string Source { get; set; } = "";
+    }
+
+    [Table("discoveredpaths")]
+    private sealed class OldDiscoveredPath
+    {
+        [PrimaryKey] public string DestinationBaseCallsign { get; set; } = "";
+        public string IntermediatesCsv { get; set; } = "";
+        public DateTime LastSeenAt { get; set; }
+        public DateTime LastUsedAt { get; set; }
+        public int ConsecutiveFailures { get; set; }
+    }
 }

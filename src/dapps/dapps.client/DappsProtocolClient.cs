@@ -296,10 +296,11 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
     public sealed record DiscoveredPeerInfo(string Callsign, string Source, int? BearerPort);
 
     /// <summary>One row of a <c>routes</c> response. The remote is
-    /// asserting it can reach <see cref="DestinationBaseCallsign"/>;
-    /// the receiver's gossip importer adds this as a learned route
-    /// via the responding neighbour.</summary>
-    public sealed record GossipedRoute(string DestinationBaseCallsign, int? Hops, int? AgeSeconds);
+    /// asserting it can reach <see cref="DestinationCallsign"/>, a full
+    /// callsign with its SSID (a bare callsign is SSID 0, never "any
+    /// SSID"); the receiver's gossip importer adds this as a learned
+    /// route via the responding neighbour.</summary>
+    public sealed record GossipedRoute(string DestinationCallsign, int? Hops, int? AgeSeconds);
 
     /// <summary>
     /// Send <c>routes\n</c> and read <c>route &lt;dest&gt; ...</c>
@@ -312,7 +313,7 @@ public class DappsProtocolClient(Stream stream, ILoggerFactory loggerFactory)
     /// Wire form per row:
     /// </para>
     /// <code>
-    /// route &lt;destBaseCallsign&gt; [hops=&lt;int&gt;] [ageSeconds=&lt;int&gt;]
+    /// route &lt;destCallsign&gt; [hops=&lt;int&gt;] [ageSeconds=&lt;int&gt;]
     /// </code>
     /// <para>
     /// terminated by <c>end\n</c>. Receivers ignore unknown KVs.

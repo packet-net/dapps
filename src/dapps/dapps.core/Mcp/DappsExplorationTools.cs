@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text;
 using dapps.core.Models;
+using dapps.core.Routing;
 using dapps.core.Services;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Server;
@@ -60,14 +61,13 @@ public sealed class DappsExplorationTools(
         // Build the "what we already know" set: our own callsign +
         // every manual neighbour + every discovered peer + every
         // probed node we already track.
-        var ourBase = options.CurrentValue.Callsign.Split('-')[0];
         var allNeighbours = (await database.GetNeighbours()).Select(n => n.Callsign).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var allPeers = (await database.GetDiscoveredPeers()).Select(p => p.Callsign).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var allProbed = (await database.GetProbedNodes()).Select(p => p.Callsign).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         bool IsKnown(string c) =>
             allNeighbours.Contains(c) || allPeers.Contains(c) || allProbed.Contains(c) ||
-            c.StartsWith(ourBase, StringComparison.OrdinalIgnoreCase);
+            DestinationParser.SameStation(c, options.CurrentValue.Callsign);
 
         var annotated = result.DiscoveredPeers
             .Select(p => new AnnotatedPeer(
@@ -100,17 +100,20 @@ public sealed class DappsExplorationTools(
         "(e.g. 'try run_probe(X) first; if that succeeds, run_probe(target) via X'). The agent proposes - " +
         "the operator runs the recommended action tool to actually act on the suggestion.")]
     public async Task<RouteOpinion> OpinionOnRouteAsync(
-        [Description("Destination callsign. The base callsign without SSID is what gets resolved.")]
+        [Description("Destination callsign with its SSID (no SSID means SSID 0), as routing resolves it.")]
         string destination)
     {
-        var destBase = destination.Trim().Split('-')[0].ToUpperInvariant();
+        var dest = DestinationParser.StationKey(destination);
+        var ours = options.CurrentValue.Callsign;
+        bool Matches(string callsign) =>
+            DestinationParser.SameStation(callsign, dest) || CallsignMatch.StandsIn(callsign, dest, ours);
 
         var candidates = new List<RouteCandidate>();
 
         // Direct surfaces first - these are the same the routing
         // algorithm would consult right now.
         var hints = await database.GetRouteHintsAsync();
-        var hint = hints.FirstOrDefault(h => string.Equals(h.Destination, destBase, StringComparison.OrdinalIgnoreCase));
+        var hint = CallsignMatch.RouteHint(hints, dest);
         if (hint is not null)
         {
             candidates.Add(new RouteCandidate(
@@ -121,7 +124,7 @@ public sealed class DappsExplorationTools(
                 RecommendedAction: $"send_test_message would already use this - no extra step needed."));
         }
 
-        var learned = await database.GetLearnedRouteAsync(destBase);
+        var learned = await database.GetLearnedRouteAsync(dest);
         if (learned is not null)
         {
             var ageMin = (int)Math.Max(0, (DateTime.UtcNow - learned.LastSeenAt).TotalMinutes);
@@ -136,7 +139,7 @@ public sealed class DappsExplorationTools(
                 RecommendedAction: "send_test_message; the routing layer will consult this learned route."));
         }
 
-        var path = await database.GetDiscoveredPathAsync(destBase);
+        var path = await database.GetDiscoveredPathAsync(dest);
         if (path is not null && !string.IsNullOrEmpty(path.IntermediatesCsv))
         {
             var hops = path.IntermediatesCsv.Split(',');
@@ -150,9 +153,7 @@ public sealed class DappsExplorationTools(
 
         // Direct discovery - peer heard from us.
         var peers = await database.GetDiscoveredPeers();
-        var direct = peers.FirstOrDefault(p =>
-            string.Equals(p.Callsign, destBase, StringComparison.OrdinalIgnoreCase)
-            || p.Callsign.StartsWith(destBase + "-", StringComparison.OrdinalIgnoreCase));
+        var direct = CallsignMatch.Best(peers, p => p.Callsign, dest, ours);
         if (direct is not null)
         {
             var ageMin = (int)Math.Max(0, (DateTime.UtcNow - direct.LastSeen).TotalMinutes);
@@ -169,8 +170,7 @@ public sealed class DappsExplorationTools(
         // learned from another peer's `peers` response.
         var probed = await database.GetProbedNodes();
         var transitive = probed
-            .Where(p => string.Equals(p.Callsign, destBase, StringComparison.OrdinalIgnoreCase)
-                        || p.Callsign.StartsWith(destBase + "-", StringComparison.OrdinalIgnoreCase))
+            .Where(p => Matches(p.Callsign))
             .Where(p => p.Source.StartsWith("via:", StringComparison.OrdinalIgnoreCase))
             .Select(p =>
             {
@@ -188,16 +188,16 @@ public sealed class DappsExplorationTools(
         candidates.AddRange(transitive);
 
         var sb = new StringBuilder();
-        sb.Append($"{destBase}: ");
+        sb.Append($"{dest}: ");
         if (candidates.Count == 0)
         {
             sb.Append("no path known on any surface (route hints, learned routes, discovered paths, " +
                       "discovered peers, transitive via:* probes). The bounded-flood fallback would " +
                       "carry the first message and let a learned route form.");
             return new RouteOpinion(
-                Destination: destBase,
+                Destination: dest,
                 Candidates: candidates,
-                RecommendedAction: $"send_test_message(app, '{destBase}', '...') - flood fallback is automatic.",
+                RecommendedAction: $"send_test_message(app, '{dest}', '...') - flood fallback is automatic.",
                 Summary: sb.ToString());
         }
 
@@ -209,7 +209,7 @@ public sealed class DappsExplorationTools(
         sb.Append(best.RecommendedAction);
 
         return new RouteOpinion(
-            Destination: destBase,
+            Destination: dest,
             Candidates: ordered,
             RecommendedAction: best.RecommendedAction,
             Summary: sb.ToString());
