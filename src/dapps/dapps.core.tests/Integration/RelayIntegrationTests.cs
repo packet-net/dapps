@@ -116,6 +116,36 @@ public sealed class RelayIntegrationTests(ThreeInstanceLinbpqFixture fixture) : 
         (await c.InboundAsync("relay", ct)).Should().ContainSingle(Transcript(a, b, c));
     }
 
+    /// <summary>
+    /// Who a link comes from, as the far end sees it, when the call goes
+    /// through a node rather than straight to the peer (#242): A dials
+    /// B's node and has it connect on to C's DAPPS. BPQ makes that
+    /// downlink under A's callsign with the SSID inverted (15 - 9 = 6),
+    /// so C sees N0AAA-6, not A's DAPPS callsign N0AAA-9. Routing maps a
+    /// link source like that to the neighbour row under the same
+    /// callsign rather than requiring the exact call+SSID.
+    /// </summary>
+    [Fact]
+    public async Task AConnectScriptThroughANode_ArrivesUnderTheCallersCallsign_WithTheSsidInverted()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var script = new dapps.client.ConnectScript([new dapps.client.ConnectScriptStep($"C 2 {fixture.ApplCallC}", "DAPPSv1>", 30)]);
+        var a = await StartNodeAsync("viaA", fixture.ApplCallA, fixture.AgwPortA,
+            [new(fixture.ApplCallC, fixture.AxipPortIndex, Script: script, ConnectVia: fixture.CallsignB)], null, ct);
+        var c = await StartNodeAsync("viaC", fixture.ApplCallC, fixture.AgwPortC,
+            [new(fixture.ApplCallB, fixture.AxipPortIndex)], null, ct);
+
+        var payload = Encoding.UTF8.GetBytes("through B's node, not B's DAPPS");
+        await a.SubmitAsync("relay", c.Callsign, payload, ct, ttl: 600);
+
+        DappsDaemon.Inbound got;
+        try { got = (await c.WaitForInboundAsync("relay", 1, Delivery, ct)).Single(); }
+        catch (TimeoutException ex) { throw new TimeoutException(ex.Message + "\n" + a.Tail(60), ex); }
+        got.Payload.Should().Equal(payload);
+        got.SourceCallsign.Should().Be("N0AAA-6", "BPQ's downlink inverts the SSID of the caller, " + fixture.ApplCallA);
+        got.OriginatorCallsign.Should().Be(a.Callsign);
+    }
+
     /// <summary>Wait until <paramref name="sender"/> considers its queue
     /// drained, so "give a duplicate a chance to turn up" doesn't rely on
     /// a fixed sleep that a retry backoff could outlast.</summary>

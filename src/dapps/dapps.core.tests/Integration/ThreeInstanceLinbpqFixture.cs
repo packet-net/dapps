@@ -20,7 +20,8 @@ namespace dapps.core.tests.Integration;
 /// BPQ-B's single AXIP port carries two MAP pairs, one to each side -
 /// that's how one BPQ AXIP driver fans out to several peers, the same
 /// way <see cref="TwoInstanceLinbpqFixture"/> does it for two. A has no
-/// MAP entry for C's callsigns and vice versa, so an AGW connect from A
+/// MAP entry for C's callsigns and vice versa (C has one only for the
+/// N0AAA-6 a downlink from B's node arrives as), so an AGW connect from A
 /// straight to C is refused; DAPPS has to route the message to B first.
 ///
 /// Networking: all three containers share container A's network
@@ -78,7 +79,12 @@ public sealed class ThreeInstanceLinbpqFixture : IAsyncLifetime
             nodeCall: CallsignC, nodeAlias: "CCC", applCall: ApplCallC, applAlias: "APPLC",
             agwInsidePort: InsideAgwPortC, axipInsidePort: InsideAxipPortC,
             telnetInsidePort: 18013, httpInsidePort: 18023, netromInsidePort: 18033, fbbInsidePort: 18043, apiInsidePort: 18053,
-            peers: [(CallsignB, ApplCallB, InsideAxipPortB)]));
+            peers: [(CallsignB, ApplCallB, InsideAxipPortB)],
+            // A call to C that A has B's node make (a connect script through
+            // B, #242) comes from N0AAA-6: BPQ inverts the SSID of A's
+            // N0AAA-9 for the downlink. C only answers it knowing where to
+            // send the replies: back to B. A still can't reach C straight.
+            replyVia: (["N0AAA-6"], InsideAxipPortB)));
 
         // A publishes all three AGW ports. B and C share A's netns, so
         // their AGW ports are reachable on the host via A's mappings too.
@@ -135,9 +141,14 @@ public sealed class ThreeInstanceLinbpqFixture : IAsyncLifetime
         string nodeCall, string nodeAlias, string applCall, string applAlias,
         int agwInsidePort, int axipInsidePort,
         int telnetInsidePort, int httpInsidePort, int netromInsidePort, int fbbInsidePort, int apiInsidePort,
-        IReadOnlyList<(string Call, string ApplCall, int AxipInsidePort)> peers)
+        IReadOnlyList<(string Call, string ApplCall, int AxipInsidePort)> peers,
+        (string[] Calls, int AxipInsidePort)? replyVia = null)
     {
         var maps = new StringBuilder();
+        foreach (var call in replyVia?.Calls ?? [])
+        {
+            maps.Append($" MAP {call} 127.0.0.1 UDP {replyVia!.Value.AxipInsidePort} B\n");
+        }
         var routes = new StringBuilder();
         foreach (var (call, applCallPeer, peerAxipInsidePort) in peers)
         {

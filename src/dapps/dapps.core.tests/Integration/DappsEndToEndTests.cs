@@ -356,7 +356,7 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : Dapps
             (await ReadUntilEndAsync(caller, ct)).Should().Contain($"peer {fixture.ApplCallA} source=n port={fixture.AxipPortIndex}");
 
             await caller.SendAsync("routes\n", ct);
-            (await ReadUntilEndAsync(caller, ct)).Should().Contain($"route {fixture.CallsignA} hops=1");
+            (await ReadUntilEndAsync(caller, ct)).Should().Contain($"route {fixture.ApplCallA} hops=1", "a route names the station, SSID included (#242)");
 
             // Our rules: from now on either side sends as it likes. B
             // already sent its own, so it doesn't answer with another.
@@ -405,7 +405,12 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : Dapps
         var payload = "via the node"u8.ToArray();
         await a.SubmitAsync("chat", b.Callsign, payload, ct);
 
-        (await b.WaitForInboundAsync("chat", 1, Delivery, ct)).Single().Payload.Should().Equal(payload);
+        var got = (await b.WaitForInboundAsync("chat", 1, Delivery, ct)).Single();
+        got.Payload.Should().Equal(payload);
+        // Through the node, B still sees the call come from A's own
+        // DAPPS callsign, which routing compares with its neighbour rows
+        // exactly (#242).
+        got.SourceCallsign.Should().Be(a.Callsign);
         // However BPQ routes the connect to B's node (directly, or over the
         // NET/ROM link the two nodes build between themselves), A has to
         // type B's application command there and get B's prompt back.
