@@ -356,8 +356,9 @@ Reference: [InboundConnectionHandler.cs](https://github.com/packet-net/dapps/blo
 ```
 C: routes\n
 S: route M0LTE-9 hops=1\n
-S: route GB7RDG hops=2 ageSeconds=300\n
-S: route G7VVK hops=2 ageSeconds=900\n
+S: route G6FCI-7 hops=1\n
+S: route G6FCI-8 hops=2 ageSeconds=300\n
+S: route GB7RDG hops=2 ageSeconds=900\n
 S: end\n
 ```
 
@@ -366,16 +367,18 @@ The connecting peer asks "what destinations can you reach?"; the server emits on
 Per-line format:
 
 ```
-route <destBaseCallsign> [hops=<int>] [ageSeconds=<int>]
+route <destCallsign> [hops=<int>] [ageSeconds=<int>]
 ```
 
-- `destBaseCallsign`: the destination's base callsign (no SSID).
+- `destCallsign`: the destination's full callsign, `CALL[-SSID]`. The SSID is part of the station's identity, so two SSIDs of one callsign are two lines, as `G6FCI-7` and `G6FCI-8` are above. A bare callsign means SSID 0, as in AX.25 (`GB7RDG` above is `GB7RDG-0`); it never means "any SSID". Compare callsigns ignoring case, and treat `-0` and no SSID as the same.
 - `hops` (optional): a hint for the receiver's cost calculation. The reference daemon emits `1` for direct neighbours, `2` for traffic-learned routes (via one intermediate). Receivers that don't care about hops ignore it.
 - `ageSeconds` (optional): how long ago the responder last saw evidence the route works. Helps the receiver decide whether to trust it.
 
-Receivers import each row as a learned route via the responding peer, marked as gossip-sourced. Failures invalidate via the same per-row failure counter the daemon already maintains for traffic-learned routes; gossip-sourced rows don't get re-exported (only direct observation gets advertised, to avoid distance-vector loops).
+Receivers import each row as a learned route to that exact station via the responding peer, marked as gossip-sourced, skipping a row for the responding peer itself or for the receiver's own callsign. Failures invalidate via the same per-row failure counter the daemon already maintains for traffic-learned routes; gossip-sourced rows don't get re-exported (only direct observation gets advertised, to avoid distance-vector loops).
 
 The reference daemon's emitter filters: only routes whose failure counter is zero, and only routes the daemon itself has actually used (not just heard about). Manual neighbours are always advertised; traffic-learned routes are advertised only when proven; gossip-imported routes are never advertised (don't re-export hearsay).
+
+Up to 0.46 the reference daemon sent the base callsign alone and filed what it received under the base callsign. Mixed versions still work: an older node files `route G6FCI-8` under `G6FCI-8` and never looks it up, and a newer one reads an older node's `route G6FCI` as SSID 0. Either way the route goes unused and routing falls back as it would without it.
 
 Implementations that don't care about route gossip should respond `eh?\n` to the command. Senders treat `eh?` as "this peer doesn't gossip" and don't ask again for a while.
 
