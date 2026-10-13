@@ -45,11 +45,17 @@ public sealed class XrouterIntegrationFixture : IAsyncLifetime
 {
     /// <summary>
     /// Pinned by digest, like the other test images, so the tests only move
-    /// to a new XRouter on purpose: XRouter 505o, the image built on
-    /// 11 October 2026. CI pulls whatever digest this line names. To try
+    /// to a new XRouter on purpose: XRouter 505c, the image built on
+    /// 3 May 2026. CI pulls whatever digest this line names. To try
     /// another build first, set DAPPS_XROUTER_IMAGE to its image reference.
+    ///
+    /// Not 505o (built 11 October 2026): its reply to an RHPv2 bind isn't
+    /// valid JSON (packethacking/xrouter-container#2), so DAPPS never gets
+    /// to listen and <see cref="XrouterRhpEndToEndTests"/> fails. The AGW
+    /// test passes on 505o. The pin moves once XRouter publishes a build
+    /// with a valid bind reply.
     /// </summary>
-    public const string PinnedImage = "ghcr.io/packethacking/xrouter@sha256:13894554b23fd4c552d3dfc4738e17e47bf2622a25c8c0740b81a780477d44da";
+    public const string PinnedImage = "ghcr.io/packethacking/xrouter@sha256:6a885470e19d5c8ee3033d224a30a8675d5b1957428a832aa89746f37ec0b611";
 
     public static string Image =>
         Environment.GetEnvironmentVariable("DAPPS_XROUTER_IMAGE") is { Length: > 0 } other ? other : PinnedImage;
