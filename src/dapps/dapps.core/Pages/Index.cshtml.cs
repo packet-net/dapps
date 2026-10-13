@@ -81,9 +81,7 @@ public sealed class IndexModel(
     /// </summary>
     public static (string Label, string PillClass) MessageStatus(DbMessage m, string ourCallsign)
     {
-        var local = ourCallsign.Split('-')[0];
-        var dest = m.Destination.Split('@').Last().Split('-')[0];
-        var isLocal = string.Equals(dest, local, StringComparison.OrdinalIgnoreCase);
+        var isLocal = DestinationParser.IsLocal(m.Destination, ourCallsign);
         if (isLocal && m.LocallyDelivered) return ("delivered", "ok");
         if (isLocal) return ("pending local", "warn");
         if (m.Forwarded) return ("forwarded", "info");

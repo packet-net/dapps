@@ -28,13 +28,15 @@ public class DestinationParserTests
 
     [Theory]
     [InlineData("foo@N0CALL", "N0CALL", true)]
-    [InlineData("foo@N0CALL-3", "N0CALL", true)]                    // dest has SSID, local doesn't
-    [InlineData("foo@N0CALL", "N0CALL-1", true)]                     // local has SSID, dest doesn't
+    [InlineData("foo@N0CALL-3", "N0CALL-3", true)]
+    [InlineData("foo@N0CALL-3", "N0CALL", false)]                   // the SSID is part of the station (#239)
+    [InlineData("foo@N0CALL", "N0CALL-1", false)]
+    [InlineData("foo@N0CALL", "N0CALL-0", true)]                     // no SSID is SSID 0
     [InlineData("foo@n0call", "N0CALL", true)]                       // case-insensitive
     [InlineData("foo@G8BPQ", "N0CALL", false)]                       // different callsign
     [InlineData("", "N0CALL", false)]                                // malformed
     [InlineData("foo@", "N0CALL", false)]                            // empty callsign
-    public void IsLocal_MatchesSsidInsensitivelyAndCaseInsensitively(string destination, string local, bool expected)
+    public void IsLocal_MatchesTheWholeCallsignCaseInsensitively(string destination, string local, bool expected)
     {
         DestinationParser.IsLocal(destination, local).Should().Be(expected);
     }

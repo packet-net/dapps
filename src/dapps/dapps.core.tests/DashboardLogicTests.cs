@@ -30,11 +30,12 @@ public class DashboardLogicTests
     }
 
     [Fact]
-    public void MessageStatus_LocalSsidVariant_StillCountsAsLocal()
+    public void MessageStatus_OtherSsidOfOurCallsign_IsRemote()
     {
-        // "myapp@N0CALL-3" - same base callsign as us, different SSID.
-        var m = new DbMessage { Destination = "myapp@N0CALL-3", LocallyDelivered = true };
-        IndexModel.MessageStatus(m, "N0CALL").Label.Should().Be("delivered");
+        // "myapp@N0CALL-3" - same base callsign as us, different SSID,
+        // so another node's mail (#239).
+        var m = new DbMessage { Destination = "myapp@N0CALL-3", Forwarded = false };
+        IndexModel.MessageStatus(m, "N0CALL").Label.Should().Be("pending");
     }
 
     [Fact]

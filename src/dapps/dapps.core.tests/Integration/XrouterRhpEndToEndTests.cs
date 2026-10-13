@@ -20,8 +20,7 @@ public sealed class XrouterRhpEndToEndTests(XrouterIntegrationFixture fixture) :
 {
     private static readonly TimeSpan Delivery = TimeSpan.FromSeconds(60);
 
-    // Different base callsigns: DAPPS takes mail for its own base callsign,
-    // whatever the SSID, as its own. And none of the node's (G9DUM).
+    // None of the node's callsign (G9DUM).
     private const string CallA = "G9AAA-7";
     private const string CallB = "G9BBB-7";
     private readonly List<DappsDaemon> running = [];
@@ -48,6 +47,33 @@ public sealed class XrouterRhpEndToEndTests(XrouterIntegrationFixture fixture) :
         gotThere.SourceCallsign.Should().Be(a.Callsign);
 
         var back = Encoding.UTF8.GetBytes("Hello A, B here, heard you fine");
+        var backId = await b.SubmitAsync("chat", a.Callsign, back, ct);
+        var gotBack = (await WaitAsync(a, b, ct)).Single();
+        gotBack.Id.Should().Be(backId);
+        gotBack.Payload.Should().Equal(back);
+        gotBack.SourceCallsign.Should().Be(b.Callsign);
+    }
+
+    /// <summary>
+    /// Two daemons under one callsign, told apart by SSID, as an operator
+    /// running two nodes of their own sets it up (#239). Each must see the
+    /// other's mail as mail to send on, not as mail for its own apps.
+    /// </summary>
+    [Fact]
+    public async Task AMessage_GoesEachWay_BetweenTwoSsidsOfOneCallsign()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var a = await StartAsync("xr-s7", "G9AAA-7", "G9AAA-8", ct);
+        var b = await StartAsync("xr-s8", "G9AAA-8", "G9AAA-7", ct);
+
+        var there = Encoding.UTF8.GetBytes("Hello World");
+        var thereId = await a.SubmitAsync("chat", b.Callsign, there, ct);
+        var gotThere = (await WaitAsync(b, a, ct)).Single();
+        gotThere.Id.Should().Be(thereId);
+        gotThere.Payload.Should().Equal(there);
+        gotThere.SourceCallsign.Should().Be(a.Callsign);
+
+        var back = Encoding.UTF8.GetBytes("Hello yourself");
         var backId = await b.SubmitAsync("chat", a.Callsign, back, ct);
         var gotBack = (await WaitAsync(a, b, ct)).Single();
         gotBack.Id.Should().Be(backId);

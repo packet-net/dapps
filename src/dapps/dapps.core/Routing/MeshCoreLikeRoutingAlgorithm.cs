@@ -219,7 +219,7 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
         IReadOnlyList<string> downstream;
         if (remaining.Length == 0)
         {
-            nextHopCallsign = destBaseCall;
+            nextHopCallsign = message.Destination.Split('@').Last();
             downstream = [];
         }
         else
@@ -236,9 +236,7 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
             // entries may differ in SSID. Fall back to a base-match
             // scan before declaring the source route broken.
             var neighbours = await ctx.GetNeighboursAsync(ct);
-            var nextHopBase = nextHopCallsign.Split('-')[0];
-            nextHop = neighbours.FirstOrDefault(
-                n => n.Callsign.Split('-')[0].Equals(nextHopBase, StringComparison.OrdinalIgnoreCase));
+            nextHop = CallsignMatch.Best(neighbours, n => n.Callsign, nextHopCallsign);
             if (nextHop is null)
             {
                 logger.LogWarning(
@@ -293,7 +291,7 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
         IReadOnlyList<string> downstream;
         if (intermediates.Count == 0)
         {
-            nextHopCallsign = destBaseCall;
+            nextHopCallsign = message.Destination.Split('@').Last();
             downstream = [];
         }
         else
@@ -306,9 +304,7 @@ public sealed class MeshCoreLikeRoutingAlgorithm(
         if (nextHop is null)
         {
             var neighbours = await ctx.GetNeighboursAsync(ct);
-            var nextHopBase = nextHopCallsign.Split('-')[0];
-            nextHop = neighbours.FirstOrDefault(
-                n => n.Callsign.Split('-')[0].Equals(nextHopBase, StringComparison.OrdinalIgnoreCase));
+            nextHop = CallsignMatch.Best(neighbours, n => n.Callsign, nextHopCallsign);
         }
         if (nextHop is null)
         {

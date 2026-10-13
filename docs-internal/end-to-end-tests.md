@@ -48,7 +48,7 @@ The cases that don't depend on BPQ live in `DappsExchangeTests`, which takes any
 
 `UdpBearerIntegrationTests` puts a neighbour's `UdpEndpoint` between two daemons instead of an AGW bearer port - the fire-and-forget datagram bearer Plan A0.4 stands in for MeshCore with. The two BPQs stay up only so each daemon has a node to be "reachable" on at startup; the test checks BPQ's monitor never sees a session between the two application callsigns at all, proving the message went by plain UDP.
 
-`XrouterRhpEndToEndTests` runs DAPPS on XRouter the way docs/connect/xrouter.md sets it up, over RHPv2: two daemons on one XRouter (`XrouterIntegrationFixture`), and a message each way between them through the node's loopback port, so each daemon's listener and its dials are both used. There's no air monitor for XRouter, so the `DappsExchangeTests` cases don't run on it. The two daemons need different base callsigns, as DAPPS takes mail for its own base callsign, whatever the SSID, as its own.
+`XrouterRhpEndToEndTests` runs DAPPS on XRouter the way docs/connect/xrouter.md sets it up, over RHPv2: two daemons on one XRouter (`XrouterIntegrationFixture`), and a message each way between them through the node's loopback port, so each daemon's listener and its dials are both used. There's no air monitor for XRouter, so the `DappsExchangeTests` cases don't run on it. It runs twice: once with two different callsigns, and once with two SSIDs of one callsign (G9AAA-7 and G9AAA-8), as an operator running two nodes of their own would (#239).
 
 ## On a simulated radio channel
 

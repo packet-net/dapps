@@ -1,3 +1,4 @@
+using dapps.core.Services;
 using dapps.client.Backhaul;
 using dapps.core.Models;
 
@@ -30,28 +31,29 @@ public sealed class StaticRoutingAlgorithm(ILogger<StaticRoutingAlgorithm> logge
         var neighbours = await ctx.GetNeighboursAsync(ct);
         var peers = await ctx.GetDiscoveredPeersAsync(ct);
 
-        // Destinations are `app@call[-ssid]`. Compare on the base
-        // callsign - SSID mismatches between configured route and
-        // destination are tolerated.
-        var destBaseCall = message.Destination.Split('@').Last().Split('-')[0];
+        // Destinations are `app@call[-ssid]`. A neighbour with the exact
+        // call+SSID wins; failing that, SSID mismatches between configured
+        // route and destination are tolerated.
+        var destCall = message.Destination.Split('@').Last();
+        var destBaseCall = destCall.Split('-')[0];
 
         // 1. Manual operator-configured neighbour wins. Lets a sysop
         //    pin a specific route even if discovery would suggest a
         //    different (and possibly cheaper) channel.
-        var manual = neighbours.FirstOrDefault(
-            n => n.Callsign.Split('-')[0].Equals(destBaseCall, StringComparison.OrdinalIgnoreCase));
+        var manual = CallsignMatch.Best(neighbours, n => n.Callsign, destCall);
         if (manual is not null)
         {
             return new RouteDecision.NextHop(RouteBuilder.FromNeighbour(manual, ctx.DefaultBearerPort));
         }
 
         // 2. Discovered peers, freshness-filtered, ordered by cost.
-        //    The cheapest fresh channel wins.
+        //    The exact call+SSID first, then the cheapest fresh channel.
         var now = DateTime.UtcNow;
         var freshPeer = peers
-            .Where(p => p.Callsign.Split('-')[0].Equals(destBaseCall, StringComparison.OrdinalIgnoreCase))
+            .Where(p => CallsignMatch.SameBase(p.Callsign, destCall))
             .Where(p => (now - p.LastSeen).TotalSeconds <= p.TtlSeconds)
-            .OrderBy(p => p.CostHint)
+            .OrderBy(p => DestinationParser.SameStation(p.Callsign, destCall) ? 0 : 1)
+            .ThenBy(p => p.CostHint)
             .ThenBy(p => p.Hops)
             .FirstOrDefault();
         if (freshPeer is not null)

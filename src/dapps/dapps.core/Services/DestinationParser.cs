@@ -13,16 +13,45 @@ public static class DestinationParser
     }
 
     /// <summary>
-    /// True when the destination's callsign part matches our local callsign,
-    /// SSID-insensitive (so `app@N0CALL-3` matches when our local is `N0CALL`,
-    /// and vice versa).
+    /// True when the destination's callsign is our own, SSID included:
+    /// `app@G6FCI-8` is not local to G6FCI-7, so two nodes under one
+    /// callsign can mail each other (#239). Case-insensitive, and a bare
+    /// callsign is SSID 0, as in AX.25.
     /// </summary>
     public static bool IsLocal(string destination, string localCallsign)
     {
         var (_, dst) = Parse(destination);
         if (dst.Length == 0) return false;
-        var dstBase = dst.Split('-')[0];
-        var localBase = localCallsign.Split('-')[0];
-        return string.Equals(dstBase, localBase, StringComparison.OrdinalIgnoreCase);
+        return SameStation(dst, localCallsign);
     }
+
+    /// <summary>True when two callsigns name the same station: same call,
+    /// same SSID, ignoring case, with no SSID meaning SSID 0.</summary>
+    public static bool SameStation(string a, string b)
+        => string.Equals(Normalise(a), Normalise(b), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The SQL LIKE patterns (escaped with '\') that match a destination
+    /// for <paramref name="app"/> (or any app, when null) at our own
+    /// callsign. Two patterns, because SSID 0 can be written with or
+    /// without the "-0"; for any other SSID both are the same. SQLite's
+    /// LIKE is case-insensitive for ASCII, as callsigns are.
+    /// </summary>
+    public static (string, string) LocalLikePatterns(string localCallsign, string? app = null)
+    {
+        var call = EscapeLike(Normalise(localCallsign));
+        var prefix = app is null ? "%@" : EscapeLike(app) + "@";
+        return call.Contains('-')
+            ? (prefix + call, prefix + call)
+            : (prefix + call, prefix + call + "-0");
+    }
+
+    private static string Normalise(string callsign)
+    {
+        var c = callsign.Trim();
+        return c.EndsWith("-0", StringComparison.Ordinal) ? c[..^2] : c;
+    }
+
+    private static string EscapeLike(string s)
+        => s.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
 }
