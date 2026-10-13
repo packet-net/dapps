@@ -322,9 +322,9 @@ cmd_learned() {
 import sqlite3, sys
 con = sqlite3.connect(sys.argv[1])
 try:
-    rows = list(con.execute("select DestinationBaseCallsign, NextHopCallsign, LastSeenAt, ConsecutiveFailures from learnedroutes order by DestinationBaseCallsign"))
+    rows = list(con.execute("select DestinationCallsign, NextHopCallsign, LastSeenAt, ConsecutiveFailures from learnedroutes2 order by DestinationCallsign"))
 except sqlite3.OperationalError as e:
-    print(f"  (no learnedroutes table yet: {e})"); sys.exit()
+    print(f"  (no learnedroutes2 table yet: {e})"); sys.exit()
 if not rows:
     print("  (none)")
 for dest, nh, seen, fails in rows:
@@ -347,9 +347,9 @@ cmd_discovered() {
 import sqlite3, sys
 con = sqlite3.connect(sys.argv[1])
 try:
-    rows = list(con.execute("select DestinationBaseCallsign, IntermediatesCsv, LastSeenAt, ConsecutiveFailures from discoveredpaths order by DestinationBaseCallsign"))
+    rows = list(con.execute("select DestinationCallsign, IntermediatesCsv, LastSeenAt, ConsecutiveFailures from discoveredpaths2 order by DestinationCallsign"))
 except sqlite3.OperationalError as e:
-    print(f"  (no discoveredpaths table yet: {e})"); sys.exit()
+    print(f"  (no discoveredpaths2 table yet: {e})"); sys.exit()
 if not rows:
     print("  (none)")
 for dest, mids, seen, fails in rows:

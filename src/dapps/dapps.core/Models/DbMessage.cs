@@ -80,7 +80,7 @@ public class DbMessage
     /// local node). Each forwarder appends its own callsign before
     /// encoding the outbound copy. Carried only on flood-discovery
     /// messages - the destination uses the inbound value reversed
-    /// to populate its <c>discoveredpaths</c> table.
+    /// to populate its <c>discoveredpaths2</c> table.
     /// </summary>
     public string? TraversedHopsCsv { get; init; }
 

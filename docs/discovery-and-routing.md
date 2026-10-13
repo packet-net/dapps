@@ -85,7 +85,7 @@ DSR-flavoured. The sender stamps the path on the message; intermediate nodes fol
 
 ## Route gossip
 
-Once two DAPPS nodes have a session open for real work (a push, a probe, a reverse poll), they piggyback a `routes` exchange to share what they know about further-reach destinations. The receiver writes each gossiped route into its `learnedroutes` table marked `source=gossip`; the existing failure-counter machinery invalidates anything that turns out not to work.
+Once two DAPPS nodes have a session open for real work (a push, a probe, a reverse poll), they piggyback a `routes` exchange to share what they know about further-reach destinations. The receiver writes each gossiped route into its learned-routes table marked `source=gossip`; the existing failure-counter machinery invalidates anything that turns out not to work.
 
 Bounded by a per-(local, remote) staleness gate: at most one pull per `RouteGossipStalenessHours` (default 6h) per neighbour, regardless of session frequency. No scheduled transmission - if there's no traffic and no probes, no gossip exchange happens. Setting `RouteGossipStalenessHours=0` disables it entirely.
 

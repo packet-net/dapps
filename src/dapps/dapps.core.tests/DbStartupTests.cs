@@ -638,6 +638,34 @@ public sealed class DbStartupTests : IAsyncLifetime
         (await database.GetLearnedRouteAsync("G0NEW-2"))!.NextHopCallsign.Should().Be("M0RLY-1");
     }
 
+    /// <summary>
+    /// Downgrading from 0.47.0 to 0.46 must still start: 0.46 opens
+    /// learnedroutes and discoveredpaths with their old base-callsign key,
+    /// and sqlite-net can't add a primary key column to a table 0.47.0 left
+    /// in another shape. 0.47.0 keeps its routes under new table names, so
+    /// the old ones are simply recreated empty.
+    /// </summary>
+    [Fact]
+    public void Downgrade_AfterThisVersionHasRun_StillOpensTheOldTables()
+    {
+        DbStartup.EnsureSchemaAndSeed();
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbLearnedRoute { DestinationCallsign = "G6FCI-8", NextHopCallsign = "M0RLY-1" });
+            c.Insert(new DbDiscoveredPath { DestinationCallsign = "G6FCI-8", IntermediatesCsv = "M0RLY-1" });
+        }
+
+        using var old = DbInfo.GetConnection();
+        var act = () =>
+        {
+            old.CreateTable<OldLearnedRoute>();
+            old.CreateTable<OldDiscoveredPath>();
+            old.Insert(new OldLearnedRoute { DestinationBaseCallsign = "G0OLD", NextHopCallsign = "M0RLY-1" });
+        };
+
+        act.Should().NotThrow();
+    }
+
     [Table("learnedroutes")]
     private sealed class OldLearnedRoute
     {

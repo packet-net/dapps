@@ -16,14 +16,17 @@ namespace dapps.core.Models;
 /// destination with weighting, but a single best-effort entry is
 /// enough for the v0.x phase.
 /// </summary>
-[Table("learnedroutes")]
+// "learnedroutes2": the table was "learnedroutes", keyed by base
+// callsign, until 0.47.0 (#242). A new name rather than a migration, so a
+// downgrade finds no table of the wrong shape and starts.
+[Table("learnedroutes2")]
 public class DbLearnedRoute
 {
     /// <summary>The destination's full callsign, SSID included, in
     /// <see cref="dapps.core.Services.DestinationParser.StationKey"/> form
     /// (upper case, no "-0"): G0FOO-1 and G0FOO-9 are two stations and
     /// keep a route each (#242). Before 0.47.0 this was the base
-    /// callsign, and DbStartup drops a table keyed that way.</summary>
+    /// callsign, in the old "learnedroutes" table.</summary>
     [PrimaryKey]
     public string DestinationCallsign { get; set; } = "";
 

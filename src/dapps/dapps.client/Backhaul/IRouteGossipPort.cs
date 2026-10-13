@@ -10,7 +10,7 @@ namespace dapps.client.Backhaul;
 ///
 /// Implementations live in dapps.core; the gate consults the
 /// <c>routegossipstate</c> table and the import upserts into
-/// <c>learnedroutes</c>.
+/// <c>learnedroutes2</c>.
 /// </summary>
 public interface IRouteGossipPort
 {

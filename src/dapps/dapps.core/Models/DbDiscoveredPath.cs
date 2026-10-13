@@ -17,14 +17,16 @@ namespace dapps.core.Models;
 /// work could maintain a candidate set with weighting; today the
 /// most-recent flood wins.
 /// </summary>
-[Table("discoveredpaths")]
+// "discoveredpaths2": "discoveredpaths", keyed by base callsign, until
+// 0.47.0 (#242); a new name so a downgrade still starts.
+[Table("discoveredpaths2")]
 public class DbDiscoveredPath
 {
     /// <summary>The destination's full callsign, SSID included, in
     /// <see cref="dapps.core.Services.DestinationParser.StationKey"/> form
     /// (upper case, no "-0"): G0FOO-1 and G0FOO-9 are two stations and
     /// keep a path each (#242). Before 0.47.0 this was the base
-    /// callsign, and DbStartup drops a table keyed that way.</summary>
+    /// callsign, in the old "discoveredpaths" table.</summary>
     [PrimaryKey]
     public string DestinationCallsign { get; set; } = "";
 

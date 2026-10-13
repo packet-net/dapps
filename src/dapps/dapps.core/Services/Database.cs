@@ -575,7 +575,7 @@ public class Database(
     public async Task<IReadOnlyList<DbLearnedRoute>> GetLearnedRoutesAsync()
     {
         var connection = DbInfo.GetAsyncConnection();
-        return await connection.QueryAsync<DbLearnedRoute>("select * from learnedroutes order by LastSeenAt desc");
+        return await connection.QueryAsync<DbLearnedRoute>("select * from learnedroutes2 order by LastSeenAt desc");
     }
 
     // ── Flood deduplication (PR-C) ──────────────────────────────────
@@ -736,7 +736,7 @@ public class Database(
     public async Task<IReadOnlyList<DbDiscoveredPath>> GetDiscoveredPathsAsync()
     {
         var connection = DbInfo.GetAsyncConnection();
-        return await connection.QueryAsync<DbDiscoveredPath>("select * from discoveredpaths order by LastSeenAt desc");
+        return await connection.QueryAsync<DbDiscoveredPath>("select * from discoveredpaths2 order by LastSeenAt desc");
     }
 
 

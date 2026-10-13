@@ -177,11 +177,12 @@ public static class DbStartup
         // keeps them itself now. Drop the table an older version left.
         db.Execute("drop table if exists offers");
         // Learned routes and discovered paths were keyed by base callsign
-        // until 0.47.0 and are keyed by the full callsign now (#242).
-        // sqlite-net never changes an existing table's primary key, so a
-        // table of the old shape goes; it is runtime state and relearns.
-        DropIfKeyedByBaseCallsign(db, "learnedroutes", logger);
-        DropIfKeyedByBaseCallsign(db, "discoveredpaths", logger);
+        // until 0.47.0, and live in new tables keyed by the full callsign
+        // now (#242). The old ones go: they are runtime state and relearn.
+        // New tables rather than reshaped old ones, so a downgrade finds
+        // no table it can't open, and simply starts with empty ones.
+        db.Execute("drop table if exists learnedroutes");
+        db.Execute("drop table if exists discoveredpaths");
         db.CreateTable<DbMessage>();
         db.CreateTable<DbSystemOption>();
         db.CreateTable<DbRouteHint>();
@@ -239,17 +240,6 @@ public static class DbStartup
         ValidateRequiredConfig(db, logger);
 
         logger?.LogInformation("DB schema refreshed");
-    }
-
-    private static void DropIfKeyedByBaseCallsign(SQLiteConnection db, string table, ILogger? logger)
-    {
-        if (!db.GetTableInfo(table).Any(c => string.Equals(c.Name, "DestinationBaseCallsign", StringComparison.OrdinalIgnoreCase)))
-        {
-            return;
-        }
-        db.Execute($"drop table {table}");
-        logger?.LogInformation(
-            "Cleared {0}: routes are now kept per callsign and SSID, and will be learned again from traffic", table);
     }
 
     /// <summary>Marks that <see cref="TurnOnUpdateCheckForDeb"/> has run on this database.</summary>
