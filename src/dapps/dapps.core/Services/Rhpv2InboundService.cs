@@ -363,7 +363,14 @@ public sealed class Rhpv2InboundService(
             var handle = await rhp.SocketAsync(ProtocolFamily.Ax25, SocketMode.Stream, ct);
             try
             {
-                await rhp.BindAsync(handle, local: candidate, port: null, ct);
+                // Port omitted (null): all of the node's ports. Rhpv2Bind
+                // also reads XRouter 505o's bind reply, which isn't JSON.
+                if (await Rhpv2Bind.BindAsync(rhp, handle, candidate, ct))
+                {
+                    logger.LogInformation(
+                        "RHP inbound: the node's reply to bind {call} wasn't valid JSON (XRouter 505o does this); read it as Ok",
+                        candidate);
+                }
                 await rhp.ListenAsync(handle, OpenFlags.Passive, ct);
             }
             catch (RhpServerException ex) when (ex.ErrorCode == RhpErrorCode.DuplicateSocket)

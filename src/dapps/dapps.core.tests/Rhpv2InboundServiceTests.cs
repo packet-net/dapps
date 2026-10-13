@@ -185,6 +185,39 @@ public sealed class Rhpv2InboundServiceTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task Startup_OnXrouter505o_ListensDespiteItsUnreadableBindReply()
+    {
+        // XRouter 505o answers bind with a reply that isn't JSON. Before
+        // Rhpv2Bind, the service waited for the bind forever and never
+        // listened, so nothing could connect to it.
+        await using var node = new UnreadableBindReplyRhpNode();
+        var opts = new TestOptionsMonitor<SystemOptions>(new SystemOptions
+        {
+            Callsign = "G0DPB-1",
+            NodeBearer = "rhpv2",
+            NodeHost = node.Endpoint.Address.ToString(),
+            RhpPort = node.Endpoint.Port,
+        });
+        var service = new Rhpv2InboundService(
+            opts, NullLoggerFactory.Instance, NullLogger<Rhpv2InboundService>.Instance,
+            new Database(NullLogger<Database>.Instance, opts), new NoopInbox(), new OperationalMetrics());
+
+        await service.StartAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (node.Requests.Count < 3 && DateTime.UtcNow < deadline) await Task.Delay(10, TestContext.Current.CancellationToken);
+
+            node.Requests.Select(r => r.GetType())
+                .Should().Equal(typeof(SocketMessage), typeof(BindMessage), typeof(ListenMessage));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
     private sealed class NoopInbox : IBackhaulInbox
     {
         public Task DeliverAsync(BackhaulMessage message, string sourceCallsign, CancellationToken ct)

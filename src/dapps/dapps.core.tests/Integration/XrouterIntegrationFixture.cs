@@ -5,11 +5,11 @@ using DotNet.Testcontainers.Containers;
 namespace dapps.core.tests.Integration;
 
 /// <summary>
-/// Spins up a single ghcr.io/packethacking/xrouter container with AGW
-/// exposed to the host. Mirrors <see cref="LinbpqIntegrationFixture"/>'s
-/// shape so AGW frame-format and behavioural tests can run against
-/// XRouter's AGW emulator alongside BPQ's, proving DAPPS isn't
-/// BPQ-specific.
+/// Spins up a single ghcr.io/packethacking/xrouter container with its AGW
+/// emulator and its RHPv2 port exposed to the host. AGW frame-format tests
+/// run against XRouter's AGW emulator alongside BPQ's, proving DAPPS isn't
+/// BPQ-specific; RHPv2 is how DAPPS is meant to run on XRouter
+/// (docs/connect/xrouter.md), and two daemons on this one node exercise it.
 ///
 /// XRouter (Paula Dowie, G8PZT) is the most common BPQ alternative
 /// in the British packet community. Its AGW emulator reports a
@@ -25,8 +25,16 @@ namespace dapps.core.tests.Integration;
 /// <item>LOCATOR is required and must be a valid 6-char Maidenhead
 ///   grid (e.g. "IO91PM"); "NONE" / "IO99ZE" / etc. are rejected.</item>
 /// <item><c>AGWPORT=8000</c> takes a single arg (the TCP port). The
-///   shipped config example has <c>AGWPORT=8000 8000</c> which the
-///   .CFG.MAN doesn't actually document; one arg works fine.</item>
+///   shipped config example has <c>AGWPORT=8000 8000</c>, which sets
+///   the XRouter stack's and the host stack's port separately; one arg
+///   sets both.</item>
+/// <item>ACCESS.SYS decides whether an AGW client must log in with a
+///   password, and 505o enforces it where 505c didn't: a client that
+///   doesn't log in gets no answer to any frame, not even the version
+///   ('R'). The image's stock ACCESS.SYS asks a password of every address
+///   outside 44/8 and 192.168.0/24, which takes in Docker's bridge and
+///   loopback, so the fixture brings its own (see <see cref="AccessSys"/>).
+///   RHPv2 isn't affected.</item>
 /// <item>The image's entrypoint runs xrouter in headless mode and
 ///   tails /data/LOG/*.TXT to stdout, so docker logs / Testcontainers
 ///   wait-for-log strategies pick up boot lines once the daemon is
@@ -35,43 +43,61 @@ namespace dapps.core.tests.Integration;
 /// </summary>
 public sealed class XrouterIntegrationFixture : IAsyncLifetime
 {
-    // Pinned by digest, like the other test images, so the tests only move
-    // to a new XRouter on purpose. This is the image CI used up to
-    // 10 October 2026; the one published after it stopped answering the
-    // AGW version handshake (see docs-internal/end-to-end-tests.md).
-    private const string Image = "ghcr.io/packethacking/xrouter@sha256:6a885470e19d5c8ee3033d224a30a8675d5b1957428a832aa89746f37ec0b611";
+    /// <summary>
+    /// Pinned by digest, like the other test images, so the tests only move
+    /// to a new XRouter on purpose: XRouter 505o, the image built on
+    /// 11 October 2026. CI pulls whatever digest this line names. To try
+    /// another build first, set DAPPS_XROUTER_IMAGE to its image reference.
+    /// </summary>
+    public const string PinnedImage = "ghcr.io/packethacking/xrouter@sha256:13894554b23fd4c552d3dfc4738e17e47bf2622a25c8c0740b81a780477d44da";
+
+    public static string Image =>
+        Environment.GetEnvironmentVariable("DAPPS_XROUTER_IMAGE") is { Length: > 0 } other ? other : PinnedImage;
+
     private const int InsideAgwPort = 8000;
+    private const int InsideRhpPort = 9000;
 
     public string Host => "127.0.0.1";
     public int AgwPort { get; private set; }
+    public int RhpPort { get; private set; }
 
     public string LocalCallsign => "G9DUM-1";
 
     /// <summary>Bearer port equivalent on XRouter. The
     /// AGW emulator dispatches on the per-port byte the same as BPQ;
     /// 0 corresponds to the first INTERFACE/PORT pair (the loopback
-    /// in the test config).</summary>
+    /// in the test config). Over RHPv2 DAPPS asks for that port as "1".</summary>
     public int BearerPortIndex => 0;
+
+    /// <summary>
+    /// Test harness only: any valid callsign may connect, with no password,
+    /// from anywhere (flags 1). The interop rig in xrouter-container uses the
+    /// same. Without it XRouter 505o ignores the AGW tests' frames.
+    /// </summary>
+    private const string AccessSys = "0.0.0.0/0 1\n";
 
     private IContainer? _container;
 
     public async ValueTask InitializeAsync()
     {
-        var configBytes = Encoding.UTF8.GetBytes(RenderConfig());
-
         _container = new ContainerBuilder()
             .WithImage(Image)
-            .WithResourceMapping(configBytes, "/data/XROUTER.CFG")
+            .WithResourceMapping(Encoding.UTF8.GetBytes(RenderConfig()), "/data/XROUTER.CFG")
+            .WithResourceMapping(Encoding.UTF8.GetBytes(AccessSys), "/data/ACCESS.SYS")
             .WithPortBinding(InsideAgwPort, assignRandomHostPort: true)
-            // XRouter takes a couple of seconds to bind AGW; the
+            .WithPortBinding(InsideRhpPort, assignRandomHostPort: true)
+            // XRouter takes a couple of seconds to bind its ports; the
             // entrypoint's tail-LOG/*.TXT pattern means we get a
             // "started" line only when xrouter is fully up. Port-
             // available is the simpler ready signal.
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(InsideAgwPort))
+            .WithWaitStrategy(Wait.ForUnixContainer()
+                .UntilInternalTcpPortIsAvailable(InsideAgwPort)
+                .UntilInternalTcpPortIsAvailable(InsideRhpPort))
             .Build();
 
         await _container.StartAsync();
         AgwPort = _container.GetMappedPublicPort(InsideAgwPort);
+        RhpPort = _container.GetMappedPublicPort(InsideRhpPort);
 
         // Match the BPQ fixture's tiny grace; XRouter's AGW emulator
         // also rejects the very first connect occasionally as the
@@ -88,9 +114,9 @@ public sealed class XrouterIntegrationFixture : IAsyncLifetime
     }
 
     private string RenderConfig() =>
-        // Loopback-only setup. No real radio interfaces means no
-        // routable AX.25, but the AGW emulator itself works fine for
-        // frame-format tests.
+        // Loopback-only setup: what goes out of port 1 comes straight back
+        // in, so a daemon that opens a link to another daemon's callsign on
+        // port 1 reaches that daemon's listener on this same node.
         //
         // DNS is required because xrouter is statically linked and
         // can't use the libc resolver. 8.8.8.8 is the README's
@@ -103,6 +129,7 @@ public sealed class XrouterIntegrationFixture : IAsyncLifetime
         "CHATCALL=G9DUM-8\n" +
         "CHATALIAS=DTCHAT\n" +
         $"AGWPORT={InsideAgwPort}\n" +
+        $"RHPPORT={InsideRhpPort}\n" +
         "INTERFACE=1\n" +
         "\tTYPE=LOOPBACK\n" +
         "\tPROTOCOL=KISS\n" +

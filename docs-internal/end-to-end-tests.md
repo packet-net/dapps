@@ -48,6 +48,8 @@ The cases that don't depend on BPQ live in `DappsExchangeTests`, which takes any
 
 `UdpBearerIntegrationTests` puts a neighbour's `UdpEndpoint` between two daemons instead of an AGW bearer port - the fire-and-forget datagram bearer Plan A0.4 stands in for MeshCore with. The two BPQs stay up only so each daemon has a node to be "reachable" on at startup; the test checks BPQ's monitor never sees a session between the two application callsigns at all, proving the message went by plain UDP.
 
+`XrouterRhpEndToEndTests` runs DAPPS on XRouter the way docs/connect/xrouter.md sets it up, over RHPv2: two daemons on one XRouter (`XrouterIntegrationFixture`), and a message each way between them through the node's loopback port, so each daemon's listener and its dials are both used. There's no air monitor for XRouter, so the `DappsExchangeTests` cases don't run on it. The two daemons need different base callsigns, as DAPPS takes mail for its own base callsign, whatever the SSID, as its own.
+
 ## On a simulated radio channel
 
 The tests above use AXIP, so frames cost no airtime. `NetSimTwoBpqFixture` puts the two BPQs on a simulated radio channel instead: [net-sim](https://github.com/packet-net/net-sim) runs real modems, gives each an FM radio (a Tait TM8100 at 25 W by default) and puts a physical FM channel between them (its `docs/fm-channel.md`). Each BPQ attaches to one simulated radio over KISS, as it would to a real TNC.
@@ -225,7 +227,7 @@ No duplicates or corrupt messages in either pdn run. pdn's links are v2.2, and i
 ## Not covered yet
 
 - The link reset with DAPPS at both ends (one node's call goes over a link the other has already heard from): the experiment shows what BPQ does and the unit tests cover each side's part, but no scenario forces it. The crossed-call scenario's cold round met the timing in three of five runs since the held prompt, which kept the reset from happening each time.
-- XRouter. RHPv2 runs on pdn (above).
+- The exchange tests on XRouter: `XrouterRhpEndToEndTests` (above) sends one message each way, without an air record.
 - The MeshCore bearer, which needs hardware.
 
 ## The linbpq image
@@ -234,4 +236,8 @@ No duplicates or corrupt messages in either pdn run. pdn's links are v2.2, and i
 
 ## The XRouter image
 
-`ghcr.io/packethacking/xrouter` is pinned by digest (XrouterIntegrationFixture), like linbpq, net-sim and pdn. Until 10 October 2026 the tests pulled `:latest`. The image published after that (`sha256:13894554...`) never answered the AGW version handshake within the test's 15 s, so `XrouterAgwIntegrationTests` failed every CI attempt on master from 11 October. The pin is the last image that passed (`sha256:6a885470...`). Moving to a newer XRouter means checking what changed in its AGW handshake first.
+`ghcr.io/packethacking/xrouter` is pinned by digest (`XrouterIntegrationFixture`), like linbpq, net-sim and pdn, and CI pulls the digest the fixture names. The pin is XRouter 505o, the image built on 11 October 2026 (`sha256:13894554...`). To try another build before moving the pin, set `DAPPS_XROUTER_IMAGE` to its image reference; both XRouter classes pass on 505c (`sha256:6a885470...`, built 3 May) that way too.
+
+Until 10 October the tests pulled `:latest`, which was 505c. On 505o, `XrouterAgwIntegrationTests` timed out waiting for the AGW version reply on every CI run from 11 October (#231), and the pin went back to 505c for a while. The cause was the fixture's config, not XRouter's AGW code. ACCESS.SYS decides whether an AGW client has to log in with a password (XRouter's AGWHOST manual says so). 505c never asked; 505o does. The image seeds XRouter's sample ACCESS.SYS, which asks a password of every address outside 44/8 and 192.168.0/24 (flags 7), and that takes in Docker's bridge and loopback. 505o then answers nothing at all until the client logs in: under strace it reads the 36-byte 'R' frame and never writes, where 505c sends its 44-byte reply 0.1 ms later. The fixture now brings its own ACCESS.SYS, `0.0.0.0/0 1` (any valid callsign, no password), as xrouter-container's interop rig does. RHPv2 asks no password under the sample ACCESS.SYS on either version, so DAPPS users aren't affected.
+
+505o has two RHPv2 bugs of its own, both fixed by its author for the next build. Its bind reply isn't JSON (packethacking/xrouter-container#2): RhpClient can't read it, so it never completed the bind, and DAPPS's listener waited for it forever and never listened (its log stopped at `RHP inbound: connecting to`). `Rhpv2Bind` now reads that reply itself. A send on a listening socket gets a reply without the socket's handle (#3 there); DAPPS never sends on its listener. `XrouterRhpEndToEndTests` passes on 505o and 505c.

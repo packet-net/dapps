@@ -10,6 +10,10 @@ DAPPS opens one TCP connection to XRouter's RHPv2 listener and binds its callsig
 
 DAPPS does not need to be on the same host as XRouter, as long as it can reach XRouter's RHPv2 port over TCP.
 
+## XRouter versions
+
+DAPPS works with XRouter 505c and 505o. On 505o there's one catch: when DAPPS claims its callsign, 505o's reply isn't valid JSON. That's an XRouter bug, already fixed for its next build. DAPPS copes with it from the release after 0.46.2. An older DAPPS on 505o never starts listening, so nothing can connect to it, and its log stops at `RHP inbound: connecting to`. Update DAPPS, or stay on 505c for now.
+
 ## Step 1: enable RHPv2 in XRouter
 
 XRouter's RHPv2 listener is opt-in. Add the directive to `XROUTER.CFG`:
@@ -116,6 +120,7 @@ Same-callsign-same-SSID with another XRouter declaration is **not** supported - 
 | Symptom | Likely cause |
 |---------|--------------|
 | `RHP inbound: connection lost; reconnecting` repeatedly | XRouter isn't listening on `DAPPS_RHP_PORT`, or you've got a firewall in the way. Confirm with `nc -vz <host> <port>`. Check `RHPPORT=` is set in `XROUTER.CFG`. |
+| The log stops at `RHP inbound: connecting to`, with no `listener bound` line after it | XRouter 505o with DAPPS 0.46.2 or older. See [XRouter versions](#xrouter-versions). |
 | Authentication failure in the log | `DAPPS_RHP_USER` / `DAPPS_RHP_PASS` don't match XRouter's RHPv2 credentials. |
 | Inbound `c <DAPPS-callsign>` lands at the XRouter node prompt instead of `DAPPSv1>` | DAPPS isn't successfully bound - either it's not running, or the bind failed (callsign collision with NODECALL / CONSOLECALL / CHATCALL / APPL). Check DAPPS logs. |
 | Inbound `c <DAPPS-callsign>` fails with no L2 response | The remote node doesn't have a route to your DAPPS callsign. NetROM/AX.25 routing is XRouter's job, not DAPPS's. |
