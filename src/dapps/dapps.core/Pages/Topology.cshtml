@@ -23,7 +23,7 @@
         <p class="panel-sub">Callsigns this node will forward through. Use <strong>edit</strong> on a row to change it. Connect-script lets you reach a peer through a chain of intermediate non-DAPPS nodes: DAPPS first connects to Connect via (or the Callsign, if blank) on the Radio port, then plays the script at that node's prompt (one <code>send|expect</code> step per line, final expect must contain <code>DAPPSv1&gt;</code>).</p>
         <form id="neigh-form" class="row-form neigh-form" onsubmit="dappsAddNeighbour(event)" style="margin-bottom: 1rem;">
             <div class="field"><label>Callsign</label><input name="callsign" placeholder="GB7XYZ-3" required />
-                <span class="hint">the peer's DAPPS callsign</span>
+                <span class="hint">the peer's DAPPS callsign, with its SSID</span>
             </div>
             <div class="field"><label>Connect via (optional)</label><input name="connectVia" placeholder="GB7ABC" />
                 <span class="hint">node to dial first; the script runs at its prompt</span>
@@ -449,11 +449,25 @@ else
             };
             const fmtCompression = (c) => c == null ? '<span class="muted">default</span>' : (c ? 'on' : 'off');
             const fmtHold = (s) => s == null ? '<span class="muted">default</span>' : (s === 0 ? 'off' : String(s));
+            // Routing matches a neighbour by callsign and SSID; one entered
+            // with another SSID still works, standing in for the station
+            // it was meant for, but is worth tidying (#242).
+            const station = (c) => c.trim().toUpperCase().replace(/-0$/, '');
+            const callOf = (c) => station(c).split('-')[0];
+            const heard = t.discoveredPeers || [];
+            const ssidNote = (n) => {
+                if (heard.some(p => station(p.callsign) === station(n.callsign))) return '';
+                const other = heard.find(p => callOf(p.callsign) === callOf(n.callsign)
+                    && !ns.some(x => station(x.callsign) === station(p.callsign)));
+                if (other) return `<div class="muted"><span class="pill warn">SSID?</span> heard as <code>${escape(other.callsign)}</code>; if that's the DAPPS node here, use that callsign</div>`;
+                if (!n.callsign.includes('-')) return '<div class="muted"><span class="pill warn">SSID?</span> no SSID means SSID 0; add the DAPPS node\'s SSID if it has one</div>';
+                return '';
+            };
             if (!ns.length) {
                 body.innerHTML = '<tr><td colspan="7" class="empty" style="text-align:center;">No neighbours yet. Add one above.</td></tr>';
             } else {
                 body.innerHTML = ns.map(n => `<tr>
-                    <td><code>${escape(n.callsign)}</code></td>
+                    <td><code>${escape(n.callsign)}</code>${ssidNote(n)}</td>
                     <td>${fmtPort(n.bearerPort)}</td>
                     <td>${n.udpEndpoint ? '<code>' + escape(n.udpEndpoint) + '</code>' : '<span class="muted">-</span>'}</td>
                     <td>${fmtCompression(n.compressionEnabled)}</td>
