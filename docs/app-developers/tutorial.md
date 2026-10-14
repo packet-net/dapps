@@ -103,11 +103,11 @@ Replying is symmetric to receiving - publish to `dapps/out/<app>/<destination-ca
 
 ```python
 from paho.mqtt.properties import Properties
-from paho.mqtt.packettypes import PacketType
+from paho.mqtt.packettypes import PacketTypes
 
 reply = f"hello, {payload}!".encode("utf-8")
 
-out_props = Properties(PacketType.PUBLISH)
+out_props = Properties(PacketTypes.PUBLISH)
 out_props.UserProperty = [("dapps-ttl", "300")]
 
 client.publish(

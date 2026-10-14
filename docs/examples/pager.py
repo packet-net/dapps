@@ -33,7 +33,7 @@ import time
 
 import paho.mqtt.client as mqtt
 from paho.mqtt.properties import Properties
-from paho.mqtt.packettypes import PacketType
+from paho.mqtt.packettypes import PacketTypes
 
 
 HOST = "127.0.0.1"
@@ -102,7 +102,7 @@ def run_sender(callsign: str, message: str):
     client.connect(HOST, PORT, keepalive=10)
     client.loop_start()
 
-    props = Properties(PacketType.PUBLISH)
+    props = Properties(PacketTypes.PUBLISH)
     props.UserProperty = [("dapps-ttl", "300")]   # 5 min
     info = client.publish(
         f"dapps/out/{APP}/{callsign}",

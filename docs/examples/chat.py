@@ -31,7 +31,7 @@ import sys
 
 import paho.mqtt.client as mqtt
 from paho.mqtt.properties import Properties
-from paho.mqtt.packettypes import PacketType
+from paho.mqtt.packettypes import PacketTypes
 
 
 HOST = "127.0.0.1"
@@ -87,7 +87,7 @@ def reader_loop(client, recipients):
             payload = line.encode("utf-8")
             # 1-hour TTL - chat is more useful than a 5-minute reply
             # window, less useful than a day-old message.
-            props = Properties(PacketType.PUBLISH)
+            props = Properties(PacketTypes.PUBLISH)
             props.UserProperty = [("dapps-ttl", "3600")]
             for callsign in recipients:
                 client.publish(

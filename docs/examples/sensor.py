@@ -33,7 +33,7 @@ import time
 
 import paho.mqtt.client as mqtt
 from paho.mqtt.properties import Properties
-from paho.mqtt.packettypes import PacketType
+from paho.mqtt.packettypes import PacketTypes
 
 
 HOST = "127.0.0.1"
@@ -57,7 +57,7 @@ def publish_one(client: mqtt.Client, subscribers: list[str]) -> None:
     # 24h TTL - sensor data is interesting for a long time, but a
     # week-old reading is just clutter.  Pick whatever matches the
     # cadence: roughly 1.5–2x the publish interval is a sensible floor.
-    props = Properties(PacketType.PUBLISH)
+    props = Properties(PacketTypes.PUBLISH)
     props.UserProperty = [("dapps-ttl", "86400")]
 
     for callsign in subscribers:

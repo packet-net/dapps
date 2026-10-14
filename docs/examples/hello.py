@@ -27,7 +27,7 @@ with - the reply will loop back to you.
 
 import paho.mqtt.client as mqtt
 from paho.mqtt.properties import Properties
-from paho.mqtt.packettypes import PacketType
+from paho.mqtt.packettypes import PacketTypes
 
 
 HOST = "127.0.0.1"
@@ -80,7 +80,7 @@ def on_message(client, userdata, msg):
     # message a 5-minute residual lifetime - anything older than that
     # at delivery time means the receiver was offline long enough that
     # the greeting is no longer interesting.
-    out_props = Properties(PacketType.PUBLISH)
+    out_props = Properties(PacketTypes.PUBLISH)
     out_props.UserProperty = [("dapps-ttl", "300")]
     client.publish(
         f"dapps/out/{APP}/{sender}",
