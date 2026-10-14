@@ -50,6 +50,8 @@ The cases that don't depend on BPQ live in `DappsExchangeTests`, which takes any
 
 `XrouterRhpEndToEndTests` runs DAPPS on XRouter the way docs/connect/xrouter.md sets it up, over RHPv2: two daemons on one XRouter (`XrouterIntegrationFixture`), and a message each way between them through the node's loopback port, so each daemon's listener and its dials are both used. There's no air monitor for XRouter, so the `DappsExchangeTests` cases don't run on it. It runs twice: once with two different callsigns, and once with two SSIDs of one callsign (G9AAA-7 and G9AAA-8), as an operator running two nodes of their own would (#239).
 
+`XrouterProbePortTests` runs two XRouter nodes linked by AXUDP (the second shares the first's network namespace, so the link is on 127.0.0.1), with A on the first and B and C on the second, B reaching C on a port the first node doesn't have. A probes B, learns of C from B's peers list, and probes C. It pins #246: A must probe C on its own port to B, where XRouter's RHP error 10 ("No such port" on 505c, "Invalid port" on 505p) said A had taken B's port number; C must answer through B's node.
+
 ## On a simulated radio channel
 
 The tests above use AXIP, so frames cost no airtime. `NetSimTwoBpqFixture` puts the two BPQs on a simulated radio channel instead: [net-sim](https://github.com/packet-net/net-sim) runs real modems, gives each an FM radio (a Tait TM8100 at 25 W by default) and puts a physical FM channel between them (its `docs/fm-channel.md`). Each BPQ attaches to one simulated radio over KISS, as it would to a real TNC.
