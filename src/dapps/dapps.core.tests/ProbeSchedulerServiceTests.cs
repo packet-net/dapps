@@ -313,12 +313,42 @@ public sealed class ProbeSchedulerServiceTests : IAsyncLifetime
 
         rows.Should().ContainKey("N0AAA-9");
         rows["N0AAA-9"].Source.Should().Be("via:N0SRC-9");
-        rows["N0AAA-9"].LastBearerPort.Should().Be(2);     // server-supplied port preferred
+        // port=2 is N0SRC-9's own port to N0AAA-9, a number on the other
+        // node; ours is the one N0SRC-9 answered on (#246)
+        rows["N0AAA-9"].LastBearerPort.Should().Be(1);
         rows["N0AAA-9"].LastProbedAt.Should().BeNull(); // candidate, not probed yet
 
         rows.Should().ContainKey("N0BBB-9");
         rows["N0BBB-9"].Source.Should().Be("via:N0SRC-9");
-        rows["N0BBB-9"].LastBearerPort.Should().Be(1);     // fell back to source's port
+        rows["N0BBB-9"].LastBearerPort.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ProbeAndRecord_UnansweredCandidateOnPeersPort_MovedToOurPort()
+    {
+        // #246: before 0.47.1 a candidate took the port the peer reported,
+        // a port on the peer's node. On XRouter that port didn't exist here
+        // and every probe of the candidate failed "Invalid port". The next
+        // peers answer from the same peer puts it on our port.
+        await database.UpsertNeighbour("N0SRC-9", bearerPort: 1);
+        await database.UpsertProbedNode(new DbProbedNode
+        {
+            Callsign = "N0AAA-9",
+            LastBearerPort = 17,
+            Source = "via:N0SRC-9",
+            LastError = "RHP error 10: Invalid port",
+            ConsecutiveFailures = 3,
+        });
+        var sched = MakeScheduler(new RecordingTransport(("N0SRC-9",
+            "DAPPSv1>\n" +
+            "peer N0AAA-9 source=n port=17\n" +
+            "end\n")));
+
+        await sched.ProbeAndRecordAsync("N0US", "N0SRC-9", 1, CancellationToken.None);
+
+        var row = (await database.GetProbedNodes()).Single(r => r.Callsign == "N0AAA-9");
+        row.LastBearerPort.Should().Be(1);
+        row.Source.Should().Be("via:N0SRC-9");
     }
 
     [Fact]

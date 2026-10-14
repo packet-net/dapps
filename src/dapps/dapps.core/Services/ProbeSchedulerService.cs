@@ -386,7 +386,10 @@ public sealed class ProbeSchedulerService(
     /// the port is the same port we just probed the source peer on -
     /// usually right when the network is one shared frequency, often
     /// wrong otherwise; the next sweep surfaces the mismatch as a
-    /// regular probe failure.
+    /// regular probe failure. The <c>port=</c> a peer reports is its
+    /// own port to that callsign, a number on another node, so it is
+    /// never used here: on XRouter it named a port this node didn't
+    /// have, and every probe failed "Invalid port" (#246).
     /// </summary>
     private async Task PersistTransitiveDiscoveriesAsync(NodeProber.ProbeResult result)
     {
@@ -397,19 +400,33 @@ public sealed class ProbeSchedulerService(
             if (string.Equals(p.Callsign, ourCallsign, StringComparison.OrdinalIgnoreCase)) continue;
 
             var existing = await database.GetProbedNode(p.Callsign);
-            if (existing is not null) continue;   // we already track this - don't clobber direct state
+            if (existing is not null)
+            {
+                // A candidate this same peer told us about that has never
+                // answered may hold the peer's own port from before 0.47.1
+                // (#246); move it to the port the peer answered on. Anything
+                // else is direct state - don't clobber it.
+                if (existing.LastSuccessAt is null
+                    && string.Equals(existing.Source, $"via:{result.Callsign}", StringComparison.OrdinalIgnoreCase)
+                    && existing.LastBearerPort != result.BearerPort)
+                {
+                    existing.LastBearerPort = result.BearerPort;
+                    await database.UpsertProbedNode(existing);
+                }
+                continue;
+            }
 
             await database.UpsertProbedNode(new DbProbedNode
             {
                 Callsign = p.Callsign.ToUpperInvariant(),
-                LastBearerPort = p.BearerPort ?? result.BearerPort,
+                LastBearerPort = result.BearerPort,
                 Source = $"via:{result.Callsign}",
                 // No probe attempt yet - leave LastProbedAt / LastSuccessAt
                 // null; the scheduler picks it up on the next sweep.
             });
             logger.LogInformation(
                 "Transitive discovery: {0} via {1} (port {2})",
-                p.Callsign, result.Callsign, p.BearerPort ?? result.BearerPort);
+                p.Callsign, result.Callsign, result.BearerPort);
         }
     }
 
