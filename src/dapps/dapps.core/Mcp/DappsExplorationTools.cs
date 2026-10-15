@@ -182,7 +182,9 @@ public sealed class DappsExplorationTools(
                     Rationale: $"Heard about {p.Callsign} from {via}'s peers list. " +
                                (p.LastSuccessAt.HasValue
                                    ? $"Last successful probe {(int)(DateTime.UtcNow - p.LastSuccessAt.Value).TotalMinutes}m ago."
-                                   : "Never probed directly from here."),
+                                   : p.LastProbedAt.HasValue
+                                       ? $"Probed directly {p.ConsecutiveFailures} time(s) from here, never answered; most likely reached only through {via}."
+                                       : "Never probed directly from here."),
                     RecommendedAction: $"explore_via_neighbour({via}) to confirm they still know about {p.Callsign}, then run_probe({p.Callsign}) over the same path.");
             });
         candidates.AddRange(transitive);

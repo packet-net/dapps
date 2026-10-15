@@ -11,7 +11,9 @@ namespace dapps.core.tests.Integration;
 /// is two hops away (A-B-C over AXIP, no link between A and C), so a direct
 /// probe of C never answers. Each try is connect attempts on air for
 /// nothing, so the sweep gives up on C after a few, while an operator can
-/// still probe it by hand, and mail to C still goes through B.
+/// still probe it by hand, and mail to C still goes through B. Here A's
+/// node has no AXIP mapping for C, so it refuses the connect at once where
+/// G6FCI's XRouter tried and timed out; the count is the same either way.
 /// </summary>
 [Collection("Linbpq three-instance integration")]
 [Trait("Category", "Integration")]
