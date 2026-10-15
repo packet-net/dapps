@@ -1,4 +1,6 @@
 ﻿using System.Net.Sockets;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using dapps.core.Models;
 using dapps.core.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -12,11 +14,34 @@ public class ConfigController(SystemOptionsStore options, AdminPasswordStore adm
     [HttpGet]
     public ActionResult<SystemOptions> Get() => options.CurrentValue;
 
+    /// <summary>
+    /// Change settings. Only the settings in the body change; the rest
+    /// keep their stored values. The Settings page doesn't send every
+    /// setting (the TX stop, the routing algorithm, the audit and
+    /// fragment settings aren't on it), and binding the body to a whole
+    /// <see cref="SystemOptions"/> used to save those as their defaults,
+    /// so saving the page turned a stopped transmitter back on. Names
+    /// that aren't settings are ignored.
+    /// </summary>
     [HttpPost]
-    public async Task<IActionResult> Post(SystemOptions systemOptions)
+    public async Task<IActionResult> Post([FromBody] JsonObject? changes)
     {
-        await options.SaveAsync(systemOptions);
+        if (changes is null) return BadRequest("Send a JSON object of the settings to change.");
+        await options.SaveAsync(Merge(options.CurrentValue, changes));
         return Ok();
+    }
+
+    internal static SystemOptions Merge(SystemOptions current, JsonObject changes)
+    {
+        var json = JsonSerializerOptions.Web;
+        var merged = JsonSerializer.SerializeToNode(current, json)!.AsObject();
+        var names = merged.Select(p => p.Key).ToList();
+        foreach (var (name, value) in changes)
+        {
+            var key = names.FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase));
+            if (key is not null) merged[key] = value?.DeepClone();
+        }
+        return merged.Deserialize<SystemOptions>(json)!;
     }
 
     /// <summary>

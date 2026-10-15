@@ -214,18 +214,56 @@ public sealed class RemainingControllersTests : IAsyncLifetime
         var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
         var ctrl = new ConfigController(store, new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance));
 
-        var post = await ctrl.Post(new SystemOptions
+        var post = await ctrl.Post(new System.Text.Json.Nodes.JsonObject
         {
-            Callsign = "M0LTE-2",
-            NodeHost = "127.0.0.1",
-            AgwPort = 8000,
-            DefaultBearerPort = 0,
-            MqttPort = 1883,
+            ["Callsign"] = "M0LTE-2",
+            ["NodeHost"] = "127.0.0.1",
+            ["AgwPort"] = 8000,
+            ["DefaultBearerPort"] = 0,
+            ["MqttPort"] = 1883,
         });
         post.Should().BeOfType<OkResult>();
 
         var got = ctrl.Get().Value!;
         got.Callsign.Should().Be("M0LTE-2");
+    }
+
+    [Fact]
+    public async Task ConfigController_Post_KeepsSettingsItWasNotSent()
+    {
+        // The Settings page doesn't send TxEnabled, RoutingAlgorithm and
+        // others. Saving it must not put them back to their defaults: an
+        // operator's TX stop stays stopped.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbSystemOption { Option = "TxEnabled", Value = "False" });
+            c.Insert(new DbSystemOption { Option = "RoutingAlgorithm", Value = "meshcore" });
+            c.Insert(new DbSystemOption { Option = "TransmissionAuditRetentionDays", Value = "7" });
+            c.Insert(new DbSystemOption { Option = "RouteGossipStalenessHours", Value = "0" });
+            c.Insert(new DbSystemOption { Option = "ProbeStrategy", Value = "Overnight" });
+        }
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        var ctrl = new ConfigController(store, new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance));
+
+        // As the Settings page sends it: PascalCase, a subset, an enum as a string.
+        var post = await ctrl.Post(new System.Text.Json.Nodes.JsonObject
+        {
+            ["Callsign"] = "M0LTE-3",
+            ["MqttPort"] = 1885,
+            ["ProbingEnabled"] = true,
+            ["NotASetting"] = "ignored",
+        });
+        post.Should().BeOfType<OkResult>();
+
+        var got = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance).CurrentValue;
+        got.Callsign.Should().Be("M0LTE-3");
+        got.MqttPort.Should().Be(1885);
+        got.ProbingEnabled.Should().BeTrue();
+        got.TxEnabled.Should().BeFalse("the TX stop wasn't on the page, so it stays stopped");
+        got.RoutingAlgorithm.Should().Be("meshcore");
+        got.TransmissionAuditRetentionDays.Should().Be(7);
+        got.RouteGossipStalenessHours.Should().Be(0, "0 turns gossip pulls off and must survive a load and a save");
+        got.ProbeStrategy.Should().Be(ProbeStrategy.Overnight);
     }
 
     // ── /Message ─────────────────────────────────────────────────
