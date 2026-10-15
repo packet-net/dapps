@@ -47,11 +47,11 @@ public class ProbesController(
         if (string.IsNullOrWhiteSpace(callsign)) return BadRequest("Callsign is required");
         var normalized = callsign.Trim().ToUpperInvariant();
 
-        var (port, hasRoute) = await ResolvePort(normalized);
+        var (port, hasRoute) = await scheduler.ResolveProbePortAsync(normalized);
         if (!hasRoute)
         {
             return BadRequest(
-                $"No AGW route to {normalized} - add a /Neighbours row or wait for a beacon.");
+                $"No AGW route to {normalized} - add a /Neighbours row, wait for a beacon, or probe a neighbour that knows it.");
         }
 
         var row = await scheduler.ProbeAndRecordAsync(
@@ -77,34 +77,6 @@ public class ProbesController(
     {
         var removed = await database.RemoveProbedNode(callsign.Trim().ToUpperInvariant());
         return removed ? NoContent() : NotFound();
-    }
-
-    /// <summary>Resolve the bearer port to use for an on-demand
-    /// probe of <paramref name="callsign"/>. Mirrors the precedence
-    /// the scheduler uses: explicit neighbour > AGW-bearer discovered
-    /// peer > <see cref="SystemOptions.DefaultBearerPort"/>. Returns
-    /// (port, true) when at least one source matched, or
-    /// (default, false) when the callsign isn't known anywhere - the
-    /// caller surfaces that as a 400 rather than blindly trying the
-    /// default port and emitting a probe to a stranger.</summary>
-    private async Task<(int Port, bool HasRoute)> ResolvePort(string callsign)
-    {
-        var neighbour = await database.GetNeighbour(callsign);
-        if (neighbour is not null && neighbour.UdpEndpoint is null)
-        {
-            return (neighbour.BearerPort ?? options.CurrentValue.DefaultBearerPort, true);
-        }
-
-        var peers = await database.GetDiscoveredPeers();
-        var match = peers.FirstOrDefault(p =>
-            string.Equals(p.Bearer, "agw", StringComparison.OrdinalIgnoreCase)
-            && string.Equals(p.Callsign, callsign, StringComparison.OrdinalIgnoreCase));
-        if (match is not null)
-        {
-            return (match.BearerPort ?? options.CurrentValue.DefaultBearerPort, true);
-        }
-
-        return (options.CurrentValue.DefaultBearerPort, false);
     }
 
     private static ProbedNodeModel ToModel(DbProbedNode r) => new(

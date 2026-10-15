@@ -292,6 +292,85 @@ public sealed class ProbeSchedulerServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task EnumerateTargets_TransitiveCandidateNeverAnswered_DroppedAfterItsTries()
+    {
+        // #249: a candidate two hops away never answers a direct probe, and
+        // each try is connect attempts on air. After a few the sweep stops.
+        await database.UpsertProbedNode(new DbProbedNode
+        {
+            Callsign = "N0GONE-9",
+            LastBearerPort = 3,
+            Source = "via:N0SRC-9",
+            ConsecutiveFailures = ProbeSchedulerService.UnansweredCandidateTries,
+        });
+        await database.UpsertProbedNode(new DbProbedNode
+        {
+            Callsign = "N0TRY-9",
+            LastBearerPort = 3,
+            Source = "via:N0SRC-9",
+            ConsecutiveFailures = ProbeSchedulerService.UnansweredCandidateTries - 1,
+        });
+        // One that has answered before keeps being tried, failing or not.
+        await database.UpsertProbedNode(new DbProbedNode
+        {
+            Callsign = "N0WAS-9",
+            LastBearerPort = 3,
+            Source = "via:N0SRC-9",
+            LastSuccessAt = DateTime.UtcNow.AddDays(-2),
+            ConsecutiveFailures = ProbeSchedulerService.UnansweredCandidateTries + 5,
+        });
+
+        var sched = MakeScheduler(new RecordingTransport());
+        var targets = await sched.EnumerateTargets(new SystemOptions { Callsign = "N0US", DefaultBearerPort = 7 });
+
+        targets.Select(t => t.Callsign).Should().BeEquivalentTo(["N0TRY-9", "N0WAS-9"]);
+    }
+
+    [Fact]
+    public async Task ResolveProbePort_TransitiveCandidate_UsesItsPort()
+    {
+        // #249: a candidate can be probed by hand, on our port to the
+        // neighbour that told us of it.
+        await database.UpsertProbedNode(new DbProbedNode
+        {
+            Callsign = "N0VIA-9",
+            LastBearerPort = 3,
+            Source = "via:N0SRC-9",
+            ConsecutiveFailures = ProbeSchedulerService.UnansweredCandidateTries,
+        });
+        var sched = MakeScheduler(new RecordingTransport());
+
+        (await sched.ResolveProbePortAsync("N0VIA-9")).Should().Be((3, true));
+        (await sched.ResolveProbePortAsync("N0WHO-9")).Should().Be((7, false));
+    }
+
+    [Fact]
+    public async Task ResolveProbePort_Neighbour_WinsOverCandidate()
+    {
+        await database.UpsertNeighbour("N0VIA-9", bearerPort: 1);
+        await database.UpsertProbedNode(new DbProbedNode
+        {
+            Callsign = "N0VIA-9",
+            LastBearerPort = 3,
+            Source = "via:N0SRC-9",
+        });
+        var sched = MakeScheduler(new RecordingTransport());
+
+        (await sched.ResolveProbePortAsync("N0VIA-9")).Should().Be((1, true));
+    }
+
+    [Fact]
+    public async Task ResolveProbePort_ProbedNeighbourRowWithoutVia_IsNotARoute()
+    {
+        // A probednodes row that isn't a via: candidate (an old neighbour
+        // since removed, an operator opt-out) is no route to anywhere.
+        await database.UpsertProbedNode(new DbProbedNode { Callsign = "N0OLD-9", LastBearerPort = 2, Source = "neighbour" });
+        var sched = MakeScheduler(new RecordingTransport());
+
+        (await sched.ResolveProbePortAsync("N0OLD-9")).HasRoute.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task ProbeAndRecord_FetchPeersTrue_RecordsTransitiveCandidatesWithSource()
     {
         await database.UpsertNeighbour("N0SRC-9", bearerPort: 1);
@@ -349,6 +428,8 @@ public sealed class ProbeSchedulerServiceTests : IAsyncLifetime
         var row = (await database.GetProbedNodes()).Single(r => r.Callsign == "N0AAA-9");
         row.LastBearerPort.Should().Be(1);
         row.Source.Should().Be("via:N0SRC-9");
+        // The failures were on the wrong port; the sweep tries it afresh (#249).
+        row.ConsecutiveFailures.Should().Be(0);
     }
 
     [Fact]

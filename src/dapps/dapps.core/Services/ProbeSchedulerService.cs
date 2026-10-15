@@ -415,6 +415,8 @@ public sealed class ProbeSchedulerService(
                     && !await IsNeighbourOrDiscoveredPeerAsync(p.Callsign))
                 {
                     existing.LastBearerPort = result.BearerPort;
+                    // Failures on the wrong port say nothing about this one.
+                    existing.ConsecutiveFailures = 0;
                     await database.UpsertProbedNode(existing);
                 }
                 continue;
@@ -438,6 +440,43 @@ public sealed class ProbeSchedulerService(
         (await database.GetNeighbours()).Any(n => string.Equals(n.Callsign, callsign, StringComparison.OrdinalIgnoreCase))
         || (await database.GetDiscoveredPeers()).Any(d => string.Equals(d.Callsign, callsign, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>Probes a transitive candidate gets without an answer
+    /// before the sweep stops trying it (#249).</summary>
+    public const int UnansweredCandidateTries = 3;
+
+    /// <summary>The bearer port for an on-demand probe of
+    /// <paramref name="callsign"/>, in the sweep's precedence: explicit
+    /// neighbour, AGW-bearer discovered peer, then a transitive candidate's
+    /// stored port (the port to the neighbour that told us of it).
+    /// (port, false) when the callsign isn't known anywhere, so the
+    /// caller refuses rather than probing a stranger on the default
+    /// port.</summary>
+    public async Task<(int Port, bool HasRoute)> ResolveProbePortAsync(string callsign)
+    {
+        var defaultPort = options.CurrentValue.DefaultBearerPort;
+        var neighbour = await database.GetNeighbour(callsign);
+        if (neighbour is not null && neighbour.UdpEndpoint is null)
+        {
+            return (neighbour.BearerPort ?? defaultPort, true);
+        }
+
+        var peer = (await database.GetDiscoveredPeers()).FirstOrDefault(p =>
+            string.Equals(p.Bearer, "agw", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(p.Callsign, callsign, StringComparison.OrdinalIgnoreCase));
+        if (peer is not null)
+        {
+            return (peer.BearerPort ?? defaultPort, true);
+        }
+
+        var candidate = await database.GetProbedNode(callsign);
+        if (candidate is not null && candidate.Source.StartsWith("via:", StringComparison.OrdinalIgnoreCase))
+        {
+            return (candidate.LastBearerPort ?? defaultPort, true);
+        }
+
+        return (defaultPort, false);
+    }
+
     /// <summary>
     /// Build the eligible target list for a sweep. Sources:
     /// <see cref="DbNeighbour"/> rows without a UDP endpoint (AGW-routable),
@@ -445,7 +484,8 @@ public sealed class ProbeSchedulerService(
     /// transitive candidates - <see cref="DbProbedNode"/> rows whose
     /// <c>Source</c> starts with <c>via:</c> (i.e. learned from another
     /// peer's <c>peers</c> response, not yet on either of the other
-    /// two surfaces). Per-callsign opt-outs from
+    /// two surfaces), less those that have never answered in
+    /// <see cref="UnansweredCandidateTries"/> tries. Per-callsign opt-outs from
     /// <see cref="DbProbedNode.OptOut"/> are honoured. Port preference
     /// (highest precedence first): neighbour's <c>BearerPort</c>, peer's
     /// observed <c>BearerPort</c>, candidate's stored <c>LastBearerPort</c>,
@@ -492,6 +532,11 @@ public sealed class ProbeSchedulerService(
             if (string.IsNullOrWhiteSpace(c.Callsign)) continue;
             if (!c.Source.StartsWith("via:", StringComparison.OrdinalIgnoreCase)) continue;
             if (targets.ContainsKey(c.Callsign)) continue;
+            // Never answered after a few tries: most likely two hops away,
+            // reached through the neighbour that told us of it, and each
+            // try is connect attempts on air for nothing (#249). A probe by
+            // hand that gets an answer brings it back.
+            if (c.LastSuccessAt is null && c.ConsecutiveFailures >= UnansweredCandidateTries) continue;
             targets[c.Callsign] = new ProbeTarget(c.Callsign, c.LastBearerPort ?? opts.DefaultBearerPort);
         }
 

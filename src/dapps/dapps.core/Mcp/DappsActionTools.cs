@@ -29,8 +29,9 @@ public sealed class DappsActionTools(
         "Probe a single callsign now (B6.1). Bypasses the normal cadence + airtime budget - operator-triggered " +
         "actions are explicit human decisions. The probe is over AGW; the bearer port is resolved in this " +
         "precedence order: (1) the configured neighbour's BearerPort, (2) the AGW-bearer discovered peer's " +
-        "observed port, (3) SystemOptions.DefaultBearerPort. Returns an error if the callsign is unknown on " +
-        "every surface - add a /Neighbours row first, or wait for a beacon.")]
+        "observed port, (3) a transitive 'via:CALLSIGN' candidate's port (our port to that neighbour). " +
+        "Returns an error if the callsign is unknown on every surface - add a /Neighbours row first, wait " +
+        "for a beacon, or probe a neighbour that knows it.")]
     public async Task<DbProbedNode> RunProbeAsync(
         [Description("Target DAPPS callsign, case-insensitive (e.g. 'M0LTE-9').")] string callsign,
         CancellationToken ct)
@@ -38,11 +39,11 @@ public sealed class DappsActionTools(
         if (string.IsNullOrWhiteSpace(callsign))
             throw new ArgumentException("callsign is required", nameof(callsign));
         var normalized = callsign.Trim().ToUpperInvariant();
-        var (port, hasRoute) = await ResolveAgwPortAsync(normalized);
+        var (port, hasRoute) = await probeScheduler.ResolveProbePortAsync(normalized);
         if (!hasRoute)
         {
             throw new InvalidOperationException(
-                $"No AGW route to {normalized} - add a /Neighbours row or wait for a beacon.");
+                $"No AGW route to {normalized} - add a /Neighbours row, wait for a beacon, or probe a neighbour that knows it.");
         }
         return await probeScheduler.ProbeAndRecordAsync(
             options.CurrentValue.Callsign, normalized, port, ct,
@@ -64,8 +65,8 @@ public sealed class DappsActionTools(
     [McpServerTool(Name = "run_poll")]
     [Description(
         "Poll a single callsign now (F3b - call the peer so it can send the mail it holds for us). " +
-        "AGW/RHP only; UDP peers can't be polled. Looks up the peer's bearer port the same way as " +
-        "run_probe. Mostly useful when an operator suspects a peer has mail queued for us and no session " +
+        "AGW/RHP only; UDP peers can't be polled. Looks up the peer's bearer port from its neighbour or " +
+        "discovered-peer row, as run_probe does, but never from a 'via:' candidate. Mostly useful when an operator suspects a peer has mail queued for us and no session " +
         "between the two has come up since.")]
     public async Task<DbPolledNode> RunPollAsync(
         [Description("Target DAPPS callsign, case-insensitive (e.g. 'M0LTE-9').")] string callsign,
@@ -165,9 +166,11 @@ public sealed class DappsActionTools(
             ttlSeconds);
     }
 
-    /// <summary>Mirrors the precedence the scheduler + REST controllers
-    /// use: explicit neighbour > AGW-bearer discovered peer > the
-    /// configured DefaultBearerPort. (port, true) when at least one
+    /// <summary>The port for a poll: explicit neighbour > AGW-bearer
+    /// discovered peer > the configured DefaultBearerPort. Unlike
+    /// <see cref="ProbeSchedulerService.ResolveProbePortAsync"/>, never a
+    /// transitive candidate: a poll asks for mail, and a station two hops
+    /// away is reached through its neighbour. (port, true) when at least one
     /// surface knew about the callsign; (default, false) when the
     /// callsign is a stranger to us - caller must surface that as an
     /// error rather than blindly probing the default port.</summary>
