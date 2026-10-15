@@ -29,7 +29,7 @@ namespace dapps.core.tests.Integration;
 ///   the XRouter stack's and the host stack's port separately; one arg
 ///   sets both.</item>
 /// <item>ACCESS.SYS decides whether an AGW client must log in with a
-///   password, and 505o enforces it where 505c didn't: a client that
+///   password, and 505o and later enforce it where 505c didn't: a client that
 ///   doesn't log in gets no answer to any frame, not even the version
 ///   ('R'). The image's stock ACCESS.SYS asks a password of every address
 ///   outside 44/8 and 192.168.0/24, which takes in Docker's bridge and
@@ -45,17 +45,17 @@ public sealed class XrouterIntegrationFixture : IAsyncLifetime
 {
     /// <summary>
     /// Pinned by digest, like the other test images, so the tests only move
-    /// to a new XRouter on purpose: XRouter 505c, the image built on
-    /// 3 May 2026. CI pulls whatever digest this line names. To try
-    /// another build first, set DAPPS_XROUTER_IMAGE to its image reference.
+    /// to a new XRouter on purpose: XRouter 505p, the multi-arch index
+    /// published on 15 October 2026. CI pulls whatever digest this line
+    /// names. To try another build first, set DAPPS_XROUTER_IMAGE to its
+    /// image reference.
     ///
     /// Not 505o (built 11 October 2026): its reply to an RHPv2 bind isn't
     /// valid JSON (packethacking/xrouter-container#2), so DAPPS never gets
-    /// to listen and <see cref="XrouterRhpEndToEndTests"/> fails. The AGW
-    /// test passes on 505o. The pin moves once XRouter publishes a build
-    /// with a valid bind reply.
+    /// to listen and <see cref="XrouterRhpEndToEndTests"/> fails there.
+    /// 505p fixed the reply; DAPPS has no workaround for the bad one.
     /// </summary>
-    public const string PinnedImage = "ghcr.io/packethacking/xrouter@sha256:6a885470e19d5c8ee3033d224a30a8675d5b1957428a832aa89746f37ec0b611";
+    public const string PinnedImage = "ghcr.io/packethacking/xrouter@sha256:24f86c38ebc7f752c33a274df6b2915eb9a307e4afbbcfb755012ebf726e9a70";
 
     public static string Image =>
         Environment.GetEnvironmentVariable("DAPPS_XROUTER_IMAGE") is { Length: > 0 } other ? other : PinnedImage;
@@ -78,7 +78,7 @@ public sealed class XrouterIntegrationFixture : IAsyncLifetime
     /// <summary>
     /// Test harness only: any valid callsign may connect, with no password,
     /// from anywhere (flags 1). The interop rig in xrouter-container uses the
-    /// same. Without it XRouter 505o ignores the AGW tests' frames.
+    /// same. Without it XRouter 505o and later ignore the AGW tests' frames.
     /// </summary>
     private const string AccessSys = "0.0.0.0/0 1\n";
 
