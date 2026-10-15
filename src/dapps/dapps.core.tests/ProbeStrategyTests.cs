@@ -136,13 +136,11 @@ public sealed class ProbeStrategyTests
     {
         clock ??= new FakeTimeProvider(DateTimeOffset.Parse("2026-04-15T12:00:00Z"));
         var optsMon = new TestOptions(opts);
-        var poller = (NodeProber)Activator.CreateInstance(
-            typeof(NodeProber),
+        var poller = new NodeProber(
             new NoopTransport(),
             TimeProvider.System,
             NullLoggerFactory.Instance,
-            NullLogger<NodeProber>.Instance,
-            null)!;  // routeGossip - optional, not exercised here
+            NullLogger<NodeProber>.Instance);
         var db = new Database(NullLogger<Database>.Instance, optsMon);
         var svc = new ProbeSchedulerService(
             poller, db, optsMon, clock,
