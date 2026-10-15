@@ -89,7 +89,7 @@ else
                 <input id="filter-app" type="text" placeholder="e.g. mail" />
             </div>
             <div class="field">
-                <label for="filter-callsign">From callsign</label>
+                <label for="filter-callsign">Callsign (from or via)</label>
                 <input id="filter-callsign" type="text" placeholder="e.g. M0LTE" />
             </div>
             <div class="field">
@@ -402,7 +402,7 @@ else
                 const row = document.createElement('tr');
                 row.className = 'inbound-row';
                 row.dataset.id = d.id;
-                row.dataset.src = d.sourceCallsign ?? '';
+                row.dataset.src = [d.sourceCallsign, d.viaCallsign].filter(Boolean).join(' ');
                 row.dataset.dest = d.destination ?? '';
                 row.innerHTML =
                     '<td>' + escape(fmtAt(d.receivedAt)) + '</td>' +

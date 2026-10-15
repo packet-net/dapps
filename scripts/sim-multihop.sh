@@ -299,7 +299,7 @@ import json, sys, base64
 rows = json.loads(sys.argv[1])
 for r in rows:
     payload = base64.b64decode(r.get("payload", "") or "").decode("utf-8", errors="replace")
-    print(f"  id={r['id']}  origin={r.get('originatorCallsign') or '?'}  source={r['sourceCallsign']}  payload={payload!r}  ttl={r.get('ttl')}")
+    print(f"  id={r['id']}  origin={r.get('originatorCallsign') or '?'}  source={r['sourceCallsign']}  via={r.get('viaCallsign') or '?'}  payload={payload!r}  ttl={r.get('ttl')}")
 PY
 }
 
@@ -721,9 +721,9 @@ cmd_exercise() {
     echo "  F1 ACCEPTANCE CHECK"
     echo "  Every 'origin=…' above should be the *originator* callsign"
     echo "  (the from-side of the arrow), NOT the link-source/relay."
-    echo "  source=UDP is fine - it's the bearer placeholder for"
-    echo "  datagram-shaped backhauls; the receiver app has dapps-source"
-    echo "  via MQTT for the link source separately."
+    echo "  source= should match origin= (it falls back to the link"
+    echo "  source only when the originator is unknown); via= is the"
+    echo "  link source, UDP for datagram-shaped backhauls."
     echo "═════════════════════════════════════════════════════════════"
 
     echo

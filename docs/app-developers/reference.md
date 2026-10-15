@@ -39,7 +39,7 @@ DAPPS publishes one message here for each pending delivery to `<app>` on this no
 | Name           | Type                  | Meaning                                                                  |
 |----------------|-----------------------|--------------------------------------------------------------------------|
 | `dapps-id`     | string (7 hex chars)  | The message id. Use this as the idempotency key.                         |
-| `dapps-source` | string (callsign)     | Who the message is from: the originating callsign, however many stations it came through. Use as destination for replies. |
+| `dapps-source` | string (callsign)     | Who the message is from: the originating callsign, however many stations it came through, or the last hop if the sender's DAPPS didn't say. Use as destination for replies. |
 | `dapps-via`    | string (callsign)     | The last hop: the neighbouring DAPPS node that handed the message to this one. The same as `dapps-source` when it came straight from the sender. |
 | `dapps-origin` | string (callsign)     | *Optional.* The originating callsign alone, absent if the sender's DAPPS didn't say. Kept for apps written for it; `dapps-source` is the one to use. |
 | `dapps-ttl`    | string (decimal int)  | *Optional.* Residual lifetime in seconds. Absent if the sender didn't set a TTL. |

@@ -180,7 +180,7 @@ Poll the inbox:
 
 ```bash
 curl http://127.0.0.1:5000/AppApi/inbound/hello
-# [{"id":"abc1234","sourceCallsign":"G7XYZ","payload":"d29ybGQ=","ttl":287}]
+# [{"id":"abc1234","sourceCallsign":"G7XYZ","payload":"d29ybGQ=","ttl":287,"originatorCallsign":"G7XYZ","viaCallsign":"G7XYZ"}]
 ```
 
 `ttl` is the *residual* - the same 5-minute window you set, minus however long the message dwelt on this node. `null` means the sender didn't set one.

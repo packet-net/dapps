@@ -36,7 +36,7 @@ Terms used throughout this manual.
 
 **dapps-id** - User property on MQTT publishes / REST submits that DAPPS uses for idempotent at-least-once delivery. Same `dapps-id` twice → second submit is a no-op.
 
-**dapps-source** - User property carrying the originating callsign. Set by DAPPS at the source node and propagated end-to-end across forwarding hops.
+**dapps-source** - User property carrying who the message is from: the originating callsign, set by DAPPS at the source node and carried end-to-end across forwarding hops, or the last hop if the sender's DAPPS didn't say. Reply to it.
 
 **dapps-via** - User property carrying the last hop: the neighbouring DAPPS node that handed the message over. Differs from `dapps-source` when the message was relayed.
 

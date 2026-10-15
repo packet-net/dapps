@@ -117,6 +117,36 @@ public sealed class AppApiControllerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetInbound_RelayedMessage_SourceIsTheOriginator_ViaIsTheLastHop()
+    {
+        await database.SaveMessage("inbx002", "relayed"u8.ToArray(), salt: 1L,
+            destination: "myapp@N0CALL", sourceCallsign: "G6CCC-7", additionalProperties: "{}", ttl: null,
+            originatorCallsign: "G6AAA-7");
+
+        var result = await controller.GetInbound("myapp");
+        var list = result.Result.Should().BeOfType<OkObjectResult>().Subject
+            .Value.Should().BeOfType<List<InboundMessage>>().Subject;
+        var m = list.Single();
+        m.SourceCallsign.Should().Be("G6AAA-7", "an app replies to who the message is from");
+        m.ViaCallsign.Should().Be("G6CCC-7");
+        m.OriginatorCallsign.Should().Be("G6AAA-7");
+    }
+
+    [Fact]
+    public async Task GetInbound_OriginatorUnknown_SourceIsTheLastHop()
+    {
+        await database.SaveMessage("inbx003", "direct"u8.ToArray(), salt: 1L,
+            destination: "myapp@N0CALL", sourceCallsign: "G0SRC", additionalProperties: "{}", ttl: null);
+
+        var result = await controller.GetInbound("myapp");
+        var m = result.Result.Should().BeOfType<OkObjectResult>().Subject
+            .Value.Should().BeOfType<List<InboundMessage>>().Subject.Single();
+        m.SourceCallsign.Should().Be("G0SRC");
+        m.ViaCallsign.Should().Be("G0SRC");
+        m.OriginatorCallsign.Should().BeNull();
+    }
+
+    [Fact]
     public async Task GetInbound_AuthMismatchesPathApp_Returns403()
     {
         controller.HttpContext.Items[BearerAuthMiddleware.AuthenticatedAppKey] = "yourapp";

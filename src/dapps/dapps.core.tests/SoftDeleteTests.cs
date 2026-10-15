@@ -57,6 +57,22 @@ public sealed class SoftDeleteTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SoftDelete_KeepsTheOriginator()
+    {
+        await database.SaveMessage("abc1235", "relayed"u8.ToArray(), salt: 1L,
+            destination: "app@N0DEST", sourceCallsign: "G6CCC-7",
+            additionalProperties: "{}", ttl: 60, originatorCallsign: "G6AAA-7");
+
+        await database.SoftDeleteMessage("abc1235", "ttl-expired");
+
+        using var c = DbInfo.GetConnection();
+        var dropped = c.Find<DbDroppedMessage>("abc1235")!;
+        dropped.SourceCallsign.Should().Be("G6CCC-7");
+        dropped.OriginatorCallsign.Should().Be("G6AAA-7");
+        dropped.FromCallsign.Should().Be("G6AAA-7");
+    }
+
+    [Fact]
     public async Task SoftDelete_OnMissingRow_IsANoOp()
     {
         // Exists for the concurrent-drop case: forwarder picks up a

@@ -522,7 +522,7 @@ import json, sys, base64
 rows = json.loads(sys.argv[1])
 for r in rows:
     payload = base64.b64decode(r.get("payload", "") or "").decode("utf-8", errors="replace")
-    print(f"  id={r['id']}  origin={r.get('originatorCallsign') or '?'}  source={r['sourceCallsign']}  payload={payload!r}  ttl={r.get('ttl')}")
+    print(f"  id={r['id']}  origin={r.get('originatorCallsign') or '?'}  source={r['sourceCallsign']}  via={r.get('viaCallsign') or '?'}  payload={payload!r}  ttl={r.get('ttl')}")
 PY
 }
 
