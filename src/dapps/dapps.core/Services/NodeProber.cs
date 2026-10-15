@@ -24,8 +24,19 @@ public sealed class NodeProber(
     TimeProvider timeProvider,
     ILoggerFactory loggerFactory,
     ILogger<NodeProber> logger,
-    IRouteGossipPort? routeGossip = null)
+    IRouteGossipPort? routeGossip = null,
+    PeerSessionRegistry? peerSessions = null,
+    SessionDirectory? sessionDirectory = null,
+    IDappsBackhaul? backhaul = null)
 {
+    /// <summary>How long a probe waits for the <c>pong</c> when it pings
+    /// inside a session that is already open.</summary>
+    public TimeSpan PingTimeout { get; init; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>Longer than any session should take to reach its exchange:
+    /// one open this long with nothing running on it looks stuck.</summary>
+    private static readonly TimeSpan StuckLeaseAge = TimeSpan.FromMinutes(5);
+
     /// <summary>Outcome of a single probe attempt. <see cref="Success"/>
     /// is true iff the prompt was observed end-to-end. <see cref="Error"/>
     /// is empty on success, populated with a short human-readable
@@ -34,14 +45,18 @@ public sealed class NodeProber(
     /// <c>fetchPeers: true</c> and the remote answered the
     /// <c>peers</c> query - Plan B6.1 Phase 2 transitive discovery.
     /// Empty when peers wasn't requested or the request failed; failure
-    /// to fetch peers does not mark the probe itself as failed.</summary>
+    /// to fetch peers does not mark the probe itself as failed.
+    /// <see cref="Detail"/> is set when the probe found a session with the
+    /// peer already open and pinged inside it: what it found, for the
+    /// operator (on failure it is the error too).</summary>
     public sealed record ProbeResult(
         string Callsign,
         int BearerPort,
         bool Success,
         string Error,
         DateTime At,
-        IReadOnlyList<DappsProtocolClient.DiscoveredPeerInfo> DiscoveredPeers);
+        IReadOnlyList<DappsProtocolClient.DiscoveredPeerInfo> DiscoveredPeers,
+        string Detail = "");
 
     /// <summary>
     /// Connect to <paramref name="remoteCallsign"/> on
@@ -68,6 +83,10 @@ public sealed class NodeProber(
     {
         var at = timeProvider.GetUtcNow().UtcDateTime;
         IReadOnlyList<DappsProtocolClient.DiscoveredPeerInfo> peers = [];
+        if (FindOpenSession(remoteCallsign) is { } open)
+        {
+            return await PingOpenSessionAsync(open, remoteCallsign, bearerPort, at, ct);
+        }
         try
         {
             await using var connection = await transport.ConnectAsync(
@@ -150,6 +169,10 @@ public sealed class NodeProber(
             // exit cleanly on shutdown.
             throw;
         }
+        catch (PeerSessionBusyException)
+        {
+            return BusyResult(remoteCallsign, bearerPort, at);
+        }
         catch (TimeoutException ex)
         {
             logger.LogInformation("Probe timeout: {0} ({1})", remoteCallsign, ex.Message);
@@ -189,6 +212,10 @@ public sealed class NodeProber(
     {
         var at = timeProvider.GetUtcNow().UtcDateTime;
         IReadOnlyList<DappsProtocolClient.DiscoveredPeerInfo> peers = [];
+        if (FindOpenSession(remoteNodeCall) is { } open)
+        {
+            return await PingOpenSessionAsync(open, remoteNodeCall, bearerPort, at, ct);
+        }
         try
         {
             await using var connection = await transport.ConnectAsync(
@@ -252,11 +279,117 @@ public sealed class NodeProber(
         {
             throw;
         }
+        catch (PeerSessionBusyException)
+        {
+            return BusyResult(remoteNodeCall, bearerPort, at);
+        }
         catch (Exception ex)
         {
             logger.LogInformation("Node-prompt probe failed: {0} ({1})", remoteNodeCall, ex.Message);
             return new ProbeResult(remoteNodeCall, bearerPort, false, ex.Message, at, peers);
         }
+    }
+
+    /// <summary>
+    /// The running session with <paramref name="callsign"/>, if there is
+    /// one: one we dialled for traffic, or one it opened with us (or a poll
+    /// of ours). Dialling it again would send a second SABM down the live
+    /// link, and the far node takes that for a reset (#178).
+    /// </summary>
+    private ExchangeSession? FindOpenSession(string callsign) =>
+        (backhaul as Dappsv1SessionBackhaul)?.FindOpenSession(callsign)
+        ?? sessionDirectory?.Find(callsign);
+
+    /// <summary>
+    /// A session with the peer is already open, so rather than dial, ping
+    /// inside it: a <c>pong</c> shows the link carries traffic both ways
+    /// end to end. Either way the result says where the session stands.
+    /// </summary>
+    private async Task<ProbeResult> PingOpenSessionAsync(
+        ExchangeSession session, string callsign, int bearerPort, DateTime at, CancellationToken ct)
+    {
+        var roundTrip = await session.PingAsync(PingTimeout, ct);
+        var status = session.Status;
+        var now = timeProvider.GetUtcNow();
+        var who = status.Dialled ? "we called it" : "it called us";
+        var state = Describe(status, now);
+
+        if (roundTrip is { } rtt)
+        {
+            var detail = $"Already in a session with {callsign} ({who}), so pinged inside it: answered in {Duration(rtt)}. {state}";
+            logger.LogInformation("Probe ok: {0}", detail);
+            return new ProbeResult(callsign, bearerPort, true, "", at, [], detail);
+        }
+
+        string error;
+        if (status.Ending)
+        {
+            error = $"The session with {callsign} ({who}) was ending, so there was nothing to ping. Probe again in a few seconds. {state}";
+        }
+        else
+        {
+            // Heard from it since the ping went, yet no pong: it's
+            // talking, so it's most likely on a version without ping.
+            var heardSince = status.LastHeard > now - PingTimeout;
+            error = $"In a session with {callsign} ({who}), but no answer to a ping in {Duration(PingTimeout)}. {state} "
+                + (heardSince
+                    ? $"{callsign} is still sending, so it may be on a DAPPS older than 0.50.0, which doesn't answer pings."
+                    : "Nothing is getting through from it: the link may be up at our node and dead beyond it.");
+        }
+        logger.LogInformation("Probe failed: {0}", error);
+        return new ProbeResult(callsign, bearerPort, false, error, at, [], error);
+    }
+
+    /// <summary>
+    /// The peer is held by a session here with nothing running on it to
+    /// ping: a call still connecting, another probe or poll before its
+    /// exchange, or one left over from a link that died without a
+    /// disconnect. Says which direction and for how long.
+    /// </summary>
+    private ProbeResult BusyResult(string callsign, int bearerPort, DateTime at)
+    {
+        var now = timeProvider.GetUtcNow();
+        var held = peerSessions?.Sessions(callsign) ?? [];
+        string error;
+        if (held.Count == 0)
+        {
+            error = $"A session with {callsign} was open a moment ago and has just ended. Probe again.";
+        }
+        else
+        {
+            var oldest = held[0];
+            var who = oldest.Direction == "inbound" ? "it called us" : "we called it";
+            var age = now - oldest.Since;
+            error = $"A session with {callsign} is open ({who}, {Duration(age)} ago, "
+                + (oldest.Connected ? "connected" : "still connecting")
+                + ") but hasn't reached the DAPPS exchange, so there is nothing to ping.";
+            if (age >= StuckLeaseAge)
+            {
+                error += " That is far longer than setting up takes, so it looks stuck: the link may have died without a disconnect. Restarting DAPPS clears it.";
+            }
+        }
+        logger.LogInformation("Probe skipped: {0}", error);
+        return new ProbeResult(callsign, bearerPort, false, error, at, [], error);
+    }
+
+    private static string Describe(SessionStatus s, DateTimeOffset now)
+    {
+        var text = $"Session up {Duration(now - s.Started)}, last heard from it {Duration(now - s.LastHeard)} ago";
+        text += s.Unanswered == 0
+            ? ", none of ours waiting for an answer"
+            : $", {s.Unanswered} of ours waiting for an answer (oldest sent {Duration(now - s.OldestUnansweredSentAt!.Value)} ago)";
+        if (s.Receiving > 0) text += $", {s.Receiving} of its messages on their way to us";
+        return text + ".";
+    }
+
+    /// <summary>A short duration for people: 2.4s, 3m10s, 2h05m.</summary>
+    internal static string Duration(TimeSpan t)
+    {
+        if (t < TimeSpan.Zero) t = TimeSpan.Zero;
+        if (t < TimeSpan.FromSeconds(10)) return $"{t.TotalSeconds:F1}s";
+        if (t < TimeSpan.FromMinutes(1)) return $"{(int)t.TotalSeconds}s";
+        if (t < TimeSpan.FromHours(1)) return $"{(int)t.TotalMinutes}m{t.Seconds:D2}s";
+        return $"{(int)t.TotalHours}h{t.Minutes:D2}m";
     }
 
     private static readonly TimeSpan DefaultBannerTotal = TimeSpan.FromSeconds(8);

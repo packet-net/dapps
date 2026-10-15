@@ -31,8 +31,11 @@ public sealed class DappsActionTools(
         "precedence order: (1) the configured neighbour's BearerPort, (2) the AGW-bearer discovered peer's " +
         "observed port, (3) a transitive 'via:CALLSIGN' candidate's port (our port to that neighbour). " +
         "Returns an error if the callsign is unknown on every surface - add a /Neighbours row first, wait " +
-        "for a beacon, or probe a neighbour that knows it.")]
-    public async Task<DbProbedNode> RunProbeAsync(
+        "for a beacon, or probe a neighbour that knows it. When a session with the peer is already open, " +
+        "the probe doesn't dial: it pings inside that session, and Detail says how it answered and where " +
+        "the session stands (who called, how long it has been up, when the peer was last heard, what is " +
+        "waiting for an answer).")]
+    public async Task<ProbeRunResult> RunProbeAsync(
         [Description("Target DAPPS callsign, case-insensitive (e.g. 'M0LTE-9').")] string callsign,
         CancellationToken ct)
     {
@@ -45,10 +48,15 @@ public sealed class DappsActionTools(
             throw new InvalidOperationException(
                 $"No AGW route to {normalized} - add a /Neighbours row, wait for a beacon, or probe a neighbour that knows it.");
         }
-        return await probeScheduler.ProbeAndRecordAsync(
+        var (row, result) = await probeScheduler.ProbeAndRecordVerboseAsync(
             options.CurrentValue.Callsign, normalized, port, ct,
             reason: "operator-triggered probe (MCP)");
+        return new ProbeRunResult(row, result.Detail);
     }
+
+    /// <summary>What <c>run_probe</c> returns: the probe row as written,
+    /// and what a probe inside an open session found (empty otherwise).</summary>
+    public sealed record ProbeRunResult(DbProbedNode Probe, string Detail);
 
     [McpServerTool(Name = "run_probe_sweep")]
     [Description(

@@ -61,11 +61,12 @@ namespace dapps.core.Services;
 /// the node's own link timeout ends it, whichever comes first; the
 /// cost is latency on the next dial to that peer, not lost traffic.
 /// </summary>
-public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null)
+public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null, TimeProvider? timeProvider = null)
 {
     private readonly Lock gate = new();
     private readonly Dictionary<string, List<PeerSessionLease>> open = new(StringComparer.OrdinalIgnoreCase);
     private TaskCompletionSource changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
 
     /// <summary>Marks a session with <paramref name="peerCallsign"/> as
     /// open, and connected, until the returned lease is disposed: what an
@@ -78,7 +79,7 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null)
     /// bearer that takes no part in retirement.</param>
     public PeerSessionLease Acquire(string peerCallsign, string direction, int? linkPort = null)
     {
-        var lease = new PeerSessionLease(this, peerCallsign, direction, linkPort);
+        var lease = new PeerSessionLease(this, peerCallsign, direction, linkPort, clock.GetUtcNow());
         lock (gate)
         {
             if (!open.TryGetValue(peerCallsign, out var leases))
@@ -109,6 +110,21 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null)
         return false;
     }
 
+    /// <summary>
+    /// The sessions with <paramref name="peerCallsign"/> this node has
+    /// open, oldest first: for a probe that finds the peer busy and has
+    /// no running session to ask, so it can say what holds the peer.
+    /// </summary>
+    public IReadOnlyList<OpenSessionInfo> Sessions(string peerCallsign)
+    {
+        lock (gate)
+        {
+            return open.TryGetValue(peerCallsign, out var leases)
+                ? [.. leases.Select(l => new OpenSessionInfo(l.Direction, l.IsConnected, l.Since))]
+                : [];
+        }
+    }
+
     /// <summary>Atomically acquires a lease only if no session with the
     /// peer is open yet; otherwise returns null and reports the
     /// direction of whatever is already open. Unlike calling
@@ -137,7 +153,7 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null)
                 return null;
             }
             openDirection = null;
-            var lease = new PeerSessionLease(this, peerCallsign, direction, linkPort);
+            var lease = new PeerSessionLease(this, peerCallsign, direction, linkPort, clock.GetUtcNow());
             open[peerCallsign] = [lease];
             Signal();
             return lease;
@@ -278,6 +294,9 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null)
     }
 }
 
+/// <summary>One open session with a peer, as <see cref="PeerSessionRegistry.Sessions"/> reports it.</summary>
+public sealed record OpenSessionInfo(string Direction, bool Connected, DateTimeOffset Since);
+
 /// <summary>
 /// One DAPPS session with a peer, as <see cref="PeerSessionRegistry"/>
 /// knows it. Disposing it ends the registration.
@@ -288,8 +307,9 @@ public sealed class PeerSessionLease : IDisposable
     private readonly CancellationTokenSource retired = new();
     private readonly TaskCompletionSource settled = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    internal PeerSessionLease(PeerSessionRegistry owner, string peer, string direction, int? linkPort)
+    internal PeerSessionLease(PeerSessionRegistry owner, string peer, string direction, int? linkPort, DateTimeOffset since)
     {
+        Since = since;
         this.owner = owner;
         Peer = peer;
         Direction = direction;
@@ -298,6 +318,9 @@ public sealed class PeerSessionLease : IDisposable
 
     public string Peer { get; }
     public string Direction { get; }
+
+    /// <summary>When the session registered: the dial, or the node handing us the peer's call.</summary>
+    public DateTimeOffset Since { get; }
 
     /// <summary>The AGW port the link is on; null when the session takes
     /// no part in retirement.</summary>

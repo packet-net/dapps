@@ -52,6 +52,8 @@ Three flavours:
 | **Transitive**     | After a successful direct probe, ask the peer "who do you know?" via the `peers` command. Seed each unknown callsign as a candidate.          | `via:<asked-peer>`      |
 | **Node-prompt**    | For peers that aren't (yet) DAPPS - connect to the BPQ node prompt, type the application command (`DAPPS` by default), and probe from there.  | `node-prompt:<source>`  |
 
+If DAPPS already has a session open with the peer, a probe doesn't dial: a second call would reset the link. It sends a `ping` down that session instead and waits up to a minute for the `pong`. The answer says how long the round trip took, or that none came, along with who called whom, how long the session has been up, when the peer was last heard, and how many messages are waiting for an answer. That tells apart a link that works, one that is up at your node but gets nothing through, and a peer on a version before 0.50.0, which doesn't answer pings. When DAPPS holds the peer but has no session running to ask, the probe says so and for how long. The dashboard shows all this in a pop-up after **probe now**.
+
 Node-prompt auto-discovery is gated on `DAPPS_AUTO_DISCOVER_VIA_NODE_CALL=true`. When on, every AGW DAPPS beacon also seeds a node-prompt-probe candidate for the source's base callsign.
 
 ## Neighbours

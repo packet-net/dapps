@@ -14,7 +14,9 @@ namespace dapps.core.Controllers;
 /// <item><c>POST /Probes/run/{callsign}</c> - probe one callsign now.
 ///   Unlike the scheduled sweep, on-demand probes go through even when
 ///   the row is opt-out - a sysop wants the option to test a specific
-///   peer without un-flipping the opt-out toggle.</item>
+///   peer without un-flipping the opt-out toggle. When a session with
+///   the peer is already open it pings inside it rather than dialling,
+///   and <c>detail</c> says what it found.</item>
 /// <item><c>POST /Probes/{callsign}/optout</c> - set/clear opt-out.</item>
 /// <item><c>DELETE /Probes/{callsign}</c> - forget a row entirely
 ///   (next sweep will recreate it for non-opted-out targets).</item>
@@ -54,10 +56,10 @@ public class ProbesController(
                 $"No AGW route to {normalized} - add a /Neighbours row, wait for a beacon, or probe a neighbour that knows it.");
         }
 
-        var row = await scheduler.ProbeAndRecordAsync(
+        var (row, result) = await scheduler.ProbeAndRecordVerboseAsync(
             options.CurrentValue.Callsign, normalized, port, ct,
             reason: "operator-triggered probe (REST)");
-        return ToModel(row);
+        return ToModel(row) with { Detail = result.Detail };
     }
 
     [HttpPost("{callsign}/optout")]
@@ -93,7 +95,8 @@ public class ProbesController(
 
 /// <summary>Wire shape returned by the /Probes endpoints. Mirrors
 /// <see cref="DbProbedNode"/> 1:1 - keeping a separate model lets the
-/// row evolve without breaking the wire shape.</summary>
+/// row evolve without breaking the wire shape. <see cref="Detail"/> is
+/// only set by an on-demand probe that pinged inside an open session.</summary>
 public sealed record ProbedNodeModel(
     string Callsign,
     int? LastBearerPort,
@@ -103,7 +106,8 @@ public sealed record ProbedNodeModel(
     int ConsecutiveFailures,
     int SuccessCount,
     bool OptOut,
-    string Source);
+    string Source,
+    string Detail = "");
 
 /// <summary>Body for <c>POST /Probes/{callsign}/optout</c>.</summary>
 public sealed record OptOutBody(bool OptOut);

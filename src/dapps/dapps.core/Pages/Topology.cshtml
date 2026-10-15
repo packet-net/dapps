@@ -443,6 +443,10 @@ else
             alert(`Probe failed (${res.status}): ${await res.text()}`);
             return;
         }
+        // A session with the peer was already open, so the probe pinged
+        // inside it: say what it found, which the table has no room for.
+        const probed = res.status === 200 ? await res.json().catch(() => null) : null;
+        if (probed?.detail) alert(probed.detail);
         await window.dappsRefreshSnap?.();
     };
     window.dappsSetOptOut = async (callsign, optOut) => {

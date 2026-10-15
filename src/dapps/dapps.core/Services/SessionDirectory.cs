@@ -49,4 +49,8 @@ public sealed class SessionDirectory(ForwarderWakeup? forwarderWakeup = null)
     /// </summary>
     public bool TryHand(string peer, IBackhaulBatch batch) =>
         sessions.TryGetValue(peer, out var session) && session.TryTake(batch);
+
+    /// <summary>The established session with <paramref name="peer"/>, or null.</summary>
+    public ExchangeSession? Find(string peer) =>
+        sessions.TryGetValue(peer, out var session) ? session : null;
 }

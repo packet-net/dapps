@@ -1,5 +1,6 @@
 using System.Text;
 using AwesomeAssertions;
+using dapps.client.Backhaul;
 using dapps.client.Transport;
 using dapps.core.Services;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -114,6 +115,91 @@ public sealed class NodeProberTests
 
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
+
+    // ---- A session with the peer already open ----
+
+    /// <summary>An established session with N0THEM-9 (it called us),
+    /// the far end driven line by line, in a directory a prober can see.</summary>
+    private static async Task<(SessionDirectory Directory, ExchangeSession Session, LinePeer Peer)> OpenSessionAsync(CancellationToken ct)
+    {
+        var (ours, theirs) = await ExchangeTestKit.LoopbackPairAsync(ct);
+        var session = new ExchangeSession(ours, "N0THEM-9", dialled: false, new ExchangeSettings(), new RecordingInbox(), NullLoggerFactory.Instance);
+        var peer = new LinePeer(theirs);
+        _ = session.RunAsync(ct);
+        await peer.ReadLineAsync(ct);   // prompt
+        await peer.ReadLineAsync(ct);   // its rules
+        await peer.WriteLineAsync("exchange id=peer01 hold=60 inline=256 z=1", ct);
+        var deadline = DateTime.UtcNow + ExchangeTestKit.Patience;
+        while (!session.Established && DateTime.UtcNow < deadline) await Task.Delay(10, ct);
+        var directory = new SessionDirectory();
+        directory.Register("N0THEM-9", session);
+        return (directory, session, peer);
+    }
+
+    [Fact]
+    public async Task ProbeAsync_WithASessionOpen_PingsInsideIt_RatherThanDialling()
+    {
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var (directory, _, peer) = await OpenSessionAsync(lifetime.Token);
+        var transport = new FakeOutboundTransport("DAPPSv1>\n"u8.ToArray());
+        var prober = new NodeProber(transport, TimeProvider.System, NullLoggerFactory.Instance, NullLogger<NodeProber>.Instance,
+            sessionDirectory: directory);
+
+        var probing = prober.ProbeAsync("N0US", "N0THEM-9", bearerPort: 1, lifetime.Token);
+        var ping = await peer.ReadLineAsync(lifetime.Token);
+        await peer.WriteLineAsync("pong " + ping["ping ".Length..], lifetime.Token);
+        var result = await probing;
+
+        result.Success.Should().BeTrue(result.Error);
+        result.Detail.Should().Contain("Already in a session with N0THEM-9 (it called us)").And.Contain("answered in");
+        transport.Dialled.Should().BeEmpty();
+        lifetime.Cancel();
+    }
+
+    [Fact]
+    public async Task ProbeAsync_WithASessionOpen_AndNoPong_SaysSo()
+    {
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var (directory, _, _) = await OpenSessionAsync(lifetime.Token);
+        var transport = new FakeOutboundTransport("DAPPSv1>\n"u8.ToArray());
+        var prober = new NodeProber(transport, TimeProvider.System, NullLoggerFactory.Instance, NullLogger<NodeProber>.Instance,
+            sessionDirectory: directory)
+        {
+            PingTimeout = TimeSpan.FromMilliseconds(300),
+        };
+
+        var result = await prober.ProbeAsync("N0US", "N0THEM-9", bearerPort: 1, lifetime.Token);
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().Contain("no answer to a ping").And.Contain("last heard from it");
+        result.Detail.Should().Be(result.Error);
+        transport.Dialled.Should().BeEmpty();
+        lifetime.Cancel();
+    }
+
+    [Fact]
+    public async Task ProbeAsync_PeerHeldWithNothingRunning_SaysHowLong_AndThatItLooksStuck()
+    {
+        var clock = new Microsoft.Extensions.Time.Testing.FakeTimeProvider();
+        var registry = new PeerSessionRegistry(timeProvider: clock);
+        using var lease = registry.Acquire("N0THEM-9", "inbound");
+        clock.Advance(TimeSpan.FromMinutes(42));
+        var prober = new NodeProber(new ThrowingTransport(new PeerSessionBusyException("N0THEM-9", "inbound")),
+            clock, NullLoggerFactory.Instance, NullLogger<NodeProber>.Instance, peerSessions: registry);
+
+        var result = await prober.ProbeAsync("N0US", "N0THEM-9", bearerPort: 1, CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().Contain("it called us, 42m00s ago").And.Contain("looks stuck");
+    }
+
+    [Theory]
+    [InlineData(2.4, "2.4s")]
+    [InlineData(42, "42s")]
+    [InlineData(190, "3m10s")]
+    [InlineData(7500, "2h05m")]
+    public void Duration_IsShortAndPlain(double seconds, string expected) =>
+        NodeProber.Duration(TimeSpan.FromSeconds(seconds)).Should().Be(expected);
 
     private static NodeProber MakeProber(IDappsOutboundTransport transport)
         => new(transport, TimeProvider.System, NullLoggerFactory.Instance, NullLogger<NodeProber>.Instance);

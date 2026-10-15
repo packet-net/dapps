@@ -1612,4 +1612,91 @@ public sealed class ExchangeSessionTests : IDisposable
 
         opened.Should().Be(1);
     }
+
+    // ---- Ping, for a probe that finds a session already open ----
+
+    [Fact]
+    public async Task APing_GoesDownTheSession_AndThePeersPongAnswersIt()
+    {
+        var (session, peer, _) = await CalleeAsync();
+        await peer.WriteLineAsync(Rules(), Ct);
+        await WaitUntilAsync(() => session.Established);
+
+        var pinging = session.PingAsync(Patience, Ct);
+        var line = await peer.ReadLineAsync(Ct);
+        line.Should().MatchRegex("^ping [!-~]+$");
+        await peer.WriteLineAsync("pong " + line["ping ".Length..], Ct);
+
+        (await pinging).Should().NotBeNull();
+        session.Status.Should().Match<SessionStatus>(s => s.Established && !s.Dialled && !s.Ending && s.Unanswered == 0);
+    }
+
+    [Fact]
+    public async Task ThePeersPing_IsAnsweredWithAPong()
+    {
+        var (_, peer, _) = await CalleeAsync();
+        await peer.WriteLineAsync(Rules(), Ct);
+        await peer.WriteLineAsync("ping 7f3a", Ct);
+
+        (await peer.ReadLineAsync(Ct)).Should().Be("pong 7f3a");
+    }
+
+    [Fact]
+    public async Task NoPingGoes_BeforeTheExchange()
+    {
+        // The answering node would take it for a mistyped command and hang up.
+        var (session, _, run, wire) = await CallerAsync();
+
+        (await session.PingAsync(Patience, Ct)).Should().BeNull();
+        run.IsCompleted.Should().BeFalse();
+        wire.Writes.Should().NotContain(w => w.Contains("ping"));
+    }
+
+    [Fact]
+    public async Task APingWithNoPong_TimesOut_AndTheSessionCarriesOn()
+    {
+        // A peer on a version without ping ignores it.
+        var (session, peer, run) = await CalleeAsync();
+        await peer.WriteLineAsync(Rules(), Ct);
+        await WaitUntilAsync(() => session.Established);
+
+        (await session.PingAsync(Short, Ct)).Should().BeNull();
+        (await peer.ReadLineAsync(Ct)).Should().StartWith("ping ");
+        run.IsCompleted.Should().BeFalse();
+        session.Status.Ending.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Pongs_DontKeepASessionWhoseMessagesGoUnanswered()
+    {
+        // A probe pinging every few seconds mustn't hold open a link that
+        // carries nothing else: the answer timeout runs on regardless.
+        var ours = Message("never answered", $"app@{Them}", 1);
+        var batch = new RecordingBatch(ours);
+        var clock = new WatchedClock();
+        var (session, peer, run, _) = await CallerAsync(new ExchangeSettings(HoldSeconds: 60), inactivity: TimeSpan.FromSeconds(1), clock: clock);
+        session.TryTake(batch);
+        await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
+        await peer.ReadLineAsync(Ct);
+        await peer.ReadWithPayloadAsync(Ct);
+
+        for (var i = 0; i < 2; i++)
+        {
+            await clock.WaitUntilPendingAsync(Ct);
+            clock.Advance(TimeSpan.FromMilliseconds(400));
+            // No timeout: its timer would sit on the clock too, and the
+            // session's own wait couldn't be told apart from it.
+            var pinging = session.PingAsync(Timeout.InfiniteTimeSpan, Ct);
+            var line = await peer.ReadLineAsync(Ct);
+            await peer.WriteLineAsync("pong " + line["ping ".Length..], Ct);
+            (await pinging).Should().NotBeNull();
+        }
+        run.IsCompleted.Should().BeFalse();
+
+        await clock.WaitUntilPendingAsync(Ct);
+        clock.Advance(TimeSpan.FromMilliseconds(400));
+        await batch.WaitForOutcomesAsync(1, Ct);
+        await run.WaitAsync(Patience, Ct);
+        batch.Outcomes.Single().Result.Error.Should().Contain("no answer");
+    }
 }

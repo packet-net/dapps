@@ -311,6 +311,10 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         && entry.Route.BearerPort == route.BearerPort
         && entry.Session.TryTake(batch);
 
+    /// <summary>The established session we dialled to <paramref name="callsign"/>, or null.</summary>
+    public ExchangeSession? FindOpenSession(string callsign) =>
+        open.TryGetValue(callsign, out var entry) ? entry.Session : null;
+
     /// <summary>Peers this bearer has an established session with.</summary>
     public IReadOnlyCollection<string> OpenPeers => [.. open.Keys];
 
