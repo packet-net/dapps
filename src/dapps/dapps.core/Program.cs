@@ -9,6 +9,10 @@ using dapps.core.Routing;
 using dapps.core.Services;
 using dapps.core.Updater;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.DataProtection.AuthenticatedEncryption;
+using Microsoft.AspNetCore.DataProtection.AuthenticatedEncryption.ConfigurationModel;
+using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using Microsoft.Extensions.Options;
 using Scalar.AspNetCore;
 using MQTTnet.AspNetCore;
@@ -206,6 +210,28 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
         options.LogoutPath = "/Logout";
         options.ExpireTimeSpan = TimeSpan.FromDays(90);
         options.SlidingExpiration = true;
+        // #248: reissue a login sealed with a pre-GCM key, so an
+        // existing operator's cookie shrinks on their next request
+        // rather than at the 45-day sliding renewal.
+        options.Events.OnValidatePrincipal = ctx =>
+        {
+            if (ctx.Properties.IssuedUtc < CookieEncryption.GcmKeySince)
+            {
+                ctx.ShouldRenew = true;
+            }
+            return Task.CompletedTask;
+        };
+    });
+// #248: keep our cookies small, because other web apps on the node
+// get them too (see CookieEncryption). The antiforgery cookie's
+// default name is ".AspNetCore.Antiforgery." plus a hash, and GCM
+// data protection has less overhead than the default CBC + HMAC.
+builder.Services.AddAntiforgery(options => options.Cookie.Name = "dapps.af");
+builder.Services.AddDataProtection()
+    .UseCryptographicAlgorithms(new AuthenticatedEncryptorConfiguration
+    {
+        EncryptionAlgorithm = EncryptionAlgorithm.AES_256_GCM,
+        ValidationAlgorithm = ValidationAlgorithm.HMACSHA256,
     });
 // Per-destination sliding-scale backoff so a destination that connects
 // fine but rejects at the application layer (e.g. BPQ's "No AGWPE Host
@@ -343,6 +369,9 @@ builder.Services.AddLogging(logging =>
     });
 });
 var app = builder.Build();
+CookieEncryption.EnsureGcmKey(
+    app.Services.GetRequiredService<IKeyManager>(),
+    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CookieEncryption"));
 
 // pdn app-gateway support (packet.net docs/app-gateway.md). When the
 // dashboard is reverse-proxied under /apps/dapps/, the gateway strips
@@ -366,6 +395,24 @@ app.Use((ctx, next) =>
     if (!string.IsNullOrEmpty(prefix) && prefix.StartsWith('/'))
     {
         ctx.Request.PathBase = new PathString(prefix);
+    }
+    return next(ctx);
+});
+
+// #248: delete the default-named antiforgery cookie earlier versions
+// set. It's a session cookie, and browsers that restore sessions
+// would otherwise keep sending it alongside dapps.af indefinitely.
+app.Use((ctx, next) =>
+{
+    foreach (var name in ctx.Request.Cookies.Keys)
+    {
+        if (name.StartsWith(".AspNetCore.Antiforgery.", StringComparison.Ordinal))
+        {
+            ctx.Response.Cookies.Delete(name, new CookieOptions
+            {
+                Path = ctx.Request.PathBase.HasValue ? ctx.Request.PathBase.Value : "/",
+            });
+        }
     }
     return next(ctx);
 });

@@ -173,7 +173,7 @@ public sealed class GatewayPathBaseTests
     /// db lands in its data/ subdir). Same launch model as
     /// dapps.core.uitests' WebAppFixture, minus the browser.
     /// </summary>
-    private sealed class DappsSubprocess : IAsyncDisposable
+    internal sealed class DappsSubprocess : IAsyncDisposable
     {
         private static readonly Regex ListeningRegex =
             new(@"Now listening on:\s*(http://[^\s]+)", RegexOptions.Compiled);
