@@ -54,8 +54,7 @@ public sealed class XrouterProbePortTests : IAsyncLifetime
     public async Task PeerLearnedFromANeighbour_IsProbedOnOurPortToThatNeighbour()
     {
         var ct = TestContext.Current.CancellationToken;
-        x = new ContainerBuilder()
-            .WithImage(XrouterIntegrationFixture.Image)
+        x = new ContainerBuilder(XrouterIntegrationFixture.Image)
             .WithResourceMapping(Encoding.UTF8.GetBytes(Config("G9XXX-1", "XRX", InsideAgwX, InsideRhpX, AxudpX, AxudpY, loopback: false)), "/data/XROUTER.CFG")
             .WithResourceMapping(Encoding.UTF8.GetBytes(AccessSys), "/data/ACCESS.SYS")
             .WithPortBinding(InsideRhpX, assignRandomHostPort: true)
@@ -63,9 +62,9 @@ public sealed class XrouterProbePortTests : IAsyncLifetime
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(InsideRhpX))
             .Build();
         await x.StartAsync(ct);
-        y = new ContainerBuilder()
-            .WithImage(XrouterIntegrationFixture.Image)
-            .WithCreateParameterModifier(p => p.HostConfig.NetworkMode = $"container:{x.Id}")
+        var xId = x.Id;
+        y = new ContainerBuilder(XrouterIntegrationFixture.Image)
+            .WithCreateParameterModifier(p => p.HostConfig!.NetworkMode = $"container:{xId}")
             .WithResourceMapping(Encoding.UTF8.GetBytes(Config("G9YYY-1", "XRY", InsideAgwY, InsideRhpY, AxudpY, AxudpX, loopback: true)), "/data/XROUTER.CFG")
             .WithResourceMapping(Encoding.UTF8.GetBytes(AccessSys), "/data/ACCESS.SYS")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(InsideRhpY))
