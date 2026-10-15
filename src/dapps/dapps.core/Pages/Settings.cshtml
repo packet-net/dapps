@@ -333,10 +333,22 @@ async function dappsRotatePassword(ev) {
 (function () {
     const select = document.querySelector("select[name='ProbeStrategy']");
     const fields = document.querySelectorAll('[data-strategy]');
+    for (const input of document.querySelectorAll('[data-strategy] input')) input.dataset.last = input.value;
     function apply() {
         for (const el of fields) {
-            el.style.display = el.dataset.strategy === select?.value ? '' : 'none';
+            const show = el.dataset.strategy === select?.value;
+            el.style.display = show ? '' : 'none';
+            // A hidden field is still sent. If it was left empty or out
+            // of range it goes back to its last good value, so it can
+            // neither block the save nor fail it.
+            for (const input of el.querySelectorAll('input')) {
+                if (show) continue;
+                if (!input.checkValidity() || input.value === '') input.value = input.dataset.last ?? input.defaultValue;
+            }
         }
+    }
+    for (const input of document.querySelectorAll('[data-strategy] input')) {
+        input.addEventListener('change', () => { if (input.checkValidity() && input.value !== '') input.dataset.last = input.value; });
     }
     if (select) {
         select.addEventListener('change', apply);

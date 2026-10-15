@@ -88,6 +88,7 @@ else if (tab == "channels")
             <ul>
                 <li>The link class sets the routing cost and, unless you set Beacon every, the cadence: every 30 minutes on VHF/UHF FM, hourly on MeshCore, every 2 hours on HF.</li>
                 <li>The airtime budget caps this channel's transmissions per hour; 0 means only the overall budget in Settings applies.</li>
+                <li>Changes take effect within about 10 seconds. A channel on a bearer that wasn't running at start, or a new UDP address, needs DAPPS restarted.</li>
                 <li>A solicit asks "who's there?" and listens for replies; useful on HF where beaconing is dear.</li>
                 <li><a href="https://packet-net.github.io/dapps/discovery-and-routing/" target="_blank" rel="noopener">Manual: discovery and routing</a>.</li>
             </ul>
@@ -330,6 +331,8 @@ else
     const LINK_LABELS = { Unknown: 'unknown', VhfUhfFm: 'VHF/UHF FM', MeshCore: 'MeshCore', Hf: 'HF', LanMulticast: 'LAN multicast', InternetIp: 'Internet IP' };
     const linkClassName = (v) => typeof v === 'number' ? (LINK_CLASSES[v] ?? 'Unknown') : String(v ?? 'Unknown');
     const linkClassLabel = (v) => LINK_LABELS[linkClassName(v)] ?? linkClassName(v);
+    // Default cadence per class, as LinkClassDefaults.BeaconIntervalSeconds.
+    const CLASS_CADENCE = { Unknown: 1800, VhfUhfFm: 1800, MeshCore: 3600, Hf: 7200, LanMulticast: 60, InternetIp: 300 };
     // The upsert is keyed on (bearer, channel key); a zero for cadence,
     // TTL or cost means "the link class default". TTL and cost have no
     // form field, so an edit carries the row's values through
@@ -338,13 +341,23 @@ else
         ev.preventDefault();
         const f = ev.target;
         const minutes = parseInt(f.beaconMinutes.value, 10);
+        let seconds = minutes > 0 ? minutes * 60 : 0;
+        let ttl = parseInt(f.dataset.ttl ?? '0', 10) || 0;
+        let cost = parseInt(f.dataset.cost ?? '0', 10) || 0;
+        // A class change on an edit takes the new class's defaults for
+        // whatever was still at the old class's defaults.
+        const origClass = f.dataset.origClass;
+        if (origClass && origClass !== f.linkClass.value) {
+            ttl = 0; cost = 0;
+            if (seconds === (CLASS_CADENCE[origClass] ?? -1)) seconds = 0;
+        }
         const body = {
             Bearer: f.bearer.value,
             ChannelKey: f.channelKey.value,
             LinkClass: f.linkClass.value,
-            BeaconIntervalSeconds: minutes > 0 ? minutes * 60 : 0,
-            AdvertisedTtlSeconds: parseInt(f.dataset.ttl ?? '0', 10) || 0,
-            CostHint: parseInt(f.dataset.cost ?? '0', 10) || 0,
+            BeaconIntervalSeconds: seconds,
+            AdvertisedTtlSeconds: ttl,
+            CostHint: cost,
             Enabled: f.enabled.checked,
             Notes: f.dataset.notes ?? null,
             AirtimeBudgetSecondsPerHour: parseInt(f.airtimeBudgetSecondsPerHour.value, 10) || 0,
@@ -370,7 +383,8 @@ else
         f.bearer.disabled = true;
         if (key.tagName === 'SELECT') key.disabled = true; else key.readOnly = true;
         f.linkClass.value = linkClassName(c.linkClass);
-        f.beaconMinutes.value = c.beaconIntervalSeconds > 0 ? String(Math.round(c.beaconIntervalSeconds / 60)) : '';
+        f.dataset.origClass = linkClassName(c.linkClass);
+        f.beaconMinutes.value = c.beaconIntervalSeconds > 0 ? String(Math.min(1440, Math.max(1, Math.round(c.beaconIntervalSeconds / 60)))) : '';
         f.airtimeBudgetSecondsPerHour.value = String(c.airtimeBudgetSecondsPerHour ?? 0);
         f.solicitIntervalSeconds.value = String(c.solicitIntervalSeconds ?? 0);
         f.enabled.checked = !!c.enabled;
@@ -388,9 +402,12 @@ else
         f.bearer.disabled = false;
         const key = f.channelKey;
         if (key) { key.disabled = false; key.readOnly = false; }
-        delete f.dataset.ttl; delete f.dataset.cost; delete f.dataset.notes;
+        delete f.dataset.ttl; delete f.dataset.cost; delete f.dataset.notes; delete f.dataset.origClass;
         f.querySelector('button[type="submit"]').textContent = 'Add / update';
         document.getElementById('chan-cancel').style.display = 'none';
+        // reset() put the bearer back without a change event; redraw
+        // the key control to match it.
+        window.__dappsChanRender?.();
     };
     window.dappsSetChannelEnabled = async (id, enabled) => {
         const c = (window.__dappsChannels || []).find(x => x.id === id);

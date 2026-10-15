@@ -24,7 +24,7 @@ A discovery channel is the tuple `(bearer, channel-key)`. For AGW, the channel k
 - **Link-class hint** - used by the routing cost model.
 - **Optional per-channel airtime budget** - caps tx on this channel independently of the global budget.
 - **Optional scheduled-solicit interval** - for HF NVIS where push-only beaconing is too expensive.
-- **Enabled flag** + free-form notes. The dashboard form sets the bearer, port, link class, beacon cadence, airtime budget, solicit interval and enabled flag, and a row can be edited, enabled or disabled from the table; the TTL, cost and notes take the link class defaults unless set through `POST /DiscoveryChannels`.
+- **Enabled flag** + free-form notes. The dashboard form sets the bearer, port, link class, beacon cadence, airtime budget, solicit interval and enabled flag, and a row can be edited, enabled or disabled from the table, taking effect within about 10 seconds; the TTL and cost take the link class defaults and notes stay empty unless set through `POST /DiscoveryChannels`. A channel on a bearer that wasn't running when DAPPS started, or a new UDP multicast address, needs a restart.
 
 There is **no default channel**. Operators add channels via the dashboard's **Discovery channels** section once they've thought about which bearer port DAPPS should beacon on. Defaulting to "beacon on port 0" would silently put DAPPS chatter on whatever band that port happens to be - possibly a band the operator's licence class doesn't permit at the relevant power level. Explicit add is the right contract.
 

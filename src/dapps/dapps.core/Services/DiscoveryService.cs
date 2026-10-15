@@ -37,6 +37,13 @@ public sealed class DiscoveryService(
 {
     private static readonly TimeSpan SweepInterval = TimeSpan.FromMinutes(1);
 
+    /// <summary>How often the running loop re-reads the channels table,
+    /// so a channel disabled, enabled or retimed on the dashboard takes
+    /// effect without a restart. Bearers are started once: a channel on
+    /// a bearer that wasn't running at start still needs a restart, and
+    /// a UDP channel keeps the multicast groups bound at start.</summary>
+    public TimeSpan ChannelReloadInterval { get; init; } = TimeSpan.FromSeconds(10);
+
     /// <summary>How often to re-check the channels table when no
     /// channels are configured yet - operators add them via REST while
     /// the service is running, so we can't just give up at start.</summary>
@@ -62,7 +69,9 @@ public sealed class DiscoveryService(
 
         var byBearer = rows.GroupBy(r => r.Bearer.Trim().ToLowerInvariant()).ToList();
         var bearers = new Dictionary<string, IDiscoveryBearer>(StringComparer.Ordinal);
-        var channelsByBearer = new Dictionary<string, IReadOnlyList<DiscoveryChannelInfo>>(StringComparer.Ordinal);
+        // Replaced wholesale on each reload; readers take the current
+        // list per lookup, never hold one across awaits.
+        var channelsByBearer = new System.Collections.Concurrent.ConcurrentDictionary<string, IReadOnlyList<DiscoveryChannelInfo>>(StringComparer.Ordinal);
 
         foreach (var group in byBearer)
         {
@@ -74,10 +83,7 @@ public sealed class DiscoveryService(
                     bearerName, group.Count());
                 continue;
             }
-            var info = group.Select(r => new DiscoveryChannelInfo(
-                r.Id, r.Bearer, r.ChannelKey, r.LinkClass,
-                r.BeaconIntervalSeconds, r.AdvertisedTtlSeconds, r.CostHint,
-                r.AirtimeBudgetSecondsPerHour, r.SolicitIntervalSeconds)).ToList();
+            var info = group.Select(ToInfo).ToList();
             try
             {
                 await bearer.StartAsync(info, stoppingToken);
@@ -105,7 +111,7 @@ public sealed class DiscoveryService(
         }
 
         var listenTasks = bearers.Select(kv =>
-            Task.Run(() => ListenLoopAsync(kv.Value, channelsByBearer[kv.Key], stoppingToken), stoppingToken)).ToList();
+            Task.Run(() => ListenLoopAsync(kv.Value, channelsByBearer, stoppingToken), stoppingToken)).ToList();
 
         try
         {
@@ -120,6 +126,76 @@ public sealed class DiscoveryService(
                 try { await b.DisposeAsync(); } catch { /* best effort */ }
             }
         }
+    }
+
+    private static DiscoveryChannelInfo ToInfo(DbDiscoveryChannel r) => new(
+        r.Id, r.Bearer, r.ChannelKey, r.LinkClass,
+        r.BeaconIntervalSeconds, r.AdvertisedTtlSeconds, r.CostHint,
+        r.AirtimeBudgetSecondsPerHour, r.SolicitIntervalSeconds);
+
+    /// <summary>
+    /// Re-read the channels table and replace each running bearer's
+    /// list with its enabled rows, so dashboard changes reach the loop.
+    /// Returns the keys that appeared and disappeared, for the caller
+    /// to reschedule. A UDP bearer only has the multicast groups it
+    /// bound at start, so a new UDP key is held back; a channel on a
+    /// bearer that isn't running is held back too. Both are logged
+    /// once.
+    /// </summary>
+    private async Task<(List<(string Bearer, DiscoveryChannelInfo Channel)> Added, List<(string Bearer, string ChannelKey)> Removed)> ReloadChannelsAsync(
+        IReadOnlyDictionary<string, IDiscoveryBearer> bearers,
+        System.Collections.Concurrent.ConcurrentDictionary<string, IReadOnlyList<DiscoveryChannelInfo>> channelsByBearer,
+        IReadOnlySet<(string Bearer, string ChannelKey)> boundAtStart,
+        HashSet<string> heldBack)
+    {
+        var added = new List<(string, DiscoveryChannelInfo)>();
+        var removed = new List<(string, string)>();
+        var rows = await database.GetDiscoveryChannels();
+        var enabled = rows.Where(r => r.Enabled).ToList();
+
+        foreach (var r in enabled)
+        {
+            var bearerName = r.Bearer.Trim().ToLowerInvariant();
+            if (bearers.ContainsKey(bearerName)) continue;
+            if (heldBack.Add($"bearer:{bearerName}"))
+            {
+                logger.LogWarning(
+                    "DiscoveryService: channel {0}/{1} is on a bearer that was not running at start; restart dapps to use it",
+                    bearerName, r.ChannelKey);
+            }
+        }
+
+        foreach (var (bearerName, bearer) in bearers)
+        {
+            var fresh = new List<DiscoveryChannelInfo>();
+            foreach (var r in enabled.Where(x => string.Equals(x.Bearer.Trim(), bearerName, StringComparison.OrdinalIgnoreCase)))
+            {
+                if (bearerName == "udp" && !boundAtStart.Contains((bearerName, r.ChannelKey)))
+                {
+                    if (heldBack.Add($"udp:{r.ChannelKey}"))
+                    {
+                        logger.LogWarning(
+                            "DiscoveryService: UDP channel {0} was added after start; restart dapps to bind its multicast group",
+                            r.ChannelKey);
+                    }
+                    continue;
+                }
+                fresh.Add(ToInfo(r));
+            }
+            var previous = channelsByBearer.TryGetValue(bearerName, out var prev) ? prev : Array.Empty<DiscoveryChannelInfo>();
+            foreach (var ch in fresh.Where(f => !previous.Any(p => p.ChannelKey == f.ChannelKey)))
+            {
+                added.Add((bearerName, ch));
+            }
+            foreach (var ch in previous.Where(p => !fresh.Any(f => f.ChannelKey == p.ChannelKey)))
+            {
+                removed.Add((bearerName, ch.ChannelKey));
+            }
+            channelsByBearer[bearerName] = fresh;
+        }
+        foreach (var (b, ch) in added) logger.LogInformation("DiscoveryService: channel {0}/{1} now active", b, ch.ChannelKey);
+        foreach (var (b, k) in removed) logger.LogInformation("DiscoveryService: channel {0}/{1} no longer active", b, k);
+        return (added, removed);
     }
 
     private IDiscoveryBearer? TryConstructBearer(string bearerName)
@@ -141,9 +217,14 @@ public sealed class DiscoveryService(
     /// </summary>
     private async Task EmitAndSweepAsync(
         IReadOnlyDictionary<string, IDiscoveryBearer> bearers,
-        IReadOnlyDictionary<string, IReadOnlyList<DiscoveryChannelInfo>> channelsByBearer,
+        System.Collections.Concurrent.ConcurrentDictionary<string, IReadOnlyList<DiscoveryChannelInfo>> channelsByBearer,
         CancellationToken stoppingToken)
     {
+        var boundAtStart = channelsByBearer
+            .SelectMany(kv => kv.Value.Select(ch => (kv.Key, ch.ChannelKey)))
+            .ToHashSet();
+        var heldBack = new HashSet<string>(StringComparer.Ordinal);
+        var nextReload = timeProvider.GetUtcNow().UtcDateTime + ChannelReloadInterval;
         var nextEmit = new Dictionary<(string Bearer, string ChannelKey), DateTime>();
         // Plan B6.2 follow-up - per-channel scheduled solicit. Only
         // populated for channels with a positive SolicitIntervalSeconds.
@@ -170,13 +251,52 @@ public sealed class DiscoveryService(
         {
             var now = timeProvider.GetUtcNow().UtcDateTime;
 
+            if (now >= nextReload)
+            {
+                try
+                {
+                    var (added, removed) = await ReloadChannelsAsync(bearers, channelsByBearer, boundAtStart, heldBack);
+                    foreach (var (b, k) in removed)
+                    {
+                        nextEmit.Remove((b, k));
+                        nextSolicit.Remove((b, k));
+                    }
+                    foreach (var (b, ch) in added)
+                    {
+                        nextEmit[(b, ch.ChannelKey)] = now.AddMilliseconds(Random.Shared.Next(50, 250));
+                        if (ch.SolicitIntervalSeconds > 0) nextSolicit[(b, ch.ChannelKey)] = now.AddSeconds(ch.SolicitIntervalSeconds);
+                    }
+                    // A retimed channel: a shorter cadence should not wait
+                    // out the old one, and a solicit interval switched on
+                    // or off takes effect now.
+                    foreach (var kv in channelsByBearer)
+                    foreach (var ch in kv.Value)
+                    {
+                        var key = (kv.Key, ch.ChannelKey);
+                        var cadence = now.AddSeconds(Math.Max(5, ch.BeaconIntervalSeconds));
+                        if (nextEmit.TryGetValue(key, out var due) && due > cadence) nextEmit[key] = cadence;
+                        if (ch.SolicitIntervalSeconds > 0)
+                        {
+                            var solicitDue = now.AddSeconds(ch.SolicitIntervalSeconds);
+                            if (!nextSolicit.TryGetValue(key, out var sd) || sd > solicitDue) nextSolicit[key] = solicitDue;
+                        }
+                        else nextSolicit.Remove(key);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "DiscoveryService: channel reload failed");
+                }
+                nextReload = now + ChannelReloadInterval;
+            }
+
             foreach (var kv in channelsByBearer)
             {
                 var bearer = bearers[kv.Key];
                 foreach (var ch in kv.Value)
                 {
                     var key = (kv.Key, ch.ChannelKey);
-                    if (now < nextEmit[key]) continue;
+                    if (!nextEmit.TryGetValue(key, out var emitDue) || now < emitDue) continue;
 
                     // Plan B7 - airtime budget. Defer this beacon if the
                     // operator-set cap would be blown; reschedule a short
@@ -319,8 +439,9 @@ public sealed class DiscoveryService(
             }
 
             // Sleep until the nearest of: next emit, next solicit,
-            // next sweep, or 1s.
-            var soonest = nextEmit.Values.Min();
+            // next sweep, next channel reload, or 1s.
+            var soonest = nextReload;
+            if (nextEmit.Count > 0 && nextEmit.Values.Min() < soonest) soonest = nextEmit.Values.Min();
             if (nextSolicit.Count > 0)
             {
                 var soonestSolicit = nextSolicit.Values.Min();
@@ -346,7 +467,7 @@ public sealed class DiscoveryService(
 
     private async Task ListenLoopAsync(
         IDiscoveryBearer bearer,
-        IReadOnlyList<DiscoveryChannelInfo> channels,
+        System.Collections.Concurrent.ConcurrentDictionary<string, IReadOnlyList<DiscoveryChannelInfo>> channelsByBearer,
         CancellationToken ct)
     {
         try
@@ -374,6 +495,10 @@ public sealed class DiscoveryService(
                             // Concurrent solicits each schedule their own
                             // reply task; the channel naturally serialises
                             // the actual writes via the bearer's framing.
+                            // Look the channel list up now, not at start:
+                            // a channel disabled since then must not reply.
+                            var channels = channelsByBearer.TryGetValue(bearer.Name, out var current)
+                                ? current : Array.Empty<DiscoveryChannelInfo>();
                             _ = RespondToSolicitAsync(bearer, channels, rs, ct);
                             break;
                     }
