@@ -24,7 +24,7 @@ A discovery channel is the tuple `(bearer, channel-key)`. For AGW, the channel k
 - **Link-class hint** - used by the routing cost model.
 - **Optional per-channel airtime budget** - caps tx on this channel independently of the global budget.
 - **Optional scheduled-solicit interval** - for HF NVIS where push-only beaconing is too expensive.
-- **Enabled flag** + free-form notes. The dashboard form sets only the bearer, port, link class, airtime budget and solicit interval; the cadence, TTL and cost come from the link class, and the enabled flag and notes are reachable through `POST /DiscoveryChannels`.
+- **Enabled flag** + free-form notes. The dashboard form sets the bearer, port, link class, beacon cadence, airtime budget, solicit interval and enabled flag, and a row can be edited, enabled or disabled from the table; the TTL, cost and notes take the link class defaults unless set through `POST /DiscoveryChannels`.
 
 There is **no default channel**. Operators add channels via the dashboard's **Discovery channels** section once they've thought about which bearer port DAPPS should beacon on. Defaulting to "beacon on port 0" would silently put DAPPS chatter on whatever band that port happens to be - possibly a band the operator's licence class doesn't permit at the relevant power level. Explicit add is the right contract.
 
@@ -109,7 +109,7 @@ When the only path to a peer runs through bare packet nodes that don't speak DAP
 For most operators, the simplest workable setup is:
 
 1. Add **one or two manual neighbours** for the peers you actually want to talk to. This works without any discovery system at all.
-2. **Add a discovery channel** for the bearer port your DAPPS beacon should go on. The link class sets the cadence (every 30 minutes on VHF/UHF FM, every 2 hours on HF); `POST /DiscoveryChannels` can set another. Set a per-channel airtime budget.
+2. **Add a discovery channel** for the bearer port your DAPPS beacon should go on. The link class sets the cadence (every 30 minutes on VHF/UHF FM, every 2 hours on HF) unless you set **Beacon every**. Set a per-channel airtime budget.
 3. Once you've heard from a few peers via beacons and have an idea of the on-air ecosystem, **enable probing** with the `Overnight` strategy so the connectivity matrix is verified during quiet hours.
 4. Decide whether you want **scheduled polling** on (you probably don't if your peers are well-behaved; every session carries traffic both ways, which covers the common case).
 

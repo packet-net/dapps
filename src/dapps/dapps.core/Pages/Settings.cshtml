@@ -146,9 +146,9 @@
                 </select>
                 <span class="hint">Fixed: every N hours. Overnight: once a day in the window below. When quiet: after nothing forwarded for the quiet window.</span>
             </div>
-            <div class="field"><label>Overnight start hour</label><input name="ProbeOvernightStartHour" type="number" min="0" max="23" value="@Model.Options.ProbeOvernightStartHour" required /><span class="hint">local time</span></div>
-            <div class="field"><label>Overnight end hour</label><input name="ProbeOvernightEndHour" type="number" min="0" max="23" value="@Model.Options.ProbeOvernightEndHour" required /></div>
-            <div class="field"><label>Quiet window (s)</label><input name="ProbeQuietWindowSeconds" type="number" min="1" max="86400" value="@Model.Options.ProbeQuietWindowSeconds" required /></div>
+            <div class="field" data-strategy="Overnight"><label>Overnight start hour</label><input name="ProbeOvernightStartHour" type="number" min="0" max="23" value="@Model.Options.ProbeOvernightStartHour" required /><span class="hint">local time</span></div>
+            <div class="field" data-strategy="Overnight"><label>Overnight end hour</label><input name="ProbeOvernightEndHour" type="number" min="0" max="23" value="@Model.Options.ProbeOvernightEndHour" required /></div>
+            <div class="field" data-strategy="WhenQuiet"><label>Quiet window (s)</label><input name="ProbeQuietWindowSeconds" type="number" min="1" max="86400" value="@Model.Options.ProbeQuietWindowSeconds" required /></div>
             <label class="field-checkbox"><input name="AutoDiscoverViaNodeCall" type="checkbox" @(Model.Options.AutoDiscoverViaNodeCall ? "checked" : "") />
                 <span>Also probe the node behind each beacon heard<br/><span class="hint">adds it to the probe list, so needs probing on; finds DAPPS behind plain packet nodes by typing the command below at their prompt</span></span></label>
             <div class="field"><label>Node-prompt application command</label><input name="NodePromptApplicationCommand" type="text" value="@Model.Options.NodePromptApplicationCommand" />
@@ -324,6 +324,23 @@ async function dappsRotatePassword(ev) {
         const holder = el.closest('.field')?.querySelector('label')
             ?? el.closest('.field-checkbox')?.querySelector('span');
         holder?.appendChild(badge);
+    }
+})();
+
+// --- Strategy-conditional fields ---
+// Overnight's hours and When quiet's window mean nothing under the
+// other strategies. Hide them; the save still serialises their values.
+(function () {
+    const select = document.querySelector("select[name='ProbeStrategy']");
+    const fields = document.querySelectorAll('[data-strategy]');
+    function apply() {
+        for (const el of fields) {
+            el.style.display = el.dataset.strategy === select?.value ? '' : 'none';
+        }
+    }
+    if (select) {
+        select.addEventListener('change', apply);
+        apply();
     }
 })();
 

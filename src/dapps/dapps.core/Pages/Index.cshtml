@@ -8,7 +8,7 @@
 }
 
 @section Actions {
-    <a class="btn secondary sm" href="~/Diagnostics">Audit log</a>
+    <a class="btn secondary sm" href="~/Diagnostics">Diagnostics</a>
     <a class="btn sm" href="~/Compose">Compose message</a>
 }
 
@@ -172,7 +172,7 @@
 <!-- Quick test send -->
 <h2>Quick send</h2>
 <form class="panel" method="post" asp-page-handler="Send">
-    <p class="panel-sub">Queue a one-off message as an app would. Good for checking a link works.</p>
+    <p class="panel-sub">Queue a one-off message as an app would. Good for checking a link works. Expires after 24 hours.</p>
     <div class="field-grid">
         <div class="field">
             <label for="App">App</label>
@@ -187,7 +187,7 @@
         <div class="field" style="grid-column: 1 / -1;">
             <label for="Payload">Payload (UTF-8 text)</label>
             <input id="Payload" type="text" name="@nameof(IndexModel.Send).@nameof(IndexModel.SendForm.Payload)" value="@Model.Send.Payload" placeholder="hello world" />
-            <span class="hint">For binary payloads or fine-grained control use <a href="~/Compose">Compose</a>.</span>
+            <span class="hint">For another expiry or finer control use <a href="~/Compose">Compose</a>.</span>
         </div>
     </div>
     <div style="margin-top: 0.85rem; display: flex; gap: 0.5rem;">

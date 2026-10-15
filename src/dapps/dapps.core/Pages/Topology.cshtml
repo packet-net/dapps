@@ -86,7 +86,7 @@ else if (tab == "channels")
         <details class="help">
             <summary>How channels work</summary>
             <ul>
-                <li>The link class sets the beacon cadence: every 30 minutes on VHF/UHF FM, hourly on MeshCore, every 2 hours on HF. It also sets the routing cost.</li>
+                <li>The link class sets the routing cost and, unless you set Beacon every, the cadence: every 30 minutes on VHF/UHF FM, hourly on MeshCore, every 2 hours on HF.</li>
                 <li>The airtime budget caps this channel's transmissions per hour; 0 means only the overall budget in Settings applies.</li>
                 <li>A solicit asks "who's there?" and listens for replies; useful on HF where beaconing is dear.</li>
                 <li><a href="https://packet-net.github.io/dapps/discovery-and-routing/" target="_blank" rel="noopener">Manual: discovery and routing</a>.</li>
@@ -115,11 +115,17 @@ else if (tab == "channels")
                     <option value="LanMulticast">LAN multicast (testing)</option>
                     <option value="InternetIp">Internet IP</option>
                 </select>
-                <span class="hint">sets the beacon cadence and the routing cost</span>
+                <span class="hint">sets the routing cost and the default cadence</span>
             </div>
+            <div class="field"><label>Beacon every (minutes)</label><input name="beaconMinutes" type="number" min="1" max="1440" placeholder="default" />
+                <span class="hint">blank = the link class default</span></div>
             <div class="field"><label>Airtime budget (s/h, 0 = unlimited)</label><input name="airtimeBudgetSecondsPerHour" type="number" min="0" max="3600" value="0" /></div>
             <div class="field"><label>Solicit interval (s, 0 = off)</label><input name="solicitIntervalSeconds" type="number" min="0" max="86400" value="0" /></div>
-            <button class="btn" type="submit">Add / update</button>
+            <label class="field-checkbox" style="align-self: center;"><input name="enabled" type="checkbox" checked /><span>Enabled</span></label>
+            <div style="grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 0.5rem;">
+                <button class="btn ghost" type="button" id="chan-cancel" onclick="dappsCancelEditChannel()" style="display: none;">Cancel</button>
+                <button class="btn" type="submit">Add / update</button>
+            </div>
         </form>
         <table>
             <thead>
@@ -318,17 +324,90 @@ else
         if (!confirm(`Remove neighbour ${callsign}?`)) return;
         if (await dappsPostJson('@Url.Content("~/Neighbours/")' + encodeURIComponent(callsign), null, 'DELETE')) location.reload();
     };
+    // The snapshot serialises LinkClass as its number; the API wants the
+    // name. Map either form to the name and to a readable label.
+    const LINK_CLASSES = ['Unknown', 'VhfUhfFm', 'MeshCore', 'Hf', 'LanMulticast', 'InternetIp'];
+    const LINK_LABELS = { Unknown: 'unknown', VhfUhfFm: 'VHF/UHF FM', MeshCore: 'MeshCore', Hf: 'HF', LanMulticast: 'LAN multicast', InternetIp: 'Internet IP' };
+    const linkClassName = (v) => typeof v === 'number' ? (LINK_CLASSES[v] ?? 'Unknown') : String(v ?? 'Unknown');
+    const linkClassLabel = (v) => LINK_LABELS[linkClassName(v)] ?? linkClassName(v);
+    // The upsert is keyed on (bearer, channel key); a zero for cadence,
+    // TTL or cost means "the link class default". TTL and cost have no
+    // form field, so an edit carries the row's values through
+    // unchanged via the form's dataset.
     window.dappsAddChannel = async (ev) => {
         ev.preventDefault();
         const f = ev.target;
+        const minutes = parseInt(f.beaconMinutes.value, 10);
         const body = {
             Bearer: f.bearer.value,
             ChannelKey: f.channelKey.value,
             LinkClass: f.linkClass.value,
+            BeaconIntervalSeconds: minutes > 0 ? minutes * 60 : 0,
+            AdvertisedTtlSeconds: parseInt(f.dataset.ttl ?? '0', 10) || 0,
+            CostHint: parseInt(f.dataset.cost ?? '0', 10) || 0,
+            Enabled: f.enabled.checked,
+            Notes: f.dataset.notes ?? null,
             AirtimeBudgetSecondsPerHour: parseInt(f.airtimeBudgetSecondsPerHour.value, 10) || 0,
             SolicitIntervalSeconds: parseInt(f.solicitIntervalSeconds.value, 10) || 0,
         };
         if (await dappsPostJson('@Url.Content("~/DiscoveryChannels")', body)) location.reload();
+    };
+    window.dappsEditChannel = async (id) => {
+        const c = (window.__dappsChannels || []).find(x => x.id === id);
+        const f = document.getElementById('chan-form');
+        if (!c || !f) return;
+        f.bearer.value = c.bearer;
+        if (window.__dappsChanRender) await window.__dappsChanRender();
+        const key = f.channelKey;
+        if (key.tagName === 'SELECT' && ![...key.options].some(o => o.value === String(c.channelKey))) {
+            const opt = document.createElement('option');
+            opt.value = String(c.channelKey);
+            opt.textContent = `Port ${c.channelKey}`;
+            key.appendChild(opt);
+        }
+        key.value = c.channelKey;
+        // Bearer and key identify the row, so lock them while editing.
+        f.bearer.disabled = true;
+        if (key.tagName === 'SELECT') key.disabled = true; else key.readOnly = true;
+        f.linkClass.value = linkClassName(c.linkClass);
+        f.beaconMinutes.value = c.beaconIntervalSeconds > 0 ? String(Math.round(c.beaconIntervalSeconds / 60)) : '';
+        f.airtimeBudgetSecondsPerHour.value = String(c.airtimeBudgetSecondsPerHour ?? 0);
+        f.solicitIntervalSeconds.value = String(c.solicitIntervalSeconds ?? 0);
+        f.enabled.checked = !!c.enabled;
+        f.dataset.ttl = String(c.advertisedTtlSeconds ?? 0);
+        f.dataset.cost = String(c.costHint ?? 0);
+        if (c.notes != null) f.dataset.notes = c.notes;
+        f.querySelector('button[type="submit"]').textContent = `Save ${c.bearer} ${c.channelKey}`;
+        document.getElementById('chan-cancel').style.display = '';
+        f.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        f.beaconMinutes.focus();
+    };
+    window.dappsCancelEditChannel = () => {
+        const f = document.getElementById('chan-form');
+        f.reset();
+        f.bearer.disabled = false;
+        const key = f.channelKey;
+        if (key) { key.disabled = false; key.readOnly = false; }
+        delete f.dataset.ttl; delete f.dataset.cost; delete f.dataset.notes;
+        f.querySelector('button[type="submit"]').textContent = 'Add / update';
+        document.getElementById('chan-cancel').style.display = 'none';
+    };
+    window.dappsSetChannelEnabled = async (id, enabled) => {
+        const c = (window.__dappsChannels || []).find(x => x.id === id);
+        if (!c) return;
+        const body = {
+            Bearer: c.bearer,
+            ChannelKey: c.channelKey,
+            LinkClass: linkClassName(c.linkClass),
+            BeaconIntervalSeconds: c.beaconIntervalSeconds,
+            AdvertisedTtlSeconds: c.advertisedTtlSeconds,
+            CostHint: c.costHint,
+            Enabled: enabled,
+            Notes: c.notes ?? null,
+            AirtimeBudgetSecondsPerHour: c.airtimeBudgetSecondsPerHour,
+            SolicitIntervalSeconds: c.solicitIntervalSeconds,
+        };
+        if (await dappsPostJson('@Url.Content("~/DiscoveryChannels")', body)) await window.dappsRefreshSnap?.();
     };
     window.dappsDeleteChannel = async (id) => {
         if (!confirm(`Remove discovery channel ${id}?`)) return;
@@ -445,6 +524,7 @@ else
             }
 
             bearerSel.addEventListener('change', render);
+            window.__dappsChanRender = render;
             render();
         })();
     }
@@ -511,6 +591,8 @@ else
         if (tab === 'channels') {
             const body = document.getElementById('chan-body');
             const cs = t.discoveryChannels || [];
+            window.__dappsChannels = cs;
+            const fmtDur = (s) => s >= 3600 && s % 3600 === 0 ? `${s / 3600}h` : s >= 60 ? `${Math.round(s / 60)}m` : `${s}s`;
             // For AGW channels the channelKey is a 0-indexed port
             // number; resolve the human description so the row reads
             // "0 (VHF FM 1200 baud)" instead of just "0". UDP rows
@@ -528,14 +610,16 @@ else
                 body.innerHTML = cs.map(c => `<tr>
                     <td>${escape(c.bearer)}</td>
                     <td>${fmtKey(c)}</td>
-                    <td>${escape(c.linkClass)}</td>
+                    <td>${escape(linkClassLabel(c.linkClass))}</td>
                     <td class="numeric">${c.costHint}</td>
-                    <td class="numeric">${c.beaconIntervalSeconds}s</td>
-                    <td class="numeric">${c.advertisedTtlSeconds}s</td>
+                    <td class="numeric">${fmtDur(c.beaconIntervalSeconds)}</td>
+                    <td class="numeric">${fmtDur(c.advertisedTtlSeconds)}</td>
                     <td class="numeric">${c.airtimeBudgetSecondsPerHour > 0 ? c.airtimeBudgetSecondsPerHour + 's/h' : '<span class="muted">-</span>'}</td>
                     <td class="numeric">${c.solicitIntervalSeconds > 0 ? c.solicitIntervalSeconds + 's' : '<span class="muted">-</span>'}</td>
                     <td>${c.enabled ? '<span class="pill ok">yes</span>' : '<span class="pill warn">no</span>'}</td>
                     <td><div class="actions">
+                        <button class="link-btn" onclick="dappsEditChannel(${c.id})">edit</button>
+                        <button class="link-btn" onclick="dappsSetChannelEnabled(${c.id}, ${c.enabled ? 'false' : 'true'})">${c.enabled ? 'disable' : 'enable'}</button>
                         <button class="link-btn" onclick="dappsSolicitChannel(${c.id})" title="Send a one-shot 'who's there?'">solicit</button>
                         <button class="link-btn danger" onclick="dappsDeleteChannel(${c.id})">remove</button>
                     </div></td>

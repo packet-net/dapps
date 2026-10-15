@@ -102,13 +102,13 @@ A remote node can `c <your-callsign>` and lands at the XRouter node prompt, but 
 A fresh DAPPS install has **no discovery channels configured by default** - discovery is opt-in. Without a channel and an enabled beacon, you don't hear other nodes and they don't hear you. Two ways forward:
 
 - **Manual neighbour**: dashboard > Topology > Neighbours, add a row for the peer you want to talk to. This is the fastest path to "first message" - no discovery needed.
-- **Discovery channel**: dashboard > Topology > Discovery channels, add a channel for the bearer port DAPPS should beacon on. The link class sets the cadence (every 30 minutes on VHF/UHF FM); set a per-channel airtime budget if you're on a shared band.
+- **Discovery channel**: dashboard > Topology > Discovery channels, add a channel for the bearer port DAPPS should beacon on. The link class sets the cadence (every 30 minutes on VHF/UHF FM) unless you set **Beacon every**; set a per-channel airtime budget if you're on a shared band.
 
 ### "I added a discovery channel but I'm not hearing anyone"
 
 Check, in order:
 
-- Channel is **enabled** (the Enabled column; channels added from the dashboard always are, only the REST API can add a disabled one).
+- Channel is **enabled** (the Enabled column; **enable** on the row turns it back on).
 - Beacon cadence isn't unreasonably long (the Beacon column; one beacon every 2 hours, the HF default, means you hear nothing for 2 hours after start).
 - Other DAPPS nodes are actually transmitting on the same channel-key (same bearer port). A node beaconing on port 1 won't be heard by a node listening on port 0.
 - Airtime budget isn't exhausted. The Discovery airtime panel on the dashboard's Overview shows trailing-hour consumption; if it's at 100 % of the global cap or more, beacons will defer. Either raise the cap or wait.

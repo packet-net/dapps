@@ -48,10 +48,13 @@ public sealed class IndexModel(
         {
             try
             {
+                // Same 24 h expiry Compose offers by default, so the two
+                // forms behave alike.
                 var id = await database.SubmitOutboundMessage(
                     Send.App.Trim(),
                     Send.Destination.Trim().ToUpperInvariant(),
-                    Encoding.UTF8.GetBytes(Send.Payload!));
+                    Encoding.UTF8.GetBytes(Send.Payload!),
+                    ttlSeconds: QuickSendTtlSeconds);
                 FlashOk = $"Queued message {id} for {Send.App}@{Send.Destination}.";
                 Send = new SendForm();
             }
@@ -64,6 +67,9 @@ public sealed class IndexModel(
 
         return Page();
     }
+
+    /// <summary>Quick send's fixed expiry, matching Compose's default.</summary>
+    public const int QuickSendTtlSeconds = 86400;
 
     public sealed class SendForm
     {

@@ -16,7 +16,7 @@ The home page, refreshing its live panels every 5 seconds:
 - **Outbound queue / Local inbox** - pending and undelivered counts, with links to the Messages tabs.
 - **Discovery airtime** - trailing-hour discovery transmissions against the global budget.
 - **Needs attention** - anything the node thinks you should look at.
-- **Quick send** - a small form that submits straight into the same path an app would take. Useful for verifying a node-to-node link without writing an app first.
+- **Quick send** - a small form that submits straight into the same path an app would take, with a 24-hour expiry. Useful for verifying a node-to-node link without writing an app first.
 
 The decision-events ring is also mirrored into the systemd journal as log lines, so a `journalctl --grep` works for retrospective lookups beyond what the in-memory ring holds.
 
@@ -34,7 +34,7 @@ Four tabs:
 Five tabs:
 
 - **Neighbours** - the forwarding-partner table. Add / edit / remove, probe one, and set per-neighbour radio port, compression, link hold and connect-script.
-- **Discovery channels** - the bearers DAPPS beacons / listens on: beacon cadence, advertised TTL, link class, channel-specific airtime budget and solicit interval. Add new channels from the form; **solicit** sends a one-off "who's there?".
+- **Discovery channels** - the bearers DAPPS beacons / listens on: beacon cadence, advertised TTL, link class, channel-specific airtime budget and solicit interval. Add channels from the form; **edit**, **enable** / **disable** and **remove** on a row; **solicit** sends a one-off "who's there?".
 - **Discovered peers** - callsigns heard via beacons or solicit replies.
 - **Probed nodes** - per-callsign probe state. Source flag distinguishes direct (`neighbour`), transitive (`via:CALL`), and node-prompt-discovered (`node-prompt:CALL`) rows. Last probed, last success, consecutive failures, opt-out flag.
 - **Polled nodes** - if scheduled polling is on, the per-target poll state.
