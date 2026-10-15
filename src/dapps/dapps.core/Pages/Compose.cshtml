@@ -4,7 +4,7 @@
     ViewData["Title"] = $"DAPPS - compose ({Model.Options.Callsign})";
     ViewData["Active"] = "compose";
     ViewData["PageTitle"] = "Compose";
-    ViewData["PageSubtitle"] = "Queue a message by hand with every field exposed, exactly as an app would. Useful for testing edge cases without writing an app.";
+    ViewData["PageSubtitle"] = "Queue a message by hand, with every field exposed.";
 }
 
 @if (Model.FlashOk is not null)
@@ -21,17 +21,17 @@
         <div class="field">
             <label for="App">App</label>
             <input id="App" type="text" name="@nameof(ComposeModel.Form).@nameof(ComposeModel.ComposeForm.App)" value="@Model.Form.App" required />
-            <span class="hint">the app name; on the destination node the app subscribes to <code>dapps/in/&lt;app&gt;</code></span>
+            <span class="hint">the app on the receiving node; it subscribes to <code>dapps/in/&lt;app&gt;</code></span>
         </div>
         <div class="field">
             <label for="Destination">Destination callsign</label>
             <input id="Destination" type="text" name="@nameof(ComposeModel.Form).@nameof(ComposeModel.ComposeForm.Destination)" value="@Model.Form.Destination" required placeholder="M0LTE-1" />
-            <span class="hint">the destination node's DAPPS callsign with SSID; case doesn't matter</span>
+            <span class="hint">the destination's DAPPS callsign, with SSID</span>
         </div>
         <div class="field">
             <label for="Ttl">Residual TTL (seconds)</label>
             <input id="Ttl" type="text" name="@nameof(ComposeModel.Form).@nameof(ComposeModel.ComposeForm.TtlSeconds)" value="@Model.Form.TtlSeconds" />
-            <span class="hint">empty = never expires; otherwise the message is dropped once this many seconds have passed, counting time spent queued at each hop</span>
+            <span class="hint">empty = never expires; otherwise seconds until the message is dropped</span>
         </div>
         <div class="field" style="grid-column: 1 / -1;">
             <label for="Payload">Payload (UTF-8 text)</label>

@@ -699,6 +699,15 @@
             margin: 1.2rem 0 0.55rem;
         }
         .muted { color: var(--text-muted); }
+        /* "How this works" disclosure under a panel intro or a field */
+        details.help { font-size: 0.78rem; color: var(--text-muted); margin: 0.2rem 0 0.6rem; }
+        details.help summary { cursor: pointer; color: var(--accent); list-style: none; }
+        details.help summary::-webkit-details-marker { display: none; }
+        details.help summary::before { content: "\25B8"; margin-right: 0.35em; }
+        details.help[open] summary::before { content: "\25BE"; margin-right: 0.35em; }
+        details.help ul { margin: 0.3rem 0 0; padding-left: 1.1rem; line-height: 1.5; }
+        details.help li { margin: 0.15rem 0; }
+        details.help a { color: var(--accent); }
         .muted-inline { color: var(--text-muted); font-size: 0.85rem; margin: 0.25rem 0 0.6rem; line-height: 1.5; }
         .empty {
             padding: 1rem;

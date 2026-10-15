@@ -4,7 +4,7 @@
     ViewData["Title"] = $"DAPPS - streams ({Model.Options.Callsign})";
     ViewData["Active"] = "streams";
     ViewData["PageTitle"] = "Streams";
-    ViewData["PageSubtitle"] = "For apps that ask for in-order delivery by setting a stream id on their messages. Nothing shows here unless an app does.";
+    ViewData["PageSubtitle"] = "For apps that set a stream id to get in-order delivery.";
     var now = DateTime.UtcNow;
 }
 
@@ -43,7 +43,7 @@
 <div class="panel" style="margin-top: 1rem;">
     <h3>Receive state</h3>
     <p class="panel-sub">
-        Highlighted rows are holding messages back because an earlier one in the stream hasn't arrived. Gap deadline is when DAPPS stops waiting for it and delivers what it has; a strict stream (<code>gt=0</code>) never does, so shows none.
+        Highlighted rows are waiting for an earlier message. Gap deadline is when DAPPS stops waiting; strict streams never do.
     </p>
     @if (Model.RecvStates.Count == 0)
     {

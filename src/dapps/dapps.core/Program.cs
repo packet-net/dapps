@@ -236,7 +236,7 @@ builder.Services.AddDataProtection()
 // Per-destination sliding-scale backoff so a destination that connects
 // fine but rejects at the application layer (e.g. BPQ's "No AGWPE Host
 // Sessions available" instead of the DAPPSv1> prompt) doesn't get
-// re-dialled on every 5s forwarder tick forever.
+// re-dialled on every forwarder tick forever.
 builder.Services.AddSingleton<OutboundDestinationBackoff>();
 // #178: which peers have a DAPPS session open right now, in either
 // direction. The inbound bearers and the outbound transport write it;

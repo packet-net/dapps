@@ -217,7 +217,7 @@ public sealed class TopologyTests(LoggedInWebAppFixture app, PlaywrightFixture p
             new PageWaitForFunctionOptions { Timeout = 10_000 });
 
         var hint = await page.Locator("#neigh-form [data-port-picker='bearerPort'] .hint, #neigh-form .hint:has-text('couldn')").AllInnerTextsAsync();
-        hint.Should().Contain(t => t.Contains("couldn't query BPQ"),
+        hint.Should().Contain(t => t.Contains("can't list BPQ's ports"),
             "the hint should explain why we fell back to a text input");
     }
 

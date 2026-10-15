@@ -23,7 +23,7 @@
 {
     <div class="panel">
         <h3>Outbound queue</h3>
-        <p class="panel-sub">Messages for other nodes, waiting to be forwarded. The forwarder runs as soon as a message is queued, and every 30 seconds otherwise. Click an id to see the payload.</p>
+        <p class="panel-sub">Messages for other nodes, waiting to go. Sent as soon as queued, or within 30 s. Click an id for the payload.</p>
         <table>
             <thead>
                 <tr>
@@ -43,7 +43,7 @@ else if (tab == "inbox")
 {
     <div class="panel">
         <h3>Local inbox</h3>
-        <p class="panel-sub">Messages that arrived for an app on this node and that the app hasn't acknowledged yet (on <code>dapps/ack/&lt;app&gt;</code> or over REST). A growing inbox usually means the app is subscribed but not acknowledging.</p>
+        <p class="panel-sub">Arrived for an app here, not yet acknowledged by it. A growing inbox means the app isn't acknowledging.</p>
         <table>
             <thead>
                 <tr>
@@ -63,7 +63,7 @@ else if (tab == "dropped")
 {
     <div class="panel">
         <h3>Recently dropped</h3>
-        <p class="panel-sub">Messages DAPPS gave up on, with the reason: TTL expired, no route, or the content didn't match its hash. The place to look for "where did message X go?".</p>
+        <p class="panel-sub">Messages DAPPS gave up on, with the reason.</p>
         <table>
             <thead>
                 <tr>
@@ -82,7 +82,7 @@ else
 {
     <div class="panel">
         <h3>Live arrivals</h3>
-        <p class="panel-sub">Every message that arrives at this node, as it arrives, whether for an app here or for forwarding on. Click a row to see its payload.</p>
+        <p class="panel-sub">Every message as it arrives. Click a row for its payload.</p>
         <div class="row-form" style="margin-bottom: 1rem;">
             <div class="field">
                 <label for="filter-app">App</label>

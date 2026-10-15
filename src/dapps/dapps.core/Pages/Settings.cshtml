@@ -4,7 +4,7 @@
     ViewData["Title"] = $"DAPPS - settings ({Model.Options.Callsign})";
     ViewData["Active"] = "settings";
     ViewData["PageTitle"] = "Settings";
-    ViewData["PageSubtitle"] = "Most changes take effect within seconds of saving. The MQTT and UDP ports, and the MeshCore enable, serial port and region, need DAPPS restarted.";
+    ViewData["PageSubtitle"] = "Changes take effect within seconds. Only the MQTT and UDP ports and the MeshCore enable, serial port and region need a restart.";
     var nb = (Model.Options.NodeBearer ?? "agw").Trim().ToLowerInvariant();
     var ps = Model.Options.ProbeStrategy;
 }
@@ -36,18 +36,18 @@
 <form id="settings-form" onsubmit="dappsSaveConfig(event)" autocomplete="off" data-default-bearer-port="@Model.Options.DefaultBearerPort">
     <div class="panel">
         <h3>Identity &amp; packet-node bearer</h3>
-        <p class="panel-sub">The callsign DAPPS uses on the air, and the packet node it sends and receives through. Changes here reconnect to the node within a few seconds.</p>
+        <p class="panel-sub">DAPPS's callsign on the air, and the packet node it talks through.</p>
         <div class="field-grid">
             <div class="field"><label>Callsign</label><input name="Callsign" value="@Model.Options.Callsign" required />
-                <span class="hint">DAPPS's own callsign with SSID, e.g. <code>M0LTE-7</code>, not your node's</span></div>
+                <span class="hint">with SSID, e.g. <code>M0LTE-7</code>; DAPPS's own, not the node's</span></div>
             <div class="field"><label>Node host</label><input name="NodeHost" value="@Model.Options.NodeHost" required />
                 <span class="hint">usually <code>localhost</code></span></div>
             <div class="field"><label>Node bearer</label>
                 <select name="NodeBearer">
                     <option value="agw" selected="@(nb == "agw")">AGW (BPQ)</option>
-                    <option value="rhpv2" selected="@(nb == "rhpv2")">RHPv2 (XRouter)</option>
+                    <option value="rhpv2" selected="@(nb == "rhpv2")">RHPv2 (XRouter, pdn)</option>
                 </select>
-                <span class="hint">how DAPPS talks to the node: AGW for BPQ, RHPv2 for XRouter or pdn</span>
+                <span class="hint">AGW for BPQ; RHPv2 for XRouter or pdn</span>
             </div>
             <div class="field" data-bearer="agw"><label>AGW TCP port</label><input name="AgwPort" type="number" min="1" max="65535" value="@Model.Options.AgwPort" required />
                 <span class="hint">BPQ's AGW listener (default <code>8000</code>)</span></div>
@@ -77,7 +77,7 @@
         <div class="field-grid">
             <div class="field"><label>MQTT broker port</label><input name="MqttPort" type="number" min="1" max="65535" value="@Model.Options.MqttPort" required /></div>
             <div class="field"><label>UDP listener port</label><input name="UdpListenPort" type="number" min="0" max="65535" value="@Model.Options.UdpListenPort" required />
-                <span class="hint">0 = off. A test-only bearer over UDP; leave at 0 unless you are testing with it.</span></div>
+                <span class="hint">0 = off; test-only UDP bearer</span></div>
             <label class="field-checkbox" style="grid-column: 1 / -1;">
                 <input name="AuthRequired" type="checkbox" @(Model.Options.AuthRequired ? "checked" : "") />
                 <span>Require per-app tokens for MQTT/REST<br/><span class="hint">leave off on a single-operator loopback node</span></span>
@@ -102,8 +102,8 @@
                     <option value="custom" selected="@(Model.Options.MeshCoreRegion == "custom")">Custom - your own preset below</option>
                 </select>
             </div>
-            <div class="field"><label>Custom preset</label><input name="MeshCoreCustomPreset" type="text" value="@Model.Options.MeshCoreCustomPreset" /><span class="hint">used when the region preset is Custom, e.g. freq=868.4;bw=62.5;sf=8;cr=8;pwr=14</span></div>
-            <div class="field"><label>Flood-scope key</label><input name="MeshCoreFloodScopeKey" type="text" value="@Model.Options.MeshCoreFloodScopeKey" class="masked" /><span class="hint">blank = floods go to every repeater; set a key so only nodes with the same key repeat them</span></div>
+            <div class="field"><label>Custom preset</label><input name="MeshCoreCustomPreset" type="text" value="@Model.Options.MeshCoreCustomPreset" /><span class="hint">when Region preset is Custom, e.g. freq=868.4;bw=62.5;sf=8;cr=8;pwr=14</span></div>
+            <div class="field"><label>Flood-scope key</label><input name="MeshCoreFloodScopeKey" type="text" value="@Model.Options.MeshCoreFloodScopeKey" class="masked" /><span class="hint">blank = unscoped; a key limits floods to nodes with the same key</span></div>
             <div class="field"><label>TX power (dBm)</label><input name="MeshCoreTxPowerDbm" type="number" min="0" max="30" value="@Model.Options.MeshCoreTxPowerDbm" /><span class="hint">capped by the region's max</span></div>
             <div class="field"><label>Node name</label><input name="MeshCoreNodeName" type="text" value="@Model.Options.MeshCoreNodeName" /></div>
             <div class="field"><label>Channel slot</label><input name="MeshCoreChannelIndex" type="number" min="0" max="255" value="@Model.Options.MeshCoreChannelIndex" /><span class="hint">0 = public; 1+ = private</span></div>
@@ -123,7 +123,7 @@
 
     <div class="panel">
         <h3>Discovery &amp; airtime</h3>
-        <p class="panel-sub">A cap on how many seconds of airtime all discovery transmissions (beacons, solicits, probes) may use in any hour. Per-channel caps are set on Topology > Discovery channels.</p>
+        <p class="panel-sub">Seconds of airtime per hour for all beacons, solicits and probes. Per-channel caps are in Topology.</p>
         <div class="field-grid">
             <div class="field"><label>Discovery airtime budget (s/h)</label>
                 <input name="DiscoveryAirtimeBudgetSecondsPerHour" type="number" min="0" max="3600" value="@Model.Options.DiscoveryAirtimeBudgetSecondsPerHour" required />
@@ -133,7 +133,7 @@
 
     <div class="panel">
         <h3>Probing &amp; routing</h3>
-        <p class="panel-sub">Probing connects to each known peer now and then to check it still answers. Off by default: it uses airtime on other people's channels too.</p>
+        <p class="panel-sub">Check calls to known peers. Off by default; uses airtime on other people's channels.</p>
         <div class="field-grid">
             <label class="field-checkbox"><input name="ProbingEnabled" type="checkbox" @(Model.Options.ProbingEnabled ? "checked" : "") />
                 <span>Probe known peers on a schedule</span></label>
@@ -144,26 +144,26 @@
                     <option value="Overnight" selected="@(ps == ProbeStrategy.Overnight)">Overnight</option>
                     <option value="WhenQuiet" selected="@(ps == ProbeStrategy.WhenQuiet)">When quiet</option>
                 </select>
-                <span class="hint">Fixed interval: every so many hours. Overnight: once a day, inside the hours below. When quiet: on the interval, but only after nothing has been forwarded for the quiet window.</span>
+                <span class="hint">Fixed: every N hours. Overnight: once a day in the window below. When quiet: after nothing forwarded for the quiet window.</span>
             </div>
             <div class="field"><label>Overnight start hour</label><input name="ProbeOvernightStartHour" type="number" min="0" max="23" value="@Model.Options.ProbeOvernightStartHour" required /><span class="hint">local time</span></div>
             <div class="field"><label>Overnight end hour</label><input name="ProbeOvernightEndHour" type="number" min="0" max="23" value="@Model.Options.ProbeOvernightEndHour" required /></div>
             <div class="field"><label>Quiet window (s)</label><input name="ProbeQuietWindowSeconds" type="number" min="1" max="86400" value="@Model.Options.ProbeQuietWindowSeconds" required /></div>
             <label class="field-checkbox"><input name="AutoDiscoverViaNodeCall" type="checkbox" @(Model.Options.AutoDiscoverViaNodeCall ? "checked" : "") />
-                <span>Also probe the packet node behind each beacon heard<br/><span class="hint">when a DAPPS beacon arrives over AGW, DAPPS also tries connecting to that station's node and typing the command below, to find DAPPS nodes that sit behind an ordinary packet node</span></span></label>
+                <span>Also probe the node behind each beacon heard<br/><span class="hint">adds it to the probe list, so needs probing on; finds DAPPS behind plain packet nodes by typing the command below at their prompt</span></span></label>
             <div class="field"><label>Node-prompt application command</label><input name="NodePromptApplicationCommand" type="text" value="@Model.Options.NodePromptApplicationCommand" />
-                <span class="hint">the command that enters DAPPS at a BPQ node prompt: the name on its <code>APPLICATION</code> line, <code>DAPPS</code> unless changed</span></div>
+                <span class="hint">the name on the BPQ <code>APPLICATION</code> line; <code>DAPPS</code> unless changed</span></div>
         </div>
     </div>
 
     <div class="panel">
         <h3>Links and polling</h3>
-        <p class="panel-sub">Every session with a neighbour carries mail both ways, whoever called. Scheduled polls call each neighbour anyway, to collect mail it holds for us.</p>
+        <p class="panel-sub">Every session carries mail both ways. Scheduled polls call neighbours anyway.</p>
         <div class="field-grid">
             <label class="field-checkbox"><input name="CompressionEnabled" type="checkbox" @(Model.Options.CompressionEnabled ? "checked" : "") />
                 <span>Compress payloads to neighbours when it saves bytes</span></label>
             <div class="field"><label>Link hold (seconds, 0 = off)</label><input name="SessionTailSeconds" type="number" min="0" max="600" value="@Model.Options.SessionTailSeconds" required />
-                <span class="hint">keep a link to a neighbour open this long after the last traffic, so a reply goes without a new call</span></div>
+                <span class="hint">keeps a link open after traffic, so a reply needs no new call</span></div>
             <div class="field"><label>Largest message to take from a neighbour (bytes, 0 = no limit)</label><input name="MaxMessageBytes" type="number" min="0" value="@Model.Options.MaxMessageBytes" required /></div>
             <label class="field-checkbox"><input name="ScheduledPollEnabled" type="checkbox" @(Model.Options.ScheduledPollEnabled ? "checked" : "") />
                 <span>Call every neighbour on a schedule to collect mail held for us</span></label>
@@ -173,7 +173,7 @@
 
     <div class="panel">
         <h3>Heartbeat</h3>
-        <p class="panel-sub">Publishes a status snapshot to the MQTT topic <code>dapps/metrics/heartbeat</code> for monitoring. Same content as <code>/Operational</code>. Not transmitted on the air.</p>
+        <p class="panel-sub">Status snapshot on MQTT topic <code>dapps/metrics/heartbeat</code>, for monitoring. Not on the air.</p>
         <div class="field-grid">
             <label class="field-checkbox"><input name="HeartbeatEnabled" type="checkbox" @(Model.Options.HeartbeatEnabled ? "checked" : "") />
                 <span>Publish heartbeat to MQTT</span></label>
@@ -185,7 +185,7 @@
         <h3>Updates</h3>
         <div class="field-grid">
             <label class="field-checkbox"><input name="UpdateCheckEnabled" type="checkbox" @(Model.Options.UpdateCheckEnabled ? "checked" : "") />
-                <span>Check for new releases<br/><span class="hint">An apt install reads packet-net's apt repository every 6 hours and shows the apt command when a newer version is there; any other install asks GitHub hourly. Use the button below to check now.</span></span></label>
+                <span>Check for new releases<br/><span class="hint">every 6 hours on an apt install, hourly otherwise; the dashboard then shows how to upgrade</span></span></label>
             <div class="field" style="grid-column: 1 / -1; align-items: flex-start;">
                 <button type="button" class="btn ghost sm" id="check-updates-btn" style="margin-top: 0.4rem;">Check for updates now</button>
                 <span class="hint" id="check-updates-status" style="margin-top: 0.5rem; min-height: 1em;"></span>

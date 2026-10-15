@@ -161,7 +161,7 @@ public sealed class ProbeSchedulerService(
                     return new Decision(true, fixedInterval, "forwarder quiet for {idle}");
                 }
                 // Recheck soon - quiet windows arrive on the order of
-                // forwarder ticks (5s), no point sleeping a full hour.
+                // forwarder ticks (30s), no point sleeping a full hour.
                 return new Decision(false, TimeSpan.FromSeconds(Math.Max(15, opts.ProbeQuietWindowSeconds / 4)),
                     $"forwarder active ({idle} ago), waiting for quiet");
             }
