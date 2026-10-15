@@ -140,6 +140,7 @@ public sealed class NodeProberTests
     public async Task ProbeAsync_WithASessionOpen_PingsInsideIt_RatherThanDialling()
     {
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        using var stop = new CancelOnDispose(lifetime);
         var (directory, _, peer) = await OpenSessionAsync(lifetime.Token);
         var transport = new FakeOutboundTransport("DAPPSv1>\n"u8.ToArray());
         var prober = new NodeProber(transport, TimeProvider.System, NullLoggerFactory.Instance, NullLogger<NodeProber>.Instance,
@@ -153,13 +154,13 @@ public sealed class NodeProberTests
         result.Success.Should().BeTrue(result.Error);
         result.Detail.Should().Contain("Already in a session with N0THEM-9 (it called us)").And.Contain("answered in");
         transport.Dialled.Should().BeEmpty();
-        lifetime.Cancel();
     }
 
     [Fact]
     public async Task ProbeAsync_WithASessionOpen_AndNoPong_SaysSo()
     {
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        using var stop = new CancelOnDispose(lifetime);
         var (directory, _, _) = await OpenSessionAsync(lifetime.Token);
         var transport = new FakeOutboundTransport("DAPPSv1>\n"u8.ToArray());
         var prober = new NodeProber(transport, TimeProvider.System, NullLoggerFactory.Instance, NullLogger<NodeProber>.Instance,
@@ -174,7 +175,42 @@ public sealed class NodeProberTests
         result.Error.Should().Contain("no answer to a ping").And.Contain("last heard from it");
         result.Detail.Should().Be(result.Error);
         transport.Dialled.Should().BeEmpty();
-        lifetime.Cancel();
+    }
+
+    [Fact]
+    public async Task ProbeAsync_ASessionThatEndsWhileWeWait_IsReportedAsNoAnswer_NotAsEnding()
+    {
+        // The stalled session a probe is most often run for: the ping goes,
+        // nothing comes back, and the link drops before the probe gives up.
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        using var stop = new CancelOnDispose(lifetime);
+        var (directory, _, peer) = await OpenSessionAsync(lifetime.Token);
+        var prober = new NodeProber(new FakeOutboundTransport("DAPPSv1>\n"u8.ToArray()), TimeProvider.System,
+            NullLoggerFactory.Instance, NullLogger<NodeProber>.Instance, sessionDirectory: directory);
+
+        var probing = prober.ProbeAsync("N0US", "N0THEM-9", bearerPort: 1, lifetime.Token);
+        (await peer.ReadLineAsync(lifetime.Token)).Should().StartWith("ping ");
+        peer.Close();
+        var result = await probing.WaitAsync(ExchangeTestKit.Patience, lifetime.Token);
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().Contain("no answer came before the session ended");
+    }
+
+    [Fact]
+    public async Task ProbeAsync_ThroughAConnectScript_ReportsTheBusyNodeItDials()
+    {
+        var registry = new PeerSessionRegistry();
+        using var lease = registry.Acquire("N0NODE", "outbound");
+        var prober = new NodeProber(new ThrowingTransport(new PeerSessionBusyException("N0NODE", "outbound")),
+            TimeProvider.System, NullLoggerFactory.Instance, NullLogger<NodeProber>.Instance, peerSessions: registry);
+        var script = new dapps.client.ConnectScript([new dapps.client.ConnectScriptStep("DAPPS", "DAPPSv1>")]);
+
+        var result = await prober.ProbeAsync("N0US", "N0THEM-3", bearerPort: 1, CancellationToken.None,
+            connectScript: script, connectVia: "N0NODE");
+
+        result.Callsign.Should().Be("N0THEM-3");
+        result.Error.Should().Contain("A session with N0NODE is open (we called it");
     }
 
     [Fact]
@@ -200,6 +236,12 @@ public sealed class NodeProberTests
     [InlineData(7500, "2h05m")]
     public void Duration_IsShortAndPlain(double seconds, string expected) =>
         NodeProber.Duration(TimeSpan.FromSeconds(seconds)).Should().Be(expected);
+
+    /// <summary>Cancels on dispose, so a session a test started stops even when an assertion fails first.</summary>
+    private sealed class CancelOnDispose(CancellationTokenSource source) : IDisposable
+    {
+        public void Dispose() => source.Cancel();
+    }
 
     private static NodeProber MakeProber(IDappsOutboundTransport transport)
         => new(transport, TimeProvider.System, NullLoggerFactory.Instance, NullLogger<NodeProber>.Instance);

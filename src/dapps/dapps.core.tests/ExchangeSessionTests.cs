@@ -1627,7 +1627,7 @@ public sealed class ExchangeSessionTests : IDisposable
         line.Should().MatchRegex("^ping [!-~]+$");
         await peer.WriteLineAsync("pong " + line["ping ".Length..], Ct);
 
-        (await pinging).Should().NotBeNull();
+        (await pinging).Should().Match<PingOutcome>(o => o.Sent && o.RoundTrip != null);
         session.Status.Should().Match<SessionStatus>(s => s.Established && !s.Dialled && !s.Ending && s.Unanswered == 0);
     }
 
@@ -1647,7 +1647,7 @@ public sealed class ExchangeSessionTests : IDisposable
         // The answering node would take it for a mistyped command and hang up.
         var (session, _, run, wire) = await CallerAsync();
 
-        (await session.PingAsync(Patience, Ct)).Should().BeNull();
+        (await session.PingAsync(Patience, Ct)).Should().Be(new PingOutcome(Sent: false, RoundTrip: null));
         run.IsCompleted.Should().BeFalse();
         wire.Writes.Should().NotContain(w => w.Contains("ping"));
     }
@@ -1660,7 +1660,7 @@ public sealed class ExchangeSessionTests : IDisposable
         await peer.WriteLineAsync(Rules(), Ct);
         await WaitUntilAsync(() => session.Established);
 
-        (await session.PingAsync(Short, Ct)).Should().BeNull();
+        (await session.PingAsync(Short, Ct)).Should().Be(new PingOutcome(Sent: true, RoundTrip: null));
         (await peer.ReadLineAsync(Ct)).Should().StartWith("ping ");
         run.IsCompleted.Should().BeFalse();
         session.Status.Ending.Should().BeFalse();
@@ -1689,7 +1689,7 @@ public sealed class ExchangeSessionTests : IDisposable
             var pinging = session.PingAsync(Timeout.InfiniteTimeSpan, Ct);
             var line = await peer.ReadLineAsync(Ct);
             await peer.WriteLineAsync("pong " + line["ping ".Length..], Ct);
-            (await pinging).Should().NotBeNull();
+            (await pinging).RoundTrip.Should().NotBeNull();
         }
         run.IsCompleted.Should().BeFalse();
 

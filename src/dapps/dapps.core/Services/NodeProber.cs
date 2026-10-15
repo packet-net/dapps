@@ -27,7 +27,7 @@ public sealed class NodeProber(
     IRouteGossipPort? routeGossip = null,
     PeerSessionRegistry? peerSessions = null,
     SessionDirectory? sessionDirectory = null,
-    IDappsBackhaul? backhaul = null)
+    Dappsv1SessionBackhaul? sessionBackhaul = null)
 {
     /// <summary>How long a probe waits for the <c>pong</c> when it pings
     /// inside a session that is already open.</summary>
@@ -47,7 +47,7 @@ public sealed class NodeProber(
     /// Empty when peers wasn't requested or the request failed; failure
     /// to fetch peers does not mark the probe itself as failed.
     /// <see cref="Detail"/> is set when the probe found a session with the
-    /// peer already open and pinged inside it: what it found, for the
+    /// peer already open, and so didn't dial: what it found, for the
     /// operator (on failure it is the error too).</summary>
     public sealed record ProbeResult(
         string Callsign,
@@ -169,9 +169,10 @@ public sealed class NodeProber(
             // exit cleanly on shutdown.
             throw;
         }
-        catch (PeerSessionBusyException)
+        catch (PeerSessionBusyException ex)
         {
-            return BusyResult(remoteCallsign, bearerPort, at);
+            // Held under the callsign dialled: the connect-script's node, if any.
+            return BusyResult(ex.PeerCallsign, bearerPort, at, remoteCallsign);
         }
         catch (TimeoutException ex)
         {
@@ -279,9 +280,9 @@ public sealed class NodeProber(
         {
             throw;
         }
-        catch (PeerSessionBusyException)
+        catch (PeerSessionBusyException ex)
         {
-            return BusyResult(remoteNodeCall, bearerPort, at);
+            return BusyResult(ex.PeerCallsign, bearerPort, at, remoteNodeCall);
         }
         catch (Exception ex)
         {
@@ -297,7 +298,7 @@ public sealed class NodeProber(
     /// link, and the far node takes that for a reset (#178).
     /// </summary>
     private ExchangeSession? FindOpenSession(string callsign) =>
-        (backhaul as Dappsv1SessionBackhaul)?.FindOpenSession(callsign)
+        sessionBackhaul?.FindOpenSession(callsign)
         ?? sessionDirectory?.Find(callsign);
 
     /// <summary>
@@ -308,13 +309,13 @@ public sealed class NodeProber(
     private async Task<ProbeResult> PingOpenSessionAsync(
         ExchangeSession session, string callsign, int bearerPort, DateTime at, CancellationToken ct)
     {
-        var roundTrip = await session.PingAsync(PingTimeout, ct);
+        var ping = await session.PingAsync(PingTimeout, ct);
         var status = session.Status;
         var now = timeProvider.GetUtcNow();
         var who = status.Dialled ? "we called it" : "it called us";
         var state = Describe(status, now);
 
-        if (roundTrip is { } rtt)
+        if (ping.RoundTrip is { } rtt)
         {
             var detail = $"Already in a session with {callsign} ({who}), so pinged inside it: answered in {Duration(rtt)}. {state}";
             logger.LogInformation("Probe ok: {0}", detail);
@@ -322,9 +323,16 @@ public sealed class NodeProber(
         }
 
         string error;
-        if (status.Ending)
+        if (!ping.Sent)
         {
             error = $"The session with {callsign} ({who}) was ending, so there was nothing to ping. Probe again in a few seconds. {state}";
+        }
+        else if (status.Ending)
+        {
+            // What a probe of a stalled session most often finds: the ping
+            // went, nothing came back, and the session gave up on the link.
+            error = $"In a session with {callsign} ({who}): pinged it, but no answer came before the session ended. {state} "
+                + "The link was most likely not getting anything through. The next message or probe dials afresh.";
         }
         else
         {
@@ -345,27 +353,29 @@ public sealed class NodeProber(
     /// ping: a call still connecting, another probe or poll before its
     /// exchange, or one left over from a link that died without a
     /// disconnect. Says which direction and for how long.
+    /// <paramref name="held"/> is the callsign the session is held under
+    /// (the dialled one), <paramref name="callsign"/> the probe's target.
     /// </summary>
-    private ProbeResult BusyResult(string callsign, int bearerPort, DateTime at)
+    private ProbeResult BusyResult(string heldCall, int bearerPort, DateTime at, string callsign)
     {
         var now = timeProvider.GetUtcNow();
-        var held = peerSessions?.Sessions(callsign) ?? [];
+        var held = peerSessions?.Sessions(heldCall) ?? [];
         string error;
         if (held.Count == 0)
         {
-            error = $"A session with {callsign} was open a moment ago and has just ended. Probe again.";
+            error = $"A session with {heldCall} was open a moment ago and has just ended. Probe again.";
         }
         else
         {
             var oldest = held[0];
             var who = oldest.Direction == "inbound" ? "it called us" : "we called it";
             var age = now - oldest.Since;
-            error = $"A session with {callsign} is open ({who}, {Duration(age)} ago, "
+            error = $"A session with {heldCall} is open ({who}, {Duration(age)} ago, "
                 + (oldest.Connected ? "connected" : "still connecting")
                 + ") but hasn't reached the DAPPS exchange, so there is nothing to ping.";
             if (age >= StuckLeaseAge)
             {
-                error += " That is far longer than setting up takes, so it looks stuck: the link may have died without a disconnect. Restarting DAPPS clears it.";
+                error += " That is far longer than setting up takes. Unless someone is at the DAPPSv1> prompt by hand, it looks stuck: the link may have died without a disconnect, and restarting DAPPS clears it.";
             }
         }
         logger.LogInformation("Probe skipped: {0}", error);

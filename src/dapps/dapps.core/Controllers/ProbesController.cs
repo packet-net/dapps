@@ -96,7 +96,8 @@ public class ProbesController(
 /// <summary>Wire shape returned by the /Probes endpoints. Mirrors
 /// <see cref="DbProbedNode"/> 1:1 - keeping a separate model lets the
 /// row evolve without breaking the wire shape. <see cref="Detail"/> is
-/// only set by an on-demand probe that pinged inside an open session.</summary>
+/// only set by an on-demand probe that found a session with the peer
+/// already open, and so didn't dial.</summary>
 public sealed record ProbedNodeModel(
     string Callsign,
     int? LastBearerPort,

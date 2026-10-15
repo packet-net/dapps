@@ -320,7 +320,7 @@ builder.Services.AddSingleton<CompressionPolicy>();
 builder.Services.AddSingleton<SessionTailPolicy>();
 builder.Services.AddSingleton<ExchangePolicy>();
 builder.Services.AddSingleton<SessionDirectory>();
-builder.Services.AddSingleton<IDappsBackhaul>(sp => new Dappsv1SessionBackhaul(
+builder.Services.AddSingleton(sp => new Dappsv1SessionBackhaul(
     sp.GetRequiredService<IDappsOutboundTransport>(),
     sp.GetRequiredService<ILoggerFactory>(),
     // What the neighbour sends us on a session we dialled.
@@ -332,6 +332,8 @@ builder.Services.AddSingleton<IDappsBackhaul>(sp => new Dappsv1SessionBackhaul(
     settingsFor: sp.GetRequiredService<ExchangePolicy>().ForPeerAsync,
     // An established session takes anything else queued for its peer.
     sessionOpened: sp.GetRequiredService<ForwarderWakeup>().Wake));
+// As itself as well, so a probe can find a session it dialled.
+builder.Services.AddSingleton<IDappsBackhaul>(sp => sp.GetRequiredService<Dappsv1SessionBackhaul>());
 builder.Services.AddSingleton<DatabaseAndMqttInbox>();
 builder.Services.AddSingleton<IBackhaulInbox>(sp => sp.GetRequiredService<DatabaseAndMqttInbox>());
 builder.Services.AddHostedService<UdpDatagramListener>();
