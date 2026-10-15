@@ -229,6 +229,51 @@ public sealed class RemainingControllersTests : IAsyncLifetime
     }
 
     [Fact]
+    public void ConfigMerge_WithNothingToChange_KeepsEverySetting()
+    {
+        // Every setting must survive the JSON round trip the merge does;
+        // one that didn't (say a later [JsonIgnore] or init-only property)
+        // would quietly change on every save.
+        var original = new SystemOptions();
+        foreach (var p in typeof(SystemOptions).GetProperties().Where(p => p.CanWrite))
+        {
+            var t = Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType;
+            object value = t == typeof(string) ? "x-" + p.Name
+                : t == typeof(int) ? 7
+                : t == typeof(double) ? 0.1 + 0.2
+                : t == typeof(bool) ? !(bool)(p.GetValue(original) ?? false)
+                : t.IsEnum ? Enum.GetValues(t).Cast<object>().Last()
+                : throw new InvalidOperationException($"add a test value for {t} ({p.Name})");
+            p.SetValue(original, value);
+        }
+
+        var merged = ConfigController.Merge(original, new System.Text.Json.Nodes.JsonObject());
+
+        foreach (var p in typeof(SystemOptions).GetProperties().Where(p => p.CanWrite))
+        {
+            p.GetValue(merged).Should().Be(p.GetValue(original), p.Name);
+        }
+    }
+
+    [Theory]
+    [InlineData("{\"MqttPort\":null}")]
+    [InlineData("{\"MqttPort\":\"abc\"}")]
+    [InlineData("{\"MqttPort\":1.5}")]
+    [InlineData("{\"ProbeStrategy\":\"nope\"}")]
+    [InlineData("{\"Callsign\":null}")]
+    public async Task ConfigController_Post_BadValue_Is400_AndChangesNothing(string body)
+    {
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        var ctrl = new ConfigController(store, new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance));
+        var before = store.CurrentValue.MqttPort;
+
+        var post = await ctrl.Post(System.Text.Json.Nodes.JsonNode.Parse(body)!.AsObject());
+
+        post.Should().BeOfType<BadRequestObjectResult>();
+        store.CurrentValue.MqttPort.Should().Be(before);
+    }
+
+    [Fact]
     public async Task ConfigController_Post_KeepsSettingsItWasNotSent()
     {
         // The Settings page doesn't send TxEnabled, RoutingAlgorithm and

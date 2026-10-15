@@ -40,6 +40,33 @@ public sealed class TxControlControllerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task StopAndResume_KeepEveryOtherSetting()
+    {
+        // STOP used to save a hand-written copy of the settings that left
+        // out the MeshCore ones, so it turned MeshCore off.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbSystemOption { Option = "MeshCoreEnabled", Value = "True" });
+            c.Insert(new DbSystemOption { Option = "MeshCorePort", Value = "/dev/ttyACM3" });
+            c.Insert(new DbSystemOption { Option = "MeshCoreChannelPsk", Value = "not-the-default" });
+            c.Insert(new DbSystemOption { Option = "RouteGossipStalenessHours", Value = "0" });
+        }
+        var (ctrl, store, _, _) = BuildController();
+
+        await ctrl.Stop();
+        store.CurrentValue.TxEnabled.Should().BeFalse();
+        store.CurrentValue.MeshCoreEnabled.Should().BeTrue();
+        store.CurrentValue.MeshCorePort.Should().Be("/dev/ttyACM3");
+        store.CurrentValue.MeshCoreChannelPsk.Should().Be("not-the-default");
+        store.CurrentValue.RouteGossipStalenessHours.Should().Be(0);
+
+        await ctrl.Resume();
+        store.CurrentValue.TxEnabled.Should().BeTrue();
+        store.CurrentValue.MeshCoreEnabled.Should().BeTrue();
+        store.CurrentValue.MeshCorePort.Should().Be("/dev/ttyACM3");
+    }
+
+    [Fact]
     public async Task Stop_FlipsTxEnabledFalse_AndGateReports()
     {
         var (ctrl, store, gate, _) = BuildController();

@@ -27,10 +27,19 @@ public class ConfigController(SystemOptionsStore options, AdminPasswordStore adm
     public async Task<IActionResult> Post([FromBody] JsonObject? changes)
     {
         if (changes is null) return BadRequest("Send a JSON object of the settings to change.");
-        await options.SaveAsync(Merge(options.CurrentValue, changes));
+        SystemOptions merged;
+        try { merged = Merge(options.CurrentValue, changes); }
+        catch (JsonException ex) { return BadRequest(ex.Message); }
+        await options.SaveAsync(merged);
         return Ok();
     }
 
+    /// <summary>
+    /// <paramref name="current"/> with the settings named in
+    /// <paramref name="changes"/> (matched case-insensitively) replaced.
+    /// Throws <see cref="JsonException"/> for a value of the wrong type,
+    /// or null for a setting that can't be null.
+    /// </summary>
     internal static SystemOptions Merge(SystemOptions current, JsonObject changes)
     {
         var json = JsonSerializerOptions.Web;
@@ -39,9 +48,22 @@ public class ConfigController(SystemOptionsStore options, AdminPasswordStore adm
         foreach (var (name, value) in changes)
         {
             var key = names.FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase));
-            if (key is not null) merged[key] = value?.DeepClone();
+            if (key is null) continue;
+            if (value is null && !Nullable(key))
+            {
+                throw new JsonException($"{name} can't be null.");
+            }
+            merged[key] = value?.DeepClone();
         }
         return merged.Deserialize<SystemOptions>(json)!;
+    }
+
+    private static bool Nullable(string jsonName)
+    {
+        var property = typeof(SystemOptions).GetProperty(jsonName,
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+        return property is not null
+            && new System.Reflection.NullabilityInfoContext().Create(property).WriteState == System.Reflection.NullabilityState.Nullable;
     }
 
     /// <summary>

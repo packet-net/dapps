@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using dapps.core.Models;
 using dapps.core.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -53,8 +54,9 @@ public sealed class TxControlController(
             return RedirectToReferer();
         }
 
-        var updated = Clone(current);
-        updated.TxEnabled = enabled;
+        // Change TxEnabled alone. A hand-written copy of the settings here
+        // left out every MeshCore one, so STOP or RESUME turned MeshCore off.
+        var updated = ConfigController.Merge(current, new JsonObject { ["TxEnabled"] = enabled });
         await options.SaveAsync(updated);
 
         await audit.RecordAsync(
@@ -77,46 +79,6 @@ public sealed class TxControlController(
         return Redirect(string.IsNullOrEmpty(referer) ? $"{Request.PathBase}/" : referer);
     }
 
-    private static SystemOptions Clone(SystemOptions s) => new()
-    {
-        NodeHost = s.NodeHost,
-        AgwPort = s.AgwPort,
-        NodeBearer = s.NodeBearer,
-        RhpPort = s.RhpPort,
-        RhpUser = s.RhpUser,
-        RhpPass = s.RhpPass,
-        DefaultBearerPort = s.DefaultBearerPort,
-        Callsign = s.Callsign,
-        MqttPort = s.MqttPort,
-        UdpListenPort = s.UdpListenPort,
-        AuthRequired = s.AuthRequired,
-        UpdateCheckEnabled = s.UpdateCheckEnabled,
-        RoutingAlgorithm = s.RoutingAlgorithm,
-        ProbingEnabled = s.ProbingEnabled,
-        ProbeIntervalHours = s.ProbeIntervalHours,
-        FragmentThresholdBytes = s.FragmentThresholdBytes,
-        FragmentReassemblyTimeoutSeconds = s.FragmentReassemblyTimeoutSeconds,
-        ReceivedMemorySeconds = s.ReceivedMemorySeconds,
-        RouteGossipStalenessHours = s.RouteGossipStalenessHours,
-        CompressionEnabled = s.CompressionEnabled,
-        SessionTailSeconds = s.SessionTailSeconds,
-        MaxMessageBytes = s.MaxMessageBytes,
-        ScheduledPollEnabled = s.ScheduledPollEnabled,
-        PollIntervalHours = s.PollIntervalHours,
-        DiscoveryAirtimeBudgetSecondsPerHour = s.DiscoveryAirtimeBudgetSecondsPerHour,
-        ProbeStrategy = s.ProbeStrategy,
-        ProbeOvernightStartHour = s.ProbeOvernightStartHour,
-        ProbeOvernightEndHour = s.ProbeOvernightEndHour,
-        ProbeQuietWindowSeconds = s.ProbeQuietWindowSeconds,
-        HeartbeatEnabled = s.HeartbeatEnabled,
-        HeartbeatIntervalSeconds = s.HeartbeatIntervalSeconds,
-        AutoDiscoverViaNodeCall = s.AutoDiscoverViaNodeCall,
-        NodePromptApplicationCommand = s.NodePromptApplicationCommand,
-        TransmissionAuditEnabled = s.TransmissionAuditEnabled,
-        TransmissionAuditRetentionDays = s.TransmissionAuditRetentionDays,
-        TransmissionAuditMqttPublish = s.TransmissionAuditMqttPublish,
-        TxEnabled = s.TxEnabled,
-    };
 }
 
 public sealed record TxControlStatus(
