@@ -88,7 +88,7 @@ else if (tab == "channels")
             <ul>
                 <li>The link class sets the routing cost and, unless you set Beacon every, the cadence: every 30 minutes on VHF/UHF FM, hourly on MeshCore, every 2 hours on HF.</li>
                 <li>The airtime budget caps this channel's transmissions per hour; 0 means only the overall budget in Settings applies.</li>
-                <li>Changes take effect within about 10 seconds. A channel on a bearer that wasn't running at start, or a new UDP address, needs DAPPS restarted.</li>
+                <li>Changes take effect within about 10 seconds. If the packet node is down, DAPPS keeps retrying it.</li>
                 <li>A solicit asks "who's there?" and listens for replies; useful on HF where beaconing is dear.</li>
                 <li><a href="https://packet-net.github.io/dapps/discovery-and-routing/" target="_blank" rel="noopener">Manual: discovery and routing</a>.</li>
             </ul>
