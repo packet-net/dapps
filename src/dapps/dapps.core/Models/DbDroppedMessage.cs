@@ -21,6 +21,11 @@ public class DbDroppedMessage
     public long? Salt { get; init; }
     public string Destination { get; init; } = "";
     public string SourceCallsign { get; init; } = "";
+    public string OriginatorCallsign { get; init; } = "";
+
+    /// <summary>As <see cref="DbMessage.FromCallsign"/>.</summary>
+    [Ignore]
+    public string FromCallsign => string.IsNullOrEmpty(OriginatorCallsign) ? SourceCallsign : OriginatorCallsign;
     public string AdditionalProperties { get; init; } = "";
     public bool Forwarded { get; init; }
     public bool LocallyDelivered { get; init; }

@@ -84,7 +84,8 @@ public sealed class OperationalSnapshotBuilder(
                 Id: m.Id,
                 Destination: m.Destination,
                 App: appOverride ?? m.Destination.Split('@')[0],
-                SourceCallsign: m.SourceCallsign,
+                SourceCallsign: m.FromCallsign,
+                ViaCallsign: m.SourceCallsign,
                 Bytes: m.Payload.Length,
                 Ttl: m.Ttl,
                 AgeSeconds: (int)Math.Max(0, (timeProvider.GetUtcNow().UtcDateTime - m.CreatedAt).TotalSeconds));
@@ -96,7 +97,8 @@ public sealed class OperationalSnapshotBuilder(
                 .Select(d => new DroppedMessageRow(
                     Id: d.Id,
                     Destination: d.Destination,
-                    SourceCallsign: d.SourceCallsign,
+                    SourceCallsign: d.FromCallsign,
+                    ViaCallsign: d.SourceCallsign,
                     Bytes: d.Payload.Length,
                     Ttl: d.Ttl,
                     CreatedAt: d.CreatedAt,

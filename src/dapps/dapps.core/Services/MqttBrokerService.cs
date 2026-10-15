@@ -146,15 +146,19 @@ public sealed class MqttBrokerService(
             .WithPayload(message.Payload)
             .WithUserProperty("dapps-id", message.Id)
             .WithQualityOfServiceLevel(MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce);
+        // dapps-source is who the message is from, the station to reply
+        // to: the originator, or the last hop when the originator is
+        // unknown. dapps-via is the last hop, the neighbour that handed
+        // it to us. dapps-origin, the originator alone, is still sent
+        // for apps written for it.
+        if (!string.IsNullOrEmpty(message.FromCallsign))
+        {
+            builder = builder.WithUserProperty("dapps-source", message.FromCallsign);
+        }
         if (!string.IsNullOrEmpty(message.SourceCallsign))
         {
-            builder = builder.WithUserProperty("dapps-source", message.SourceCallsign);
+            builder = builder.WithUserProperty("dapps-via", message.SourceCallsign);
         }
-        // F1 end-to-end source tracking: dapps-origin = originating
-        // callsign when the upstream chain told us. Distinct from
-        // dapps-source (link source / last hop). Omitted when unknown
-        // - apps should fall back to dapps-source if dapps-origin is
-        // absent.
         if (!string.IsNullOrEmpty(message.OriginatorCallsign))
         {
             builder = builder.WithUserProperty("dapps-origin", message.OriginatorCallsign);

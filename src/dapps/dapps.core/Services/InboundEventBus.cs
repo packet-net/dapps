@@ -71,4 +71,5 @@ public sealed record InboundEvent(
     string SourceCallsign,
     string Destination,
     int PayloadLength,
-    int? Ttl);
+    int? Ttl,
+    string ViaCallsign = "");

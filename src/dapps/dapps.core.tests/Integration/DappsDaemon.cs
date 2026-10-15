@@ -243,7 +243,7 @@ internal sealed class DappsDaemon : IAsyncDisposable
         }
     }
 
-    public sealed record Inbound(string Id, string SourceCallsign, byte[] Payload, int? Ttl, string? OriginatorCallsign);
+    public sealed record Inbound(string Id, string SourceCallsign, byte[] Payload, int? Ttl, string? OriginatorCallsign, string? ViaCallsign = null);
 
     public async Task<IReadOnlyList<Inbound>> InboundAsync(string app, CancellationToken ct) =>
         await Http.GetFromJsonAsync<List<Inbound>>($"AppApi/inbound/{app}", JsonOptions, ct) ?? [];

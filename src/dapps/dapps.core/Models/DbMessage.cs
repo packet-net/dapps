@@ -30,6 +30,12 @@ public class DbMessage
     /// </summary>
     public string OriginatorCallsign { get; init; } = "";
 
+    /// <summary>Who the message is from, as apps and the dashboard see it:
+    /// the originator, or the link source when the originator is unknown.
+    /// <see cref="SourceCallsign"/> is the last hop.</summary>
+    [Ignore]
+    public string FromCallsign => string.IsNullOrEmpty(OriginatorCallsign) ? SourceCallsign : OriginatorCallsign;
+
     public string AdditionalProperties { get; init; } = "";
 
     /// <summary>True once OutboundMessageManager has handed this off to a

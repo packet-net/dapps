@@ -116,7 +116,50 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
         var msg = await received.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
         msg.PayloadSegment.ToArray().Should().Equal(payload);
         msg.UserProperties.Single(p => p.Name == "dapps-id").Value.Should().Be("inbx001");
+        // No originator on the wire: who it's from is the link source.
         msg.UserProperties.Single(p => p.Name == "dapps-source").Value.Should().Be("G7XYZ-3");
+        msg.UserProperties.Single(p => p.Name == "dapps-via").Value.Should().Be("G7XYZ-3");
+
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
+    [Fact]
+    public async Task DeliverAsync_RelayedMessage_SourceIsTheOriginator_ViaIsTheLastHop()
+    {
+        // G6FCI's A-B-C-D chain: mail from A arrives at D from C. Apps
+        // reply to dapps-source, so it must be A; dapps-via says C.
+        var ct = TestContext.Current.CancellationToken;
+        var client = await ConnectClient();
+
+        var received = new TaskCompletionSource<MqttApplicationMessage>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        client.ApplicationMessageReceivedAsync += async e =>
+        {
+            received.TrySetResult(e.ApplicationMessage);
+            await Task.CompletedTask;
+        };
+        await client.SubscribeAsync("dapps/in/myapp",
+            MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, ct);
+
+        var bm = new BackhaulMessage(
+            Id: "inbx002",
+            Destination: "myapp@N0CALL",
+            Salt: 1L,
+            Ttl: 600,
+            Payload: "relayed"u8.ToArray(),
+            Originator: "G6AAA-7");
+
+        await inbox.DeliverAsync(bm, sourceCallsign: "G6CCC-7", ct);
+
+        var msg = await received.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        msg.UserProperties.Single(p => p.Name == "dapps-source").Value.Should().Be("G6AAA-7");
+        msg.UserProperties.Single(p => p.Name == "dapps-via").Value.Should().Be("G6CCC-7");
+        msg.UserProperties.Single(p => p.Name == "dapps-origin").Value.Should().Be("G6AAA-7");
+
+        using var c = DbInfo.GetConnection();
+        var row = c.Find<DbMessage>("inbx002");
+        row!.SourceCallsign.Should().Be("G6CCC-7", "routing keeps the link source");
+        row.FromCallsign.Should().Be("G6AAA-7");
 
         await client.DisconnectAsync(cancellationToken: ct);
     }

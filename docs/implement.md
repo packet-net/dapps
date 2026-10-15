@@ -229,7 +229,7 @@ ihave 7e1f3a2 len=5 fmt=p s=1714982400000 src=G0ORIG dst=mail@G0RCV chk=a31f
 
 `src=<callsign>` is the *originator* of the message - the callsign of the node whose app submitted it. Distinct from the *link source* (the immediate sender, derived from the bearer's session metadata). On a multi-hop relay path, every forwarder preserves `src=` verbatim; only the originator stamps it.
 
-Why have it: without `src=`, a receiver three hops down can't tell whether a message originated at G0FIRST or just transited through G0FIRST. With `src=`, the receiver's app sees the originator (exposed as the `dapps-origin` MQTT user property) and can route replies back to the right source. Forwarders that don't propagate it omit `src=`; receivers treat absent `src=` as "originator unknown".
+Why have it: without `src=`, a receiver three hops down can't tell whether a message originated at G0FIRST or just transited through G0FIRST. With `src=`, the receiver's app sees the originator (as `dapps-source` on MQTT and `sourceCallsign` on REST; the link source is `dapps-via` and `viaCallsign`) and can route replies back to the right source. When `src=` is absent, `dapps-source` falls back to the link source. Forwarders that don't propagate it omit `src=`; receivers treat absent `src=` as "originator unknown".
 
 Reference: [OfferLine.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/OfferLine.cs) (writing it), [IHaveValidator.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/IHaveValidator.cs) (reading it).
 

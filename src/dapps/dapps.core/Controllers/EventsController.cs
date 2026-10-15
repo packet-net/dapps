@@ -68,7 +68,8 @@ public sealed class EventsController(
         return rows.Select(d => new DroppedMessageRow(
             Id: d.Id,
             Destination: d.Destination,
-            SourceCallsign: d.SourceCallsign,
+            SourceCallsign: d.FromCallsign,
+            ViaCallsign: d.SourceCallsign,
             Bytes: d.Payload.Length,
             Ttl: d.Ttl,
             CreatedAt: d.CreatedAt,
@@ -94,7 +95,8 @@ public sealed class EventsController(
             Id: m.Id,
             Destination: m.Destination,
             App: appOverride ?? m.Destination.Split('@')[0],
-            SourceCallsign: m.SourceCallsign,
+            SourceCallsign: m.FromCallsign,
+            ViaCallsign: m.SourceCallsign,
             Bytes: m.Payload.Length,
             Ttl: m.Ttl,
             AgeSeconds: (int)Math.Max(0, (DateTime.UtcNow - m.CreatedAt).TotalSeconds));
@@ -136,19 +138,19 @@ public sealed class EventsController(
         var msg = await database.GetMessage(id);
         if (msg is not null)
         {
-            return BuildPreview(msg.Id, msg.Destination, msg.SourceCallsign, msg.Payload);
+            return BuildPreview(msg.Id, msg.Destination, msg.FromCallsign, msg.SourceCallsign, msg.Payload);
         }
 
         var dropped = await database.GetDroppedMessage(id);
         if (dropped is not null)
         {
-            return BuildPreview(dropped.Id, dropped.Destination, dropped.SourceCallsign, dropped.Payload);
+            return BuildPreview(dropped.Id, dropped.Destination, dropped.FromCallsign, dropped.SourceCallsign, dropped.Payload);
         }
 
         return NotFound();
     }
 
-    private static PayloadPreview BuildPreview(string id, string destination, string sourceCallsign, byte[]? payload)
+    private static PayloadPreview BuildPreview(string id, string destination, string sourceCallsign, string viaCallsign, byte[]? payload)
     {
         var bytes = payload ?? Array.Empty<byte>();
         var truncated = bytes.Length > PayloadPreviewLimit;
@@ -174,6 +176,7 @@ public sealed class EventsController(
             Id: id,
             Destination: destination,
             SourceCallsign: sourceCallsign,
+            ViaCallsign: viaCallsign,
             ByteLength: bytes.Length,
             Truncated: truncated,
             TextValid: textValid,
@@ -229,11 +232,14 @@ public sealed class EventsController(
     }
 }
 
+/// <summary><see cref="SourceCallsign"/> is who it's from (the originator,
+/// else the last hop); <see cref="ViaCallsign"/> the last hop.</summary>
 public sealed record QueueRow(
     string Id,
     string Destination,
     string App,
     string SourceCallsign,
+    string ViaCallsign,
     int Bytes,
     int? Ttl,
     int AgeSeconds);
@@ -265,6 +271,7 @@ public sealed record PayloadPreview(
     string Id,
     string Destination,
     string SourceCallsign,
+    string ViaCallsign,
     int ByteLength,
     bool Truncated,
     bool TextValid,
@@ -275,6 +282,7 @@ public sealed record DroppedMessageRow(
     string Id,
     string Destination,
     string SourceCallsign,
+    string ViaCallsign,
     int Bytes,
     int? Ttl,
     DateTime CreatedAt,

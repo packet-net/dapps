@@ -39,7 +39,9 @@ DAPPS publishes one message here for each pending delivery to `<app>` on this no
 | Name           | Type                  | Meaning                                                                  |
 |----------------|-----------------------|--------------------------------------------------------------------------|
 | `dapps-id`     | string (7 hex chars)  | The message id. Use this as the idempotency key.                         |
-| `dapps-source` | string (callsign)     | The originating callsign. Use as destination for replies.                |
+| `dapps-source` | string (callsign)     | Who the message is from: the originating callsign, however many stations it came through. Use as destination for replies. |
+| `dapps-via`    | string (callsign)     | The last hop: the neighbouring DAPPS node that handed the message to this one. The same as `dapps-source` when it came straight from the sender. |
+| `dapps-origin` | string (callsign)     | *Optional.* The originating callsign alone, absent if the sender's DAPPS didn't say. Kept for apps written for it; `dapps-source` is the one to use. |
 | `dapps-ttl`    | string (decimal int)  | *Optional.* Residual lifetime in seconds. Absent if the sender didn't set a TTL. |
 
 #### `dapps/out/<app>/<dest-callsign>` - outbox
@@ -119,20 +121,24 @@ List currently unacknowledged messages for `{app}`.
   "id": "abc1234",
   "sourceCallsign": "G7XYZ",
   "payload": "<base64-encoded bytes>",
-  "ttl": 287
+  "ttl": 287,
+  "originatorCallsign": "G7XYZ",
+  "viaCallsign": "G4ABC"
 }
 ```
 
 | Field            | Type                  | Notes                                                                                  |
 |------------------|-----------------------|----------------------------------------------------------------------------------------|
 | `id`             | string                | Stable across redeliveries. Use as idempotency key.                                    |
-| `sourceCallsign` | string                | Same semantics as `dapps-source` on MQTT - originating callsign.                       |
+| `sourceCallsign` | string                | Same as `dapps-source` on MQTT: who the message is from. Reply to this.                |
 | `payload`        | bytes (base64)        | Raw payload.                                                                           |
 | `ttl`            | int seconds, nullable | **Residual** lifetime - initial TTL minus dwell time on this node. `null` if no TTL.    |
+| `originatorCallsign` | string, nullable  | Same as `dapps-origin` on MQTT. `null` if the sender's DAPPS didn't say.               |
+| `viaCallsign`    | string, nullable      | Same as `dapps-via` on MQTT: the last hop.                                             |
 
 ```bash
 curl http://localhost:5000/AppApi/inbound/chat
-# [{"id":"abc1234","sourceCallsign":"G7XYZ","payload":"aGVsbG8=","ttl":287}]
+# [{"id":"abc1234","sourceCallsign":"G7XYZ","payload":"aGVsbG8=","ttl":287,"originatorCallsign":"G7XYZ","viaCallsign":"G4ABC"}]
 ```
 
 ### `POST /AppApi/inbound/{app}/{id}/ack`
@@ -202,7 +208,8 @@ DAPPS does not impose a hard payload-size limit at the app interface - submit an
 | Send a message                 | Publish `dapps/out/<app>/<dest>` (QoS 1)          | `POST /AppApi/outbound`                             |
 | Acknowledge a message          | Publish id to `dapps/ack/<app>`                   | `POST /AppApi/inbound/{app}/{id}/ack`               |
 | Read message id                | `dapps-id` user property                          | `id` field on inbound JSON                          |
-| Read source callsign           | `dapps-source` user property                      | `sourceCallsign` field                              |
+| Read who it's from (reply to)  | `dapps-source` user property                      | `sourceCallsign` field                              |
+| Read the last hop              | `dapps-via` user property                         | `viaCallsign` field                                 |
 | Read residual TTL              | `dapps-ttl` user property (absent if no TTL)      | `ttl` field (`null` if no TTL)                      |
 | Set TTL on submit              | `dapps-ttl` user property                         | `ttl` field                                         |
 | Opt into ordered delivery      | `dapps-stream` user property                      | `streamId` field                                    |

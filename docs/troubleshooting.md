@@ -134,7 +134,7 @@ Check, in order:
 
 - The subscriber is connected to the right port (default 1883, configurable).
 - The subscriber is subscribed to the right topic (`dapps/in/<app>` for incoming).
-- Your MQTT client supports MQTT 5 user properties. DAPPS publishes `dapps-id`, `dapps-source`, `dapps-ttl` etc. as user properties - MQTT 3.1.1 clients will get the payload but not the metadata.
+- Your MQTT client supports MQTT 5 user properties. DAPPS publishes `dapps-id`, `dapps-source`, `dapps-via`, `dapps-ttl` etc. as user properties - MQTT 3.1.1 clients will get the payload but not the metadata.
 - The subscriber is acking (`dapps/ack/<app>`). Without acks the messages stay in the local-inbox queue (dashboard → Local inbox panel) and re-deliver on the next subscription.
 
 ### "REST submit returns 200 but message never arrives"

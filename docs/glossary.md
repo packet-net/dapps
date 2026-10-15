@@ -38,6 +38,8 @@ Terms used throughout this manual.
 
 **dapps-source** - User property carrying the originating callsign. Set by DAPPS at the source node and propagated end-to-end across forwarding hops.
 
+**dapps-via** - User property carrying the last hop: the neighbouring DAPPS node that handed the message over. Differs from `dapps-source` when the message was relayed.
+
 **dapps-ttl** - User property carrying the residual TTL in seconds. Decremented on each forwarding hop; messages are dropped on zero.
 
 **DAPPSv1** - The current on-air session-protocol version. The version is the suffix on the prompt; future incompatible cuts would be `DAPPSv2>` etc.

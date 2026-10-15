@@ -260,6 +260,7 @@ public class Database(
             Salt = row.Salt,
             Destination = row.Destination,
             SourceCallsign = row.SourceCallsign,
+            OriginatorCallsign = row.OriginatorCallsign,
             AdditionalProperties = row.AdditionalProperties,
             Forwarded = row.Forwarded,
             LocallyDelivered = row.LocallyDelivered,

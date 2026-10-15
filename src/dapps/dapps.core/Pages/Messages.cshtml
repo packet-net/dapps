@@ -29,7 +29,7 @@
                 <tr>
                     <th style="width: 8.5rem;">Id</th>
                     <th>Destination</th>
-                    <th>Source</th>
+                    <th>From</th>
                     <th class="numeric">Bytes</th>
                     <th>Age</th>
                     <th>State</th>
@@ -49,7 +49,7 @@ else if (tab == "inbox")
                 <tr>
                     <th style="width: 8.5rem;">Id</th>
                     <th>Destination</th>
-                    <th>Source</th>
+                    <th>From</th>
                     <th class="numeric">Bytes</th>
                     <th>Age</th>
                     <th>State</th>
@@ -69,7 +69,7 @@ else if (tab == "dropped")
                 <tr>
                     <th style="width: 8.5rem;">Id</th>
                     <th>Destination</th>
-                    <th>Source</th>
+                    <th>From</th>
                     <th>Reason</th>
                     <th>When</th>
                 </tr>
@@ -89,7 +89,7 @@ else
                 <input id="filter-app" type="text" placeholder="e.g. mail" />
             </div>
             <div class="field">
-                <label for="filter-callsign">Source callsign</label>
+                <label for="filter-callsign">From callsign</label>
                 <input id="filter-callsign" type="text" placeholder="e.g. M0LTE" />
             </div>
             <div class="field">
@@ -104,7 +104,7 @@ else
                 <tr>
                     <th style="width: 11rem;">Received (UTC)</th>
                     <th style="width: 7rem;">Id</th>
-                    <th style="width: 9rem;">Source</th>
+                    <th style="width: 9rem;">From</th>
                     <th>Destination</th>
                     <th class="numeric" style="width: 6rem;">Bytes</th>
                     <th class="numeric" style="width: 5rem;">TTL</th>
@@ -147,6 +147,11 @@ else
     const tab = '@tab';
     const escape = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
         ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    // Who a message is from (the originator) and, when it came through
+    // another station, the neighbour that handed it to us.
+    const via = (m) => !!m.viaCallsign && m.viaCallsign.toUpperCase() !== String(m.sourceCallsign ?? '').toUpperCase();
+    const fromCell = (m) => `<code>${escape(m.sourceCallsign)}</code>`
+        + (via(m) ? ` <span class="muted">via <code>${escape(m.viaCallsign)}</code></span>` : '');
     const fmtAt = (iso) => {
         if (!iso) return '-';
         try { return new Date(iso).toISOString().replace('T', ' ').substring(0, 19); }
@@ -206,7 +211,8 @@ else
             const meta = `${p.byteLength} byte(s)` +
                 (p.truncated ? ' - preview truncated' : '') +
                 (p.textValid ? '' : ' - not valid UTF-8, showing hex') +
-                ` - src <code>${escape(p.sourceCallsign)}</code>` +
+                ` - from <code>${escape(p.sourceCallsign)}</code>` +
+                (via(p) ? ` via <code>${escape(p.viaCallsign)}</code>` : '') +
                 ` - dst <code>${escape(p.destination)}</code>`;
             const showText = p.textValid;
             tr.innerHTML = `<td colspan="${colspan}">
@@ -289,7 +295,7 @@ else
                 `<tr data-id="${escape(m.id)}">`
                 + `<td><code class="msg-id-link" title="click to view payload">${escape(m.id)}</code></td>`
                 + `<td><code>${escape(m.destination)}</code></td>`
-                + `<td><code>${escape(m.sourceCallsign)}</code></td>`
+                + `<td>${fromCell(m)}</td>`
                 + `<td class="numeric">${m.bytes ?? '-'}</td>`
                 + `<td>${ageStr(m.ageSeconds)}</td>`
                 + '<td><span class="pill">queued</span></td>'
@@ -309,7 +315,7 @@ else
                 `<tr data-id="${escape(m.id)}">`
                 + `<td><code class="msg-id-link" title="click to view payload">${escape(m.id)}</code></td>`
                 + `<td><code>${escape(m.destination)}</code></td>`
-                + `<td><code>${escape(m.sourceCallsign)}</code></td>`
+                + `<td>${fromCell(m)}</td>`
                 + `<td class="numeric">${m.bytes ?? '-'}</td>`
                 + `<td>${ageStr(m.ageSeconds)}</td>`
                 + '<td><span class="pill warn">awaiting ack</span></td>'
@@ -329,7 +335,7 @@ else
                 `<tr data-id="${escape(m.id)}">`
                 + `<td><code class="msg-id-link" title="click to view payload">${escape(m.id)}</code></td>`
                 + `<td><code>${escape(m.destination)}</code></td>`
-                + `<td><code>${escape(m.sourceCallsign)}</code></td>`
+                + `<td>${fromCell(m)}</td>`
                 + `<td>${escape(m.reason ?? '-')}</td>`
                 + `<td>${fmtAt(m.droppedAt)}</td>`
                 + '</tr>'
@@ -401,7 +407,7 @@ else
                 row.innerHTML =
                     '<td>' + escape(fmtAt(d.receivedAt)) + '</td>' +
                     '<td><code>' + escape(d.id) + '</code></td>' +
-                    '<td>' + escape(d.sourceCallsign) + '</td>' +
+                    '<td>' + fromCell(d) + '</td>' +
                     '<td>' + escape(d.destination) + '</td>' +
                     '<td class="numeric">' + escape(d.payloadLength) + '</td>' +
                     '<td class="numeric">' + (d.ttl == null ? '-' : escape(d.ttl)) + '</td>';

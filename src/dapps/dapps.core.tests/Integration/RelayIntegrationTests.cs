@@ -142,7 +142,8 @@ public sealed class RelayIntegrationTests(ThreeInstanceLinbpqFixture fixture) : 
         try { got = (await c.WaitForInboundAsync("relay", 1, Delivery, ct)).Single(); }
         catch (TimeoutException ex) { throw new TimeoutException(ex.Message + "\n" + a.Tail(60), ex); }
         got.Payload.Should().Equal(payload);
-        got.SourceCallsign.Should().Be("N0AAA-6", "BPQ's downlink inverts the SSID of the caller, " + fixture.ApplCallA);
+        got.ViaCallsign.Should().Be("N0AAA-6", "BPQ's downlink inverts the SSID of the caller, " + fixture.ApplCallA);
+        got.SourceCallsign.Should().Be(a.Callsign, "an app replies to who the message is from, not the link");
         got.OriginatorCallsign.Should().Be(a.Callsign);
     }
 

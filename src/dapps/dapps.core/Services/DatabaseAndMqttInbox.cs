@@ -202,10 +202,11 @@ public sealed class DatabaseAndMqttInbox(
             events.Publish(new InboundEvent(
                 ReceivedAt: timeProvider.GetUtcNow().UtcDateTime,
                 Id: message.Id,
-                SourceCallsign: sourceCallsign,
+                SourceCallsign: FromOf(message, sourceCallsign),
                 Destination: message.Destination,
                 PayloadLength: message.Payload.Length,
-                Ttl: message.Ttl));
+                Ttl: message.Ttl,
+                ViaCallsign: sourceCallsign));
             return;
         }
 
@@ -292,10 +293,11 @@ public sealed class DatabaseAndMqttInbox(
         events.Publish(new InboundEvent(
             ReceivedAt: timeProvider.GetUtcNow().UtcDateTime,
             Id: message.Id,
-            SourceCallsign: sourceCallsign,
+            SourceCallsign: FromOf(message, sourceCallsign),
             Destination: message.Destination,
             PayloadLength: message.Payload.Length,
-            Ttl: message.Ttl));
+            Ttl: message.Ttl,
+            ViaCallsign: sourceCallsign));
     }
 
     /// <summary>
@@ -353,7 +355,7 @@ public sealed class DatabaseAndMqttInbox(
             logger.LogInformation(
                 "Stream {0}|{1}: dropping {2} (sn={3} < expected {4}) as stream-stale",
                 streamSender, streamId, message.Id, sn, recv.NextExpectedSeq);
-            events.Publish(new InboundEvent(now, message.Id, sourceCallsign, message.Destination, message.Payload.Length, message.Ttl));
+            events.Publish(new InboundEvent(now, message.Id, FromOf(message, sourceCallsign), message.Destination, message.Payload.Length, message.Ttl, sourceCallsign));
             return;
         }
 
@@ -383,7 +385,7 @@ public sealed class DatabaseAndMqttInbox(
                 "Stream {0}|{1}: parking {2} (sn={3}, expected {4}, gt={5})",
                 streamSender, streamId, message.Id, sn, recv.NextExpectedSeq,
                 message.StreamGapTimeoutSeconds ?? 0);
-            events.Publish(new InboundEvent(now, message.Id, sourceCallsign, message.Destination, message.Payload.Length, message.Ttl));
+            events.Publish(new InboundEvent(now, message.Id, FromOf(message, sourceCallsign), message.Destination, message.Payload.Length, message.Ttl, sourceCallsign));
             return;
         }
 
@@ -409,7 +411,7 @@ public sealed class DatabaseAndMqttInbox(
         recv.LastReceivedAt = now;
 
         await DrainConsecutivePendingAsync(recv, streamSender, streamId, ct);
-        events.Publish(new InboundEvent(now, message.Id, sourceCallsign, message.Destination, message.Payload.Length, message.Ttl));
+        events.Publish(new InboundEvent(now, message.Id, FromOf(message, sourceCallsign), message.Destination, message.Payload.Length, message.Ttl, sourceCallsign));
     }
 
     /// <summary>
@@ -604,4 +606,9 @@ public sealed class DatabaseAndMqttInbox(
             "Reassembled master {0} ({1} fragments, {2} bytes) - delivered as one message",
             masterId, fragTotal, totalLen);
     }
+
+    /// <summary>Who a message is from, as the dashboard shows it: the
+    /// originator, else the neighbour that handed it to us.</summary>
+    private static string FromOf(BackhaulMessage message, string linkSource) =>
+        string.IsNullOrEmpty(message.Originator) ? linkSource : message.Originator;
 }
