@@ -52,7 +52,7 @@ For non-Debian Linux, Docker, Windows, or macOS, see the [install pages](install
 `http://<your-host>:5000/`. On a fresh install the first request lands on `/Setup`, a two-step wizard:
 
 1. **Admin password.** One password for the whole node - there are no user accounts. Used to gate the admin endpoints (`/Config`, `/Neighbours`, etc.) behind a cookie.
-2. **Callsign + packet node.** Type your callsign with SSID (e.g. `M0LTE-1`) and pick a bearer. Click **Detect packet node** and the dashboard probes `localhost:8000` (AGW) and `localhost:9000` (RHPv2) and pre-fills the choice.
+2. **Callsign + packet node.** Type the callsign DAPPS will use, with SSID (e.g. `M0LTE-7`; its own, not your node's), and pick a bearer. Click **Detect packet node** and the dashboard looks for a BPQ, XRouter or pdn process on its own machine and probes port 8000 (AGW) and 9000 (RHPv2) on the host you entered, then pre-fills the choice.
 
 Submit; the daemon picks up the new callsign and bearer within a few seconds (no restart). The dashboard appears.
 
@@ -74,8 +74,8 @@ This advertises a `DAPPS` command at the BPQ node prompt, and - via the APPLCALL
 
 DAPPS knows nothing about other DAPPS nodes until you tell it about one. On the dashboard's **Topology > Neighbours** tab, enter:
 
-- A peer's callsign with SSID.
-- The bearer port your link goes out on (the AGW port byte for BPQ, or the 0-indexed `PORT=N - 1` for XRouter).
+- A peer's DAPPS callsign with SSID.
+- The **Radio port** your link to it goes out on. With BPQ the form lists BPQ's ports to pick from; with XRouter or pdn type the port number counting from 0 (`PORT=1` is 0).
 
 There's a REST API and a [discovery system](discovery-and-routing.md) that auto-finds peers if you turn on beaconing - but a single manual neighbour gets you to "first message" fastest.
 

@@ -99,7 +99,7 @@ Add a manual neighbour on the dashboard's **Topology > Neighbours** tab:
 | Field          | Value                                       |
 |----------------|---------------------------------------------|
 | Callsign       | another DAPPS node's callsign with SSID     |
-| Radio port     | the XRouter port byte to use for the originate |
+| Radio port     | the XRouter port the peer is reached on, counting from 0 (`PORT=1` is 0) |
 | UDP endpoint   | leave blank                                 |
 
 Send a test message with the **Quick send** form on the dashboard's Overview. The forwarder service picks it up within a few seconds, asks XRouter to dial the remote callsign, and you'll see the session in XRouter's stats / monitor view.

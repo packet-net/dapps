@@ -88,7 +88,7 @@ Add a manual neighbour on the dashboard's **Topology > Neighbours** tab (or the 
 | Field          | Value                                       |
 |----------------|---------------------------------------------|
 | Callsign       | another DAPPS node's callsign with SSID     |
-| Radio port     | the bearer port to use for AGW originates |
+| Radio port     | the BPQ port the peer is reached on, picked from the list DAPPS reads from BPQ |
 | UDP endpoint   | leave blank                                 |
 
 Send a test message with the **Quick send** form on the dashboard's Overview. The forwarder service will pick it up within a few seconds, dial the remote callsign over AGW, and you'll see the session in BPQ's MHEARD / connections view.

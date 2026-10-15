@@ -20,28 +20,28 @@
 {
     <div class="panel">
         <h3>Manual neighbours</h3>
-        <p class="panel-sub">Callsigns this node will forward through. Use <strong>edit</strong> on a row to change it. Connect-script lets you reach a peer through a chain of intermediate non-DAPPS nodes: DAPPS first connects to Connect via (or the Callsign, if blank) on the Radio port, then plays the script at that node's prompt (one <code>send|expect</code> step per line, final expect must contain <code>DAPPSv1&gt;</code>).</p>
+        <p class="panel-sub">The DAPPS nodes this node sends mail to. For a peer you can dial directly, fill in Callsign and Radio port and leave the rest alone. Connect via and Connect script are only for a peer you can't dial directly: they let DAPPS type its way there through an ordinary packet node, the way you would by hand. Use <strong>edit</strong> on a row to change it.</p>
         <form id="neigh-form" class="row-form neigh-form" onsubmit="dappsAddNeighbour(event)" style="margin-bottom: 1rem;">
             <div class="field"><label>Callsign</label><input name="callsign" placeholder="GB7XYZ-3" required />
                 <span class="hint">the peer's DAPPS callsign, with its SSID</span>
             </div>
             <div class="field"><label>Connect via (optional)</label><input name="connectVia" placeholder="GB7ABC" />
-                <span class="hint">node to dial first; the script runs at its prompt</span>
+                <span class="hint">only when the peer can't be dialled directly: the packet node DAPPS dials instead, then types the script at its prompt</span>
             </div>
             <div class="field" data-port-picker="bearerPort">
                 <label>Radio port</label>
                 <select name="bearerPort">
-                    <option value="">(default - port 0)</option>
+                    <option value="">(default - port @Model.Options.DefaultBearerPort)</option>
                 </select>
                 <span class="hint" data-port-picker-hint>loading from BPQ...</span>
             </div>
             <div class="field span-all">
                 <label>Connect script (optional)</label>
-                <textarea name="connectScript" rows="3" placeholder="C 4 GB7XYZ-3|DAPPSv1>|60"></textarea>
-                <span class="hint">Typed at the prompt of the node DAPPS dialled (Connect via, or the Callsign), not at your own node. One step per line: <code>send|expect</code> or <code>send|expect|timeoutSeconds</code>. With Connect via blank, a first line <code>C &lt;CALL&gt;</code> becomes Connect via. Empty box clears the script.</span>
+                <textarea name="connectScript" rows="3" placeholder="C 1 GB7XYZ-3|DAPPSv1>|60"></textarea>
+                <span class="hint">Only for a peer DAPPS can't dial directly. What you would type at the prompt of the node in Connect via to reach the peer, one step per line: the command to send, a <code>|</code>, then the text to wait for in the reply, for example <code>C 1 GB7XYZ-3|Connected</code>. Add <code>|60</code> to a line to wait up to 60 seconds for its reply instead of the usual 30. The last line must wait for the peer's <code>DAPPSv1&gt;</code> prompt. Don't include the connect to the Connect via node itself: DAPPS has already made it. If you leave Connect via blank and start the script with <code>C &lt;node&gt;</code>, DAPPS moves that line into Connect via when you save. Empty the box to clear the script.</span>
             </div>
             <div class="field"><label>UDP endpoint (optional)</label><input name="udpEndpoint" placeholder="host:port" />
-                <span class="hint">instead of the radio, for a peer on UDP</span>
+                <span class="hint">test-only: reach this peer over UDP instead of the radio</span>
             </div>
             <div class="field"><label>Compression</label>
                 <select name="compression">
@@ -49,11 +49,11 @@
                     <option value="off">Off</option>
                     <option value="on">On</option>
                 </select>
-                <span class="hint">overrides the system-wide setting</span>
+                <span class="hint">overrides the setting in Settings for this peer</span>
             </div>
             <div class="field"><label>Link hold (s)</label>
                 <input name="sessionTail" type="number" min="0" max="600" placeholder="default" />
-                <span class="hint">blank = system setting, 0 = off</span>
+                <span class="hint">seconds to keep the link open after the last traffic; blank = the setting in Settings, 0 = off</span>
             </div>
             <div class="span-all neigh-actions">
                 <button class="btn ghost" type="button" id="neigh-cancel" onclick="dappsCancelEditNeighbour()" style="display: none;">Cancel</button>
@@ -72,7 +72,7 @@ else if (tab == "channels")
 {
     <div class="panel">
         <h3>Discovery channels</h3>
-        <p class="panel-sub">Per-bearer, per-port beacon configuration. Per-channel airtime budget is the trailing-hour cap; 0 means use only the global budget.</p>
+        <p class="panel-sub">Where DAPPS announces itself and listens for other DAPPS nodes. Nothing beacons until you add a channel. Beacon cadence, advertised TTL and cost come from the link class: every 30 minutes on VHF/UHF FM, hourly on MeshCore, every 2 hours on HF. The airtime budget caps this channel's transmissions over the trailing hour; 0 means only the overall budget in Settings applies.</p>
         <form id="chan-form" class="row-form" onsubmit="dappsAddChannel(event)" style="margin-bottom: 1rem;">
             <div class="field"><label>Bearer</label>
                 <select name="bearer">
@@ -81,7 +81,7 @@ else if (tab == "channels")
                 </select>
             </div>
             <div class="field" id="chan-channelKey-field">
-                <label>Channel key</label>
+                <label>Port or address</label>
                 <!-- Replaced on page load + on bearer-dropdown change.
                      For AGW: a <select> populated from /Bearer/agw/ports.
                      For UDP: a free-text <input> for the multicast addr. -->
@@ -90,12 +90,13 @@ else if (tab == "channels")
             </div>
             <div class="field"><label>Link class</label>
                 <select name="linkClass">
-                    <option>VhfUhfFm</option>
-                    <option>MeshCore</option>
-                    <option>Hf</option>
-                    <option>LanMulticast</option>
-                    <option>InternetIp</option>
+                    <option value="VhfUhfFm">VHF/UHF FM</option>
+                    <option value="MeshCore">MeshCore</option>
+                    <option value="Hf">HF</option>
+                    <option value="LanMulticast">LAN multicast (testing)</option>
+                    <option value="InternetIp">Internet IP</option>
                 </select>
+                <span class="hint">sets the beacon cadence and the routing cost</span>
             </div>
             <div class="field"><label>Airtime budget (s/h, 0 = unlimited)</label><input name="airtimeBudgetSecondsPerHour" type="number" min="0" max="3600" value="0" /></div>
             <div class="field"><label>Solicit interval (s, 0 = off)</label><input name="solicitIntervalSeconds" type="number" min="0" max="86400" value="0" /></div>
@@ -117,7 +118,7 @@ else if (tab == "peers")
 {
     <div class="panel">
         <h3>Discovered peers</h3>
-        <p class="panel-sub">Peers heard on the air via beacons or solicit replies. Auto-populated; the daemon ages them out.</p>
+        <p class="panel-sub">DAPPS nodes heard beaconing or answering a solicit. Filled in automatically and forgotten once their advertised TTL runs out. Hearing a peer doesn't make it a neighbour: add it on the Neighbours tab to send mail to it.</p>
         <table>
             <thead>
                 <tr><th>Callsign</th><th>Bearer</th><th>Channel</th><th class="numeric">Hops</th><th class="numeric">Cost</th><th>Last seen</th></tr>
@@ -132,7 +133,7 @@ else if (tab == "probes")
         <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;">
             <div>
                 <h3>Probed nodes</h3>
-                <p class="panel-sub">Connected-mode liveness state from B6.1 probes. Three cents to spend if you want a live picture; otherwise let the scheduler do it.</p>
+                <p class="panel-sub">Whether each known peer answered when DAPPS connected to check it was there. Probes run on the schedule in Settings when probing is on, or when you press a probe button. Opt-out stops a peer being probed on the schedule.</p>
             </div>
             <div class="card-actions" style="margin-top: 0;">
                 <button class="btn secondary sm" type="button" onclick="dappsRunSweep()">Probe everyone now</button>
@@ -152,7 +153,7 @@ else
         <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;">
             <div>
                 <h3>Polled nodes</h3>
-                <p class="panel-sub">F3b scheduled poll state. When enabled, this node calls each neighbour periodically so it can send any mail it holds for us.</p>
+                <p class="panel-sub">What happened when this node last called each neighbour to collect mail held for us. Scheduled polls are off unless turned on in Settings; every session carries mail both ways anyway, so most nodes don't need them.</p>
             </div>
             <div class="card-actions" style="margin-top: 0;">
                 <button class="btn secondary sm" type="button" onclick="dappsRunPollSweep()">Poll everyone now</button>
@@ -170,6 +171,7 @@ else
 <script>
 (function () {
     const tab = '@tab';
+    const defaultPort = @Model.Options.DefaultBearerPort;
     const escape = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
         ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const fmtAt = (iso) => {
@@ -373,7 +375,7 @@ else
                     <input name="bearerPort" type="number" min="0" max="255" placeholder="0" />
                     <span class="hint">${/not AGW/.test(r.error)
                         ? 'XRouter port, counted from 0: 0 is PORT=1, 1 is PORT=2.'
-                        : `couldn't query BPQ: ${escape(r.error)}. Type a 0-indexed port number.`}</span>`;
+                        : `couldn't get the port list from BPQ (${escape(r.error)}). Type the port number, counting from 0.`}</span>`;
                 return;
             }
             for (const p of r.ports) {
@@ -382,7 +384,7 @@ else
                 opt.textContent = `Port ${p.index} - ${p.description}`;
                 select.appendChild(opt);
             }
-            hint.textContent = `${r.ports.length} port${r.ports.length === 1 ? '' : 's'} from BPQ. Leave at default to inherit port 0.`;
+            hint.textContent = `${r.ports.length} port${r.ports.length === 1 ? '' : 's'} from BPQ. Default is port ${defaultPort}.`;
         })();
     }
 
@@ -402,14 +404,14 @@ else
                 const bearer = (bearerSel.value || 'agw').toLowerCase();
                 if (bearer === 'udp') {
                     wrap.innerHTML = `<input name="channelKey" required placeholder="239.0.0.1:54321" />`;
-                    hint.textContent = 'multicast IP and port for the UDP backhaul';
+                    hint.textContent = 'multicast address and port, e.g. 239.0.0.1:54321';
                     return;
                 }
                 // AGW path - show port dropdown.
                 const r = await loadAgwPorts();
                 if (r.error) {
                     wrap.innerHTML = `<input name="channelKey" type="number" min="0" max="255" required placeholder="0" />`;
-                    hint.textContent = `couldn't query BPQ: ${r.error}. Type a 0-indexed port number.`;
+                    hint.textContent = `couldn't get the port list from BPQ (${r.error}). Type the port number, counting from 0.`;
                     return;
                 }
                 const opts = r.ports.map(p =>

@@ -163,10 +163,8 @@
         {
             <h1>Set an admin password</h1>
             <p class="intro">
-                You'll use this to sign in here and to gate the admin
-                endpoints (<code>/Config</code>, <code>/Neighbours</code>,
-                <code>/AppTokens</code>). One password for the whole node -
-                there are no user accounts.
+                You'll use this to sign in to the dashboard. One password
+                for the whole node; there are no user accounts.
             </p>
             <form method="post" asp-page-handler="Password">
                 <label for="password">Password</label>
@@ -183,7 +181,8 @@
             </form>
             <div class="hint">
                 Forgotten later? Stop dapps, run
-                <code>sqlite3 /var/lib/dapps/dapps.db "delete from systemoptions where option like 'AdminPassword%';"</code>,
+                <code>sqlite3 /var/lib/dapps/dapps.db "delete from systemoptions where option like 'AdminPassword%';"</code>
+                (that is the database path on an apt or systemd install),
                 restart, and you'll land back here.
             </div>
         }
@@ -191,18 +190,19 @@
         {
             <h1>Connect your packet node</h1>
             <p class="intro">
-                DAPPS rides on top of a packet node. Tell it the callsign
-                DAPPS will identify itself with on-air, and which bearer
-                the node speaks. <em>Detect</em> looks for a running
-                <code>linbpq</code> or <code>xrouter</code> on this host.
+                DAPPS sends and receives through a packet node such as BPQ,
+                XRouter or pdn. Give it the callsign DAPPS will use on the air
+                and say how to reach the node. <em>Detect packet node</em>
+                looks for a node running on this machine and for the usual
+                AGW and RHPv2 ports on the host you enter.
             </p>
             <form method="post" asp-page-handler="Bearer" id="bearerForm">
-                <label for="callsign">DAPPS callsign <span class="normal">with SSID, e.g. M0LTE-7 - the call+SSID DAPPS will use on the air</span>@if (SetupModel.IsEnvManaged("Callsign")) {<span class="env-badge" title="Set from DAPPS_CALLSIGN at every start — edits here will be overridden while the variable remains set.">managed by environment</span>}</label>
+                <label for="callsign">DAPPS callsign <span class="normal">with SSID, e.g. M0LTE-7. DAPPS needs its own; don't reuse your node's.</span>@if (SetupModel.IsEnvManaged("Callsign")) {<span class="env-badge" title="Set from DAPPS_CALLSIGN at every start. Edits here are overridden while the variable remains set.">managed by environment</span>}</label>
                 <input id="callsign" name="callsign" type="text" autofocus required
                     pattern="[A-Za-z0-9\-]{3,15}" value="@Model.Callsign"
                     readonly="@SetupModel.IsEnvManaged("Callsign")" />
 
-                <label for="nodeHost">Packet-node host <span class="normal">usually localhost</span>@if (SetupModel.IsEnvManaged("NodeHost")) {<span class="env-badge" title="Set from DAPPS_NODE_HOST at every start — edits here will be overridden while the variable remains set.">managed by environment</span>}</label>
+                <label for="nodeHost">Packet-node host <span class="normal">usually localhost</span>@if (SetupModel.IsEnvManaged("NodeHost")) {<span class="env-badge" title="Set from DAPPS_NODE_HOST at every start. Edits here are overridden while the variable remains set.">managed by environment</span>}</label>
                 <input id="nodeHost" name="nodeHost" type="text" required value="@Model.NodeHost"
                     readonly="@SetupModel.IsEnvManaged("NodeHost")" />
 
@@ -211,21 +211,21 @@
                     <span class="detect-result" id="detectResult">not detected yet</span>
                 </div>
 
-                <label for="nodeBearer">Bearer@if (SetupModel.IsEnvManaged("NodeBearer")) {<span class="env-badge" title="Set from DAPPS_NODE_BEARER at every start — edits here will be overridden while the variable remains set.">managed by environment</span>}</label>
+                <label for="nodeBearer">Node bearer <span class="normal">AGW for BPQ, RHPv2 for XRouter or pdn</span> @if (SetupModel.IsEnvManaged("NodeBearer")) {<span class="env-badge" title="Set from DAPPS_NODE_BEARER at every start. Edits here are overridden while the variable remains set.">managed by environment</span>}</label>
                 <select id="nodeBearer" name="nodeBearer">
                     <option value="agw" selected="@(Model.NodeBearer == "agw")">AGW (BPQ)</option>
                     <option value="rhpv2" selected="@(Model.NodeBearer == "rhpv2")">RHPv2 (XRouter)</option>
                 </select>
 
-                <label for="port" id="portLabel">@(Model.NodeBearer == "rhpv2" ? "RHPv2 port" : "AGW port")@if (SetupModel.IsEnvManaged(Model.NodeBearer == "rhpv2" ? "RhpPort" : "AgwPort")) {<span class="env-badge" title="Set from the environment at every start — edits here will be overridden while the variable remains set.">managed by environment</span>}</label>
+                <label for="port" id="portLabel">@(Model.NodeBearer == "rhpv2" ? "RHPv2 port" : "AGW port")@if (SetupModel.IsEnvManaged(Model.NodeBearer == "rhpv2" ? "RhpPort" : "AgwPort")) {<span class="env-badge" title="Set from the environment at every start. Edits here are overridden while the variable remains set.">managed by environment</span>}</label>
                 <input id="port" name="port" type="number" min="1" max="65535" value="@Model.Port" required />
 
                 <div id="rhpAuthFields" class="bearer-fields @(Model.NodeBearer == "rhpv2" ? "show" : "")">
-                    <label for="rhpUser">RHPv2 user <span class="normal">leave blank if your XRouter doesn't require RHPv2 auth</span>@if (SetupModel.IsEnvManaged("RhpUser")) {<span class="env-badge" title="Set from DAPPS_RHP_USER at every start — edits here will be overridden while the variable remains set.">managed by environment</span>}</label>
+                    <label for="rhpUser">RHPv2 user <span class="normal">leave blank if your node doesn't require RHPv2 authentication</span>@if (SetupModel.IsEnvManaged("RhpUser")) {<span class="env-badge" title="Set from DAPPS_RHP_USER at every start. Edits here are overridden while the variable remains set.">managed by environment</span>}</label>
                     <input id="rhpUser" name="rhpUser" type="text" value="@Model.RhpUser"
                         readonly="@SetupModel.IsEnvManaged("RhpUser")" />
 
-                    <label for="rhpPass">RHPv2 password@if (SetupModel.IsEnvManaged("RhpPass")) {<span class="env-badge" title="Set from DAPPS_RHP_PASS at every start — edits here will be overridden while the variable remains set.">managed by environment</span>}</label>
+                    <label for="rhpPass">RHPv2 password <span class="normal">blank if no authentication</span> @if (SetupModel.IsEnvManaged("RhpPass")) {<span class="env-badge" title="Set from DAPPS_RHP_PASS at every start. Edits here are overridden while the variable remains set.">managed by environment</span>}</label>
                     <input id="rhpPass" name="rhpPass" type="password" value="@Model.RhpPass"
                         readonly="@SetupModel.IsEnvManaged("RhpPass")" />
                 </div>
@@ -237,9 +237,9 @@
                 }
             </form>
             <div class="hint">
-                You can change any of this later under <em>Edit configuration</em>
-                on the dashboard. Bearer changes take effect within a few seconds
-                (no daemon restart).
+                You can change any of this later on the dashboard's
+                <em>Settings</em> page. Changes take effect within a few
+                seconds, no restart needed.
             </div>
 
             <script>
@@ -287,7 +287,7 @@
                             const j = await r.json();
                             if (!j.agw && !j.rhpv2) {
                                 detectResult.className = "detect-result err";
-                                detectResult.textContent = "no packet-node process or listener found on " + (nodeHost.value || "localhost");
+                                detectResult.textContent = "nothing found on " + (nodeHost.value || "localhost") + ": no BPQ, XRouter or pdn process here, nothing on ports 8000 or 9000 there";
                                 return;
                             }
                             detectResult.className = "detect-result ok";
@@ -298,7 +298,7 @@
                             }
                         } catch (err) {
                             detectResult.className = "detect-result err";
-                            detectResult.textContent = "probe failed: " + (err.message || err);
+                            detectResult.textContent = "detection failed: " + (err.message || err);
                         }
                     });
                 })();

@@ -24,7 +24,7 @@
 @if (string.IsNullOrWhiteSpace(Model.Options.Callsign) || string.Equals(Model.Options.Callsign, "N0CALL", StringComparison.OrdinalIgnoreCase))
 {
     <div class="info-banner">
-        Looks like a fresh install. Set your callsign and packet-node bearer in <a href="~/Settings">Settings</a> to start beaconing.
+        Looks like a fresh install. Set your callsign and packet node in <a href="~/Settings">Settings</a> before DAPPS can do anything on the air.
     </div>
 }
 
@@ -46,7 +46,7 @@
             @bearerLabel @Model.Options.NodeHost:@nodePort
         </div>
         <div class="sub" id="hero-node-sub">
-            What DAPPS rides on. Probe answers means TCP connect succeeded.
+            The node DAPPS sends and receives through. Reachable means the TCP connection to it is up.
         </div>
         <div class="sub" id="hero-node-retry" style="display: none; flex-wrap: wrap; gap: 0.6rem; align-items: baseline;">
             <span id="hero-node-retry-meta" class="muted"></span>
@@ -67,7 +67,7 @@
     <div class="tile @(Model.TxAllowed ? "is-on" : "is-err")" id="hero-tx">
         <div class="head">
             <span class="led @(Model.TxAllowed ? "on" : "err")"></span>
-            <span class="lbl">TX gate</span>
+            <span class="lbl">Transmit</span>
             @if (Model.TxAllowed)
             {
                 <span class="pill ok">live</span>
@@ -77,8 +77,8 @@
                 <span class="pill err">stopped</span>
             }
         </div>
-        <div class="v">@(Model.TxAllowed ? "transmitting" : "blocked")</div>
-        <div class="sub">@(Model.TxAllowed ? "Beacons, probes, and forwards are firing as scheduled." : (Model.TxBlockReason ?? "Operator stopped TX."))</div>
+        <div class="v">@(Model.TxAllowed ? "allowed" : "stopped")</div>
+        <div class="sub">@(Model.TxAllowed ? "Beacons, probes and forwards go out as scheduled. Stop TX on the top bar halts them." : (Model.TxBlockReason ?? "Operator stopped TX."))</div>
     </div>
 
     <div class="tile" id="hero-update">
@@ -124,7 +124,7 @@
             <span class="muted" style="font-size: 0.78rem;">last 20 events</span>
         </div>
         <div class="ticker" id="ticker">
-            <div class="row"><span class="t">-</span><span class="k">waiting</span><span class="m">for events from /Operational</span></div>
+            <div class="row"><span class="t">-</span><span class="k">waiting</span><span class="m">for the first update</span></div>
         </div>
     </div>
 </div>
@@ -133,7 +133,7 @@
 <div class="grid-3" style="margin-top: 1.25rem;">
     <div class="panel">
         <h3>Outbound queue</h3>
-        <p class="panel-sub">Messages addressed elsewhere. Forwarder ticks every 5 s.</p>
+        <p class="panel-sub">Messages for other nodes, waiting to go. The forwarder runs as soon as a message is queued, and every 30 s otherwise.</p>
         <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 0.5rem;">
             <div class="card" style="padding: 0.7rem 0.85rem;"><div class="label">Pending</div><div class="value" id="ov-pending-out">-</div></div>
             <div class="card" style="padding: 0.7rem 0.85rem;"><div class="label">Forwards (boot)</div><div class="value" id="ov-fwd-success">-</div></div>
@@ -142,7 +142,7 @@
     </div>
     <div class="panel">
         <h3>Local inbox</h3>
-        <p class="panel-sub">Messages for apps on this node, awaiting MQTT/REST ack.</p>
+        <p class="panel-sub">Messages for apps on this node that the app hasn't acknowledged yet.</p>
         <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 0.5rem;">
             <div class="card" style="padding: 0.7rem 0.85rem;"><div class="label">Undelivered</div><div class="value" id="ov-pending-local">-</div></div>
             <div class="card" style="padding: 0.7rem 0.85rem;"><div class="label">Total tracked</div><div class="value" id="ov-total">-</div></div>
@@ -151,7 +151,7 @@
     </div>
     <div class="panel">
         <h3>Discovery airtime</h3>
-        <p class="panel-sub">Trailing-hour discovery TX vs. budget. Beacons defer when full.</p>
+        <p class="panel-sub">Discovery transmissions in the last hour, against the budget. Beacons wait when it is full.</p>
         <div class="card" style="padding: 0.7rem 0.85rem;">
             <div class="label" id="ov-air-label">Used</div>
             <div class="value" id="ov-air-value">-</div>
@@ -172,17 +172,17 @@
 <!-- Quick test send -->
 <h2>Quick send</h2>
 <form class="panel" method="post" asp-page-handler="Send">
-    <p class="panel-sub">Submit a one-off message via the same code path your apps use, without touching MQTT. Use this to verify a hop end-to-end.</p>
+    <p class="panel-sub">Queue a one-off message exactly as an app would, without needing an app. Handy for checking that a link to a neighbour works end to end.</p>
     <div class="field-grid">
         <div class="field">
             <label for="App">App</label>
             <input id="App" type="text" name="@nameof(IndexModel.Send).@nameof(IndexModel.SendForm.App)" value="@Model.Send.App" placeholder="mail" required />
-            <span class="hint">application slug, e.g. <code>mail</code> or <code>chat</code></span>
+            <span class="hint">the app name the receiving node delivers it to, e.g. <code>mail</code> or <code>chat</code></span>
         </div>
         <div class="field">
             <label for="Destination">Destination callsign</label>
             <input id="Destination" type="text" name="@nameof(IndexModel.Send).@nameof(IndexModel.SendForm.Destination)" value="@Model.Send.Destination" placeholder="M0LTE-1" required />
-            <span class="hint">case-insensitive, normalised to upper-case before submit</span>
+            <span class="hint">the destination node's DAPPS callsign with SSID; case doesn't matter</span>
         </div>
         <div class="field" style="grid-column: 1 / -1;">
             <label for="Payload">Payload (UTF-8 text)</label>
@@ -274,7 +274,7 @@
             const out = [];
             if (!s.nodeReachable) {
                 out.push({ tone: 'err', title: 'Packet node not answering',
-                          body: 'TCP connect to the bearer port failed. Check linbpq/xrouter is running and bearer port matches Settings.' });
+                          body: 'Can\'t connect to the packet node. Check it is running and that the host and port in Settings are right.' });
             }
             if (!s.callsignConfigured) {
                 out.push({ tone: 'warn', title: 'Callsign not set',
@@ -282,7 +282,7 @@
             }
             if (s.neighbourCount === 0 && s.discoveredPeerCount === 0) {
                 out.push({ tone: 'warn', title: 'No neighbours and no discovered peers',
-                          body: 'Nothing to forward to. Add a neighbour in Topology or enable discovery.' });
+                          body: 'Nothing to send mail to. Add a neighbour in Topology, or add a discovery channel there to hear other nodes.' });
             }
             const dropped = s.tables?.dropped ?? [];
             if (dropped.length > 0) {

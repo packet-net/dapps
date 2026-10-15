@@ -4,7 +4,7 @@
     ViewData["Title"] = $"DAPPS - diagnostics ({Model.Options.Callsign})";
     ViewData["Active"] = "diagnostics";
     ViewData["PageTitle"] = "Diagnostics";
-    ViewData["PageSubtitle"] = "What just transmitted, and why. Persistent log of every outbound frame this node has put on the air, plus on-demand actions.";
+    ViewData["PageSubtitle"] = "What this node has transmitted, and why: every beacon, probe, forward and poll, kept for 90 days.";
 }
 
 @section Actions {
@@ -16,7 +16,7 @@
     <h3>Transmissions audit
         <span id="tx-status" class="pill">loading</span>
     </h3>
-    <p class="panel-sub">Polled from <code>/Transmissions</code>; retention controlled by <code>TransmissionAuditRetentionDays</code> (default 90). Each row carries the daemon's reason for transmitting.</p>
+    <p class="panel-sub">Each row carries the reason DAPPS transmitted. Refreshes every 10 seconds, newest first. Heartbeat rows are the MQTT status publish on this machine, not on-air traffic.</p>
     <div class="row-form" style="margin-bottom: 1rem;">
         <div class="field">
             <label for="tx-kind">Kind</label>

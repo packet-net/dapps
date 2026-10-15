@@ -4,13 +4,13 @@
     ViewData["Title"] = $"DAPPS - streams ({Model.Options.Callsign})";
     ViewData["Active"] = "streams";
     ViewData["PageTitle"] = "Streams";
-    ViewData["PageSubtitle"] = "Per-(remote, stream-id) state for opt-in message ordering. Set StreamId on outbound submissions to opt in. Receive cursors gate local delivery on the next-expected sequence.";
+    ViewData["PageSubtitle"] = "For apps that ask for in-order delivery by setting a stream id on their messages. Nothing shows here unless an app does.";
     var now = DateTime.UtcNow;
 }
 
 <div class="panel">
     <h3>Send state</h3>
-    <p class="panel-sub">Monotonic <code>sn=</code> counters minted for each (local, remote, stream) tuple.</p>
+    <p class="panel-sub">The next sequence number for each stream this node sends on.</p>
     @if (Model.SendStates.Count == 0)
     {
         <div class="empty">No outbound streams have been used yet.</div>
@@ -43,7 +43,7 @@
 <div class="panel" style="margin-top: 1rem;">
     <h3>Receive state</h3>
     <p class="panel-sub">
-        Highlighted rows have parked messages awaiting an earlier <code>sn</code>. Strict streams (<code>gt=0</code>) show no gap deadline; in timeout mode the deadline is when the gap sweeper (1-minute cadence) skips past the missing seq and drains.
+        Highlighted rows are holding messages back because an earlier one in the stream hasn't arrived. Gap deadline is when DAPPS stops waiting for it and delivers what it has; a strict stream (<code>gt=0</code>) never does, so shows none.
     </p>
     @if (Model.RecvStates.Count == 0)
     {
