@@ -32,7 +32,7 @@ The right-hand column is the single-file binary attached to [every release](http
 ## Pick a platform
 
 - [**Linux (systemd)**](linux.md) - recommended; apt, and the manual equivalent.
-- [**Docker**](docker.md) - published image; useful if you already orchestrate with compose / a homelab stack.
+- [**Docker**](docker.md) - build an image from the repository's Dockerfile; useful if you already orchestrate with compose / a homelab stack.
 - [**Windows**](windows.md) - runs as a console app today; service install is manual.
 - [**macOS**](macos.md) - same shape as Windows; `launchd` plist optional.
 
@@ -47,7 +47,7 @@ The right-hand column is the single-file binary attached to [every release](http
 
 A running DAPPS node writes:
 
-- A SQLite database at `/var/lib/dapps/dapps.db` under the systemd recipe, or `data/dapps.db` relative to the working directory if you run it by hand.
+- A SQLite database at `/var/lib/dapps/dapps.db` under the systemd recipe. If you run it by hand, `dapps.db` in the working directory (or in `data/` if that folder exists there).
 - An MQTT broker on TCP 1883 (configurable; bind to localhost in most cases).
 - An HTTP listener on TCP 5000 (configurable; this is the dashboard, REST API, and MCP endpoint).
 - Optional UDP datagram listener on a port of your choosing (off by default; used by the test stand-in for MeshCore).

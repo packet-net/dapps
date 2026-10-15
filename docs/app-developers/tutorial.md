@@ -200,4 +200,4 @@ Both surfaces share the same queue. An app written against MQTT and a cron job h
 - **Persist `seen` to disk.** SQLite (`sqlite3` stdlib) is easiest. Insert the id under `INSERT OR IGNORE` and use the `changes()` count to decide whether to reply.
 - **Handle malformed payloads.** `decode("utf-8", errors="replace")` keeps the demo from crashing on a binary blob, but a real app should validate input and ack-without-replying on garbage rather than ignoring it (otherwise garbage piles up in your queue).
 - **Set sensible TTLs.** "How fresh does this still need to be?" is a useful design question. Match the value to what your app does.
-- **Authenticate.** When the operator turns on `auth-required`, the MQTT CONNECT needs `username=hello` + a per-app token, and REST needs an `Authorization: Bearer ...` header. Tokens are minted from the dashboard's `/AppTokens` page.
+- **Authenticate.** When the operator turns on per-app tokens (`AuthRequired`), the MQTT CONNECT needs `username=hello` + a per-app token, and REST needs an `Authorization: Bearer ...` header. The operator mints tokens with the `/AppTokens` REST endpoint; see the [reference](reference.md).

@@ -8,7 +8,7 @@ Three tables, each with a single job:
 
 1. **Discovery channels** - bearers / frequencies / multicast groups DAPPS will beacon on, listen on, and run scheduled solicits over. You configure these explicitly; nothing is on by default.
 2. **Discovered peers** - callsigns heard on a channel, with bearer hints and a "last seen" timestamp. Populated automatically by beacons + solicits.
-3. **Neighbours** - callsigns DAPPS will actually forward to. May be hand-added by the operator, or auto-promoted from the discovered-peers table.
+3. **Neighbours** - callsigns DAPPS will actually forward to. You add these yourself; DAPPS never adds one on its own.
 
 Plus two derived stores:
 
@@ -56,12 +56,9 @@ Node-prompt auto-discovery is gated on `DAPPS_AUTO_DISCOVER_VIA_NODE_CALL=true`.
 
 ## Neighbours
 
-The actual forwarding partners. Two ways a row lands here:
+The actual forwarding partners. You add them on the dashboard's **Topology > Neighbours** tab or with the `/Neighbours` REST endpoint. DAPPS doesn't add neighbours by itself; the `propose_topology_changes` [MCP tool](mcp.md) can suggest some from the peers you've heard.
 
-- **Operator-added** via the dashboard's Neighbours panel or the `/Neighbours` REST endpoint.
-- **Auto-promoted** from a successful probe (when configured).
-
-Each neighbour row carries: callsign, bearer port (for AGW or RHPv2), UDP endpoint (for the datagram bearer), and an optional cost override.
+Each neighbour row carries: callsign, bearer port (for AGW or RHPv2), UDP endpoint (for the datagram bearer), and optionally a connect-script plus per-neighbour compression and session-tail overrides.
 
 Enter a neighbour under its DAPPS callsign with the SSID. Mail goes to the neighbour with the exact call+SSID first. One entered under another SSID of the same callsign still works as a stand-in, and the Neighbours panel marks it so you can tidy it up.
 
@@ -73,11 +70,11 @@ Selected via `DAPPS_ROUTING_ALGORITHM` (restart required).
 
 AODV-flavoured. Routes are learned from observed forwards: when a message is forwarded *through* this node, the source becomes a known reach, the next hop becomes the way to reach the destination. The learned-routes table builds up over time without any extra airtime.
 
-Looks at the message destination, walks: explicit per-destination route hint → known-good neighbour → discovered peer → previously-learned route. First match wins.
+Looks at the message destination, walks: neighbour -> fresh discovered peer -> route hint -> learned route. First match wins. If nothing matches, it falls back to a bounded flood: the message goes to every neighbour with a small hop limit, and the replies teach the routes.
 
 Learned routes are kept per station, SSID included: a route to `G6FCI-7` says nothing about `G6FCI-8`, and two nodes under one callsign learn routes to each other like any other pair.
 
-Works well on small meshes. The trade-off is no proactive route discovery - destinations not yet seen via traffic are unknown until a forward goes through us.
+Works well on small meshes. The trade-off is no proactive route discovery - until traffic has taught a route, mail to a far station goes out as a flood.
 
 ### `meshcore`
 
@@ -93,11 +90,13 @@ The advertiser filters: only routes whose failure counter is zero, only routes t
 
 Each route is advertised under the destination's full callsign, SSID included, so two SSIDs of one callsign are two routes. Every node needs 0.47.0 or later for this to help; with an older node on either end the route simply goes unused, and mail falls back to the other ways of finding a path.
 
-The dashboard's learned-routes view marks gossip-sourced rows distinctly from traffic-learned ones. Resolution priority unchanged: hint → neighbour → discovered → learned (gossip and traffic share the learned tier).
+There's no dashboard view of learned routes; the `list_learned_routes` [MCP tool](mcp.md) lists them, with each row's source (`gossip` or `traffic`). Resolution priority unchanged: neighbour -> discovered -> hint -> learned (gossip and traffic share the learned tier).
 
 ## Route hints
 
-A manual override. The `/RouteHints` endpoint (and dashboard panel) let you say "for messages destined for X, always try Y first." Useful for steering around a known-broken link, or for asymmetric routing where the natural route in one direction differs from the other.
+A manual "for messages destined for X, send via neighbour Y" entry. It's used when X isn't itself a neighbour or a freshly heard peer, and before any learned route. Useful for asymmetric routing where the natural route in one direction differs from the other.
+
+There's no dashboard page or REST endpoint for route hints. The `list_route_hints` [MCP tool](mcp.md) lists them; adding one means writing a row into the `routehints` table of the DAPPS database. Y must already be one of your neighbours.
 
 A hint for a callsign without an SSID (`G6FCI`) covers every SSID of that callsign. One with an SSID (`G6FCI-8`) covers that station only, and wins over one without. A hint for `*` catches anything else.
 
@@ -114,4 +113,4 @@ For most operators, the simplest workable setup is:
 3. Once you've heard from a few peers via beacons and have an idea of the on-air ecosystem, **enable probing** with the `Overnight` strategy so the connectivity matrix is verified during quiet hours.
 4. Decide whether you want **scheduled polling** on (you probably don't if your peers are well-behaved; every session carries traffic both ways, which covers the common case).
 
-The dashboard's discovery panels show the live state of all of this - heard peers, probed nodes, learned routes - so you can confirm what's working without guessing.
+The dashboard's **Topology** tabs show the live state of most of this - neighbours, discovery channels, heard peers, probed and polled nodes - so you can confirm what's working without guessing. Learned routes and route hints are only visible through the [MCP tools](mcp.md).

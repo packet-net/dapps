@@ -4,77 +4,58 @@ The day-to-day surfaces of a running DAPPS node - what's there, what each one's 
 
 ## The dashboard
 
-`http://<node>:5000/` after first-use setup. Single dense view, auto-refreshing the live panels every 5 seconds.
+`http://<node>:5000/` after first-use setup. The sidebar has seven pages.
 
-Sections, top to bottom:
+### Overview
 
-### Node card
+The home page, refreshing its live panels every 5 seconds:
 
-Callsign, version, packet-node reachability indicator (probes the configured bearer port - AGW or RHPv2), MQTT broker / UDP listener status, default outbound port. Quick "is this node alive and configured" glance.
+- **Status tiles** - packet-node reachability (probes the configured bearer port - AGW or RHPv2, with a **Retry now** link while it's reconnecting), the MQTT broker, the TX gate (transmitting or stopped), and the running build with **Check now** and, when there's one to apply, **Apply update**. See [Update](update.md).
+- **Activity** - forwards per minute since the page loaded.
+- **Recent decisions** - the last 20 entries of the decision-events ring ("rejected forward, no route to X" etc.).
+- **Outbound queue / Local inbox** - pending and undelivered counts, with links to the Messages tabs.
+- **Discovery airtime** - trailing-hour discovery transmissions against the global budget.
+- **Needs attention** - anything the node thinks you should look at.
+- **Quick send** - a small form that submits straight into the same path an app would take. Useful for verifying a node-to-node link without writing an app first.
 
-### Update card
+The decision-events ring is also mirrored into the systemd journal as log lines, so a `journalctl --grep` works for retrospective lookups beyond what the in-memory ring holds.
 
-Currently-running version + latest known release. If they differ, the **Apply update** button is enabled - one click triggers the supervised in-place update path (Linux/systemd only). See the [Update](update.md) page for the detail.
+### Messages
 
-### Process metrics
+Four tabs:
 
-Per-link state for the configured bearers (last successful tx, last error, reconnect counts), uptime, message counters, decision-events ring (a rolling buffer of recent operational decisions with reasons - "rejected forward, no route to X" etc.).
+- **Outbound queue** - messages waiting to be forwarded. Updates without a page reload as messages are sent.
+- **Local inbox** - messages that arrived for apps on this node and are waiting for the app to ack them via MQTT (`dapps/ack/<app>`) or REST. If this is growing, the app isn't acking - typically a misconfigured subscriber.
+- **Dropped** - messages soft-deleted because TTL expired, hash mismatch, or another drop reason. Useful when you're investigating "where did message X go" - if it's here, you have the reason.
+- **Live arrivals** - every message as it arrives, with filters (app, source callsign, destination substring) and click-to-expand payload preview. `/Inbound` redirects here.
 
-The decision-events ring is also mirrored into the systemd journal as structured log lines, so a `journalctl --grep` works for retrospective lookups beyond what the in-memory ring holds.
+### Topology
 
-### Queue at a glance
+Five tabs:
 
-Three counters: total messages in the table, pending outbound (forwards in flight), undelivered local (messages for apps on this node that haven't been ack'd yet).
+- **Neighbours** - the forwarding-partner table. Add / edit / remove, probe one, and set per-neighbour radio port, compression, link hold and connect-script.
+- **Discovery channels** - the bearers DAPPS beacons / listens on: beacon cadence, advertised TTL, link class, channel-specific airtime budget and solicit interval. Add new channels from the form; **solicit** sends a one-off "who's there?".
+- **Discovered peers** - callsigns heard via beacons or solicit replies.
+- **Probed nodes** - per-callsign probe state. Source flag distinguishes direct (`neighbour`), transitive (`via:CALL`), and node-prompt-discovered (`node-prompt:CALL`) rows. Last probed, last success, consecutive failures, opt-out flag.
+- **Polled nodes** - if scheduled polling is on, the per-target poll state.
 
-### Outbound queue
+### Diagnostics
 
-Live table of messages waiting to be forwarded - id, destination, source, bytes, residual TTL, age. Updates without a page reload as messages are sent.
+The [transmission audit](audit.md) log, plus **Probe everyone** and **Poll everyone** buttons.
 
-### Local inbox
+### Compose
 
-Messages that arrived for apps on this node and are waiting for the app to ack them via MQTT (`dapps/ack/<app>`) or REST. If this is growing, the app isn't acking - typically a misconfigured subscriber.
-
-### Neighbours
-
-The forwarding-partner table. Add / edit / delete from here.
-
-### Discovery channels
-
-The bearers DAPPS beacons / listens on. Heading shows trailing-hour airtime consumption against the global cap (warns at ≥ 90 %). Per-channel rows show beacon cadence, advertised TTL, link-class, channel-specific airtime budget if set. Add new channels from the form below the table.
-
-### Probed nodes
-
-Per-callsign probe state. Source flag distinguishes direct (`neighbour`), transitive (`via:CALL`), and node-prompt-discovered (`node-prompt:CALL`) rows. Last probed, last success, consecutive failures, opt-out flag.
-
-### Polled nodes
-
-If scheduled polling is on, the per-target poll state.
-
-### Recently dropped
-
-Messages soft-deleted because TTL expired, hash mismatch, or another drop reason. Useful when you're investigating "where did message X go" - if it's here, you have the reason.
-
-### Live inbound feed
-
-The same SSE feed as `/Inbound`, condensed. Click a message to expand its payload preview inline.
-
-### Send a test message
-
-A small form that submits straight into the same path an app would take. Useful for verifying a node-to-node link without writing an app first.
-
-### Config
-
-A `<details>` block with every operator-tunable knob. Restart-required fields are flagged in the form blurb. Save POSTs the full settings row.
-
-## /Inbound - focused live tail
-
-`http://<node>:5000/Inbound`. Dedicated page for watching messages arrive in real time, with filter inputs (app, source callsign, destination substring) and click-to-expand payload preview. Useful when the dashboard's condensed live panel isn't enough and you want to focus on inbound traffic with a wider table and easier filtering.
-
-## /IHave - manual compose
-
-`http://<node>:5000/IHave`. A bigger compose form than the dashboard's quick send-test, with all header fields exposed (app, destination, payload, optional TTL). After submit it shows the on-air `ihave` line preview so you can see exactly how the message will appear on the wire.
+A bigger compose form than Quick send, with all header fields exposed (app, destination, payload, optional TTL). After submit it shows the on-air `ihave` line preview so you can see exactly how the message will appear on the wire.
 
 Useful for debugging payload edge cases (TTL boundaries, salt collisions, fragment-threshold crossings) without writing an app first.
+
+### Streams
+
+Send and receive state for apps that use opt-in message ordering.
+
+### Settings
+
+The operator-tunable knobs (see [Configure](configure.md)), plus admin password rotation. Restart-required fields are flagged in each section's blurb.
 
 ## /Health - for watchdogs
 
@@ -82,17 +63,19 @@ Useful for debugging payload edge cases (TTL boundaries, salt collisions, fragme
 
 ```json
 {
-  "status": "healthy",          // or "unhealthy"
-  "checkedAt": "2026-05-03T07:58:08Z",
-  "components": {
-    "database": "healthy",
-    "agw": "healthy",
-    "mqtt": "healthy"
-  }
+  "status": "healthy",          // or "degraded"
+  "callsign": "M0LTE-7",
+  "version": "0.47.0",
+  "uptimeSeconds": 86400,
+  "callsignConfigured": true,
+  "nodeReachable": true,
+  "mqttBrokerUp": true,
+  "lastForwardSuccessAt": "2026-05-03T07:58:08Z",
+  "pendingOutboundCount": 0
 }
 ```
 
-HTTP 200 when healthy, 503 when at least one component is down. **Open access** - no admin cookie required, since watchdog units don't carry one.
+HTTP 200 when healthy, 503 when the callsign isn't set, the packet node is unreachable or the MQTT broker is down. **Open access** - no admin cookie required, since watchdog units don't carry one.
 
 ## /Operational - for monitoring
 
@@ -102,26 +85,26 @@ Open access for the same reason as `/Health`.
 
 ## MQTT heartbeat
 
-Subscribers to `dapps/metrics/heartbeat` receive the operational snapshot every `heartbeat-interval-seconds` (60 s by default; minimum 10). **Retained** on the broker, so a late subscriber gets the most recent snapshot immediately.
+Subscribers to `dapps/metrics/heartbeat` receive the operational snapshot every `HeartbeatIntervalSeconds` (60 s by default; minimum 10). **Retained** on the broker, so a late subscriber gets the most recent snapshot immediately.
 
 If you're already running an MQTT-shaped monitoring pipeline, this is the easiest way to get DAPPS into it - one `mosquitto_sub -h <node> -t dapps/metrics/heartbeat` subscription gets you a ticking JSON document.
 
 ## /mcp - for AI assistants
 
-`http://<node>:5000/mcp`. The MCP (Model Context Protocol) endpoint exposes 26 operator-facing tools to a connected assistant - listing peers, triggering probes, sending test messages, applying config, applying updates, and so on. See the [MCP for assistants](mcp.md) page.
+`http://<node>:5000/mcp`. The MCP (Model Context Protocol) endpoint exposes 33 operator-facing tools to a connected assistant - listing peers, triggering probes, sending test messages, applying config, applying updates, and so on. See the [MCP for assistants](mcp.md) page.
 
 Also open access (no admin cookie). MCP clients have their own auth model that the daemon stays out of.
 
 ## What to look at when
 
 - **"Is the node alive?"** - `/Health` (open access; quickest).
-- **"Is anything wedged?"** - dashboard. The Process metrics + Decision-events panels show the recent narrative.
-- **"Why didn't message X arrive?"** - Recently dropped on the dashboard, or `journalctl --grep <message-id>` for older history.
-- **"Is the link to peer Y working?"** - Probed nodes table, or trigger a probe via the dashboard / MCP / REST.
-- **"What's my airtime usage right now?"** - Discovery channels heading on the dashboard.
-- **"What's queued and not going anywhere?"** - Outbound queue / Local inbox panels on the dashboard.
-- **"Is there an update?"** - Update card on the dashboard, or the heartbeat's `update_available` field.
+- **"Is anything wedged?"** - the dashboard's Overview. Recent decisions and Needs attention show the recent narrative.
+- **"Why didn't message X arrive?"** - the Dropped tab on the Messages page, or `journalctl --grep <message-id>` for older history.
+- **"Is the link to peer Y working?"** - Topology > Probed nodes, or trigger a probe via the dashboard / MCP / REST.
+- **"What's my airtime usage right now?"** - the Discovery airtime panel on the Overview.
+- **"What's queued and not going anywhere?"** - the Outbound queue / Local inbox tabs on the Messages page.
+- **"Is there an update?"** - the Build tile on the Overview, or `GET /Update/status`.
 
 ## Logs
 
-Systemd journal on Linux (`journalctl -u dapps.service`), Docker logs in a container, NSSM-captured stdout file on Windows. Same content everywhere: start-up events, decision events, errors. The decision-events ring on the dashboard is the same data, just bounded; the journal is the long-tail store.
+Systemd journal on Linux (`journalctl -u dapps.service`), Docker logs in a container, NSSM-captured stdout file on Windows. Same content everywhere: start-up events, decision events, errors. The Recent decisions panel on the dashboard is the same data, just bounded; the journal is the long-tail store.

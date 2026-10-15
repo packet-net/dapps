@@ -18,7 +18,7 @@ Terms used throughout this manual.
 
 **asynchronous** - Messages are queued; delivery happens when the network allows. Real-time connectivity is not a goal.
 
-**backhaul** - The bearer-side communication between two DAPPS nodes (as distinct from the app interface, which is local). AGW and RHPv2 today; MeshCore in flight.
+**backhaul** - The bearer-side communication between two DAPPS nodes (as distinct from the app interface, which is local). AGW, RHPv2 and MeshCore.
 
 **bearer** - The underlying medium DAPPS hands off to: AGW (via BPQ or another AGW host), RHPv2 (via XRouter or another RHPv2 host), MeshCore Companion (USB, shipped; KISS planned), UDP datagram (test stand-in). The bearer-agnostic seam means apps and routing don't care which.
 
@@ -34,7 +34,7 @@ Terms used throughout this manual.
 
 **cookie auth** - How the dashboard identifies you. One admin password for the whole node, set on `/Setup`, hashed with PBKDF2-HMAC-SHA256.
 
-**dapps-id** - User property on MQTT publishes / REST submits that DAPPS uses for idempotent at-least-once delivery. Same `dapps-id` twice → second submit is a no-op.
+**dapps-id** - User property on each message DAPPS delivers to an app over MQTT, carrying the message id. The app acks by publishing that id to `dapps/ack/<app>`.
 
 **dapps-source** - User property carrying who the message is from: the originating callsign, set by DAPPS at the source node and carried end-to-end across forwarding hops, or the last hop if the sender's DAPPS didn't say. Reply to it.
 
@@ -68,7 +68,7 @@ Terms used throughout this manual.
 
 **MQTT** - A pub-sub messaging protocol; DAPPS embeds an MQTT broker for the local app interface.
 
-**neighbour** - A callsign DAPPS will actually forward to. May be hand-added or auto-promoted from a successful probe.
+**neighbour** - A callsign DAPPS will actually forward to. Added by the operator.
 
 **node-prompt** - The text prompt presented when an L2 connect lands on a packet node (BPQ et al). DAPPS uses this to probe peers that aren't directly DAPPS - connect, type the application command (`DAPPS` by default), then run a normal probe from the resulting prompt.
 
@@ -86,11 +86,11 @@ Terms used throughout this manual.
 
 **RHPv2** - Remote Host Protocol v2 - a more modern host-to-node protocol than AGW. Required for DAPPS-on-XRouter (AGW outbound on XRouter is structurally broken for DAPPS); selectable with `DAPPS_NODE_BEARER=rhpv2`. Mainline BPQ does not yet ship RHPv2; will work with no DAPPS-side changes when it does.
 
-**route hint** - A manual override that says "for messages destined for X, always try Y first." Stored in the route-hints table.
+**route hint** - A manual entry that says "for messages destined for X, send via neighbour Y." Used when X isn't a neighbour or a freshly heard peer. Stored in the `routehints` table; list them with the `list_route_hints` MCP tool.
 
 **session protocol** - The DAPPSv1 session shape: prompt → `ihave` → `send` / `?` → `data` → `ack`. The on-air conversation between two DAPPS nodes.
 
-**solicit** - On-demand or scheduled "is anyone out there?" transmission on a discovery channel. Replies collected for a window. Useful on HF NVIS where push beaconing's airtime is too expensive.
+**solicit** - On-demand or scheduled "is anyone out there?" transmission on a discovery channel. Peers that hear it reply. Useful on HF NVIS where push beaconing's airtime is too expensive.
 
 **source-routing** - Stamping the full path on a message at the sender, instead of letting each hop pick the next one. The `meshcore` routing algorithm.
 

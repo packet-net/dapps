@@ -46,7 +46,7 @@ Restart XRouter to pick up `ACCESS.SYS` changes.
 
 ## Step 4: tell DAPPS where XRouter is
 
-In the dashboard's `/Setup` wizard (first run) or under **Edit configuration** on the dashboard (later):
+In the dashboard's `/Setup` wizard (first run) or on the dashboard's **Settings** page (later):
 
 | Field         | Value                                                      |
 |---------------|------------------------------------------------------------|
@@ -56,7 +56,8 @@ In the dashboard's `/Setup` wizard (first run) or under **Edit configuration** o
 | RHPv2 port    | `9000` (matches `RHPPORT=` in `XROUTER.CFG`)               |
 | RHPv2 user    | leave blank if XRouter doesn't require RHPv2 auth          |
 | RHPv2 password | matching credential, otherwise blank                       |
-| Default bearer port | the radio port DAPPS uses for outbound, 0-indexed against the order `PORT=N` blocks appear in `XROUTER.CFG` (so `PORT=1` -> byte 0, `PORT=2` -> byte 1, etc). DAPPS adds 1 internally to derive RHPv2's 1-indexed port name. |
+
+Neither page has a default bearer port field: set each neighbour's **Radio port** when you add it on the **Topology > Neighbours** tab. A neighbour without one uses bearer port `0` (change that with `DAPPS_DEFAULT_BEARER_PORT` before first start, or `POST /Config`). Bearer ports are 0-indexed against the order `PORT=N` blocks appear in `XROUTER.CFG` (so `PORT=1` -> 0, `PORT=2` -> 1, etc); DAPPS adds 1 internally to derive RHPv2's 1-indexed port name.
 
 The wizard's **Detect packet node** button probes localhost:9000 and pre-selects RHPv2 automatically when XRouter is on the same host.
 
@@ -93,15 +94,15 @@ You should land at the `DAPPSv1>` prompt. That's DAPPS having taken the inbound 
 
 ## Step 7: prove the outbound side
 
-Add a manual neighbour from the dashboard's **Neighbours** panel:
+Add a manual neighbour on the dashboard's **Topology > Neighbours** tab:
 
 | Field          | Value                                       |
 |----------------|---------------------------------------------|
 | Callsign       | another DAPPS node's callsign with SSID     |
-| bearer port       | the XRouter port byte to use for the originate |
+| Radio port     | the XRouter port byte to use for the originate |
 | UDP endpoint   | leave blank                                 |
 
-Send a test message via the dashboard's **Send a test message** form. The forwarder service picks it up within a few seconds, asks XRouter to dial the remote callsign, and you'll see the session in XRouter's stats / monitor view.
+Send a test message with the **Quick send** form on the dashboard's Overview. The forwarder service picks it up within a few seconds, asks XRouter to dial the remote callsign, and you'll see the session in XRouter's stats / monitor view.
 
 ## Multi-port setups
 

@@ -17,6 +17,7 @@ Every site where the daemon puts bytes on a bearer:
 | `forward-flood`     | Per-recipient transmission of a flood-routed message.                                     |
 | `poll`              | Reverse-poll request to a peer (scheduled or operator-triggered).                         |
 | `heartbeat`         | The periodic MQTT publish to `dapps/metrics/heartbeat`.                                   |
+| `tx-control`        | Transmitting stopped or resumed, by the dashboard's stop button or the [kill-switch](dev-time-tx-kill-switch.md). Nothing is sent. |
 
 Each row carries: timestamp, kind, bearer (`agw` / `rhpv2` / `udp` / `mqtt`), channel key (e.g. bearer port), target callsign, message id (when forwarding a specific message), bytes, duration, success boolean, reason, and an error tag on failure.
 
@@ -38,18 +39,20 @@ The reason is the load-bearing field. Examples:
 
 ## Where to read it
 
-- **Dashboard**: `/Transmissions` page. Filter by kind / target callsign / only-failures, auto-refresh every 10 s.
+- **Dashboard**: the **Transmissions audit** panel on the Diagnostics page. Filter by kind / target callsign / only-failures, auto-refresh every 10 s.
 - **REST**: `GET /Transmissions?kind=probe&target=M0LTE-1&onlyFailures=true&limit=300` returns a JSON array.
 - **MCP**: `list_transmissions` tool, same filters.
-- **MQTT** (opt-in): set `DAPPS_TRANSMISSION_AUDIT_MQTT_PUBLISH=true` and every row is also published live to `dapps/audit/tx` as JSON. Useful for scraping into an existing MQTT-shaped monitoring stack.
+- **MQTT** (opt-in): set `TransmissionAuditMqttPublish` to `true` (see below) and every row is also published live to `dapps/audit/tx` as JSON. Useful for scraping into an existing MQTT-shaped monitoring stack.
 
 ## Configuration
 
-| Setting                                | Env var                                       | Default | What it does                                                                            |
-|----------------------------------------|-----------------------------------------------|---------|-----------------------------------------------------------------------------------------|
-| Audit enabled                          | `DAPPS_TRANSMISSION_AUDIT_ENABLED`            | `true`  | Master switch. Turn off only if you're storage-constrained on a tiny SD card.           |
-| Retention days                         | `DAPPS_TRANSMISSION_AUDIT_RETENTION_DAYS`     | `90`    | The TTL sweeper deletes rows older than this. Set to `0` to disable automatic retention.|
-| Live MQTT publish                      | `DAPPS_TRANSMISSION_AUDIT_MQTT_PUBLISH`       | `false` | When true, publishes each row to MQTT topic `dapps/audit/tx` (non-retained).            |
+These three aren't on the Settings page and have no env var. Change them through the REST API: `GET /Config`, edit the field, and `POST /Config` with the whole object back.
+
+| Setting                          | Default | What it does                                                                            |
+|----------------------------------|---------|-----------------------------------------------------------------------------------------|
+| `TransmissionAuditEnabled`       | `true`  | Master switch. Turn off only if you're storage-constrained on a tiny SD card.           |
+| `TransmissionAuditRetentionDays` | `90`    | The TTL sweeper deletes rows older than this. Set to `0` to disable automatic retention.|
+| `TransmissionAuditMqttPublish`   | `false` | When true, publishes each row to MQTT topic `dapps/audit/tx` (non-retained).            |
 
 ## Storage cost
 
@@ -65,7 +68,7 @@ If you're really storage-constrained (Raspberry Pi Zero on a 4 GB SD card), drop
 GET /Transmissions?limit=500
 ```
 
-Then filter the response client-side by the `at` field. Or use the dashboard's `/Transmissions` page and scroll back.
+Then filter the response client-side by the `at` field. Or use the Transmissions audit panel on the dashboard's Diagnostics page.
 
 ### "Why did message abc1234 fail to ship?"
 
@@ -85,6 +88,6 @@ Or via MCP: `list_transmissions(kinds: "probe,probe-nodeprompt", target: "G7XYZ"
 
 ## What does **not** get logged
 
-- **Inbound** transmissions are not logged here - this is an outbound audit. Use `/Inbound` (the SSE feed) for inbound visibility, or the `messages` table for inbound persistence.
+- **Inbound** transmissions are not logged here - this is an outbound audit. Use the dashboard's **Messages > Live arrivals** tab (or the `/Events/inbound` SSE feed it reads) for inbound visibility, or the `messages` table for inbound persistence.
 - **Acks and naks** the daemon emits inside an existing inbound session aren't currently audited - they ride the same TCP session as the inbound `data` and the outbound forwarder's `ack` - so they'd be high-frequency and tightly correlated with inbound rows. May change in a follow-up if there's demand.
 - **Per-frame bearer activity** (AGW frames, UDP datagram bytes) isn't audited at the frame level. The audit log is at the DAPPS-protocol-event level, not the wire-byte level. For wire-level analysis use the bearer's own logs (BPQ's MHEARD, etc.).

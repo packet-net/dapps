@@ -4,7 +4,7 @@
 
 ## 60-second pitch
 
-A DAPPS node is a small daemon you run alongside your packet node (BPQ today; MeshCore and RHPv2 in flight). It exposes:
+A DAPPS node is a small daemon you run alongside your packet node (BPQ over AGW, XRouter over RHPv2, or a MeshCore radio). It exposes:
 
 - **An app interface** - local applications publish and subscribe over MQTT (or REST). They name their destination as `app@CALLSIGN` and DAPPS handles routing, forwarding, fragmenting, retrying, and acking.
 - **A backhaul** - DAPPS opens sessions to other DAPPS nodes (over AGW today) to move messages towards their destination, hop by hop, with TTL.
@@ -31,7 +31,7 @@ It covers:
 
 - [Getting started](https://packet-net.github.io/dapps/getting-started/) - 10-minute install-to-message tour.
 - [Install](https://packet-net.github.io/dapps/install/) - Linux/systemd, Docker, Windows, macOS.
-- [Connect a node](https://packet-net.github.io/dapps/connect/) - BPQ via AGW and XRouter via RHPv2 supported today; MeshCore in flight.
+- [Connect a node](https://packet-net.github.io/dapps/connect/) - BPQ via AGW, XRouter via RHPv2, and MeshCore radios over USB.
 - [Configure](https://packet-net.github.io/dapps/configure/), [Run](https://packet-net.github.io/dapps/run/), [Tune](https://packet-net.github.io/dapps/tune/) - every operator knob, what each background loop does, what to leave alone.
 - [Discovery & routing](https://packet-net.github.io/dapps/discovery-and-routing/), [Operate](https://packet-net.github.io/dapps/operate/), [Update](https://packet-net.github.io/dapps/update/) - the day-to-day surfaces.
 - [MCP for assistants](https://packet-net.github.io/dapps/mcp/) - let an AI assistant drive the operator surface.

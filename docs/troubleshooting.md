@@ -4,9 +4,9 @@ Failure modes, in rough order of how often you'll hit them.
 
 ## DAPPS won't start
 
-### "Refusing to start: callsign is N0CALL"
+### "Callsign is not configured (currently 'N0CALL')"
 
-You haven't set `DAPPS_CALLSIGN`. Set it in the systemd unit / docker compose / shell environment:
+DAPPS starts, but stays in setup-required mode: it won't bind its callsign or transmit until you set one. Set it on `/Setup` or the dashboard's Settings page, or seed it on first start:
 
 ```
 DAPPS_CALLSIGN=M0LTE-1
@@ -26,7 +26,7 @@ The unit file's `RestartPreventExitStatus=78` keeps systemd from hot-looping on 
 
 ### Database errors on first start
 
-DAPPS expects to be able to create a SQLite file at `data/dapps.db` (relative to the working directory) or wherever you've pointed it. If the working directory isn't writable, startup fails. On Linux/systemd the recommended unit uses `WorkingDirectory=/var/lib/dapps`; make sure that exists and is owned by the runtime user.
+DAPPS expects to be able to create a SQLite file called `dapps.db` in its working directory (inside `data/` if that folder exists there). If the working directory isn't writable, startup fails. On Linux/systemd the recommended unit uses `WorkingDirectory=/var/lib/dapps`; make sure that exists and is owned by the runtime user.
 
 ## Packet-node connection problems
 
@@ -45,7 +45,7 @@ DAPPS can't reach the bearer port on `DAPPS_NODE_HOST` (`DAPPS_AGW_PORT` for AGW
 
 ### "Packet-node connection drops repeatedly"
 
-DAPPS reconnects automatically, backing off from 10 s to 30 s to 1 minute to every 5 minutes as failures pile up, and the dashboard's Packet node tile shows the countdown with a **Retry now** link (saving `/Config` also retries straight away). If it's flapping every few seconds:
+DAPPS reconnects automatically, backing off from 10 s to 30 s to 1 minute to every 5 minutes as failures pile up, and the dashboard's Packet node tile shows the countdown with a **Retry now** link (saving Settings also retries straight away). If it's flapping every few seconds:
 
 - Check the packet node's logs for whether it's actively closing the connection. Some BPQ misconfigurations cause AGW to disconnect clients on every L2 event.
 - Check for two DAPPS instances accidentally sharing a callsign - the second binding wins and the first one sees its inbound dispatch evaporate.
@@ -101,8 +101,8 @@ A remote node can `c <your-callsign>` and lands at the XRouter node prompt, but 
 
 A fresh DAPPS install has **no discovery channels configured by default** - discovery is opt-in. Without a channel and an enabled beacon, you don't hear other nodes and they don't hear you. Two ways forward:
 
-- **Manual neighbour**: dashboard → Neighbours → add a row for the peer you want to talk to. This is the fastest path to "first message" - no discovery needed.
-- **Discovery channel**: dashboard → Discovery channels → add a channel for the bearer port DAPPS should beacon on. Set a sensible cadence (10 minutes for VHF FM is a reasonable starting point) and a per-channel airtime budget if you're on a shared band.
+- **Manual neighbour**: dashboard > Topology > Neighbours, add a row for the peer you want to talk to. This is the fastest path to "first message" - no discovery needed.
+- **Discovery channel**: dashboard > Topology > Discovery channels, add a channel for the bearer port DAPPS should beacon on. Set a sensible cadence (10 minutes for VHF FM is a reasonable starting point) and a per-channel airtime budget if you're on a shared band.
 
 ### "I added a discovery channel but I'm not hearing anyone"
 
@@ -111,7 +111,7 @@ Check, in order:
 - Channel is **enabled** (the row's enabled flag).
 - Beacon cadence isn't unreasonably long (one beacon per hour means you hear nothing for an hour after start).
 - Other DAPPS nodes are actually transmitting on the same channel-key (same bearer port). A node beaconing on port 1 won't be heard by a node listening on port 0.
-- Airtime budget isn't exhausted. Dashboard → Discovery channels heading shows trailing-hour consumption; if it's ≥ 100 % of the global cap, beacons will defer. Either raise the cap or wait.
+- Airtime budget isn't exhausted. The Discovery airtime panel on the dashboard's Overview shows trailing-hour consumption; if it's at 100 % of the global cap or more, beacons will defer. Either raise the cap or wait.
 
 ### "Probes failing"
 
@@ -135,15 +135,15 @@ Check, in order:
 - The subscriber is connected to the right port (default 1883, configurable).
 - The subscriber is subscribed to the right topic (`dapps/in/<app>` for incoming).
 - Your MQTT client supports MQTT 5 user properties. DAPPS publishes `dapps-id`, `dapps-source`, `dapps-via`, `dapps-ttl` etc. as user properties - MQTT 3.1.1 clients will get the payload but not the metadata.
-- The subscriber is acking (`dapps/ack/<app>`). Without acks the messages stay in the local-inbox queue (dashboard → Local inbox panel) and re-deliver on the next subscription.
+- The subscriber is acking (`dapps/ack/<app>`). Without acks the messages stay in the local-inbox queue (dashboard > Messages > Local inbox) and re-deliver on the next subscription.
 
 ### "REST submit returns 200 but message never arrives"
 
 Look at the dashboard:
 
-- Outbound queue panel: is the message there? If yes, it's queued but the forwarder hasn't shipped it yet. It normally goes within a second; if it sits there, the neighbour is probably in reconnect cooldown or has a session open with us (see the journal). If no, the submit didn't actually write to the messages table - check the response body, it'll have an error.
-- Recently dropped panel: did it get dropped? If yes, reason will be there (usually TTL too short, or no route to destination).
-- Per-link state panel: is the link to the destination's first-hop neighbour actually working?
+- Messages > Outbound queue: is the message there? If yes, it's queued but the forwarder hasn't shipped it yet. It normally goes within a second; if it sits there, the neighbour is probably in reconnect cooldown or has a session open with us (see the journal). If no, the submit didn't actually write to the messages table - check the response body, it'll have an error.
+- Messages > Dropped: did it get dropped? If yes, reason will be there (usually TTL too short, or no route to destination).
+- Link state: is the link to the destination's first-hop neighbour actually working? `neighbourLinks` in `GET /Operational` has the last success and error per neighbour, and Topology > Probed nodes has the probe history.
 
 ### "TTL expired" drops
 
@@ -164,19 +164,19 @@ Three possibilities:
 The new binary started but didn't pass the 60 s verify. Look at:
 
 - `journalctl -u dapps.service --since '5 minutes ago'` for the new binary's startup messages - there'll be a clear error.
-- The dashboard's update card - if rollback succeeded, the phase pill shows "rolled back" with the reason.
+- The Build tile on the dashboard's Overview - if rollback succeeded, it shows "rolled back" with the reason.
 
 The previous binary is restored automatically; you don't need to do anything to recover. Investigate the new version's failure mode and either wait for a fix or stay on the previous version.
 
 ### "Update banner shows the same version as I'm running"
 
-The poll cadence is hourly. To force an immediate re-poll, click **Check now** on the dashboard, or `POST /Update/check`, or call the `check_for_updates` MCP tool.
+The poll cadence is hourly (every six hours on an apt install). To force an immediate re-poll, click **Check now** on the dashboard, or `POST /Update/check`, or call the `check_for_updates` MCP tool.
 
 ## Investigating "where did message X go?"
 
 A worked path:
 
-1. **Dashboard → Recently dropped panel.** If the message id is there, the reason is the answer.
+1. **Dashboard > Messages > Dropped.** If the message id is there, the reason is the answer.
 2. **`journalctl -u dapps.service | grep <message-id>`** - the decision-events ring is mirrored to the journal as structured log lines. Every step the daemon took with this id will be there: submit, queue insert, forward attempt, ack received / failed, etc.
 3. **MCP `explain_why_message_failed`** if you have an assistant connected - it walks the same trail and produces a narrative.
 

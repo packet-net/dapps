@@ -29,7 +29,7 @@ The single biggest knob. By default DAPPS imposes **no cap** on discovery transm
 DAPPS_DISCOVERY_AIRTIME_BUDGET_SECONDS_PER_HOUR=120
 ```
 
-This caps **all** discovery-class transmissions (beacons + solicits + probes) at a trailing-hour total. When the cap would be exceeded, beacons reschedule a quarter-cadence later, probe sweeps stop early and resume next sweep, solicit replies are deferred. The dashboard's Discovery channels heading shows current consumption against the cap with a warning at ≥ 90 %.
+This caps **all** discovery-class transmissions (beacons + solicits + probes) at a trailing-hour total. When the cap would be exceeded, beacons reschedule a quarter-cadence later, probe sweeps stop early and resume next sweep, solicit replies are deferred. The **Discovery airtime** panel on the dashboard's Overview shows current consumption against the cap, with a warning at 90 % or more.
 
 There's also a **per-channel** cap, set on the discovery channel row itself (not via env var). When both global and per-channel caps are set, a transmission must fit under both. Use this when a single shared HF channel needs to be capped tighter than your overall budget.
 
@@ -42,16 +42,16 @@ Probing is **off by default**. Once you enable it (`DAPPS_PROBING_ENABLED=true`)
 | Strategy        | When it fires                                                                                                                                                                              |
 |-----------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `FixedInterval` | Every `DAPPS_PROBE_INTERVAL_HOURS` hours. The simplest. Same cadence regardless of context.                                                                                                |
-| `Overnight`     | Once per local-time day inside the `[probe-overnight-start-hour, probe-overnight-end-hour)` window. Default 02:00 to 06:00. Wraps midnight if `end < start`. Good for shared bands where you want to be quiet during peak hours. |
-| `WhenQuiet`     | Fixed cadence, but defers each tick if the forwarder has seen activity in the last `probe-quiet-window-seconds` (default 5 minutes). Good for nodes where probe traffic shouldn't compete with real traffic. |
+| `Overnight`     | Once per local-time day inside the `[DAPPS_PROBE_OVERNIGHT_START_HOUR, DAPPS_PROBE_OVERNIGHT_END_HOUR)` window. Default 02:00 to 06:00. Wraps midnight if `end < start`. Good for shared bands where you want to be quiet during peak hours. |
+| `WhenQuiet`     | Fixed cadence, but defers each tick if the forwarder has seen activity in the last `DAPPS_PROBE_QUIET_WINDOW_SECONDS` (default 5 minutes). Good for nodes where probe traffic shouldn't compete with real traffic. |
 
-Switch strategy via `DAPPS_PROBE_STRATEGY=Overnight` (case-insensitive) or the `/Config` form.
+Switch strategy via `DAPPS_PROBE_STRATEGY=Overnight` (case-insensitive) or the dashboard's Settings page.
 
 ## Fragment threshold
 
 Payloads strictly larger than `DAPPS_FRAGMENT_THRESHOLD_BYTES` get split into N fragments at submit, each delivered independently and reassembled at the receiver. Default is 4096 bytes - sized for VHF. Bump it higher (or set `0` to disable) on faster, more reliable bearers; drop it lower if your bearer's MTU is smaller than 4 KiB.
 
-The dashboard's outbound queue shows fragment status; the master ID groups the fragments back together for the sender.
+Each fragment travels as its own message; the master ID groups them back together at the receiver.
 
 Reassembly buffers age out after 7 days by default (`DAPPS_FRAGMENT_REASSEMBLY_TIMEOUT_SECONDS`). Drop this if you're storage-constrained; raise it if you have peers that go offline for long stretches.
 
@@ -79,7 +79,7 @@ The MQTT message is **retained** so a late subscriber gets the most recent snaps
 
 ## What *not* to tune blindly
 
-- **Don't lower `fragment-reassembly-timeout-seconds` below a day** unless you're really sure no peer of yours will ever go off the air for that long. The cost of a longer timeout is a few KB of buffer; the cost of a too-short timeout is silent message loss.
-- **Don't raise `probe-interval-hours` very high while keeping probing on** - long intervals plus stale routing data is a recipe for confidently sending to peers that have moved on.
-- **Don't disable `update-check-enabled`** unless your node really has no internet - the cost is one HTTPS request per hour and the win is knowing when there's a fix.
+- **Don't lower `FragmentReassemblyTimeoutSeconds` below a day** unless you're really sure no peer of yours will ever go off the air for that long. The cost of a longer timeout is a few KB of buffer; the cost of a too-short timeout is silent message loss.
+- **Don't raise `ProbeIntervalHours` very high while keeping probing on** - long intervals plus stale routing data is a recipe for confidently sending to peers that have moved on.
+- **Don't disable `UpdateCheckEnabled`** unless your node really has no internet - the cost is one HTTPS request per hour (every six hours on an apt install) and the win is knowing when there's a fix.
 - **Don't disable the heartbeat publisher** if you're using it for monitoring - there's no "just-once" knob, and disabling the loop means losing the entire scrape source.

@@ -511,13 +511,13 @@ An implementation can skip beacons entirely and rely on configured neighbours. I
 
 If you've implemented the bare essentials and want to verify against the reference daemon, the smallest useful smoke test:
 
-1. **Connect outbound to the reference daemon, push a message.** Read the `DAPPSv1>` prompt and the `exchange` line after it; you write `ihave …`, expect `send <id>`, write `data … hello`, expect `ack <id>`. Inspect the daemon's `/Recent` page or its MQTT topic to confirm receipt.
+1. **Connect outbound to the reference daemon, push a message.** Read the `DAPPSv1>` prompt and the `exchange` line after it; you write `ihave …`, expect `send <id>`, write `data … hello`, expect `ack <id>`. Check the dashboard's **Messages > Live arrivals** tab or the `dapps/in/<app>` MQTT topic to confirm receipt.
 2. **Receive inbound from the reference daemon.** Configure the reference daemon to forward to your callsign; queue a message; expect a session in, the daemon's `exchange` after yours, then an `ihave` (or with `inline=` above zero a `msg`), and your `ack` to clear the daemon's queue. Then its `quit`.
 3. **Round-trip with `chk`.** Include `chk=NNNN` on outbound; verify the reference daemon validates it (deliberately corrupt one byte and watch the reference reject with `error <id>`).
 4. **Round-trip with `ttl`.** Include `ttl=600`; inspect the daemon's stored row to confirm it persisted, then forward via the daemon to a third node and watch the residual decrement.
 5. **Reject malformed offers.** Send `ihave x len=oops fmt=p dst=mail@G0X` (bad len) and verify your implementation responds `error x` not `send x`.
 
-Beyond that, each optional feature has its own equivalence test: send/receive with the field set, confirm the reference daemon round-trips the value (visible on `/Recent`, on MQTT user properties, or in the SQLite database directly).
+Beyond that, each optional feature has its own equivalence test: send/receive with the field set, confirm the reference daemon round-trips the value (visible on MQTT user properties, through the `get_message` MCP tool, or in the SQLite database directly).
 
 ## See also
 

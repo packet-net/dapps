@@ -3,10 +3,12 @@
 Every operator-tunable setting on a DAPPS node has three configuration surfaces:
 
 1. **A persisted default** in the SQLite database, seeded on first start.
-2. **An environment variable**, of the form `DAPPS_SCREAMING_SNAKE_NAME`, which **overrides the persisted default at first start** and updates the persisted row.
-3. **The dashboard's `/Config` form** (or `POST /Config` REST API), which writes a new value to the persisted row at any time.
+2. **An environment variable**, of the form `DAPPS_SCREAMING_SNAKE_NAME`, which **replaces the default when the setting is first seeded**. After that the stored value wins.
+3. **The dashboard's Settings page** (or the `POST /Config` REST API, which takes the whole config object), which writes a new value to the persisted row at any time.
 
-For runtime-changeable knobs (probing on/off, fragment threshold, airtime budget, etc.), the dashboard is the right surface - changes pick up without a restart. For startup-only knobs (callsign, packet-node host/port, MQTT port, dashboard URL), the env var is the right surface - they're read once at boot.
+Most settings take effect within seconds of saving, with no restart. The MQTT and UDP listener ports, the routing algorithm, and MeshCore's enable, port and region need a restart. The dashboard's own address (`ASPNETCORE_URLS`) is env-only.
+
+A few knobs aren't on the Settings page: the default bearer port, the routing algorithm and the multi-part message timings. Change those with `POST /Config`, which changes only the settings you send, or the `update_config` [MCP tool](mcp.md). Route gossip staleness can be set with its env var before first start, or with `POST /Config` (from 0.48.1).
 
 > **Deployment-managed mode (`DAPPS_ENV_MANAGED=true`)**: when a supervising deployment (a packet.net node host, say) sets `DAPPS_ENV_MANAGED=true`, every *set* `DAPPS_*` env var becomes deployment-managed config instead - re-applied over the persisted row at **every** start, with the matching dashboard fields badged "managed by environment" and rendered read-only. `DAPPS_ENV_MANAGED` itself is a mode switch read each start, never stored. Leave it unset for the standalone installs documented here: with it unset (or `false`) env vars keep the first-start-only semantics above and the dashboard stays in charge.
 
@@ -20,11 +22,11 @@ Walks the persisted `systemoptions` table and prints `DAPPS_SCREAMING_SNAKE=valu
 
 ## The knobs
 
-### Identity (startup-only)
+### Identity and packet node
 
 | Name             | Env var          | Default     | What it does                                                              |
 |------------------|------------------|-------------|---------------------------------------------------------------------------|
-| Callsign         | `DAPPS_CALLSIGN` | `N0CALL`    | Your callsign with SSID, e.g. `M0LTE-1`. **Refuses to start on the placeholder.** |
+| Callsign         | `DAPPS_CALLSIGN` | `N0CALL`    | Your callsign with SSID, e.g. `M0LTE-1`. On the placeholder the daemon starts but won't bind or transmit until you set one. |
 | Node host        | `DAPPS_NODE_HOST`| `localhost` | TCP host of your packet node (BPQ, XRouter, etc.).                        |
 | Node bearer      | `DAPPS_NODE_BEARER` | `agw`    | Which host protocol DAPPS speaks to the packet node: `agw` (BPQ, Direwolf, AGWPE, ...) or `rhpv2` (XRouter, future RHPv2-capable BPQ). See [Connect a node](connect/index.md). |
 | AGW port         | `DAPPS_AGW_PORT` | `8000`      | TCP port the packet node's AGW interface listens on. Used when `Node bearer = agw`. |
@@ -115,4 +117,4 @@ The session-protocol version is the suffix on the prompt - `DAPPSv1>` today; `DA
 
 ## Where the config lives on disk
 
-Everything is in the SQLite database at `/var/lib/dapps/dapps.db` (Linux/systemd) or `data/dapps.db` (run-from-anywhere). The file is the only state worth backing up.
+Everything is in the SQLite database at `/var/lib/dapps/dapps.db` (Linux/systemd) or `dapps.db` in the working directory, inside `data/` if that folder exists (run-from-anywhere). The file is the only state worth backing up.

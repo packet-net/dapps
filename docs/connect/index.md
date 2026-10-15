@@ -20,7 +20,7 @@ Today that interface is **AGW** - the long-standing host-side TCP protocol that 
 
 ## Why bearer-agnostic matters
 
-DAPPS messages get routed across whatever bearers are available between source and destination - there's no rule that says "DAPPS only runs over BPQ" or "DAPPS only runs over VHF AX.25." A node that has both an AGW-attached BPQ and (eventually) a MeshCore radio can forward DAPPS messages between them, with the routing layer choosing the cheaper / more reliable path per destination. The neighbour table doesn't care which bearer a peer is reached over; the routing algorithm doesn't care; the message format doesn't care.
+DAPPS messages get routed across whatever bearers are available between source and destination - there's no rule that says "DAPPS only runs over BPQ" or "DAPPS only runs over VHF AX.25." A node that has both an AGW-attached BPQ and a MeshCore radio can forward DAPPS messages between them, with the routing layer choosing the cheaper / more reliable path per destination. The neighbour table doesn't care which bearer a peer is reached over; the routing algorithm doesn't care; the message format doesn't care.
 
 The reason BPQ is the documented setup is that the on-air ecosystem of operators we want to interoperate with already runs BPQ.
 

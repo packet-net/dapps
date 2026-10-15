@@ -7,7 +7,7 @@
 - [**Getting started**](getting-started.md) - what DAPPS is, why you might want it, and a 10-minute tour from install to first message.
 - [**Install**](install/index.md) - Linux/systemd, Docker, Windows, macOS.
 - [**Configure**](configure.md) - every operator-tunable knob, set via environment variable or the dashboard.
-- [**Connect a node**](connect/index.md) - wire DAPPS up to your packet node. BPQ via AGW and XRouter via RHPv2 supported today; MeshCore in flight.
+- [**Connect a node**](connect/index.md) - wire DAPPS up to your packet node. BPQ via AGW, XRouter via RHPv2, and MeshCore radios over USB.
 - [**Run**](run.md) - what each background loop does and how to watch it.
 - [**Tune**](tune.md) - your node's radio-port settings, airtime budgets, probe strategies, fragment thresholds, routing algorithm.
 - [**Discovery & routing**](discovery-and-routing.md) - channels, beacons, probes, neighbours, route hints.
@@ -21,7 +21,7 @@
 
 ## Bearer-agnostic by design
 
-DAPPS does **not** require BPQ. The default setup guide is BPQ because that's where the on-air ecosystem lives today, but DAPPS talks to the bearer through a small interface - anything that exposes an AGW-compatible session bearer works the same way. RHPv2 (Remote Host Protocol v2) is already in tree alongside AGW: XRouter operators set `DAPPS_NODE_BEARER=rhpv2` and DAPPS uses RHPv2 instead. A non-stream bearer is also in tree (UDP datagram, used as the test stand-in for what MeshCore will become). The bits that change per bearer are isolated; the rest of the system doesn't care whether your link is 1200-baud VHF AX.25 or LoRa mesh.
+DAPPS does **not** require BPQ. The default setup guide is BPQ because that's where the on-air ecosystem lives today, but DAPPS talks to the bearer through a small interface - anything that exposes an AGW-compatible session bearer works the same way. RHPv2 (Remote Host Protocol v2) is already in tree alongside AGW: XRouter operators set `DAPPS_NODE_BEARER=rhpv2` and DAPPS uses RHPv2 instead. Datagram bearers are in tree too: UDP, and [MeshCore](connect/meshcore.md) over USB. The bits that change per bearer are isolated; the rest of the system doesn't care whether your link is 1200-baud VHF AX.25 or LoRa mesh.
 
 ## Status
 

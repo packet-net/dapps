@@ -19,7 +19,7 @@ APPLICATION 1,DAPPS,,M0LTE-7,DAPPS,0
 Field-by-field:
 
 - `1` - application slot number. Bump this if slot 1 is already in use; the value doesn't matter beyond uniqueness.
-- `DAPPS` - the command operators type at the BPQ node prompt to enter the DAPPS slot. If you'd rather use a different name (`MSG`, `APPS`, whatever), put it here and update **Node-prompt application command** under the dashboard's **Edit configuration** to match.
+- `DAPPS` - the command operators type at the BPQ node prompt to enter the DAPPS slot. If you'd rather use a different name (`MSG`, `APPS`, whatever), put it here and update **Node-prompt application command** on the dashboard's **Settings** page to match.
 - (empty third field) - the CMD field, empty on purpose. Older recipes used `C N HOST K TRANS S` here; for DAPPS, leave it empty so BPQ doesn't run any node command on inbound - it just dispatches the L2 'C' frame to the registered AGW client.
 - `M0LTE-7` - the **APPLCALL**: the DAPPS callsign. This is the field that makes BPQ accept inbound L2 connects addressed to the DAPPS callsign. DAPPS registering the same callsign over AGW at runtime tells BPQ *which AGW client* gets those sessions; the APPLCALL declaration is what makes BPQ accept them at all. Without it, BPQ ignores connects to the DAPPS callsign and the remote caller times out with RETRYOUT.
 - `DAPPS` - the APPLALIAS. Lets stations connect to the alias as well as the callsign.
@@ -44,7 +44,7 @@ Should connect immediately. If not, check BPQ's AGW listener is enabled (`AGWPOR
 
 ## Step 3: tell DAPPS where BPQ is
 
-In the dashboard's `/Setup` wizard (first run) or under **Edit configuration** on the dashboard (later):
+In the dashboard's `/Setup` wizard (first run) or on the dashboard's **Settings** page (later):
 
 | Field         | Value                                          |
 |---------------|------------------------------------------------|
@@ -52,7 +52,8 @@ In the dashboard's `/Setup` wizard (first run) or under **Edit configuration** o
 | Node host     | `<bpq-host>` (usually `localhost`)             |
 | Node bearer   | **AGW**                                        |
 | AGW port      | `8000`                                         |
-| Default bearer port | `0` (the bearer port used for outbound when a neighbour has no per-row override; 0-indexed in the order they appear in `bpq32.cfg`'s `PORTNUM` lines) |
+
+Neither page has a default bearer port field: set each neighbour's **Radio port** when you add it on the **Topology > Neighbours** tab. A neighbour without one uses bearer port `0` (change that with `DAPPS_DEFAULT_BEARER_PORT` before first start, or `POST /Config`). Bearer ports are 0-indexed in the order they appear in `bpq32.cfg`'s `PORTNUM` lines.
 
 The wizard's **Detect packet node** button probes localhost:8000 and pre-selects AGW automatically when BPQ is on the same host. SSID matters: BPQ dispatches based on the full call+SSID, so `M0LTE-1` is different from `M0LTE-2`.
 
@@ -82,15 +83,15 @@ You should land at the `DAPPSv1>` prompt - that's DAPPS having taken the inbound
 
 ## Step 6: prove the outbound side
 
-Add a manual neighbour from the dashboard's **Neighbours** panel (or the [discovery system](../discovery-and-routing.md), but a hand-add gets you there fastest):
+Add a manual neighbour on the dashboard's **Topology > Neighbours** tab (or the [discovery system](../discovery-and-routing.md), but a hand-add gets you there fastest):
 
 | Field          | Value                                       |
 |----------------|---------------------------------------------|
 | Callsign       | another DAPPS node's callsign with SSID     |
-| bearer port       | the bearer port to use for AGW originates |
+| Radio port     | the bearer port to use for AGW originates |
 | UDP endpoint   | leave blank                                 |
 
-Send a test message via the dashboard's **Send a test message** form. The forwarder service will pick it up within a few seconds, dial the remote callsign over AGW, and you'll see the session in BPQ's MHEARD / connections view.
+Send a test message with the **Quick send** form on the dashboard's Overview. The forwarder service will pick it up within a few seconds, dial the remote callsign over AGW, and you'll see the session in BPQ's MHEARD / connections view.
 
 ## Multi-port setups
 

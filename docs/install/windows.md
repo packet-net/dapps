@@ -19,7 +19,7 @@ $env:DAPPS_AGW_PORT = "8000"
 
 For XRouter (RHPv2 instead of AGW), set `$env:DAPPS_NODE_BEARER = "rhpv2"` and `$env:DAPPS_RHP_PORT = "9000"` instead of `DAPPS_AGW_PORT`. See [Connect via XRouter](../connect/xrouter.md).
 
-You should see `Now listening on: http://0.0.0.0:5000` and the rest of the start-up lines. Open `http://localhost:5000/` in a browser, set an admin password on `/Setup`, and you're in.
+You should see `Now listening on: http://localhost:5000` and the rest of the start-up lines. Open `http://localhost:5000/` in a browser, set an admin password on `/Setup`, and you're in.
 
 `Ctrl+C` to stop.
 
@@ -43,7 +43,7 @@ The supervised in-place update path (the `/Update/apply` button on the dashboard
 
 ## State location
 
-By default DAPPS writes the SQLite database to `data\dapps.db` relative to its working directory. If you ran from `C:\Program Files\dapps` the OS may not let it write there - set the working directory to a writable location (e.g. `C:\ProgramData\dapps`).
+By default DAPPS writes the SQLite database to `dapps.db` in its working directory (or `data\dapps.db` if there's a `data` folder there). If you ran from `C:\Program Files\dapps` the OS may not let it write there - set the working directory to a writable location (e.g. `C:\ProgramData\dapps`).
 
 ```powershell
 nssm set DAPPS AppDirectory "C:\ProgramData\dapps"
@@ -51,7 +51,7 @@ nssm set DAPPS AppDirectory "C:\ProgramData\dapps"
 
 ## Firewall
 
-Windows Firewall will prompt the first time DAPPS binds the dashboard / MQTT ports. Allow it for the network profile that matches your radio setup. If you want the dashboard to be LAN-reachable rather than localhost-only, allow the rule on Private; if it should be local only, allow it on Domain or set `ASPNETCORE_URLS=http://127.0.0.1:5000` in the environment.
+Windows Firewall will prompt the first time DAPPS binds the dashboard / MQTT ports. Allow it for the network profile that matches your radio setup. Out of the box the dashboard only listens on localhost. If you want it LAN-reachable, set `ASPNETCORE_URLS=http://0.0.0.0:5000` in the environment and allow the rule on Private.
 
 ## Logs
 

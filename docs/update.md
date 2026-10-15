@@ -45,7 +45,7 @@ This path is **Linux/systemd only** today. On Docker / Windows / macOS, the upda
 
 ## Path 1: dashboard banner + button
 
-The simplest. The dashboard's update card shows current version + latest known release. If they differ, the **Apply update** button is enabled. Click it.
+The simplest. The **Build** tile on the dashboard's Overview shows current version + latest known release. If they differ, the **Apply update** button is enabled. Click it.
 
 Behind the scenes, the dashboard writes the marker file, the next updater tick picks it up, and you watch the phase pill flip through `checking` → `downloading` → `swapping` → `restarting` → `verifying` → `success` (or `rolled back` / `failed`).
 
@@ -104,11 +104,11 @@ Currently **parked**. Originally sketched as: opt-in `AutoUpdate=true` with a qu
 
 ## When updates check
 
-The update checker polls GitHub Releases every hour (rate-limit-friendly: GitHub's unauthenticated limit is 60 req/hour per IP, so we use 1/60 of that). The poll's a single HTTPS request; the response feeds the dashboard banner, the heartbeat snapshot's `update_available` field, and the MCP `get_update_status` tool.
+The update checker polls GitHub Releases every hour (rate-limit-friendly: GitHub's unauthenticated limit is 60 req/hour per IP, so we use 1/60 of that). The poll's a single HTTPS request; the response feeds the dashboard banner, `GET /Update/status`, and the MCP `get_update_status` tool.
 
 To force an immediate re-poll without waiting an hour:
 
-- Dashboard: the **Check now** button on the update card.
+- Dashboard: **Check now** on the Overview's Build tile, or **Check for updates now** in Settings.
 - REST: `POST /Update/check`.
 - MCP: `check_for_updates`.
 

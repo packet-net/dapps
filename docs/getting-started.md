@@ -17,7 +17,7 @@ The rest of this page explains what just happened and walks the loop end-to-end.
 A DAPPS node is a small daemon you run alongside your packet node. It exposes two things:
 
 1. **An app interface** - local applications publish and subscribe over MQTT (or REST). They name their destination as `app@CALLSIGN` and DAPPS handles the rest: routing, forwarding, fragmenting, retrying, and acking when the message lands.
-2. **A backhaul** - DAPPS opens sessions to other DAPPS nodes (today over AGW for BPQ or RHPv2 for XRouter; tomorrow over MeshCore) to move messages towards their destination, hop by hop, with TTL.
+2. **A backhaul** - DAPPS opens sessions to other DAPPS nodes (over AGW for BPQ, RHPv2 for XRouter, or a MeshCore radio) to move messages towards their destination, hop by hop, with TTL.
 
 The wire protocol is small and human-readable on the line: a peer connects, gets a `DAPPSv1>` prompt, offers `ihave id=<sha1> dst=<callsign> sz=<bytes> ttl=<seconds>`, the receiver responds `send` or `?` (already have it), the sender ships the bytes, the receiver acks the SHA-1 hash. That's the heart of it. Multi-part messages, source tracking, polling, and source-routing are all opt-in additions on top.
 
@@ -26,7 +26,7 @@ The wire protocol is small and human-readable on the line: a peer connects, gets
 - **Not real-time.** A DAPPS message is a queued unit of work, not a live stream. If your application needs sub-second latency, this isn't the layer.
 - **Not packet mail.** DAPPS doesn't replace BPQ Mail or any existing BBS - it complements them. Apps that want mail-shaped persistence + addressability use DAPPS; apps that want a BBS use a BBS.
 - **Not a routing protocol replacement for the AX.25 layer.** DAPPS routes its own messages over whichever bearer is available, but it doesn't replace what your packet node does for connecting users.
-- **Not BPQ-specific.** BPQ is one supported packet node; XRouter is another (via RHPv2). Anything that speaks AGW or RHPv2 works the same; MeshCore is in flight.
+- **Not BPQ-specific.** BPQ is one supported packet node; XRouter is another (via RHPv2). Anything that speaks AGW or RHPv2 works the same, and a [MeshCore](connect/meshcore.md) radio can carry DAPPS too.
 
 ## Before you put it on the air
 
@@ -72,7 +72,7 @@ This advertises a `DAPPS` command at the BPQ node prompt, and - via the APPLCALL
 
 ### 4. Add a neighbour
 
-DAPPS knows nothing about other DAPPS nodes until you tell it about one. From the dashboard's **Neighbours** panel, enter:
+DAPPS knows nothing about other DAPPS nodes until you tell it about one. On the dashboard's **Topology > Neighbours** tab, enter:
 
 - A peer's callsign with SSID.
 - The bearer port your link goes out on (the AGW port byte for BPQ, or the 0-indexed `PORT=N - 1` for XRouter).
@@ -81,13 +81,12 @@ There's a REST API and a [discovery system](discovery-and-routing.md) that auto-
 
 ### 5. Send a test message
 
-Use the dashboard's **Send a test message** form, or the `/IHave` page for a hand-crafted submit, or just publish to MQTT:
+Use the **Quick send** form on the dashboard's Overview page, or the **Compose** page for a hand-crafted submit, or just publish to MQTT:
 
 ```bash
 mosquitto_pub -h localhost -p 1883 \
-  -t dapps/out/hello \
-  -m 'hello from M0LTE' \
-  -D PUBLISH user-property dapps-dst hello@G7XYZ-1
+  -t dapps/out/hello/G7XYZ-1 \
+  -m 'hello from M0LTE'
 ```
 
 The dashboard's outbound queue should show the message; once forwarded, it disappears from the queue. On the receiving node, an app subscribed to `dapps/in/hello` will get it.

@@ -1,48 +1,50 @@
 # Install with Docker
 
-A published image is available on Docker Hub. Useful if you already orchestrate with compose, run a homelab stack, or just don't want to manage another systemd unit. The image runs the same binary as the bare-metal install - same configuration story, same dashboard.
+There's no published DAPPS image at the moment, but the repository has a Dockerfile, so you can build one yourself. Useful if you already orchestrate with compose, run a homelab stack, or just don't want to manage another systemd unit. It's the same DAPPS as the bare-metal install - same configuration story, same dashboard.
 
-## Image
+## Build the image
 
+```bash
+git clone https://github.com/packet-net/dapps.git
+cd dapps/src/dapps
+docker build -t dapps .
 ```
-m0lte/dapps:latest
-```
 
-Tagged versions (`m0lte/dapps:v0.24.0`) match the GitHub Release tags. `latest` is the most recent published release.
+Two things differ from the other installs: inside the container the dashboard listens on port **8080**, and the database lives in `/app/data` (mount a volume there to keep it).
 
 ## Quick start
 
 ```bash
 docker run -d \
   --name dapps \
-  -p 5000:5000 \
+  -p 5000:8080 \
   -p 1883:1883 \
-  -v dapps-data:/var/lib/dapps \
+  -v dapps-data:/app/data \
   -e DAPPS_CALLSIGN=M0LTE-1 \
   -e DAPPS_NODE_HOST=192.168.1.10 \
   -e DAPPS_AGW_PORT=8000 \
-  m0lte/dapps:latest
+  dapps
 ```
 
-For XRouter (RHPv2 instead of AGW), substitute `-e DAPPS_NODE_BEARER=rhpv2 -e DAPPS_RHP_PORT=9000` for `-e DAPPS_AGW_PORT=8000`. See [Connect via XRouter](../connect/xrouter.md).
+For XRouter (RHPv2 instead of AGW), substitute `-e DAPPS_NODE_BEARER=rhpv2 -e DAPPS_RHP_PORT=9000` for `-e DAPPS_AGW_PORT=8000`. See [Connect via XRouter](../connect/xrouter.md). The `DAPPS_*` variables only seed the first start; after that the dashboard owns those settings.
 
 Then `http://localhost:5000/` for the dashboard. First request goes to `/Setup` to set an admin password.
 
 ## docker compose
 
-For a more permanent setup:
+For a more permanent setup, build the image as above, then:
 
 ```yaml
 services:
   dapps:
-    image: m0lte/dapps:latest
+    image: dapps
     container_name: dapps
     restart: unless-stopped
     ports:
-      - "5000:5000"   # dashboard / REST / MCP
+      - "5000:8080"   # dashboard / REST / MCP
       - "1883:1883"   # MQTT broker
     volumes:
-      - dapps-data:/var/lib/dapps
+      - dapps-data:/app/data
     environment:
       DAPPS_CALLSIGN: M0LTE-1
       DAPPS_NODE_HOST: 192.168.1.10   # your packet node's IP
@@ -67,10 +69,11 @@ Set `DAPPS_NODE_HOST` accordingly.
 
 The supervised in-place update path (the `/Update/apply` button on the dashboard, the `trigger_update` MCP tool) does not work inside the standard image - the privileged updater wants to swap the binary on disk and restart its own service, which Docker doesn't model the same way.
 
-Instead, update by pulling a new image tag and restarting the container:
+Instead, update by rebuilding the image from a newer checkout and recreating the container:
 
 ```bash
-docker compose pull
+git pull
+docker build -t dapps .
 docker compose up -d
 ```
 
@@ -78,7 +81,7 @@ The dashboard's update banner still surfaces "v0.X.Y available" so you know when
 
 ## Persistence
 
-Everything DAPPS needs to remember between restarts is in the SQLite database at `/var/lib/dapps/dapps.db` inside the container. Mount that path to a named volume (or a host bind mount) and you can recreate the container freely without losing state.
+Everything DAPPS needs to remember between restarts is in the SQLite database at `/app/data/dapps.db` inside the container. Mount that path to a named volume (or a host bind mount) and you can recreate the container freely without losing state.
 
 ## Logs
 

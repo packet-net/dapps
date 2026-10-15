@@ -13,10 +13,10 @@ A running DAPPS node has several independent loops, each with a clear job:
 | **AGW inbound dispatcher** | Continuous (one TCP connection)                        | Listen on the AGW socket for inbound sessions matching our registered callsign. Hand each one to the DAPPS protocol parser. |
 | **Probe scheduler**        | Every probe interval (24 h default), gated by strategy | Walk the probed-nodes table; for each row not opted out, open a connected-mode probe session. Records success/failure. Off by default. |
 | **Beaconer**               | Per-channel cadence                                    | For each enabled discovery channel, transmit a beacon advertising our callsign + bearer hints + cost.        |
-| **Solicitor**              | Per-channel scheduled or operator-triggered            | Transmit a solicit on a channel; collect replies for `solicit-window-seconds`.                              |
+| **Solicitor**              | Per-channel scheduled or operator-triggered            | Transmit a solicit on a channel. Peers that hear it reply, and the replies land in the discovered-peers table. |
 | **Poll sweeper**           | Every poll interval (6 h default), if enabled          | Call each neighbour so it can send anything it holds for us. Off by default.                                 |
 | **Heartbeat publisher**    | Every 60 s (configurable, ≥ 10 s)                      | Publish an operational snapshot to MQTT topic `dapps/metrics/heartbeat`. On by default.                      |
-| **Update checker**         | Every 1 h                                              | Poll GitHub Releases. Surface "v0.X.Y available" on the dashboard / heartbeat / `/Operational`.              |
+| **Update checker**         | Every 6 h on an apt install, else every 1 h            | Check packet-net's apt repository (apt installs) or GitHub Releases (everything else). Surface "v0.X.Y available" on the dashboard and `/Update/status`. |
 
 Most are turned on by default. The exceptions are **probing**, **scheduled polling**, and **discovery channels** - you opt in to those once you've thought about your bearer's airtime budget. See [Tune](tune.md).
 
@@ -32,9 +32,9 @@ Standard log levels apply (`info` by default). Most operational events are at `i
 
 ### Dashboard
 
-`http://<node>:5000/` after first-use setup. The home page is a single dense view: callsign + version, packet-node reachability (probes the configured bearer port - AGW or RHPv2), MQTT broker / UDP listener status, queue depths, neighbours, recent messages, recent dropped, recent activity (the decision-events ring), and the Live inbound feed.
+`http://<node>:5000/` after first-use setup. The Overview page shows packet-node reachability (probes the configured bearer port - AGW or RHPv2), the MQTT broker, whether transmitting is allowed, the running version, a forwards-per-minute activity chart, the recent decisions, queue counts, discovery airtime, anything that needs attention, and a quick-send form. The other pages (Messages, Topology, Diagnostics, Compose, Streams, Settings) are in the sidebar.
 
-The dashboard auto-refreshes the queue snapshot panels every 5 seconds without a full page reload.
+The Overview refreshes its live panels every 5 seconds without a full page reload.
 
 ### `/Messages` page
 
@@ -42,13 +42,13 @@ Tabs for the outbound queue, the local inbox, recently dropped messages, and liv
 
 Useful when you're debugging "is my message arriving?" - gives you live confirmation independent of any application.
 
-### `/IHave` page
+### `/Compose` page
 
 A compose form for hand-crafting an outbound message - every operator-relevant field exposed (app, destination, payload, optional TTL). Submits via the same code path as a real app would. Useful for verifying a node-to-node link without writing an app first.
 
 ### `/Health` and `/Operational`
 
-`/Health` returns a small JSON document with overall up/down + per-component status. Designed for watchdog scrapers. Returns 200 when healthy, 503 when at least one component is unhealthy. Open access - no admin cookie required.
+`/Health` returns a small JSON document: overall status plus whether the callsign is set, the packet node is reachable and the MQTT broker is up. Designed for watchdog scrapers. Returns 200 when healthy, 503 when any of those three is not. Open access - no admin cookie required.
 
 `/Operational` returns a much richer JSON document: process metrics (uptime, message counts, probe stats, AGW reconnect counts), the recent decision-events ring (with reasons), per-link state. This is what feeds the heartbeat too. Also open access.
 
@@ -68,10 +68,10 @@ There's no "drain mode" yet - a stop is a stop. Pending outbound messages stay i
 
 ## Restart implications
 
-Most knobs are runtime-changeable - flip them in the dashboard's `/Config` form and the change takes effect immediately. The exceptions are flagged on the form; they require a restart:
+Most knobs are runtime-changeable - change them on the dashboard's Settings page and the change takes effect within a few seconds. A callsign or packet-node change reconnects to the node straight away. The exceptions, flagged on the Settings page where they appear, need a restart:
 
-- **Callsign** - the AGW registration uses it, and changing it would orphan in-flight sessions.
-- **Node host / AGW port / MQTT port / UDP listen port** - bound at startup.
+- **MQTT port / UDP listen port** - bound at startup.
+- **MeshCore enable, port and region** - the radio is set up at startup.
 - **Routing algorithm** - switching between `passive-flood` and `meshcore` rebuilds the routing graph from scratch, which is safer to do at a clean restart than mid-run.
 
 Everything else (probing on/off, fragment threshold, airtime budget, heartbeat cadence, etc.) lives loose in the running daemon and picks up changes within a few seconds.

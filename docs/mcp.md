@@ -46,6 +46,7 @@ claude mcp add --scope user --transport http dapps http://<node>:5000/mcp
 | `list_discovered_paths`       | Discovered hop-paths from the routing layer.                                                   |
 | `get_message`                 | Single-message lookup by id.                                                                   |
 | `get_update_status`           | Current version + latest known release + last apply phase.                                     |
+| `list_transmissions`          | The [transmission audit](audit.md) log, filterable by kind, target and failures.               |
 
 ### Actions
 
@@ -59,7 +60,7 @@ claude mcp add --scope user --transport http dapps http://<node>:5000/mcp
 | `run_solicit`                 | Send a solicit on a discovery channel.                                                         |
 | `run_poll`                    | Poll a single target for queued messages.                                                      |
 | `run_poll_sweep`              | Poll every known target.                                                                       |
-| `check_for_updates`           | Force a re-poll of GitHub Releases.                                                            |
+| `check_for_updates`           | Check for a newer release now (the apt repository on an apt install, GitHub Releases otherwise). |
 | `trigger_update`              | Write the update-request marker - same code path as the dashboard's Apply button.              |
 
 ### Diagnostics - composite
@@ -76,7 +77,7 @@ claude mcp add --scope user --transport http dapps http://<node>:5000/mcp
 | Tool                          | What it does                                                                                   |
 |-------------------------------|------------------------------------------------------------------------------------------------|
 | `explore_via_neighbour`       | Multi-step traversal: probe a neighbour, ask its peers, record candidates, decide which to probe next. |
-| `propose_topology_changes`    | Recommend manual neighbour additions / route hints based on observed traffic.                  |
+| `propose_topology_changes`    | Suggest heard peers to add as neighbours, and probe targets with long failure streaks to look into. |
 | `opinion_on_route`            | Rate the quality of a route: cost, hop count, reliability based on history.                    |
 
 ## Worked examples
@@ -114,7 +115,7 @@ Composite tool that walks the dropped table for the id, then the decision-events
 find_path_to(callsign="M0LTE-2")
 ```
 
-Walks neighbours, then learned routes, then discovered peers, and returns an honest answer: "direct via port 0", or "two hops via M0XYZ-1", or "no known route."
+Checks route hints, learned routes, discovered paths, discovered peers and neighbours, in that order, and returns the first match with where it came from, or "no path".
 
 ## Excluded from MCP for safety
 
@@ -123,7 +124,7 @@ A few config knobs are deliberately not in `update_config`:
 - **Callsign** - wrong value takes the node off-air.
 - **Node host / AGW port / MQTT port / UDP listen port** - all need a daemon restart and a wrong value bricks the daemon's connection to its packet node.
 
-If you need to change those, use the `/Config` dashboard form or set the env var and restart. The dashboard form has the field validation; the MCP tool would have to duplicate it, and the kinds of mistakes those knobs invite are exactly the kind an MCP-driven agent shouldn't make at 02:00 on a Saturday.
+If you need to change those, use the dashboard's Settings page or set the env var and restart. The dashboard form has the field validation; the MCP tool would have to duplicate it, and the kinds of mistakes those knobs invite are exactly the kind an MCP-driven agent shouldn't make at 02:00 on a Saturday.
 
 ## Authentication
 

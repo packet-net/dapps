@@ -38,14 +38,15 @@ apps:
 
 ## Run DAPPS on its own against pdn
 
-If you installed DAPPS separately (say from the [apt repo](../install/index.md)), point it at pdn in the `/Setup` wizard or **Edit configuration**:
+If you installed DAPPS separately (say from the [apt repo](../install/index.md)), point it at pdn in the `/Setup` wizard or on the dashboard's **Settings** page:
 
 | Field | Value |
 |---|---|
 | Node bearer | **RHPv2** |
 | Node host | pdn's host (`localhost` if it's the same machine) |
 | RHPv2 port | `9000`, or whatever pdn's `rhp.port` says |
-| Default bearer port | `0`, for pdn's first port (see below) |
+
+Set each neighbour's **Radio port** when you add it on the dashboard's **Topology > Neighbours** tab; one without a port uses `0`, pdn's first port (see below).
 
 If DAPPS is on another machine, pdn's `rhp.bind` has to be an address that machine can reach. RHPv2 has no encryption, so keep it on a network you trust. If you set `requireAuth: true`, give DAPPS a pdn username and password as its RHPv2 user and password.
 

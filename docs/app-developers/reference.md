@@ -66,12 +66,12 @@ QoS 1 is fine; QoS 0 is acceptable since at worst the message gets redelivered (
 
 ### Authentication
 
-When the operator turns on `auth-required` (off by default):
+When the operator turns on **Require per-app tokens for MQTT/REST** in Settings (`AuthRequired`, off by default):
 
 - CONNECT must include `username=<app>` and `password=<token-plaintext>`.
 - An app authenticated as `chat` may only publish to `dapps/out/chat/*` and `dapps/ack/chat`, and only subscribe to `dapps/in/chat`. Cross-app traffic is rejected with `NotAuthorized`.
 
-Tokens are minted from the dashboard's `/AppTokens` page (admin-cookie gated).
+There's no dashboard page for tokens. The operator mints one with the admin-only `/AppTokens` REST endpoint: `POST /AppTokens` with `{"app": "chat"}` returns the token (posting again rotates it), `GET /AppTokens` lists them, and `DELETE /AppTokens/chat` revokes one.
 
 ## REST
 
@@ -101,7 +101,7 @@ Submit a message.
 
 **Response**: `200 OK` with `{ "id": "abc1234" }`.
 
-**Errors**: `400` on missing/empty fields or non-positive TTL. `403` if `auth-required` is on and the bearer token doesn't match `app`.
+**Errors**: `400` on missing/empty fields or non-positive TTL. `403` if `AuthRequired` is on and the bearer token doesn't match `app`.
 
 ```bash
 curl -X POST http://localhost:5000/AppApi/outbound \
@@ -153,7 +153,7 @@ curl -X POST http://localhost:5000/AppApi/inbound/chat/abc1234/ack
 
 ### Authentication
 
-When `auth-required` is on, send `Authorization: Bearer <token>` on every `/AppApi/*` request. The token's app scope must match the `{app}` path segment (or the `app` field in the body for `POST /AppApi/outbound`); mismatches return `403`.
+When `AuthRequired` is on, send `Authorization: Bearer <token>` on every `/AppApi/*` request. The token's app scope must match the `{app}` path segment (or the `app` field in the body for `POST /AppApi/outbound`); mismatches return `403`.
 
 ## Idempotency contract
 

@@ -1,6 +1,6 @@
 # Connect via RHPv2
 
-**Status: implemented.** RHPv2 (Remote Host Protocol v2) is a more modern host-to-node protocol than AGW. DAPPS speaks it via the [`RhpV2.Client` NuGet package](https://www.nuget.org/packages/RhpV2.Client) and selects between AGW and RHPv2 with a single env var.
+**Status: implemented.** RHPv2 (Remote Host Protocol v2) is a more modern host-to-node protocol than AGW. DAPPS speaks it via the [`RhpV2.Client` NuGet package](https://www.nuget.org/packages/RhpV2.Client) and selects between AGW and RHPv2 with a single setting.
 
 [XRouter](xrouter.md) supports RHPv2 natively, and **RHPv2 is required for DAPPS-on-XRouter** - XRouter's AGW emulator is not usable as a DAPPS bearer because XRouter scopes the AGW callsign claim per-TCP-connection, which collides with DAPPS's per-outbound-fresh-connection pattern. The XRouter operator guide is at [Connect via XRouter (RHPv2)](xrouter.md).
 
@@ -18,7 +18,7 @@ AGW is a 1990s protocol - it works fine on hosts that don't constrain callsign c
 
 ## Configure DAPPS to use RHPv2
 
-In DAPPS's environment (systemd unit, shell, etc.):
+Set **Node bearer** to RHPv2, plus the node host and RHPv2 port, in the `/Setup` wizard or on the dashboard's Settings page. For an automated deployment, the same settings can be seeded with env vars before the daemon's first start (after that the dashboard owns them):
 
 ```
 DAPPS_NODE_BEARER=rhpv2
@@ -44,7 +44,7 @@ These are skipped if `DAPPS_RHP_USER` is empty.
 
 ## What stays the same
 
-Everything above the bearer seam - the protocol, the app interface, the discovery model, the routing graph, the dashboard - works identically over RHPv2 and AGW. Switching between them is a restart with one env var changed; no data migration, no on-air-format change, no neighbour table rebuild.
+Everything above the bearer seam - the protocol, the app interface, the discovery model, the routing graph, the dashboard - works identically over RHPv2 and AGW. Switching between them is one setting on the Settings page, picked up without a restart; no data migration, no on-air-format change, no neighbour table rebuild.
 
 ## Testing
 
