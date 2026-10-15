@@ -352,6 +352,32 @@ public sealed class ProbeSchedulerServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ProbeAndRecord_UnansweredCandidateThatIsANeighbour_KeepsItsPort()
+    {
+        // A via: candidate that is also a neighbour is probed on the
+        // neighbour's port, and LastBearerPort says so; the #246 repair
+        // mustn't overwrite it with a port that was never used.
+        await database.UpsertNeighbour("N0SRC-9", bearerPort: 1);
+        await database.UpsertNeighbour("N0AAA-9", bearerPort: 3);
+        await database.UpsertProbedNode(new DbProbedNode
+        {
+            Callsign = "N0AAA-9",
+            LastBearerPort = 3,
+            Source = "via:N0SRC-9",
+            ConsecutiveFailures = 1,
+        });
+        var sched = MakeScheduler(new RecordingTransport(("N0SRC-9",
+            "DAPPSv1>\n" +
+            "peer N0AAA-9 source=n port=17\n" +
+            "end\n")));
+
+        await sched.ProbeAndRecordAsync("N0US", "N0SRC-9", 1, CancellationToken.None);
+
+        var row = (await database.GetProbedNodes()).Single(r => r.Callsign == "N0AAA-9");
+        row.LastBearerPort.Should().Be(3);
+    }
+
+    [Fact]
     public async Task ProbeAndRecord_PeersIncludesOurselves_NotRecordedAsCandidate()
     {
         // The remote will list us in its peers (we just sent traffic to

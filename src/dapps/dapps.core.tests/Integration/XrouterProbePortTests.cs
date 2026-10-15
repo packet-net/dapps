@@ -19,8 +19,9 @@ namespace dapps.core.tests.Integration;
 /// probes B and asks for its peers, and B lists C with <c>port=1</c>: its own
 /// port 2, a port X doesn't have. Before 0.47.1 A probed C on that port and
 /// XRouter X refused every probe with RHP error 10 ("No such port" from the
-/// pinned 505c, "Invalid port" from the 505p in G6FCI's four-node chain). Now A probes C on its port to B, the frame
-/// crosses the AXUDP link, and C (listening on every port of Y) answers.
+/// pinned 505c, "Invalid port" from the 505p in G6FCI's four-node chain).
+/// Now A probes C on its port to B, the frame crosses the AXUDP link, and C
+/// (listening on every port of Y) answers.
 /// </summary>
 [Collection("XRouter integration")]
 [Trait("Category", "Integration")]
@@ -87,6 +88,9 @@ public sealed class XrouterProbePortTests : IAsyncLifetime
         (await ProbesAsync(a, ct)).Single(p => p.Callsign == CallC).Source.Should().Be($"via:{CallB}");
 
         // The scheduled sweep probes the candidate, as it would overnight.
+        // B opted out, so the sweep probes C alone: no second probe of B and
+        // no wait between probes inside the one HTTP request.
+        (await a.Http.PostAsJsonAsync($"Probes/{CallB}/optout", new { optOut = true }, ct)).EnsureSuccessStatusCode();
         var sweep = await a.Http.PostAsync("Probes/run", null, ct);
         sweep.EnsureSuccessStatusCode();
         var probedC = (await ProbesAsync(a, ct)).Single(p => p.Callsign == CallC);

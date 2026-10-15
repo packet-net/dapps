@@ -218,6 +218,7 @@ public sealed class DappsExplorationTools(
 
 public sealed record AnnotatedPeer(
     string Callsign,
+    [property: Description("The port the neighbour reaches this callsign on: a port on the neighbour's node, not this one (#246). To reach the callsign from here, go through the neighbour.")]
     int? BearerPort,
     [property: Description("'known' if this node already tracks the callsign as a neighbour, discovered peer, or probed node; 'new' otherwise.")]
     string Status);

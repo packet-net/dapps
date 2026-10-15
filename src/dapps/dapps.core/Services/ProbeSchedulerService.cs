@@ -405,10 +405,14 @@ public sealed class ProbeSchedulerService(
                 // A candidate this same peer told us about that has never
                 // answered may hold the peer's own port from before 0.47.1
                 // (#246); move it to the port the peer answered on. Anything
-                // else is direct state - don't clobber it.
+                // else is direct state - don't clobber it. Nor a candidate
+                // that is also a neighbour or a discovered peer: the sweep
+                // probes that on the other row's port, and LastBearerPort
+                // already says so.
                 if (existing.LastSuccessAt is null
                     && string.Equals(existing.Source, $"via:{result.Callsign}", StringComparison.OrdinalIgnoreCase)
-                    && existing.LastBearerPort != result.BearerPort)
+                    && existing.LastBearerPort != result.BearerPort
+                    && !await IsNeighbourOrDiscoveredPeerAsync(p.Callsign))
                 {
                     existing.LastBearerPort = result.BearerPort;
                     await database.UpsertProbedNode(existing);
@@ -429,6 +433,10 @@ public sealed class ProbeSchedulerService(
                 p.Callsign, result.Callsign, result.BearerPort);
         }
     }
+
+    private async Task<bool> IsNeighbourOrDiscoveredPeerAsync(string callsign) =>
+        (await database.GetNeighbours()).Any(n => string.Equals(n.Callsign, callsign, StringComparison.OrdinalIgnoreCase))
+        || (await database.GetDiscoveredPeers()).Any(d => string.Equals(d.Callsign, callsign, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Build the eligible target list for a sweep. Sources:
