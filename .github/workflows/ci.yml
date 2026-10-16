@@ -18,9 +18,12 @@ on:
     branches: [master]
   workflow_dispatch:
 
+# A newer push to a pull request cancels its older run. A master run is
+# never cancelled: each merge gets a complete test pass, including the
+# integration scenarios (#332). Later master pushes queue behind it.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
