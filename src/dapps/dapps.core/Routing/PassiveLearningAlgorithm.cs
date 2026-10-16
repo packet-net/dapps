@@ -37,7 +37,11 @@ public sealed class PassiveLearningAlgorithm(
 
     public async Task<RouteDecision> ResolveAsync(DbMessage message, IRoutingContext ctx, CancellationToken ct)
     {
-        var staticDecision = await staticAlgorithm.ResolveAsync(message, ctx, ct);
+        // Split horizon (#297): a message passing through never goes
+        // back to the neighbour it came from, by any tier. If that is
+        // the only way, there is no route: it waits in the queue.
+        var cameFrom = SplitHorizon.CameFrom(message, ctx.LocalCallsign);
+        var staticDecision = await staticAlgorithm.ResolveAsync(message, ctx, cameFrom, ct);
         if (staticDecision is not RouteDecision.Unreachable)
         {
             return staticDecision;
@@ -61,6 +65,14 @@ public sealed class PassiveLearningAlgorithm(
                 "Learned route for {0} -> {1} discarded: next-hop neighbour no longer exists",
                 destCall, learned.NextHopCallsign);
             await ctx.RecordLearnedRouteFailureAsync(destCall, invalidationThreshold: 1, ct);
+            return new RouteDecision.Unreachable();
+        }
+
+        if (cameFrom is not null && DestinationParser.SameStation(nextHop.Callsign, cameFrom))
+        {
+            // The route stays: it's still right for traffic from elsewhere.
+            logger.LogDebug("Learned route for {0} goes via {1}, where {2} came from; not sending it back",
+                destCall, nextHop.Callsign, message.Id);
             return new RouteDecision.Unreachable();
         }
 

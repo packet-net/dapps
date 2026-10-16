@@ -5,11 +5,20 @@ namespace dapps.core.Routing;
 
 /// <summary>
 /// Bounded-flood fallback for cold-start routing - the second half
-/// of B5. When the inner algorithm has no route and the message
-/// hasn't yet been flooded, send to every direct neighbour with a
-/// hop budget. Each forwarding hop decrements before re-flooding;
-/// per-(message, link-source) deduplication via <see cref="DbFloodSeen"/>
-/// stops the flood from looping back.
+/// of B5. When the inner algorithm has no route for a message a local
+/// app submitted here, send it to every direct neighbour with a hop
+/// budget. Only the originator floods (#295): a message that arrived
+/// from a neighbour and has no route waits in the queue for one, and
+/// expires by its ttl as any other does. Session bearers (AGW, RHP)
+/// don't carry the hop budget, so a relay re-flooding what it got
+/// would start a fresh, full flood at every node, back to where the
+/// message came from.
+///
+/// Datagram bearers (UDP, MeshCore) do carry the budget. A message that
+/// arrived on one with its budget still set carries on as a flood: each
+/// forwarding hop decrements before re-flooding, and per-(message,
+/// link-source) deduplication via <see cref="DbFloodSeen"/> stops the
+/// flood from looping back.
 ///
 /// Layered as a decorator over the next inner algorithm (typically
 /// <see cref="PassiveLearningAlgorithm"/>): if the inner algorithm
@@ -35,6 +44,11 @@ public sealed class FloodFallbackAlgorithm(
     /// slack; production meshes likely want 6-8. Kept conservative
     /// to bound the impact of a misconfigured node.</summary>
     public const byte DefaultHopBudget = 6;
+
+    /// <summary>Messages passing through with no route that have been
+    /// logged as waiting, so the line appears once per message. Only in
+    /// memory, and cleared if it ever grows large.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> waitingForRoute = new(StringComparer.Ordinal);
 
     public async Task<RouteDecision> ResolveAsync(DbMessage message, IRoutingContext ctx, CancellationToken ct)
     {
@@ -70,6 +84,20 @@ public sealed class FloodFallbackAlgorithm(
         if (innerDecision is not RouteDecision.Unreachable)
         {
             return innerDecision;
+        }
+
+        if (!SplitHorizon.OriginatedHere(message, ctx.LocalCallsign))
+        {
+            // Not ours to flood: it waits for a route (#295). Said once
+            // per message, not on every forwarder run.
+            if (waitingForRoute.TryAdd(message.Id, 0))
+            {
+                if (waitingForRoute.Count > 10_000) waitingForRoute.Clear();
+                logger.LogInformation(
+                    "No route for {0} (from {1}); only the node it started at floods, so it stays queued until a route turns up or its ttl runs out",
+                    message.Id, message.SourceCallsign);
+            }
+            return new RouteDecision.Unreachable();
         }
 
         var floodRoutes = await BuildFloodRoutesAsync(ctx, [], ct);

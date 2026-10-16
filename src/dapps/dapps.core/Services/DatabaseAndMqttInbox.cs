@@ -36,6 +36,20 @@ public sealed class DatabaseAndMqttInbox(
         string sourceCallsign,
         CancellationToken ct)
     {
+        // Our own message, come back from a neighbour: we sent it, so it is
+        // a repeat. Taking it would overwrite our forwarded copy with a
+        // fresh queued one, and we'd send or flood it all over again
+        // (#295). Our exact callsign only: another SSID of ours is a
+        // station like any other (#242). Accepted, so the neighbour stops
+        // offering it.
+        if (!string.IsNullOrEmpty(message.Originator)
+            && DestinationParser.SameStation(message.Originator, options.CurrentValue.Callsign))
+        {
+            logger.LogWarning(
+                "Message {0} for {1} is one of ours, come back from {2}: dropped as a repeat",
+                message.Id, message.Destination, sourceCallsign);
+            return;
+        }
 
         // Flood deduplication (B5): a message arriving with FloodHopsRemaining
         // set is part of an in-flight bounded flood. Multiple flood paths can

@@ -31,6 +31,7 @@ public sealed class FloodFallbackAlgorithmTests : IAsyncLifetime
     private Database database = null!;
     private DatabaseRoutingContext context = null!;
     private FloodFallbackAlgorithm algorithm = null!;
+    private FloodFallbackAlgorithm defaultStack = null!;
 
     private const string OurCallsign = "G0US-1";
 
@@ -62,6 +63,11 @@ public sealed class FloodFallbackAlgorithmTests : IAsyncLifetime
         context = new DatabaseRoutingContext(database, optionsMonitor);
         var staticAlgo = new StaticRoutingAlgorithm(NullLogger<StaticRoutingAlgorithm>.Instance);
         algorithm = new FloodFallbackAlgorithm(staticAlgo, NullLogger<FloodFallbackAlgorithm>.Instance);
+        // The default stack as Program.cs builds it, for the split-horizon
+        // tests that need the learned-route tier.
+        defaultStack = new FloodFallbackAlgorithm(
+            new PassiveLearningAlgorithm(staticAlgo, NullLogger<PassiveLearningAlgorithm>.Instance),
+            NullLogger<FloodFallbackAlgorithm>.Instance);
 
         return ValueTask.CompletedTask;
     }
@@ -73,13 +79,26 @@ public sealed class FloodFallbackAlgorithmTests : IAsyncLifetime
         return ValueTask.CompletedTask;
     }
 
-    private static DbMessage OutboundFor(string destBaseCallsign, byte? floodHopsRemaining = null, string sourceCallsign = "") => new()
+    private static DbMessage OutboundFor(string destBaseCallsign, byte? floodHopsRemaining = null, string sourceCallsign = "", string originatorCallsign = "") => new()
     {
         Id = "0000001",
         Destination = $"chat@{destBaseCallsign}-1",
         Payload = "x"u8.ToArray(),
         SourceCallsign = sourceCallsign,
+        OriginatorCallsign = originatorCallsign,
         FloodHopsRemaining = floodHopsRemaining,
+    };
+
+    /// <summary>A message passing through: it came over a session from
+    /// <paramref name="from"/> (no flood state, as AGW and RHP carry none),
+    /// started at G0ORG-1.</summary>
+    private static DbMessage TransitFor(string destination, string from) => new()
+    {
+        Id = "0000009",
+        Destination = destination,
+        Payload = "x"u8.ToArray(),
+        SourceCallsign = from,
+        OriginatorCallsign = "G0ORG-1",
     };
 
     [Fact]
@@ -146,6 +165,171 @@ public sealed class FloodFallbackAlgorithmTests : IAsyncLifetime
         var decision = await algorithm.ResolveAsync(msg, context, TestContext.Current.CancellationToken);
 
         decision.Should().BeOfType<RouteDecision.FloodToNeighbours>();
+    }
+
+    [Fact]
+    public async Task Resolve_LocallySubmitted_NoRoute_Floods()
+    {
+        // SubmitOutboundMessage stores our own callsign as both the link
+        // source and the originator: ours to flood (#295).
+        var msg = OutboundFor("G0XYZ", sourceCallsign: OurCallsign, originatorCallsign: OurCallsign);
+
+        var decision = await defaultStack.ResolveAsync(msg, context, TestContext.Current.CancellationToken);
+
+        var flood = decision.Should().BeOfType<RouteDecision.FloodToNeighbours>().Subject;
+        flood.HopBudget.Should().Be(FloodFallbackAlgorithm.DefaultHopBudget);
+        flood.Routes.Should().HaveCount(3);
+    }
+
+    [Theory]
+    [InlineData("G0ORG-1")]
+    [InlineData("")]
+    public async Task Resolve_Transit_NoRoute_StaysQueued_DoesNotFlood(string originator)
+    {
+        // #295: a relay that got a message over a session, with no route
+        // on, used to start a fresh full flood to every neighbour, the one
+        // it came from included. Only the originator floods now; the relay
+        // waits for a route. With or without src= (an older or other
+        // implementation may leave it out), a message from a neighbour is
+        // not ours.
+        var msg = OutboundFor("G0XYZ", sourceCallsign: "G0NA-1", originatorCallsign: originator);
+
+        var decision = await defaultStack.ResolveAsync(msg, context, TestContext.Current.CancellationToken);
+
+        decision.Should().BeOfType<RouteDecision.Unreachable>("a relay with no route keeps the message queued");
+    }
+
+    [Fact]
+    public async Task Resolve_Transit_WithARoute_StillRoutes()
+    {
+        // Not flooding doesn't mean not forwarding: a route elsewhere is used.
+        var decision = await defaultStack.ResolveAsync(
+            TransitFor("chat@G0NB-1", from: "G0NA-1"), context, TestContext.Current.CancellationToken);
+
+        decision.Should().BeOfType<RouteDecision.NextHop>().Which.Route.Callsign.Should().Be("G0NB-1");
+    }
+
+    [Fact]
+    public async Task Resolve_Transit_NeverGoesBackToTheLinkSource_ByNeighbour()
+    {
+        // #297: the destination's own neighbour row is the link source.
+        var decision = await defaultStack.ResolveAsync(
+            TransitFor("chat@G0NA-1", from: "G0NA-1"), context, TestContext.Current.CancellationToken);
+
+        decision.Should().BeOfType<RouteDecision.Unreachable>();
+    }
+
+    [Fact]
+    public async Task Resolve_Transit_NeverGoesBackToTheLinkSource_ByStandIn()
+    {
+        // G0NA-5 has no row; G0NA-1 would stand in for it under the same
+        // callsign, but G0NA-1 is where the message came from.
+        var decision = await defaultStack.ResolveAsync(
+            TransitFor("chat@G0NA-5", from: "G0NA-1"), context, TestContext.Current.CancellationToken);
+
+        decision.Should().BeOfType<RouteDecision.Unreachable>();
+    }
+
+    [Fact]
+    public async Task Resolve_Transit_SkippedTierFallsThroughToTheNext()
+    {
+        // The stand-in is the link source, but a route hint gives another
+        // way: passing over one tier lets the next have its turn.
+        using (var c = DbInfo.GetConnection())
+            c.Insert(new DbRouteHint { Destination = "G0NA-5", NextHop = "G0NB-1" });
+
+        var decision = await defaultStack.ResolveAsync(
+            TransitFor("chat@G0NA-5", from: "G0NA-1"), context, TestContext.Current.CancellationToken);
+
+        decision.Should().BeOfType<RouteDecision.NextHop>().Which.Route.Callsign.Should().Be("G0NB-1");
+    }
+
+    [Fact]
+    public async Task Resolve_Transit_NeverGoesBackToTheLinkSource_ByDiscoveredPeer()
+    {
+        using (var c = DbInfo.GetConnection())
+            c.Insert(new DbDiscoveredPeer
+            {
+                PeerKey = DbDiscoveredPeer.MakeKey("G0XYZ-1", "udp", "k"),
+                Callsign = "G0XYZ-1", Bearer = "udp", ChannelKey = "k",
+                UdpEndpoint = "127.0.0.1:65509", TtlSeconds = 3600, LastSeen = DateTime.UtcNow,
+            });
+
+        var decision = await defaultStack.ResolveAsync(
+            TransitFor("chat@G0XYZ-1", from: "G0XYZ-1"), context, TestContext.Current.CancellationToken);
+
+        decision.Should().BeOfType<RouteDecision.Unreachable>();
+    }
+
+    [Fact]
+    public async Task Resolve_Transit_NeverGoesBackToTheLinkSource_ByRouteHint()
+    {
+        using (var c = DbInfo.GetConnection())
+            c.Insert(new DbRouteHint { Destination = "G0XYZ-1", NextHop = "G0NA-1" });
+
+        var decision = await defaultStack.ResolveAsync(
+            TransitFor("chat@G0XYZ-1", from: "G0NA-1"), context, TestContext.Current.CancellationToken);
+
+        decision.Should().BeOfType<RouteDecision.Unreachable>();
+    }
+
+    [Fact]
+    public async Task Resolve_Transit_NeverGoesBackToTheLinkSource_ByLearnedRoute()
+    {
+        // The #297 black hole: a learned (or gossiped) route to the
+        // destination via the neighbour the message came from. It stays
+        // queued, and the route itself is kept for traffic from elsewhere.
+        var ct = TestContext.Current.CancellationToken;
+        await context.UpsertLearnedRouteAsync("G0XYZ-1", "G0NA-1", ct);
+
+        var decision = await defaultStack.ResolveAsync(TransitFor("chat@G0XYZ-1", from: "G0NA-1"), context, ct);
+
+        decision.Should().BeOfType<RouteDecision.Unreachable>();
+        (await context.GetLearnedRouteAsync("G0XYZ-1", ct)).Should().NotBeNull("the route is still good for traffic that didn't come from G0NA-1");
+
+        var fromElsewhere = await defaultStack.ResolveAsync(TransitFor("chat@G0XYZ-1", from: "G0NB-1"), context, ct);
+        fromElsewhere.Should().BeOfType<RouteDecision.NextHop>().Which.Route.Callsign.Should().Be("G0NA-1");
+    }
+
+    [Fact]
+    public async Task Resolve_Transit_FromAnotherSsid_StillUsesTheRoute()
+    {
+        // The exact call+SSID only: G0NA-2 is another station from G0NA-1.
+        using (var c = DbInfo.GetConnection())
+            c.Insert(new DbRouteHint { Destination = "G0XYZ-1", NextHop = "G0NA-1" });
+
+        var decision = await defaultStack.ResolveAsync(
+            TransitFor("chat@G0XYZ-1", from: "G0NA-2"), context, TestContext.Current.CancellationToken);
+
+        decision.Should().BeOfType<RouteDecision.NextHop>().Which.Route.Callsign.Should().Be("G0NA-1");
+    }
+
+    [Fact]
+    public async Task Resolve_LocallySubmitted_AnyTierIsFine()
+    {
+        // Nothing to avoid for our own message: the hint is used.
+        using (var c = DbInfo.GetConnection())
+            c.Insert(new DbRouteHint { Destination = "G0XYZ-1", NextHop = "G0NA-1" });
+
+        var decision = await defaultStack.ResolveAsync(
+            OutboundFor("G0XYZ", sourceCallsign: OurCallsign, originatorCallsign: OurCallsign),
+            context, TestContext.Current.CancellationToken);
+
+        decision.Should().BeOfType<RouteDecision.NextHop>().Which.Route.Callsign.Should().Be("G0NA-1");
+    }
+
+    [Fact]
+    public async Task Resolve_InFlightDatagramFlood_StillContinues_OnTheDefaultStack()
+    {
+        // UDP and MeshCore carry the hop budget: a flood that arrived with
+        // hops left carries on, on the default stack too.
+        var msg = OutboundFor("G0XYZ", floodHopsRemaining: 2, sourceCallsign: "G0NA-1", originatorCallsign: "G0ORG-1");
+
+        var decision = await defaultStack.ResolveAsync(msg, context, TestContext.Current.CancellationToken);
+
+        var flood = decision.Should().BeOfType<RouteDecision.FloodToNeighbours>().Subject;
+        flood.HopBudget.Should().Be(1);
+        flood.Routes.Select(r => r.Callsign).Should().BeEquivalentTo(new[] { "G0NB-1", "G0NC-1" });
     }
 
     [Fact]

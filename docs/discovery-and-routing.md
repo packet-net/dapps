@@ -72,7 +72,14 @@ Selected via `DAPPS_ROUTING_ALGORITHM` (restart required).
 
 AODV-flavoured. Routes are learned from observed forwards: when a message is forwarded *through* this node, the source becomes a known reach, the next hop becomes the way to reach the destination. The learned-routes table builds up over time without any extra airtime.
 
-Looks at the message destination, walks: neighbour -> fresh discovered peer -> route hint -> learned route. First match wins. If nothing matches, it falls back to a bounded flood: the message goes to every neighbour with a small hop limit, and the replies teach the routes.
+Looks at the message destination, walks: neighbour -> fresh discovered peer -> route hint -> learned route. First match wins. A message passing through never goes back to the neighbour it came from, whichever of these suggests it.
+
+If nothing matches, what happens depends on where the message started:
+
+- **Sent from this node:** it floods. The message goes once to every neighbour, and the replies teach the routes.
+- **Passing through:** it waits in the queue. Each forwarder run tries again, so it goes as soon as a route turns up, and it expires by its ttl like any other message. Only the node a message started at floods it.
+
+On UDP and MeshCore links the flood carries a hop limit, and a node that receives a flood still holding hops passes it on to its other neighbours. AGW and RHP sessions carry no hop count, so a node that gets a flooded message over one treats it like any other message passing through.
 
 Learned routes are kept per station, SSID included: a route to `G6FCI-7` says nothing about `G6FCI-8`, and two nodes under one callsign learn routes to each other like any other pair.
 

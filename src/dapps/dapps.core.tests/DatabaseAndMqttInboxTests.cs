@@ -375,6 +375,45 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
         return client;
     }
 
+    [Fact]
+    public async Task DeliverAsync_OurOwnMessageComingBack_IsARepeat_NotQueuedAgain()
+    {
+        // #295: we sent a message on, and a neighbour passed it back (a
+        // flood, or a loop). Taking it overwrote our forwarded row with a
+        // fresh queued one, so we sent or flooded it all over again.
+        var ct = TestContext.Current.CancellationToken;
+        var payload = "round trip"u8.ToArray();
+        var id = await database.SubmitOutboundMessage("chat", "G0XYZ-1", payload, ttlSeconds: 600);
+        await database.MarkMessageAsForwarded(id);
+        DbMessage sent;
+        using (var c = DbInfo.GetConnection()) sent = c.Find<DbMessage>(id);
+
+        await inbox.DeliverAsync(new BackhaulMessage(
+            Id: id, Destination: "chat@G0XYZ-1", Salt: sent.Salt, Ttl: 500,
+            Payload: payload, Originator: "N0CALL"), sourceCallsign: "G7XYZ-3", ct);
+
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty("our own message coming back is a repeat, not one to send again");
+        using (var c = DbInfo.GetConnection())
+        {
+            var row = c.Find<DbMessage>(id);
+            row.Should().NotBeNull();
+            row!.Forwarded.Should().BeTrue();
+            row.SourceCallsign.Should().Be("N0CALL", "the row is still the one we submitted");
+        }
+    }
+
+    [Fact]
+    public async Task DeliverAsync_FromAnotherSsidOfOurs_IsTakenAsUsual()
+    {
+        // Our exact callsign only: N0CALL-2 is a station like any other (#242).
+        var ct = TestContext.Current.CancellationToken;
+        await inbox.DeliverAsync(new BackhaulMessage(
+            Id: "sib0001", Destination: "chat@G0XYZ-1", Salt: 5L, Ttl: 500,
+            Payload: "from a sibling"u8.ToArray(), Originator: "N0CALL-2"), sourceCallsign: "N0CALL-2", ct);
+
+        (await database.GetPendingOutboundMessages()).Select(m => m.Id).Should().Contain("sib0001");
+    }
+
     private static int PickFreeTcpPort()
     {
         var l = new TcpListener(IPAddress.Loopback, 0);

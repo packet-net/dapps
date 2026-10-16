@@ -93,6 +93,9 @@ A sender offers a message again whenever it didn't see your `ack`: it restarted 
 - Answer an `ihave` for one with `ack <id>`, so the payload doesn't cross the air again. If one arrives anyway (as a `msg`, or sent before you'd finished storing the first), `ack` it and discard it.
 - Never let the memory lose a message. Record the message as "being stored" before storing it, and mark it stored once you have; a record left "being stored" (the node died in between) doesn't count, so the sender's retry is taken. If storing fails, drop the record. And if a second copy arrives while the first is still being stored, wait for the first: if it was stored the second is a repeat, if not the second gets its turn. A crash can then cost a repeat, never a loss.
 - A repeat of a message for another node, arriving from a different neighbour from the first copy, usually means a routing loop: the message was passed on and came back. It is still dropped, but it's worth logging.
+- A message whose `src=` is your own callsign (the exact call and SSID) is one you sent, come back. Treat it as a repeat: `ack` it and discard it, rather than queueing it to send again.
+
+A node passing a message on MUST NOT send it back to the neighbour it came from, whatever its routes say; if that is the only way it knows, it has no route and keeps the message. Only the node a message started at floods it. A relay with no route waits for one, because the text protocol carries no hop count to bound a flood with.
 
 A sender that gets `ack <id>` in reply to `ihave` treats the message as delivered.
 
