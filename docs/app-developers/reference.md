@@ -66,7 +66,7 @@ QoS 1 is fine; QoS 0 is acceptable since at worst the message gets redelivered (
 
 ### Authentication
 
-When the operator turns on **Require per-app tokens for MQTT/REST** in Settings (`AuthRequired`, off by default):
+New installs turn on **Require per-app tokens for MQTT/REST** (`AuthRequired`) by default; an install upgraded from an older version keeps whatever it already had set. While it's on:
 
 - CONNECT must include `username=<app>` and `password=<token-plaintext>`.
 - An app authenticated as `chat` may only publish to `dapps/out/chat/*` and `dapps/ack/chat`, and only subscribe to `dapps/in/chat`. Cross-app traffic is rejected with `NotAuthorized`.

@@ -68,6 +68,10 @@ public sealed class WebAppFixture : IAsyncLifetime
         env["DAPPS_HEARTBEAT_ENABLED"] = "false";
         env["DAPPS_PROBING_ENABLED"] = "false";
         env["DAPPS_UPDATE_CHECK_ENABLED"] = "false";
+        // Fresh DB every run, which now defaults AuthRequired to true
+        // (#316). The UI tests talk to MQTT/REST without an app token,
+        // so pin this fixture to the old open-access behaviour.
+        env["DAPPS_AUTH_REQUIRED"] = "false";
 
         var listening = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
 

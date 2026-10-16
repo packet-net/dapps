@@ -150,6 +150,11 @@ public class SystemOptions
     /// authenticated app. When false, the app interface is open to
     /// anyone reachable on those ports - fine for single-host loopback,
     /// not fine for shared nodes. Plan A4.
+    ///
+    /// Seeded true on a brand new install (#316); an upgrade that never
+    /// had this row keeps the historical false, so an already-running
+    /// app is never locked out by an update. See
+    /// <see cref="dapps.core.Services.DbStartup"/>'s isFreshInstall check.
     /// </summary>
     public bool AuthRequired { get; set; }
 

@@ -234,6 +234,15 @@
             <div class="hint">
                 Change any of this later on the <em>Settings</em> page; no restart needed.
             </div>
+            @if (Model.AuthRequired)
+            {
+                <div class="hint">
+                    Apps need a token for MQTT and REST on this install. Mint one with
+                    <code>curl -X POST /AppTokens -d '{"app":"yourapp"}'</code> (see
+                    <em>Settings &rarr; App interface</em>, or the app-developers docs) before
+                    pointing an app at this node.
+                </div>
+            }
 
             <script>
                 (function () {

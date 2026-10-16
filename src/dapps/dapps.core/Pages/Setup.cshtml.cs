@@ -62,6 +62,11 @@ public sealed class SetupModel(
     public int AgwPortDefault { get; set; } = 8000;
     public int RhpPortDefault { get; set; } = 9000;
 
+    /// <summary>Current <see cref="SystemOptions.AuthRequired"/>, shown
+    /// on the bearer step as a reminder that apps now need a token
+    /// (true by default on a new install - #316).</summary>
+    public bool AuthRequired { get; set; }
+
     public string? Error { get; private set; }
 
     /// <summary>True when the daemon runs under
@@ -100,6 +105,7 @@ public sealed class SetupModel(
             Port = NodeBearer == "rhpv2" ? RhpPortDefault : AgwPortDefault;
             RhpUser = opts.RhpUser ?? "";
             RhpPass = opts.RhpPass ?? "";
+            AuthRequired = opts.AuthRequired;
             return Page();
         }
 

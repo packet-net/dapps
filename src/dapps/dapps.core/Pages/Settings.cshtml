@@ -80,7 +80,7 @@
                 <span class="hint">0 = off; test-only UDP bearer</span></div>
             <label class="field-checkbox" style="grid-column: 1 / -1;">
                 <input name="AuthRequired" type="checkbox" @(Model.Options.AuthRequired ? "checked" : "") />
-                <span>Require per-app tokens for MQTT/REST<br/><span class="hint">leave off on a single-operator loopback node</span></span>
+                <span>Require per-app tokens for MQTT/REST<br/><span class="hint">leave off on a single-operator loopback node; on by default for new installs. Mint a token with <code>POST /AppTokens</code> (e.g. <code>curl -X POST /AppTokens -d '{"app":"yourapp"}'</code>), see the app-developers docs</span></span>
             </label>
         </div>
     </div>

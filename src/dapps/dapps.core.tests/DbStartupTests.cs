@@ -31,6 +31,7 @@ public sealed class DbStartupTests : IAsyncLifetime
         "DAPPS_MQTT_PORT",
         "DAPPS_SSID",
         "DAPPS_ENV_MANAGED",
+        "DAPPS_AUTH_REQUIRED",
         "PDN_NODE_CALLSIGN",
         "PDN_APP_CALLSIGN",
     ];
@@ -76,6 +77,70 @@ public sealed class DbStartupTests : IAsyncLifetime
         var row = c.Find<DbSystemOption>("Callsign");
         row.Should().NotBeNull();
         row!.Value.Should().Be("N0CALL");
+    }
+
+    [Fact]
+    public void EnsureSchemaAndSeed_FreshDatabase_AuthRequiredDefaultsToTrue()
+    {
+        // New installs require app tokens from the start (#316): a
+        // brand new database, with nothing seeded yet, seeds
+        // AuthRequired=true even though the entry in SeededOptions
+        // carries the historical "false" fallback.
+        DbStartup.EnsureSchemaAndSeed();
+
+        using var c = DbInfo.GetConnection();
+        c.Find<DbSystemOption>("AuthRequired")!.Value.Should().Be("true");
+    }
+
+    [Fact]
+    public void EnsureSchemaAndSeed_ExistingDatabaseMissingAuthRequiredRow_StaysFalse()
+    {
+        // An upgrade whose database already has rows (just not this
+        // one, e.g. a very old config predating AuthRequired) must
+        // never retroactively lock out a running app: it keeps the
+        // historical effective value of false.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.CreateTable<DbSystemOption>();
+            c.Insert(new DbSystemOption { Option = "Callsign", Value = "M0LTE-3" });
+        }
+
+        DbStartup.EnsureSchemaAndSeed();
+
+        using var conn = DbInfo.GetConnection();
+        conn.Find<DbSystemOption>("AuthRequired")!.Value.Should().Be("false");
+    }
+
+    [Fact]
+    public void EnsureSchemaAndSeed_FreshDatabase_ExplicitAuthRequiredEnvVarStillWins()
+    {
+        // An explicit DAPPS_AUTH_REQUIRED still overrides the new
+        // fresh-install default, same as every other seeded option.
+        Environment.SetEnvironmentVariable("DAPPS_AUTH_REQUIRED", "false");
+
+        DbStartup.EnsureSchemaAndSeed();
+
+        using var c = DbInfo.GetConnection();
+        c.Find<DbSystemOption>("AuthRequired")!.Value.Should().Be("false");
+    }
+
+    [Fact]
+    public void EnsureSchemaAndSeed_FreshDatabase_AuthRequiredRowNotTouchedOnLaterRestarts()
+    {
+        // The fresh-install default only applies while the table is
+        // still empty - once seeded, later starts leave it alone like
+        // every other option (no DAPPS_ENV_MANAGED opt-in).
+        DbStartup.EnsureSchemaAndSeed();
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Execute("update systemoptions set value=? where option=?", "false", "AuthRequired");
+        }
+
+        DbStartup.EnsureSchemaAndSeed();
+
+        using var conn = DbInfo.GetConnection();
+        conn.Find<DbSystemOption>("AuthRequired")!.Value.Should().Be("false",
+            "a dashboard edit after the first-start default must survive restarts");
     }
 
     [Fact]

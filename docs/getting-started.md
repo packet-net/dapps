@@ -56,6 +56,10 @@ For non-Debian Linux, Docker, Windows, or macOS, see the [install pages](install
 
 Submit; the daemon picks up the new callsign and bearer within a few seconds (no restart). The dashboard appears.
 
+A fresh node binds both the dashboard and the MQTT broker on every network interface, and until you submit the password step above, the dashboard has no password at all. That's fine on a trusted home or club LAN; if the machine is reachable from somewhere you don't trust, finish `/Setup` right away and either bind to localhost (`ASPNETCORE_URLS=http://127.0.0.1:5000`) or firewall the dashboard and MQTT ports until you have.
+
+New installs also require an app token before an app can use MQTT or REST (see step 5).
+
 ### 3. Tell your packet node about DAPPS
 
 The DAPPS side is now configured; your packet node needs to know to dispatch sessions to DAPPS. This is the part that depends on your node software.
@@ -81,12 +85,13 @@ There's a REST API and a [discovery system](discovery-and-routing.md) that auto-
 
 ### 5. Send a test message
 
-Use the **Quick send** form on the dashboard's Overview page, or the **Compose** page for a hand-crafted submit, or just publish to MQTT:
+Use the **Quick send** form on the dashboard's Overview page, or the **Compose** page for a hand-crafted submit - both go through your admin cookie, not an app token. An app publishing over MQTT or REST needs a token first; mint one with `curl -X POST http://localhost:5000/AppTokens -d '{"app":"hello"}'` (the response is the plaintext token, shown once), then:
 
 ```bash
 mosquitto_pub -h localhost -p 1883 \
   -t dapps/out/hello/G7XYZ-1 \
-  -m 'hello from M0LTE'
+  -m 'hello from M0LTE' \
+  -u hello -P '<token from above>'
 ```
 
 The dashboard's outbound queue should show the message; once forwarded, it disappears from the queue. On the receiving node, an app subscribed to `dapps/in/hello` will get it.

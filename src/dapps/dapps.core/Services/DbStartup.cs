@@ -106,7 +106,7 @@ public static class DbStartup
         ("MeshCoreCongestionBackoffFraction", "0.5"),
         ("MeshCoreLbtGuardMs", "400"),
         ("MeshCoreReliableDelivery", "true"),
-        ("AuthRequired", "false"),
+        ("AuthRequired", "false"), // fresh installs get "true" instead - see isFreshInstall below
         ("UpdateCheckEnabled", "true"),
         ("RoutingAlgorithm", "passive-flood"),
         ("ProbingEnabled", "false"),
@@ -206,6 +206,14 @@ public static class DbStartup
         var optionsTable = db.Table<DbSystemOption>().Table.TableName;
         var options = db.Query<DbSystemOption>($"select * from {optionsTable};");
 
+        // A completely empty systemoptions table means this is a brand
+        // new install (nothing has ever been seeded here before). Used
+        // below to pick AuthRequired's default without touching every
+        // other seeded value, and without changing what an upgrade from
+        // an older DAPPS - whose table already has rows, just not this
+        // one - ends up with.
+        var isFreshInstall = options.Count == 0;
+
         // Seeded defaults. A set env var DAPPS_<KEY> always wins for a
         // row that doesn't exist yet (first start). What happens to an
         // EXISTING row depends on the DAPPS_ENV_MANAGED mode switch:
@@ -223,7 +231,15 @@ public static class DbStartup
         //     and the dashboard badges those fields read-only.
         foreach (var (key, defaultValue) in SeededOptions)
         {
-            SeedOrApplyEnv(db, options, key, defaultValue, logger);
+            // New installs require app tokens from the start (#316): a
+            // fresh database with nothing seeded yet gets AuthRequired=true.
+            // An upgrade that already has rows but somehow missed this one
+            // keeps the historical false, so a running app that never set
+            // up a token never gets locked out. An explicit DAPPS_AUTH_REQUIRED
+            // still wins either way - SeedOrApplyEnv checks the env var
+            // before falling back to this default.
+            var effectiveDefault = key == "AuthRequired" && isFreshInstall ? "true" : defaultValue;
+            SeedOrApplyEnv(db, options, key, effectiveDefault, logger);
         }
 
         TurnOnUpdateCheckForDeb(db, options, UpdateInstall.IsDebPayload(AppContext.BaseDirectory), logger);
