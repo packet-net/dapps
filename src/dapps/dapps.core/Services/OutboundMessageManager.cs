@@ -67,6 +67,11 @@ public class OutboundMessageManager(
     /// </summary>
     private readonly ConcurrentDictionary<string, DateTime> handedToSession = new(StringComparer.Ordinal);
 
+    /// <summary>When a message that the forwarder could not handle was
+    /// last logged as an error. A row that keeps failing is logged once
+    /// an hour, not on every run.</summary>
+    private readonly ConcurrentDictionary<string, DateTime> failureLoggedAt = new(StringComparer.Ordinal);
+
     /// <summary>How long a hand-off holds a message back from later runs,
     /// in case the session never gets to it.</summary>
     internal TimeSpan HandOffPatience { get; set; } = TimeSpan.FromMinutes(10);
@@ -133,6 +138,7 @@ public class OutboundMessageManager(
         var queuedKeys = messages.Select(RefusalKey).ToHashSet(StringComparer.Ordinal);
         foreach (var key in refusals.Keys.Where(k => !queuedKeys.Contains(k)).ToList()) refusals.TryRemove(key, out _);
         foreach (var id in handedToSession.Keys.Where(id => !seen.Contains(id)).ToList()) handedToSession.TryRemove(id, out _);
+        foreach (var id in failureLoggedAt.Keys.Where(id => !seen.Contains(id)).ToList()) failureLoggedAt.TryRemove(id, out _);
 
         // Messages for the same next hop go out together on one session
         // rather than one session each. The work runs in queue order: a
@@ -230,7 +236,16 @@ public class OutboundMessageManager(
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                logger.LogError(ex, "Forwarder: could not handle message {0}, leaving it and carrying on with the rest", message.Id);
+                var now = DateTime.UtcNow;
+                if (!failureLoggedAt.TryGetValue(message.Id, out var loggedAt) || now - loggedAt >= TimeSpan.FromHours(1))
+                {
+                    failureLoggedAt[message.Id] = now;
+                    logger.LogError(ex, "Forwarder: could not handle message {0}, leaving it and carrying on with the rest", message.Id);
+                }
+                else
+                {
+                    logger.LogDebug(ex, "Forwarder: could not handle message {0} again", message.Id);
+                }
             }
         }
 

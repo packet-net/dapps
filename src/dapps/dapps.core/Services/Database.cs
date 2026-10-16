@@ -248,54 +248,55 @@ public class Database(
     /// sweeper instead of <see cref="DeleteMessage"/> when discarding
     /// rather than acknowledging.
     ///
-    /// The copy and the delete happen in one transaction, so a crash
-    /// cannot leave the message in both tables or in neither. Ids are
-    /// only 28 bits and <c>dropped_messages</c> is never purged, so an
-    /// id can already be there from an earlier, unrelated message: the
-    /// newer drop replaces that record rather than failing (#284).
+    /// Ids are only 28 bits and <c>dropped_messages</c> is never purged,
+    /// so an id can already be there from an earlier drop, of this
+    /// message or an unrelated one: the newer drop replaces that record
+    /// rather than failing (#284). The same goes for a row left in both
+    /// tables by a crash between the two steps: the next drop of it
+    /// replaces the copy and finishes the job.
     /// </summary>
-    internal Task SoftDeleteMessage(string id, string reason) => Task.Run(() =>
+    internal Task SoftDeleteMessage(string id, string reason) => DropAsync(id, reason, onlyIfStillQueued: false);
+
+    /// <summary>
+    /// Drop one message. With <paramref name="onlyIfStillQueued"/>, a row
+    /// already forwarded or delivered to its app by the time it is read
+    /// here is simply deleted, not recorded as a drop (#285).
+    /// </summary>
+    private async Task DropAsync(string id, string reason, bool onlyIfStillQueued)
     {
-        using var c = DbInfo.GetConnection();
-        // Immediate: take the write lock before reading, so a forwarder
-        // and the sweeper dropping the same row at once queue up behind
-        // each other instead of failing on a lock upgrade. The second
-        // finds the row gone and does nothing.
-        c.Execute("begin immediate");
-        try
+        // The shared pooled connection on purpose: it serialises every
+        // statement in the process, so these can never meet a locked
+        // database. No transaction for the same reason (with the pool's
+        // lock skipped, other callers' statements would land inside it).
+        var c = DbInfo.GetAsyncConnection();
+        var row = await c.FindAsync<DbMessage>(id);
+        if (row is null) return;
+        if (onlyIfStillQueued && (row.Forwarded || row.LocallyDelivered))
         {
-            var row = c.Find<DbMessage>(id);
-            if (row is not null)
-            {
-                c.InsertOrReplace(new DbDroppedMessage
-                {
-                    Id = row.Id,
-                    Payload = row.Payload,
-                    Salt = row.Salt,
-                    Destination = row.Destination,
-                    SourceCallsign = row.SourceCallsign,
-                    OriginatorCallsign = row.OriginatorCallsign,
-                    AdditionalProperties = row.AdditionalProperties,
-                    Forwarded = row.Forwarded,
-                    LocallyDelivered = row.LocallyDelivered,
-                    Ttl = row.Ttl,
-                    CreatedAt = row.CreatedAt,
-                    DroppedAt = timeProvider.GetUtcNow().UtcDateTime,
-                    Reason = reason,
-                    StreamId = row.StreamId,
-                    StreamSeq = row.StreamSeq,
-                    StreamGapTimeoutSeconds = row.StreamGapTimeoutSeconds,
-                });
-                c.Delete<DbMessage>(id);
-            }
-            c.Execute("commit");
+            await c.DeleteAsync<DbMessage>(id);
+            return;
         }
-        catch
+        await c.InsertOrReplaceAsync(new DbDroppedMessage
         {
-            try { c.Execute("rollback"); } catch { /* already rolled back */ }
-            throw;
-        }
-    });
+            Id = row.Id,
+            Payload = row.Payload,
+            Salt = row.Salt,
+            Destination = row.Destination,
+            SourceCallsign = row.SourceCallsign,
+            OriginatorCallsign = row.OriginatorCallsign,
+            AdditionalProperties = row.AdditionalProperties,
+            Forwarded = row.Forwarded,
+            LocallyDelivered = row.LocallyDelivered,
+            Ttl = row.Ttl,
+            CreatedAt = row.CreatedAt,
+            DroppedAt = timeProvider.GetUtcNow().UtcDateTime,
+            Reason = reason,
+            StreamId = row.StreamId,
+            StreamSeq = row.StreamSeq,
+            StreamGapTimeoutSeconds = row.StreamGapTimeoutSeconds,
+        });
+        await c.DeleteAsync<DbMessage>(id);
+    }
 
     public async Task<IReadOnlyList<DbDroppedMessage>> GetRecentDroppedMessages(int limit = 50)
     {
@@ -335,19 +336,12 @@ public class Database(
             // on this sweep and every later one (#284).
             try
             {
-                if (message.Forwarded || message.LocallyDelivered)
-                {
-                    // Already sent on or delivered to its app: it did not
-                    // expire, its job is done. Remove it without recording
-                    // a ttl-expired drop, which would tell the operator it
-                    // never went (#285).
-                    await connection.ExecuteAsync(
-                        "delete from messages where id=? and (forwarded=1 or locallydelivered=1)", message.Id);
-                }
-                else
-                {
-                    await SoftDeleteMessage(message.Id, "ttl-expired");
-                }
+                // Already sent on or delivered to its app (checked again
+                // as it is dropped, in case that happened since the rows
+                // were read): it did not expire, its job is done. It goes
+                // without a ttl-expired record, which would tell the
+                // operator it never went (#285).
+                await DropAsync(message.Id, "ttl-expired", onlyIfStillQueued: true);
                 actioned++;
             }
             catch (Exception ex)

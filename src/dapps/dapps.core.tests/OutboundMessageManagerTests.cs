@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using AwesomeAssertions;
 using dapps.client.Backhaul;
 using dapps.client.Discovery;
@@ -196,6 +196,32 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         using var check = DbInfo.GetConnection();
         check.Find<DbMessage>("poison1").Should().NotBeNull("the failed drop was rolled back, not half done");
         check.Find<DbDroppedMessage>("poison1").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task DoRun_AnExpiredRowAlsoInTheDroppedTable_IsDroppedAndTheRestGo()
+    {
+        // #284: a crash between the copy and the delete, or an old drop
+        // of the same id, leaves the id in dropped_messages already.
+        InsertMessage(id: "both003", ttl: 5, createdAt: DateTime.UtcNow.AddSeconds(-3600));
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbDroppedMessage
+            {
+                Id = "both003", Payload = "old"u8.ToArray(), Destination = "app@N0DEST",
+                SourceCallsign = "N0CALL", AdditionalProperties = "{}",
+                CreatedAt = DateTime.UtcNow.AddDays(-1), DroppedAt = DateTime.UtcNow.AddDays(-1), Reason = "refused: old",
+            });
+        }
+        InsertMessage(id: "fresh04", ttl: 600, createdAt: DateTime.UtcNow.AddSeconds(-1));
+
+        await manager.DoRun(TestContext.Current.CancellationToken);
+
+        backhaul.Sent.Should().ContainSingle();
+        backhaul.Sent.Single().Message.Id.Should().Be("fresh04");
+        using var check = DbInfo.GetConnection();
+        check.Find<DbMessage>("both003").Should().BeNull();
+        check.Find<DbDroppedMessage>("both003")!.Reason.Should().Be("ttl-expired");
     }
 
     [Fact]

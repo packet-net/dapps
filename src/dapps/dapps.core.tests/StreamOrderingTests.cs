@@ -353,6 +353,24 @@ public sealed class StreamOrderingTests : IAsyncLifetime
         await client.DisconnectAsync(cancellationToken: ct);
     }
 
+    [Fact]
+    public async Task StaleArrival_IdAlreadyInDroppedTable_DoesNotThrow()
+    {
+        // #284: the drop used to throw out of DeliverAsync, ending the
+        // session unacked so the sender retried it on every new one.
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbDroppedMessage { Id = "stale002", Payload = "old"u8.ToArray(), Destination = "x@N0X",
+                SourceCallsign = "G0OLD", AdditionalProperties = "{}", CreatedAt = DateTime.UtcNow, DroppedAt = DateTime.UtcNow, Reason = "ttl-expired" });
+        }
+        await inbox.DeliverAsync(MakeStreamMessage("stale001", "G0FROM", "x1", 1, 0, "first"), "G0HOP", ct);
+        var act = async () => await inbox.DeliverAsync(MakeStreamMessage("stale002", "G0FROM", "x1", 1, 0, "duplicate-first"), "G0HOP", ct);
+        await act.Should().NotThrowAsync();
+        (await database.GetMessage("stale002")).Should().BeNull();
+        (await database.GetDroppedMessage("stale002"))!.Reason.Should().Be("stream-stale");
+    }
+
     // ── Sender-side counter persistence ────────────────────────────
 
     [Fact]
