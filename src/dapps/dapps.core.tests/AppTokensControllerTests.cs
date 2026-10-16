@@ -13,7 +13,10 @@ namespace dapps.core.tests;
 /// admin-surface contracts the README's getting-started guide leans on:
 /// POST returns the plaintext exactly once, GET surfaces names without
 /// leaking secrets, DELETE 404s when nothing to revoke, validation
-/// rejects empty app names.
+/// rejects empty and malformed app names and lowercases valid ones (see
+/// <see cref="AppTokenStoreNameValidationTests"/> for the exhaustive
+/// coverage of what <see cref="AppTokenStore.TryNormalizeAppName"/>
+/// accepts and rejects).
 /// </summary>
 [Collection(SqliteOverridePathCollection.Name)]
 public sealed class AppTokensControllerTests : IAsyncLifetime
@@ -62,6 +65,26 @@ public sealed class AppTokensControllerTests : IAsyncLifetime
     {
         var result = await controller.CreateOrRotate(new CreateAppTokenRequest(""));
         result.Result.Should().BeOfType<BadRequestObjectResult>();
+    }
+
+    [Theory]
+    [InlineData("chat/room")]
+    [InlineData("chat+")]
+    [InlineData("chat#")]
+    [InlineData("my app")]
+    public async Task CreateOrRotate_AppNameWithBannedChars_ReturnsBadRequest(string app)
+    {
+        var result = await controller.CreateOrRotate(new CreateAppTokenRequest(app));
+        result.Result.Should().BeOfType<BadRequestObjectResult>();
+    }
+
+    [Fact]
+    public async Task CreateOrRotate_LowercasesTheAppName()
+    {
+        var result = await controller.CreateOrRotate(new CreateAppTokenRequest("Chat"));
+        var ok = result.Result.Should().BeOfType<OkObjectResult>().Subject;
+        var body = ok.Value.Should().BeOfType<CreateAppTokenResponse>().Subject;
+        body.App.Should().Be("chat");
     }
 
     [Fact]

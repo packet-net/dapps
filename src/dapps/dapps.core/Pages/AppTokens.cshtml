@@ -34,7 +34,8 @@
             <li>The app's MQTT CONNECT uses the app name as <code>username</code> and the token as <code>password</code>.</li>
             <li>REST calls send <code>Authorization: Bearer &lt;token&gt;</code>.</li>
             <li>The token is shown once, right below, immediately after minting - copy it now. DAPPS only stores a salted hash, so it can't be shown again; mint a new one (below) if it's lost.</li>
-            <li>Minting for an app name that already has a token rotates it - the old token stops working immediately.</li>
+            <li>Minting for an app name that already has a token rotates it (you'll be asked to confirm first): REST calls using the old token fail on their very next request, but an already-connected MQTT client for that app keeps working until it next reconnects - the broker only checks the token at CONNECT.</li>
+            <li>App names are lowercased and can't contain '/', '+', '#', whitespace or control characters - the same characters MQTT topics and the REST path use as separators or wildcards.</li>
             <li><a href="https://packet-net.github.io/dapps/app-developers/reference/#authentication" target="_blank" rel="noopener">Manual: app authentication</a>, including the equivalent curl recipe for scripting this.</li>
         </ul>
     </details>
@@ -51,7 +52,7 @@
         <div class="panel" style="margin-top: 1rem; border-color: var(--accent);">
             <h4 style="margin-top: 0;">Token for &quot;@Model.MintedApp&quot;</h4>
             <p class="panel-sub" style="color: var(--err); font-weight: 600;">
-                Shown once - copy it now. Reloading or leaving this page loses it for good; mint again (above) if that happens, which revokes this one.
+                Shown once - copy it now. Leaving this page loses it for good. A browser reload resubmits this form and mints a new token instead of showing this one again - the one above stops working as soon as that happens, same as any other rotation.
             </p>
             <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
                 <code id="minted-token" style="word-break: break-all; padding: 0.4rem 0.6rem; background: var(--surface-2); border-radius: 6px;">@Model.MintedToken</code>
@@ -70,7 +71,7 @@
     }
     else
     {
-        <table>
+        <table id="existing-tokens-table">
             <thead><tr><th>App</th><th>Minted (UTC)</th><th></th></tr></thead>
             <tbody>
                 @foreach (var t in Model.Tokens)
@@ -79,8 +80,7 @@
                         <td>@t.AppName</td>
                         <td>@t.CreatedAt.ToString("yyyy-MM-dd HH:mm")</td>
                         <td style="text-align: right;">
-                            <form method="post" asp-page-handler="Revoke" style="display: inline;"
-                                  onsubmit="return confirm('Revoke the token for &quot;@t.AppName&quot;? Anything using it stops working immediately.');">
+                            <form method="post" asp-page-handler="Revoke" style="display: inline;" class="revoke-token-form" data-app="@t.AppName">
                                 <input type="hidden" name="app" value="@t.AppName" />
                                 <button class="btn danger" type="submit">Revoke</button>
                             </form>
@@ -103,4 +103,40 @@
             setTimeout(() => { btn.textContent = prev; }, 1500);
         });
     }
+
+    // Revoke confirmation. The app name comes from the form's data-app
+    // attribute (read via .dataset, never re-parsed as HTML or code) so
+    // an app name containing a quote or any other character can't break
+    // out of a hand-built onsubmit="..." string - there isn't one.
+    document.querySelectorAll('.revoke-token-form').forEach(function (form) {
+        form.addEventListener('submit', function (e) {
+            var app = form.dataset.app || '';
+            var ok = confirm('Revoke the token for "' + app + '"? ' +
+                'REST calls using it fail on their next request; an already-connected MQTT client for it keeps working until it next reconnects.');
+            if (!ok) e.preventDefault();
+        });
+    });
+
+    // Minting for an app name that already has a token rotates it
+    // silently otherwise, so ask first. Reads the app names already
+    // rendered in the Existing tokens table (plain text nodes, so no
+    // injection risk) rather than re-fetching or re-serialising anything.
+    (function () {
+        var createForm = document.getElementById('create-token-form');
+        var appInput = document.getElementById('App');
+        if (!createForm || !appInput) return;
+
+        createForm.addEventListener('submit', function (e) {
+            var candidate = (appInput.value || '').trim().toLowerCase();
+            if (!candidate) return;
+            var existingNames = Array.prototype.map.call(
+                document.querySelectorAll('#existing-tokens-table tbody tr td:first-child'),
+                function (td) { return td.textContent.trim().toLowerCase(); });
+            if (existingNames.indexOf(candidate) === -1) return;
+
+            var ok = confirm('This replaces "' + candidate + '"\'s existing token; apps using it will stop working ' +
+                '(REST calls fail on their next request; an already-connected MQTT client keeps working until it next reconnects). Continue?');
+            if (!ok) e.preventDefault();
+        });
+    })();
 </script>

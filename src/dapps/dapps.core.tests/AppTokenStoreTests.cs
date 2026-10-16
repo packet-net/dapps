@@ -110,4 +110,106 @@ public sealed class AppTokenStoreTests : IAsyncLifetime
         row.Salt.Should().HaveLength(32, "salt is 16 random bytes hex-encoded");
         row.TokenHash.Should().HaveLength(64, "hash is 32 derived bytes hex-encoded");
     }
+
+    // --- Case-insensitive app-name matching (#316 follow-up review) ---
+    // New mints go through TryNormalizeAppName and so are always stored
+    // lowercase, but a row written before that existed could still carry
+    // mixed case - CreateOrRotateAsync and RevokeAsync must still find it.
+
+    [Fact]
+    public async Task CreateOrRotate_PreExistingMixedCaseRow_RotatesInPlaceRatherThanDuplicating()
+    {
+        // Simulate a row from before case-normalisation existed.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbAppToken
+            {
+                AppName = "Chat",
+                TokenHash = Convert.ToHexString(new byte[32]),
+                Salt = Convert.ToHexString(new byte[16]),
+                CreatedAt = DateTime.UtcNow.AddDays(-1),
+            });
+        }
+
+        var newToken = await store.CreateOrRotateAsync("chat");
+
+        var entries = await store.ListAsync();
+        entries.Should().ContainSingle("rotating 'chat' must replace the pre-existing 'Chat' row, not add a second one");
+        (await store.VerifyAsync(newToken)).Should().NotBeNull("the freshly minted token for 'chat' must verify");
+    }
+
+    [Fact]
+    public async Task RevokeAsync_MatchesPreExistingMixedCaseRow()
+    {
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbAppToken
+            {
+                AppName = "Chat",
+                TokenHash = Convert.ToHexString(new byte[32]),
+                Salt = Convert.ToHexString(new byte[16]),
+                CreatedAt = DateTime.UtcNow,
+            });
+        }
+
+        var deleted = await store.RevokeAsync("chat");
+
+        deleted.Should().BeTrue("revoking 'chat' must find the pre-existing 'Chat' row case-insensitively");
+        (await store.ListAsync()).Should().BeEmpty();
+    }
+
+}
+
+/// <summary>Tests for the static app-name validator used by both the
+/// REST endpoint and the dashboard page, so both reject the same
+/// inputs with the same reasoning.</summary>
+public sealed class AppTokenStoreNameValidationTests
+{
+    [Theory]
+    [InlineData("chat", "chat")]
+    [InlineData("  chat  ", "chat")]
+    [InlineData("Chat", "chat")]
+    [InlineData("CHAT", "chat")]
+    [InlineData("my-app_1", "my-app_1")]
+    public void TryNormalizeAppName_ValidInput_LowercasesAndTrims(string raw, string expected)
+    {
+        var ok = AppTokenStore.TryNormalizeAppName(raw, out var normalized, out var error);
+
+        ok.Should().BeTrue();
+        normalized.Should().Be(expected);
+        error.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("chat/room")]
+    [InlineData("chat+")]
+    [InlineData("chat#")]
+    [InlineData("my app")]
+    [InlineData("chat\t1")]
+    [InlineData("chat\n1")]
+    [InlineData("chat\u0001")]
+    public void TryNormalizeAppName_RejectsBlankSlashPlusHashWhitespaceAndControlChars(string? raw)
+    {
+        var ok = AppTokenStore.TryNormalizeAppName(raw, out _, out var error);
+
+        ok.Should().BeFalse();
+        error.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public void TryNormalizeAppName_AllowsQuotesAndOtherPunctuation_NotBannedForMqttOrRest()
+    {
+        // These aren't MQTT topic or REST path separators, so they're
+        // allowed - the dashboard must render them safely regardless
+        // (see AppTokensPageTests' hostile-name UI coverage), not reject
+        // them here.
+        var ok = AppTokenStore.TryNormalizeAppName("o'brien", out var normalized, out var error);
+
+        ok.Should().BeTrue();
+        normalized.Should().Be("o'brien");
+        error.Should().BeNull();
+    }
 }

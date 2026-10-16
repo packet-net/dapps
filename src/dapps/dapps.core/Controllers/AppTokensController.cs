@@ -30,12 +30,12 @@ public class AppTokensController(AppTokenStore store) : ControllerBase
     [HttpPost]
     public async Task<ActionResult<CreateAppTokenResponse>> CreateOrRotate([FromBody] CreateAppTokenRequest req)
     {
-        if (string.IsNullOrWhiteSpace(req.App))
+        if (!AppTokenStore.TryNormalizeAppName(req.App, out var app, out var error))
         {
-            return BadRequest("app is required");
+            return BadRequest(error);
         }
-        var plaintext = await store.CreateOrRotateAsync(req.App.Trim());
-        return Ok(new CreateAppTokenResponse(req.App.Trim(), plaintext));
+        var plaintext = await store.CreateOrRotateAsync(app);
+        return Ok(new CreateAppTokenResponse(app, plaintext));
     }
 
     [HttpDelete("{app}")]

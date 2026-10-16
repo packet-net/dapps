@@ -53,13 +53,13 @@ public sealed class AppTokensModel(AppTokenStore tokens, IOptionsMonitor<SystemO
     {
         Options = options.CurrentValue;
 
-        // Same validation the /AppTokens REST endpoint applies - not
-        // blank once trimmed. The app interface itself doesn't impose
-        // any format beyond that (see AppTokensController.CreateOrRotate).
-        var app = (App ?? "").Trim();
-        if (string.IsNullOrEmpty(app))
+        // Same validation the /AppTokens REST endpoint applies - see
+        // AppTokenStore.TryNormalizeAppName for exactly what that
+        // allows and why (it's what MQTT topics and /AppApi can use,
+        // lowercased since both already compare case-insensitively).
+        if (!AppTokenStore.TryNormalizeAppName(App, out var app, out var error))
         {
-            FlashError = "App name is required.";
+            FlashError = error;
             Tokens = await tokens.ListAsync();
             return Page();
         }

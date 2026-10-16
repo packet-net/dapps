@@ -71,7 +71,9 @@ New installs turn on **Require per-app tokens for MQTT/REST** (`AuthRequired`) b
 - CONNECT must include `username=<app>` and `password=<token-plaintext>`.
 - An app authenticated as `chat` may only publish to `dapps/out/chat/*` and `dapps/ack/chat`, and only subscribe to `dapps/in/chat`. Cross-app traffic is rejected with `NotAuthorized`.
 
-The operator mints one on the dashboard's **App tokens** page (in the sidebar, under System): type an app name, mint, copy the plaintext shown once, revoke from the same page when it's no longer needed. That page is a thin front-end over the admin-only `/AppTokens` REST endpoint: `POST /AppTokens` with `{"app": "chat"}` returns the token (posting again rotates it), `GET /AppTokens` lists them, and `DELETE /AppTokens/chat` revokes one - useful if you're scripting this rather than clicking through the dashboard.
+The operator mints one on the dashboard's **App tokens** page (in the sidebar, under System): type an app name, mint, copy the plaintext shown once, revoke from the same page when it's no longer needed. App names are lowercased ("chat" and "Chat" are the same app) and can't contain `/`, `+`, `#`, whitespace, or control characters - the same characters MQTT topics and the REST path use as separators or wildcards. Minting over an app that already has a token rotates it, so the page asks for confirmation first.
+
+That page is a thin front-end over the admin-only `/AppTokens` REST endpoint: `POST /AppTokens` with `{"app": "chat"}` returns the token (posting again rotates it), `GET /AppTokens` lists them, and `DELETE /AppTokens/chat` revokes one - useful if you're scripting this rather than clicking through the dashboard. Revoking or rotating stops REST access with the very next request; an MQTT client that's already connected keeps working until it disconnects and reconnects, since the broker only checks the token at CONNECT, not per message.
 
 #### Minting a token from the command line
 
