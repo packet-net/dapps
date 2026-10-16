@@ -308,7 +308,7 @@ ihave 7e1f3a2 len=5 fmt=p s=1714982400000 ttl=600 dst=mail@G0RCV chk=...
 
 Why wall-clock not hop-count: hop-count gives no useful guarantee on packet radio because retries and queue dwell dwarf the hop-count cost. A message with "TTL 5 hops" can sit in a queue for a week. A message with "TTL 600 seconds" tells every forwarder "stop trying after 10 minutes, regardless of how many hops we managed".
 
-Absent `ttl=` means "no expiry" - the message lives in the queue until forwarded, manually deleted, or the operator's cleanup policy kicks in. Apps that care about cleanup should always set a value.
+Absent `ttl=` means "no expiry" - the message stays in the queue until it is forwarded, or until the local app it is for acks it. Once it has been forwarded or acked, the node keeps it for 30 days for the dashboard and then deletes it. A message that is never forwarded or acked stays for ever, so apps that care about cleanup should always set a value.
 
 Positive integers only; `ttl=0` is rejected. Forwarders MUST decrement, not pass through unchanged - a compliant node implements `TtlMath.Residual` semantics or the system can't put a bound on stale traffic.
 

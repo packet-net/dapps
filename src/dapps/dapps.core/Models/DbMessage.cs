@@ -2,6 +2,16 @@
 
 namespace dapps.core.Models;
 
+/// <remarks>
+/// Indexes (sqlite-net creates any that are missing on every start, so an
+/// existing database gets them on upgrade; an older version simply ignores
+/// them). <c>messages_state</c> serves the forwarder queue, the unacked
+/// replay and the dashboard counts, all of which filter on
+/// <see cref="LocallyDelivered"/> and <see cref="Forwarded"/>;
+/// <c>messages_CreatedAt</c> the dashboard's newest-first list;
+/// <c>messages_CompletedAt</c> the retention sweep; <c>messages_stream</c>
+/// the ordered-stream reorder buffer.
+/// </remarks>
 [Table("messages")]
 public class DbMessage
 {
@@ -28,6 +38,7 @@ public class DbMessage
     /// a relay path). For a locally submitted message this is our own
     /// callsign. Preserved verbatim across re-forwards.
     /// </summary>
+    [Indexed(Name = "messages_stream", Order = 1)]
     public string OriginatorCallsign { get; init; } = "";
 
     /// <summary>Who the message is from, as apps and the dashboard see it:
@@ -40,10 +51,12 @@ public class DbMessage
 
     /// <summary>True once OutboundMessageManager has handed this off to a
     /// neighbour DAPPS instance (only relevant when Destination is remote).</summary>
+    [Indexed(Name = "messages_state", Order = 2)]
     public bool Forwarded { get; init; }
 
     /// <summary>True once a local app has acked receipt via the MQTT or REST
     /// app interface (only relevant when Destination is local).</summary>
+    [Indexed(Name = "messages_state", Order = 1)]
     public bool LocallyDelivered { get; init; }
 
     /// <summary>Residual lifetime in seconds at the moment we received this
@@ -55,6 +68,7 @@ public class DbMessage
     /// <summary>UTC instant the row was created - when the message arrived
     /// or was submitted locally. Used with <see cref="Ttl"/> to compute
     /// residual lifetime on forward and to age out expired rows.</summary>
+    [Indexed]
     public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
 
     /// <summary>
@@ -109,6 +123,7 @@ public class DbMessage
     /// <summary>Opt-in ordering stream id. Null when this message
     /// isn't part of an ordered stream. The receiver's reorder buffer
     /// keys on (originator-callsign, StreamId).</summary>
+    [Indexed(Name = "messages_stream", Order = 2)]
     public string? StreamId { get; init; }
 
     /// <summary>Opt-in ordering: monotonic seq within
@@ -125,5 +140,18 @@ public class DbMessage
     /// earlier StreamSeq. Set on arrival when seq &gt; expected;
     /// cleared as the cursor advances and the row drains to MQTT.
     /// Always false for non-ordered messages.</summary>
+    [Indexed(Name = "messages_stream", Order = 3)]
     public bool PendingInOrder { get; set; }
+
+    /// <summary>UTC instant the message's job here was done: forwarded to
+    /// a neighbour, or acked by the local app it was for. Null while it is
+    /// still queued or unacked. The retention sweep deletes a finished
+    /// message 30 days after this, so a message that sat in the queue for
+    /// weeks and went out yesterday stays for another 30 days. Rows
+    /// finished by a version without this column get their
+    /// <see cref="CreatedAt"/> here, filled in by the sweep. Added last so
+    /// the column order of existing databases is unchanged.</summary>
+    [Indexed]
+    [Indexed(Name = "messages_state", Order = 3)]
+    public DateTime? CompletedAt { get; init; }
 }

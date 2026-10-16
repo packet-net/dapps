@@ -8,6 +8,11 @@ namespace dapps.core.Services;
 ///
 /// Rows with no ttl set are exempt - those are local app submissions
 /// without an expiry, or pre-A1 rows from before TTL was tracked.
+///
+/// The same tick also applies retention: a message forwarded or acked by
+/// its local app is deleted <see cref="FinishedMessageRetention"/> after
+/// that happened, and a drop record <see cref="DroppedMessageRetention"/>
+/// after the drop. Fixed periods, not settings (#286).
 /// </summary>
 public class TtlSweeperService(
     Database database,
@@ -20,6 +25,17 @@ public class TtlSweeperService(
 
     /// <summary>How long a flood-seen record (DbFloodSeen) is kept.</summary>
     public static readonly TimeSpan FloodSeenWindow = TimeSpan.FromDays(1);
+
+    /// <summary>How long a forwarded or delivered message is kept.</summary>
+    public static readonly TimeSpan FinishedMessageRetention = TimeSpan.FromDays(30);
+
+    /// <summary>How long a drop record (dropped_messages) is kept.</summary>
+    public static readonly TimeSpan DroppedMessageRetention = TimeSpan.FromDays(90);
+
+    /// <summary>Most rows each retention delete removes per tick, so a
+    /// first run over a large old database works through it a batch a
+    /// minute rather than holding the shared connection for long.</summary>
+    public int RetentionBatchSize { get; init; } = 2000;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -102,6 +118,34 @@ public class TtlSweeperService(
         catch (Exception ex)
         {
             logger.LogError(ex, "Flood-seen sweep threw");
+        }
+
+        // Message and drop-record retention (#286).
+        try
+        {
+            var finished = await database.SweepFinishedMessagesAsync(now - FinishedMessageRetention, RetentionBatchSize);
+            if (finished > 0)
+            {
+                logger.LogInformation("retention sweep deleted {0} message(s) forwarded or delivered more than {1} days ago",
+                    finished, (int)FinishedMessageRetention.TotalDays);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "message retention sweep threw");
+        }
+        try
+        {
+            var drops = await database.SweepDroppedMessagesAsync(now - DroppedMessageRetention, RetentionBatchSize);
+            if (drops > 0)
+            {
+                logger.LogInformation("retention sweep deleted {0} drop record(s) older than {1} days",
+                    drops, (int)DroppedMessageRetention.TotalDays);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "drop record retention sweep threw");
         }
 
         // Transmission audit retention. Default 90 days; 0 disables.

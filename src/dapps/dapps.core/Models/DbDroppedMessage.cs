@@ -9,8 +9,8 @@ namespace dapps.core.Models;
 /// the operator can see what was thrown away during RF testing.
 ///
 /// Mirrors <see cref="DbMessage"/>'s shape plus <see cref="DroppedAt"/>
-/// + <see cref="Reason"/>. No retention policy yet - operator can purge
-/// manually if it grows.
+/// + <see cref="Reason"/>. Kept for 90 days after <see cref="DroppedAt"/>,
+/// then deleted by the retention sweep (<see cref="Services.TtlSweeperService"/>).
 /// </summary>
 [Table("dropped_messages")]
 public class DbDroppedMessage
@@ -33,6 +33,7 @@ public class DbDroppedMessage
     public DateTime CreatedAt { get; init; }
 
     /// <summary>UTC instant we decided this message was dead.</summary>
+    [Indexed]
     public DateTime DroppedAt { get; init; } = DateTime.UtcNow;
 
     /// <summary>Short tag explaining the drop. Currently used:

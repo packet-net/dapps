@@ -136,7 +136,7 @@ public sealed class SoftDeleteTests : IAsyncLifetime
     [Fact]
     public async Task SoftDelete_AnIdAlreadyDropped_ReplacesTheOldRecord()
     {
-        // #284: ids are 28 bits and dropped_messages is never purged, so
+        // #284: ids are 28 bits and dropped_messages keeps records for 90 days, so
         // an unrelated later message can share an id with an old drop.
         await database.SaveMessage("dup0001", "first"u8.ToArray(), salt: 1L,
             destination: "app@N0DEST", sourceCallsign: "G7XYZ",

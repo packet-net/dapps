@@ -80,8 +80,10 @@ public class Database(
 
     public async Task MarkLocallyDelivered(string id)
     {
+        // CompletedAt starts the retention clock; a repeat ack keeps the first time.
         await DbInfo.GetAsyncConnection().ExecuteAsync(
-            "update messages set locallydelivered=1 where id=?", id);
+            "update messages set locallydelivered=1, CompletedAt=coalesce(CompletedAt, ?) where id=?",
+            timeProvider.GetUtcNow().UtcDateTime.Ticks, id);
     }
 
     /// <summary>
@@ -232,7 +234,9 @@ public class Database(
 
     internal async Task MarkMessageAsForwarded(string id)
     {
-        await DbInfo.GetAsyncConnection().ExecuteAsync("update messages set forwarded=1 where id=?", id);
+        await DbInfo.GetAsyncConnection().ExecuteAsync(
+            "update messages set forwarded=1, CompletedAt=coalesce(CompletedAt, ?) where id=?",
+            timeProvider.GetUtcNow().UtcDateTime.Ticks, id);
     }
 
     internal async Task DeleteMessage(string id)
@@ -248,8 +252,8 @@ public class Database(
     /// sweeper instead of <see cref="DeleteMessage"/> when discarding
     /// rather than acknowledging.
     ///
-    /// Ids are only 28 bits and <c>dropped_messages</c> is never purged,
-    /// so an id can already be there from an earlier drop, of this
+    /// Ids are only 28 bits and <c>dropped_messages</c> keeps a record for
+    /// 90 days, so an id can already be there from an earlier drop, of this
     /// message or an unrelated one: the newer drop replaces that record
     /// rather than failing (#284). The same goes for a row left in both
     /// tables by a crash between the two steps: the next drop of it
@@ -351,6 +355,53 @@ public class Database(
         }
 
         return actioned;
+    }
+
+    /// <summary>
+    /// Retention for finished messages: delete up to
+    /// <paramref name="batchSize"/> rows that were forwarded or acked by
+    /// their local app before <paramref name="cutoff"/>
+    /// (<see cref="DbMessage.CompletedAt"/>). Rows still queued, unacked,
+    /// or parked for ordering are never touched, whatever their age.
+    ///
+    /// First gives up to <paramref name="batchSize"/> finished rows that
+    /// have no <see cref="DbMessage.CompletedAt"/> (finished before the
+    /// column existed, or by an older version after a downgrade) their
+    /// <see cref="DbMessage.CreatedAt"/> instead: the best time there is,
+    /// and never later than when they really finished.
+    ///
+    /// Batched so a first run over years of history doesn't hold the
+    /// shared connection for long; the next tick takes the next batch.
+    /// Returns how many rows were deleted.
+    /// </summary>
+    internal async Task<int> SweepFinishedMessagesAsync(DateTime cutoff, int batchSize)
+    {
+        var connection = DbInfo.GetAsyncConnection();
+        // Spelled out per (LocallyDelivered, Forwarded) pair so each arm is
+        // a seek on messages_state that never reads the row (or its payload).
+        await connection.ExecuteAsync(
+            "update messages set CompletedAt = CreatedAt where rowid in (select rowid from messages where " +
+            "(LocallyDelivered=1 and Forwarded=0 and CompletedAt is null) or " +
+            "(LocallyDelivered=1 and Forwarded=1 and CompletedAt is null) or " +
+            "(LocallyDelivered=0 and Forwarded=1 and CompletedAt is null) limit ?)",
+            batchSize);
+        return await connection.ExecuteAsync(
+            "delete from messages where rowid in (select rowid from messages where CompletedAt < ? " +
+            "and (Forwarded=1 or LocallyDelivered=1) and PendingInOrder=0 limit ?)",
+            cutoff.Ticks, batchSize);
+    }
+
+    /// <summary>
+    /// Retention for drop records: delete up to <paramref name="batchSize"/>
+    /// <c>dropped_messages</c> rows dropped before <paramref name="cutoff"/>.
+    /// Returns how many went.
+    /// </summary>
+    internal async Task<int> SweepDroppedMessagesAsync(DateTime cutoff, int batchSize)
+    {
+        var connection = DbInfo.GetAsyncConnection();
+        return await connection.ExecuteAsync(
+            "delete from dropped_messages where rowid in (select rowid from dropped_messages where DroppedAt < ? limit ?)",
+            cutoff.Ticks, batchSize);
     }
 
     internal async Task<ICollection<DbNeighbour>> GetNeighbours()
