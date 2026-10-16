@@ -7,7 +7,7 @@ namespace dapps.core.uitests;
 
 /// <summary>
 /// MQTT-over-WebSocket smoke. The /mqtt route is mounted on Kestrel
-/// alongside the dashboard / REST / MCP, served by the same broker
+/// alongside the dashboard / REST, served by the same broker
 /// instance as the TCP listener on :MqttPort. Browsers can speak to
 /// it directly with mqtt.js or paho-mqtt's WebSocket transport.
 ///

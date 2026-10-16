@@ -89,18 +89,12 @@ Subscribers to `dapps/metrics/heartbeat` receive the operational snapshot every 
 
 If you're already running an MQTT-shaped monitoring pipeline, this is the easiest way to get DAPPS into it - one `mosquitto_sub -h <node> -t dapps/metrics/heartbeat` subscription gets you a ticking JSON document.
 
-## /mcp - for AI assistants
-
-`http://<node>:5000/mcp`. The MCP (Model Context Protocol) endpoint exposes 33 operator-facing tools to a connected assistant - listing peers, triggering probes, sending test messages, applying config, applying updates, and so on. See the [MCP for assistants](mcp.md) page.
-
-Also open access (no admin cookie). MCP clients have their own auth model that the daemon stays out of.
-
 ## What to look at when
 
 - **"Is the node alive?"** - `/Health` (open access; quickest).
 - **"Is anything wedged?"** - the dashboard's Overview. Recent decisions and Needs attention show the recent narrative.
 - **"Why didn't message X arrive?"** - the Dropped tab on the Messages page, or `journalctl --grep <message-id>` for older history.
-- **"Is the link to peer Y working?"** - Topology > Probed nodes, or trigger a probe via the dashboard / MCP / REST.
+- **"Is the link to peer Y working?"** - Topology > Probed nodes, or trigger a probe via the dashboard / REST.
 - **"What's my airtime usage right now?"** - the Discovery airtime panel on the Overview.
 - **"What's queued and not going anywhere?"** - the Outbound queue / Local inbox tabs on the Messages page.
 - **"Is there an update?"** - the Build tile on the Overview, or `GET /Update/status`.

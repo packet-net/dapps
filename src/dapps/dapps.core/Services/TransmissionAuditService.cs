@@ -88,7 +88,7 @@ public sealed class TransmissionAuditService(
     }
 
     /// <summary>
-    /// Pull the recent transmission rows for dashboard / REST / MCP
+    /// Pull the recent transmission rows for dashboard / REST
     /// callers. Newest first; capped at <paramref name="limit"/>.
     /// Optional filter by kind (one or more) and target callsign.
     /// </summary>
@@ -131,7 +131,7 @@ public sealed class TransmissionAuditService(
     /// <summary>
     /// Delete rows older than the configured retention window.
     /// Returns the number of rows removed. Called by the retention
-    /// sweeper on its tick; safe to call ad-hoc from REST / MCP if an
+    /// sweeper on its tick; safe to call ad-hoc from REST if an
     /// operator wants to force a sweep.
     /// </summary>
     public async Task<int> SweepOldRowsAsync()

@@ -38,9 +38,6 @@ public sealed class AdminAuthMiddleware(RequestDelegate next)
         //                     polls without auth context anyway.
         //                     GET only: the retry-now action under the
         //                     same prefix needs the admin cookie.
-        //   /mcp            - Plan G MCP endpoint; clients (Claude,
-        //                     Cursor) don't have admin cookies. An
-        //                     MCP-specific token model can come later.
         //   /mqtt           - MQTT-over-WebSocket endpoint; the MQTT
         //                     CONNECT-time username/password is the
         //                     auth surface here, same model as the
@@ -109,7 +106,6 @@ public sealed class AdminAuthMiddleware(RequestDelegate next)
             || path.StartsWith("/Logout", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("/Health", StringComparison.OrdinalIgnoreCase)
             || (path.StartsWith("/Operational", StringComparison.OrdinalIgnoreCase) && HttpMethods.IsGet(method))
-            || path.StartsWith("/mcp", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("/mqtt", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("/lib/", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("/css/", StringComparison.OrdinalIgnoreCase)

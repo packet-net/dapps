@@ -78,7 +78,7 @@ PSK*. Pick a model per node (details + firmware caveats in the library README's 
   AGW, UDP, or MeshCore.
 - Discovered/neighbour peers hold MeshCore reachability alongside other bearers (a
   `MeshCoreChannel` hint on the route); the routing resolver picks per destination by cost.
-- Dashboard, REST, MQTT, MCP — unchanged.
+- Dashboard, REST, MQTT - unchanged.
 
 ## Routing implications
 

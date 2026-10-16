@@ -116,26 +116,6 @@ builder.Services.AddSingleton<OutboundActivityTracker>();
 builder.Services.AddSingleton<OperationalSnapshotBuilder>();
 builder.Services.AddHostedService<HeartbeatPublisher>();
 
-// Plan G (MCP) - Model Context Protocol server, exposing operator-
-// facing tools to Claude / other MCP clients on /mcp. Bootstrap
-// registers a single tool wrapping the operational snapshot;
-// subsequent PRs add the full read / action / diagnostic toolkits.
-// AdminAuthMiddleware allowlists /mcp the same way it does /Health
-// - these endpoints are designed for clients that don't have the
-// admin cookie.
-builder.Services.AddMcpServer()
-    .WithHttpTransport()
-    .WithTools<dapps.core.Mcp.DappsHealthTools>()
-    .WithTools<dapps.core.Mcp.DappsNetworkTools>()
-    .WithTools<dapps.core.Mcp.DappsRoutingTools>()
-    .WithTools<dapps.core.Mcp.DappsMessageTools>()
-    .WithTools<dapps.core.Mcp.DappsActionTools>()
-    .WithTools<dapps.core.Mcp.DappsConfigTools>()
-    .WithTools<dapps.core.Mcp.DappsDiagnosticTools>()
-    .WithTools<dapps.core.Mcp.DappsExplorationTools>()
-    .WithTools<dapps.core.Mcp.DappsUpdateTools>()
-    .WithTools<dapps.core.Mcp.DappsAuditTools>();
-
 builder.Services.AddSingleton(UpdateInstall.Detect());
 builder.Services.AddSingleton<UpdateChecker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<UpdateChecker>());
@@ -426,8 +406,8 @@ app.UseMiddleware<AdminAuthMiddleware>();
 // MQTT-over-WebSocket. Same broker instance as the TCP :MqttPort
 // listener; same auth interceptors. Browsers connect to ws://host/mqtt
 // with sub-protocol "mqtt" and speak MQTT 5 directly. Allowlisted in
-// AdminAuthMiddleware alongside /Health and /mcp - WebSocket clients
-// don't carry the admin cookie.
+// AdminAuthMiddleware alongside /Health - WebSocket clients don't
+// carry the admin cookie.
 app.UseWebSockets();
 app.MapMqtt("/mqtt");
 app.MapControllers();
@@ -437,11 +417,6 @@ app.MapScalarApiReference(options =>
 {
     options.OpenApiRoutePattern = "/openapi/v1.json";
 });
-// Plan G - mount the MCP endpoint at /mcp. The MCP transport
-// negotiates streamable-HTTP / SSE itself; we just need the route
-// reachable. Allowlisted in AdminAuthMiddleware alongside /Health.
-app.MapMcp("/mcp");
-
 try
 {
     app.Run();

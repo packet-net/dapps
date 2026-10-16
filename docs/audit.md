@@ -30,18 +30,16 @@ The reason is the load-bearing field. Examples:
 - `solicit-reply to G7XYZ`
 - `scheduled probe sweep`
 - `operator-triggered probe (REST)`
-- `operator-triggered probe (MCP)`
 - `forwarder tick: route via M0LTE-1`
 - `flood to neighbour (hop budget 3)`
 - `scheduled poll sweep (drained 2)`
-- `operator-triggered poll (MCP)`
+- `operator-triggered poll (REST)`
 - `periodic heartbeat publish`
 
 ## Where to read it
 
 - **Dashboard**: the **Transmissions audit** panel on the Diagnostics page. Filter by kind / target callsign / only-failures, auto-refresh every 10 s.
 - **REST**: `GET /Transmissions?kind=probe&target=M0LTE-1&onlyFailures=true&limit=300` returns a JSON array.
-- **MCP**: `list_transmissions` tool, same filters.
 - **MQTT** (opt-in): set `TransmissionAuditMqttPublish` to `true` (see below) and every row is also published live to `dapps/audit/tx` as JSON. Useful for scraping into an existing MQTT-shaped monitoring stack.
 
 ## Configuration
@@ -83,8 +81,6 @@ Look for `forward` or `forward-flood` rows with `messageId=abc1234` in the respo
 ```
 GET /Transmissions?kind=probe&kind=probe-nodeprompt&target=G7XYZ&limit=500
 ```
-
-Or via MCP: `list_transmissions(kinds: "probe,probe-nodeprompt", target: "G7XYZ", limit: 500)`.
 
 ## What does **not** get logged
 

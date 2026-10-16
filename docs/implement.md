@@ -520,7 +520,7 @@ If you've implemented the bare essentials and want to verify against the referen
 4. **Round-trip with `ttl`.** Include `ttl=600`; inspect the daemon's stored row to confirm it persisted, then forward via the daemon to a third node and watch the residual decrement.
 5. **Reject malformed offers.** Send `ihave x len=oops fmt=p dst=mail@G0X` (bad len) and verify your implementation responds `error x` not `send x`.
 
-Beyond that, each optional feature has its own equivalence test: send/receive with the field set, confirm the reference daemon round-trips the value (visible on MQTT user properties, through the `get_message` MCP tool, or in the SQLite database directly).
+Beyond that, each optional feature has its own equivalence test: send/receive with the field set, confirm the reference daemon round-trips the value (visible on MQTT user properties, through `GET /Events/payload/{id}`, or in the SQLite database directly).
 
 ## See also
 

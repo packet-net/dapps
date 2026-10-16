@@ -62,8 +62,6 @@ Terms used throughout this manual.
 
 **master ID** - The shared identifier across the fragments of one multi-part message. The receiver uses it to reassemble.
 
-**MCP** - Model Context Protocol. The endpoint at `/mcp` exposes operator-facing tools to AI assistants.
-
 **MeshCore** - A modern small-mesh radio firmware (LoRa-shaped today). Shipped DAPPS bearer via the Companion-over-USB path (binary channel-data, compression, good-citizen controls, reliability, discovery, deployment models A/B/C); off by default. The KISS-driven flavour is still planned.
 
 **MQTT** - A pub-sub messaging protocol; DAPPS embeds an MQTT broker for the local app interface.
@@ -86,7 +84,7 @@ Terms used throughout this manual.
 
 **RHPv2** - Remote Host Protocol v2 - a more modern host-to-node protocol than AGW. Required for DAPPS-on-XRouter (AGW outbound on XRouter is structurally broken for DAPPS); selectable with `DAPPS_NODE_BEARER=rhpv2`. Mainline BPQ does not yet ship RHPv2; will work with no DAPPS-side changes when it does.
 
-**route hint** - A manual entry that says "for messages destined for X, send via neighbour Y." Used when X isn't a neighbour or a freshly heard peer. Stored in the `routehints` table; list them with the `list_route_hints` MCP tool.
+**route hint** - A manual entry that says "for messages destined for X, send via neighbour Y." Used when X isn't a neighbour or a freshly heard peer. Stored in the `routehints` table of the DAPPS database.
 
 **session protocol** - The DAPPSv1 session shape: prompt → `ihave` → `send` / `?` → `data` → `ack`. The on-air conversation between two DAPPS nodes.
 

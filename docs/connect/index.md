@@ -29,7 +29,7 @@ The reason BPQ is the documented setup is that the on-air ecosystem of operators
 - The DAPPSv1 session protocol - `ihave` / `send` / `data` / `ack` - is identical over any bearer that gives DAPPS a stream-shaped session.
 - The discovery model (channels, beacons, probes) is identical.
 - The neighbour table and routing graph are identical.
-- The dashboard, REST API, MQTT app interface, MCP tools - identical.
+- The dashboard, REST API, MQTT app interface - identical.
 
 ## What changes per bearer
 

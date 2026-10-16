@@ -380,8 +380,7 @@ column on `DbNeighbour` where null means "use the default".
 | Payload compression | `DAPPS_COMPRESSION` = `auto` | `Compression` (`auto`/`off`/`on`, null) | `off` |
 
 A peer that calls in without a neighbour row gets the system defaults. Both
-need to be settable through the web UI and the MCP config tools, like the
-other neighbour fields.
+need to be settable through the web UI, like the other neighbour fields.
 
 ## Expected effect on the captured exchange
 

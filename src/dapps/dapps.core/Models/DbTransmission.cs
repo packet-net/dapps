@@ -32,7 +32,7 @@ public sealed class DbTransmission
     public DateTime At { get; init; } = DateTime.UtcNow;
 
     /// <summary>What kind of transmission. Constrained set so the
-    /// dashboard can colour-code and the MCP / REST filter can be
+    /// dashboard can colour-code and the REST filter can be
     /// tight. Values: <c>beacon</c>, <c>solicit</c>, <c>solicit-reply</c>,
     /// <c>probe</c>, <c>probe-nodeprompt</c>, <c>forward</c>,
     /// <c>forward-flood</c>, <c>poll</c>, <c>ack</c>, <c>nak</c>,

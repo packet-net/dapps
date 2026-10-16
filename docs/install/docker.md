@@ -41,7 +41,7 @@ services:
     container_name: dapps
     restart: unless-stopped
     ports:
-      - "5000:8080"   # dashboard / REST / MCP
+      - "5000:8080"   # dashboard / REST
       - "1883:1883"   # MQTT broker
     volumes:
       - dapps-data:/app/data
@@ -67,7 +67,7 @@ Set `DAPPS_NODE_HOST` accordingly.
 
 ## Updates
 
-The supervised in-place update path (the `/Update/apply` button on the dashboard, the `trigger_update` MCP tool) does not work inside the standard image - the privileged updater wants to swap the binary on disk and restart its own service, which Docker doesn't model the same way.
+The supervised in-place update path (the `/Update/apply` button on the dashboard) does not work inside the standard image - the privileged updater wants to swap the binary on disk and restart its own service, which Docker doesn't model the same way.
 
 Instead, update by rebuilding the image from a newer checkout and recreating the container:
 

@@ -171,7 +171,7 @@ The previous binary is restored automatically; you don't need to do anything to 
 
 ### "Update banner shows the same version as I'm running"
 
-The poll cadence is hourly (every six hours on an apt install). To force an immediate re-poll, click **Check now** on the dashboard, or `POST /Update/check`, or call the `check_for_updates` MCP tool.
+The poll cadence is hourly (every six hours on an apt install). To force an immediate re-poll, click **Check now** on the dashboard, or `POST /Update/check`.
 
 ## Investigating "where did message X go?"
 
@@ -179,7 +179,6 @@ A worked path:
 
 1. **Dashboard > Messages > Dropped.** If the message id is there, the reason is the answer.
 2. **`journalctl -u dapps.service | grep <message-id>`** - the decision-events ring is mirrored to the journal as structured log lines. Every step the daemon took with this id will be there: submit, queue insert, forward attempt, ack received / failed, etc.
-3. **MCP `explain_why_message_failed`** if you have an assistant connected - it walks the same trail and produces a narrative.
 
 If nothing turns up, the message was never submitted (typo on the topic / endpoint). Check the submitting application's logs.
 

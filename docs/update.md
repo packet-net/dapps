@@ -51,19 +51,9 @@ Behind the scenes, the dashboard writes the marker file, the next updater tick p
 
 The dashboard polls the update phase live, so you don't need to refresh.
 
-## Path 2: MCP tool - for AI assistants
+## Path 2: REST
 
-If you're driving operations through an MCP-aware assistant, the `trigger_update` tool wraps the same marker-file write. Workflow:
-
-```
-1. check_for_updates       - force a re-poll of GitHub Releases
-2. get_update_status       - confirm latest is what you expect
-3. trigger_update          - write the marker
-4. get_update_status       - poll until lastRun.phase == Success
-                              and current == latest
-```
-
-Same code path as the dashboard button. The full deploy loop closes - an assistant that just merged a PR can verify the release exists and apply it on the destination node within a couple of minutes, with rollback handled automatically if the new build is broken.
+If you're scripting this, `POST /Update/apply` writes the same marker file. Poll `GET /Update/status` until `lastRun.phase == Success` and `current == latest`. Same code path as the dashboard button.
 
 ## Path 3: command line
 
@@ -100,17 +90,16 @@ Out of scope today.
 
 ## Auto-update on a schedule
 
-Currently **parked**. Originally sketched as: opt-in `AutoUpdate=true` with a quiet-hours window, skipping if traffic was forwarded recently, with per-major-version pinning. Parked because the existing surfaces (banner + one-click + MCP tool) already cover today's operator population - author + a small handful of friendly nodes - and a scheduled-apply is a convenience for operators who don't watch the box at all, who don't yet exist. We'll revisit when there's a population that drifts weeks behind because nobody clicks the button.
+Currently **parked**. Originally sketched as: opt-in `AutoUpdate=true` with a quiet-hours window, skipping if traffic was forwarded recently, with per-major-version pinning. Parked because the existing surfaces (banner + one-click + REST) already cover today's operator population - author + a small handful of friendly nodes - and a scheduled-apply is a convenience for operators who don't watch the box at all, who don't yet exist. We'll revisit when there's a population that drifts weeks behind because nobody clicks the button.
 
 ## When updates check
 
-The update checker polls GitHub Releases every hour (rate-limit-friendly: GitHub's unauthenticated limit is 60 req/hour per IP, so we use 1/60 of that). The poll's a single HTTPS request; the response feeds the dashboard banner, `GET /Update/status`, and the MCP `get_update_status` tool.
+The update checker polls GitHub Releases every hour (rate-limit-friendly: GitHub's unauthenticated limit is 60 req/hour per IP, so we use 1/60 of that). The poll's a single HTTPS request; the response feeds the dashboard banner and `GET /Update/status`.
 
 To force an immediate re-poll without waiting an hour:
 
 - Dashboard: **Check now** on the Overview's Build tile, or **Check for updates now** in Settings.
 - REST: `POST /Update/check`.
-- MCP: `check_for_updates`.
 
 ## Disabling the update check
 

@@ -8,7 +8,7 @@ Every operator-tunable setting on a DAPPS node has three configuration surfaces:
 
 Most settings take effect within seconds of saving, with no restart. The MQTT and UDP listener ports, the routing algorithm, and MeshCore's enable, port and region need a restart. The dashboard's own address (`ASPNETCORE_URLS`) is env-only.
 
-A few knobs aren't on the Settings page: the default bearer port, the routing algorithm and the multi-part message timings. Change those with `POST /Config`, which changes only the settings you send, or the `update_config` [MCP tool](mcp.md). Route gossip staleness can be set with its env var before first start, or with `POST /Config` (from 0.48.1).
+A few knobs aren't on the Settings page: the default bearer port, the routing algorithm and the multi-part message timings. Change those with `POST /Config`, which changes only the settings you send. Route gossip staleness can be set with its env var before first start, or with `POST /Config` (from 0.48.1).
 
 > **Deployment-managed mode (`DAPPS_ENV_MANAGED=true`)**: when a supervising deployment (a packet.net node host, say) sets `DAPPS_ENV_MANAGED=true`, every *set* `DAPPS_*` env var becomes deployment-managed config instead - re-applied over the persisted row at **every** start, with the matching dashboard fields badged "managed by environment" and rendered read-only. `DAPPS_ENV_MANAGED` itself is a mode switch read each start, never stored. Leave it unset for the standalone installs documented here: with it unset (or `false`) env vars keep the first-start-only semantics above and the dashboard stays in charge.
 
@@ -42,7 +42,7 @@ Walks the persisted `systemoptions` table and prints `DAPPS_SCREAMING_SNAKE=valu
 | MQTT broker port  | `DAPPS_MQTT_PORT`        | `1883`  | Port the embedded MQTT broker binds.                      |
 | UDP listener port | `DAPPS_UDP_LISTEN_PORT`  | `0`     | UDP datagram bearer listen port. `0` disables.            |
 
-The dashboard / REST / MCP endpoint port is configured via `ASPNETCORE_URLS` (a .NET convention), e.g. `ASPNETCORE_URLS=http://127.0.0.1:5000`.
+The dashboard / REST endpoint port is configured via `ASPNETCORE_URLS` (a .NET convention), e.g. `ASPNETCORE_URLS=http://127.0.0.1:5000`.
 
 ### Authentication
 

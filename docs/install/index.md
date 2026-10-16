@@ -49,7 +49,7 @@ A running DAPPS node writes:
 
 - A SQLite database at `/var/lib/dapps/dapps.db` under the systemd recipe. If you run it by hand, `dapps.db` in the working directory (or in `data/` if that folder exists there).
 - An MQTT broker on TCP 1883 (configurable; bind to localhost in most cases).
-- An HTTP listener on TCP 5000 (configurable; this is the dashboard, REST API, and MCP endpoint).
+- An HTTP listener on TCP 5000 (configurable; this is the dashboard and REST API).
 - Optional UDP datagram listener on a port of your choosing (off by default; used by the test stand-in for MeshCore).
 
 It opens an outbound TCP connection to your packet node's bearer port - AGW (default 8000 on BPQ) or RHPv2 (default 9000 on XRouter), depending on `DAPPS_NODE_BEARER`.

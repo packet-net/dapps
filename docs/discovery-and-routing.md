@@ -58,7 +58,7 @@ Node-prompt auto-discovery is gated on `DAPPS_AUTO_DISCOVER_VIA_NODE_CALL=true`.
 
 ## Neighbours
 
-The actual forwarding partners. You add them on the dashboard's **Topology > Neighbours** tab or with the `/Neighbours` REST endpoint. DAPPS doesn't add neighbours by itself; the `propose_topology_changes` [MCP tool](mcp.md) can suggest some from the peers you've heard.
+The actual forwarding partners. You add them on the dashboard's **Topology > Neighbours** tab or with the `/Neighbours` REST endpoint. DAPPS doesn't add neighbours by itself; you pick them from the peers you've heard.
 
 Each neighbour row carries: callsign, bearer port (for AGW or RHPv2), UDP endpoint (for the datagram bearer), and optionally a connect-script plus per-neighbour compression and session-tail overrides.
 
@@ -92,13 +92,13 @@ The advertiser filters: only routes whose failure counter is zero, only routes t
 
 Each route is advertised under the destination's full callsign, SSID included, so two SSIDs of one callsign are two routes. Every node needs 0.47.0 or later for this to help; with an older node on either end the route simply goes unused, and mail falls back to the other ways of finding a path.
 
-There's no dashboard view of learned routes; the `list_learned_routes` [MCP tool](mcp.md) lists them, with each row's source (`gossip` or `traffic`). Resolution priority unchanged: neighbour -> discovered -> hint -> learned (gossip and traffic share the learned tier).
+There's no dashboard view of learned routes; each row's source (`gossip` or `traffic`) is visible only in the `learnedroutes2` table of the DAPPS database. Resolution priority unchanged: neighbour -> discovered -> hint -> learned (gossip and traffic share the learned tier).
 
 ## Route hints
 
 A manual "for messages destined for X, send via neighbour Y" entry. It's used when X isn't itself a neighbour or a freshly heard peer, and before any learned route. Useful for asymmetric routing where the natural route in one direction differs from the other.
 
-There's no dashboard page or REST endpoint for route hints. The `list_route_hints` [MCP tool](mcp.md) lists them; adding one means writing a row into the `routehints` table of the DAPPS database. Y must already be one of your neighbours.
+There's no dashboard page or REST endpoint for route hints. Listing or adding one means reading or writing a row in the `routehints` table of the DAPPS database. Y must already be one of your neighbours.
 
 A hint for a callsign without an SSID (`G6FCI`) covers every SSID of that callsign. One with an SSID (`G6FCI-8`) covers that station only, and wins over one without. A hint for `*` catches anything else.
 
@@ -115,4 +115,4 @@ For most operators, the simplest workable setup is:
 3. Once you've heard from a few peers via beacons and have an idea of the on-air ecosystem, **enable probing** with the `Overnight` strategy so the connectivity matrix is verified during quiet hours.
 4. Decide whether you want **scheduled polling** on (you probably don't if your peers are well-behaved; every session carries traffic both ways, which covers the common case).
 
-The dashboard's **Topology** tabs show the live state of most of this - neighbours, discovery channels, heard peers, probed and polled nodes - so you can confirm what's working without guessing. Learned routes and route hints are only visible through the [MCP tools](mcp.md).
+The dashboard's **Topology** tabs show the live state of most of this - neighbours, discovery channels, heard peers, probed and polled nodes - so you can confirm what's working without guessing. Learned routes and route hints are only visible in the DAPPS database.

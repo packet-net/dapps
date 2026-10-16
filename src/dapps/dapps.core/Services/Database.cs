@@ -330,9 +330,7 @@ public class Database(
     }
 
     /// <summary>Single-message lookup by id. Returns null if the row
-    /// has been delivered + cleaned up or never existed. Used by the
-    /// MCP tools (Plan M) to surface a specific message's state to
-    /// an operator-assistant ("explain why abc1234 didn't ship").</summary>
+    /// has been delivered + cleaned up or never existed.</summary>
     public async Task<DbMessage?> GetMessage(string id)
         => await DbInfo.GetAsyncConnection().FindAsync<DbMessage>(id);
 

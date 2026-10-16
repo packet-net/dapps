@@ -48,9 +48,9 @@ public sealed class BearerSwitchingOutboundTransport(
     ///
     /// Not operator-tunable (unlike most timing knobs in this codebase,
     /// which live on <see cref="SystemOptions"/>) - exposing it would
-    /// mean wiring a field through SystemOptionsStore, /Config, the
-    /// Setup wizard and the MCP config tools for what's an internal
-    /// protocol-timing detail. 2s comfortably covers what field logs
+    /// mean wiring a field through SystemOptionsStore, /Config and the
+    /// Setup wizard for what's an internal protocol-timing detail.
+    /// 2s comfortably covers what field logs
     /// show it taking (under 1s in the observed cases) without
     /// meaningfully slowing bulk sends - each full DAPPSv1 session
     /// already takes several seconds.

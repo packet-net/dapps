@@ -46,8 +46,6 @@ public sealed class AdminAuthMiddlewareTests : IAsyncLifetime
     [InlineData("/Health")]
     [InlineData("/Operational")]
     [InlineData("/Operational/recent")]
-    [InlineData("/mcp")]
-    [InlineData("/mcp/sse")]
     [InlineData("/AppApi/inbound/chat")]
     [InlineData("/Setup")]
     [InlineData("/Login")]
@@ -68,6 +66,8 @@ public sealed class AdminAuthMiddlewareTests : IAsyncLifetime
     [InlineData("/Config")]
     [InlineData("/Neighbours")]
     [InlineData("/Probes")]
+    [InlineData("/mcp")]
+    [InlineData("/mcp/sse")]
     public async Task GatedPaths_NoCookie_DoNotReachNextDelegate(string path)
     {
         var (mw, ctx, nextCalled) = Build(path);

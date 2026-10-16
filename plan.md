@@ -630,6 +630,8 @@ What's explicitly out: autonomous routing-participation (algorithm stays determi
 
 Package versioning side-effect: `ModelContextProtocol.AspNetCore` 1.2.0 transitively pulls Microsoft.Extensions.Logging.Abstractions 10.0.5 and System.IO.Pipelines 10.0.5. Both target net8.0 explicitly - they load fine on the LTS runtime; the version number is just the .NET 10 release train. Bumped accordingly in `Directory.Packages.props`.
 
+**2026-10-16: MCP support removed.** Nothing used it, and the `/mcp` endpoint was unauthenticated (#308). Deleted entirely rather than left disabled; may come back later from git history.
+
 ## Cross-cutting: licensing housekeeping
 
 Resolved during the toolchain refresh: tests use **AwesomeAssertions** (MIT-licensed community fork of FluentAssertions, drop-in API-compatible). FluentAssertions 8.x's switch to a paid Xceed licence isn't a concern. No further action.

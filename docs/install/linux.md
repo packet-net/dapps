@@ -213,7 +213,7 @@ sudo journalctl -u dapps.service -f
 
 `http://<node>:5000/`. The first request lands on `/Setup` - a two-step wizard for the admin password and your callsign + bearer. See [Getting started](../getting-started.md) for the walk-through.
 
-The `/Health` and `/Operational` endpoints are intentionally not behind the cookie - they're designed to be scraped by watchdogs and your own monitoring. The MCP endpoint at `/mcp` is also open for the same reason.
+The `/Health` and `/Operational` endpoints are intentionally not behind the cookie - they're designed to be scraped by watchdogs and your own monitoring.
 
 ## Logs
 
