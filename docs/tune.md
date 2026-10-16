@@ -49,7 +49,7 @@ Switch strategy via `DAPPS_PROBE_STRATEGY=Overnight` (case-insensitive) or the d
 
 ## Fragment threshold
 
-Payloads strictly larger than `DAPPS_FRAGMENT_THRESHOLD_BYTES` get split into N fragments at submit, each delivered independently and reassembled at the receiver. Default is 4096 bytes - sized for VHF. Bump it higher (or set `0` to disable) on faster, more reliable bearers; drop it lower if your bearer's MTU is smaller than 4 KiB.
+Payloads strictly larger than `DAPPS_FRAGMENT_THRESHOLD_BYTES` get split into N fragments at submit, each delivered independently and reassembled at the receiver. Default is 4096 bytes - sized for VHF. Bump it higher (or set `0` to disable) on faster, more reliable bearers, keeping in mind that each message is limited to 16 MB per hop, whatever `DAPPS_MAX_MESSAGE_BYTES` says; drop it lower if your bearer's MTU is smaller than 4 KiB.
 
 Each fragment travels as its own message; the master ID groups them back together at the receiver.
 

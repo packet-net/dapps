@@ -95,6 +95,37 @@ public sealed class PayloadCompressionTests
         PayloadCompression.Decode("d", ExchangeTestKit.Deflate(payload), payload.Length).Should().Equal(payload);
     }
 
+    [Fact]
+    public void Deflate_CutShort_IsRefused()
+    {
+        var payload = new byte[100_000];
+        new Random(262).NextBytes(payload);
+        var wire = ExchangeTestKit.Deflate(payload);
+
+        FluentActions.Invoking(() => PayloadCompression.Decode("d", wire[..(wire.Length / 2)], payload.Length))
+            .Should().Throw<InvalidDataException>();
+    }
+
+    [Fact]
+    public void Deflate_OneByteOverLen_AtTheCap_IsRefused()
+    {
+        var wire = ExchangeTestKit.Deflate(new byte[PayloadCompression.MaxPayloadBytes + 1]);
+
+        FluentActions.Invoking(() => PayloadCompression.Decode("d", wire, PayloadCompression.MaxPayloadBytes))
+            .Should().Throw<InvalidDataException>().WithMessage("*decoded to*");
+    }
+
+    [Fact]
+    public void Deflate_RightAtTheCap_NeverGrowsItsBufferPastTheCap()
+    {
+        // The growing buffer costs about twice its final size on the way
+        // up, plus the final 16 MB. Letting it double past len, then
+        // copying out, came to about 82 MB.
+        var wire = ExchangeTestKit.Deflate(new byte[PayloadCompression.MaxPayloadBytes]);
+        var allocated = AllocatedBy(() => PayloadCompression.Decode("d", wire, PayloadCompression.MaxPayloadBytes));
+        allocated.Should().BeLessThan(PayloadCompression.MaxPayloadBytes * 3L + FewMegabytes);
+    }
+
     [Theory]
     [InlineData(2_000_000_000UL)]
     [InlineData(16UL * 1024 * 1024)]

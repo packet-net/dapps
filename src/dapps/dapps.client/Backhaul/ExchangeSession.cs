@@ -960,7 +960,7 @@ public sealed class ExchangeSession
         int length;
         if (verb == "msg")
         {
-            if (!IHaveValidator.TryGetLengths(line, out _, out var decoded, out length) || length > MaxWireBytes || decoded > MaxWireBytes)
+            if (!IHaveValidator.TryGetWireLength(line, out _, out length) || length > MaxWireBytes)
             {
                 End();
                 return;
@@ -1187,13 +1187,14 @@ public sealed class ExchangeSession
     /// <summary>Reads and answers a <c>msg</c>. True if its header was valid.</summary>
     private async Task<bool> ReceiveMessageAsync(string line, CancellationToken ct)
     {
-        if (!IHaveValidator.TryGetLengths(line, out var id, out var length, out var wireLength)
-            || wireLength > MaxWireBytes || length > MaxWireBytes)
+        if (!IHaveValidator.TryGetWireLength(line, out var id, out var wireLength) || wireLength > MaxWireBytes)
         {
             // We can't tell where its payload ends, so nothing after it
-            // can be read either. One said to be over the cap, sent or
-            // decoded, can't be meant, and reading it would mean taking
-            // its word for how much to allocate.
+            // can be read either. One whose bytes on the wire are said to
+            // be over the cap can't be meant, and reading it would mean
+            // taking its word for how much to allocate. One that only
+            // decodes to over the cap is read past and refused as too
+            // large (WontTake) before anything decodes it.
             OutOfStep($"can't tell how long the payload after '{Printable(line)}' is");
             return false;
         }

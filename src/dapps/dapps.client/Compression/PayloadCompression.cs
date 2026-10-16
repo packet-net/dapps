@@ -168,25 +168,35 @@ public static class PayloadCompression
         using var input = new MemoryStream(wire);
         using var inflater = new DeflateStream(input, CompressionMode.Decompress);
         // Grows with what actually inflates, never on the word of len:
-        // a few bytes that claim to inflate to 2 GB cost a few bytes. One
-        // byte past len is read so an over-long result is caught as a
-        // length mismatch rather than silently truncated.
-        using var output = new MemoryStream(Math.Min(length + 1, Math.Max(4096, wire.Length * 4)));
-        var chunk = new byte[Math.Min(length + 1, 64 * 1024)];
+        // a few bytes that claim to inflate to 2 GB cost a few bytes. The
+        // buffer never grows past len, so a payload right at the cap costs
+        // what it is, not double.
+        using var output = new MemoryStream(Math.Min(length, Math.Max(4096, wire.Length * 4)));
+        var chunk = new byte[Math.Min(Math.Max(length, 1), 64 * 1024)];
         try
         {
             int n;
-            while (output.Length <= length
-                && (n = inflater.Read(chunk, 0, (int)Math.Min(chunk.Length, length + 1 - output.Length))) > 0)
+            while (output.Length < length
+                && (n = inflater.Read(chunk, 0, (int)Math.Min(chunk.Length, length - output.Length))) > 0)
             {
+                if (output.Length + n > output.Capacity)
+                {
+                    output.Capacity = (int)Math.Min(length, Math.Max(output.Length + n, (long)output.Capacity * 2));
+                }
                 output.Write(chunk, 0, n);
+            }
+            // Anything past len is caught as a length mismatch rather than
+            // silently truncated.
+            if (output.Length == length && inflater.Read(chunk, 0, 1) > 0)
+            {
+                throw new InvalidDataException($"fmt=d payload decoded to more than {length} bytes, len= said {length}");
             }
         }
         catch (Exception ex) when (ex is not InvalidDataException)
         {
             throw new InvalidDataException($"fmt=d payload does not decode: {ex.Message}", ex);
         }
-        return output.ToArray();
+        return output.Length == output.Capacity ? output.GetBuffer() : output.ToArray();
     }
 
     private static byte[] LoadDictionary(string name)

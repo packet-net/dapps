@@ -75,13 +75,13 @@ The admin password (for the dashboard cookie) is set on `/Setup` first-run flow,
 | Poll interval (hours)      | `DAPPS_POLL_INTERVAL_HOURS`      | `6`     | Sweep cadence when scheduled polling is on.                   |
 | Compression enabled        | `DAPPS_COMPRESSION_ENABLED`      | `true`  | Sends message payloads to neighbours zstd-compressed when that saves at least 32 bytes. Can be overridden per neighbour on the Topology page. |
 | Link hold (s)              | `DAPPS_SESSION_TAIL_SECONDS`     | `120`   | Keeps a link to a neighbour open until it has been idle this long, so follow-up messages in either direction go without a new connection. The link is held for the lower of both ends' values. 0 = off; at most 600. Can be overridden per neighbour on the Topology page. |
-| Largest message (bytes)    | `DAPPS_MAX_MESSAGE_BYTES`        | `0`     | The largest message this node takes from a neighbour. Neighbours don't send bigger ones. `0` = no limit. |
+| Largest message (bytes)    | `DAPPS_MAX_MESSAGE_BYTES`        | `0`     | The largest message this node takes from a neighbour. Neighbours don't send bigger ones. `0` = no limit, apart from the 16 MB per hop every node holds to; a value above 16 MB acts as 16 MB. |
 
 ### Multi-part messages
 
 | Name                              | Env var                                  | Default     | What it does                                                                            |
 |-----------------------------------|------------------------------------------|-------------|-----------------------------------------------------------------------------------------|
-| Fragment threshold (bytes)        | `DAPPS_FRAGMENT_THRESHOLD_BYTES`         | `4096`      | Payloads strictly larger than this get split into N fragments at submit. `0` disables.  |
+| Fragment threshold (bytes)        | `DAPPS_FRAGMENT_THRESHOLD_BYTES`         | `4096`      | Payloads strictly larger than this get split into N fragments at submit. `0` disables, but each message is still limited to 16 MB per hop.  |
 | Fragment reassembly timeout (s)   | `DAPPS_FRAGMENT_REASSEMBLY_TIMEOUT_SECONDS` | `604800` (7 d) | Drop incomplete reassembly buffers older than this.                                  |
 | Received-message memory (s)       | `DAPPS_RECEIVED_MEMORY_SECONDS`             | `2592000` (30 d) | Longest a received message is remembered, so a repeat isn't delivered or passed on twice: a message with a TTL is remembered until that runs out plus an hour, capped at this; one with no TTL for this long. |
 
