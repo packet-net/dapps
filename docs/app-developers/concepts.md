@@ -41,7 +41,7 @@ On delivery, DAPPS surfaces the **residual** TTL to the receiving app - both RES
 
 Pick a TTL that matches the app:
 
-- **Chat / presence**: short (60–300 s). Stale chat is annoying.
+- **Chat / presence**: short (60 to 300 s). Stale chat is annoying.
 - **Bulletins / news**: medium (hours).
 - **Configuration updates**: long (a day or more) - the receiver wants the latest, but yesterday's update is still useful if today's hasn't arrived yet.
 - **No TTL at all**: only if the message will *always* be useful no matter how late it arrives.
