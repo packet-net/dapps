@@ -22,14 +22,21 @@ public sealed class AppTokenStore(ILogger<AppTokenStore> logger)
     private const int Iterations = 100_000;
     private static readonly HashAlgorithmName Hash = HashAlgorithmName.SHA256;
 
+    /// <summary>Raised with the app name (as passed in, which callers have
+    /// normalised) after its token is issued, rotated or revoked. The MQTT
+    /// broker listens and drops that app's live connections, matching the
+    /// name case-insensitively.</summary>
+    public event Action<string>? TokenChanged;
+
     /// <summary>
     /// Generate a fresh token for <paramref name="appName"/>, store its
     /// hash, and return the plaintext for the caller to hand to the app
     /// owner. Re-issuing for an existing app rotates: the prior token
     /// stops verifying straight away, so REST calls using it fail on
-    /// their very next request. An MQTT client that's already connected
-    /// keeps working until it disconnects and reconnects, though - the
-    /// broker only checks the token at CONNECT, not per message.
+    /// their very next request. The broker only checks the token at
+    /// CONNECT, so it listens for <see cref="TokenChanged"/> and drops
+    /// the app's already-connected MQTT clients; they must reconnect
+    /// with the new token.
     ///
     /// Looks up any existing row for <paramref name="appName"/> case-
     /// insensitively, so rotating "chat" also replaces a pre-existing
@@ -58,6 +65,7 @@ public sealed class AppTokenStore(ILogger<AppTokenStore> logger)
         });
 
         logger.LogInformation("Issued token for app {0}", appName);
+        TokenChanged?.Invoke(appName);
         return plaintext;
     }
 
@@ -91,14 +99,14 @@ public sealed class AppTokenStore(ILogger<AppTokenStore> logger)
     /// <summary>Remove a token, matching <paramref name="appName"/>
     /// case-insensitively against whatever's stored (see
     /// <see cref="CreateOrRotateAsync"/>). Returns true if a row was
-    /// deleted. Immediate for REST; an already-connected MQTT client for
-    /// that app keeps working until it next reconnects (see
-    /// <see cref="CreateOrRotateAsync"/> for why).</summary>
+    /// deleted. Immediate for REST, and the app's already-connected MQTT
+    /// clients are dropped (see <see cref="CreateOrRotateAsync"/>).</summary>
     public async Task<bool> RevokeAsync(string appName)
     {
         var connection = DbInfo.GetAsyncConnection();
         var deleted = await connection.ExecuteAsync(
             "delete from apptokens where AppName = ? collate nocase", appName);
+        TokenChanged?.Invoke(appName);
         return deleted > 0;
     }
 

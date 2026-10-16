@@ -182,6 +182,48 @@ public sealed class AppApiControllerTests : IAsyncLifetime
             "the row must remain un-acked when the caller isn't authorised for myapp");
     }
 
+    [Fact]
+    public async Task Ack_RepeatOfOwnMessage_StillNoContent()
+    {
+        await database.SaveMessage("xyz9999", "x"u8.ToArray(), salt: null,
+            destination: "myapp@N0CALL", sourceCallsign: "G0SRC", additionalProperties: "{}", ttl: null);
+
+        (await controller.Ack("myapp", "xyz9999")).Should().BeOfType<NoContentResult>();
+        (await controller.Ack("myapp", "xyz9999")).Should().BeOfType<NoContentResult>("acks are idempotent");
+    }
+
+    [Fact]
+    public async Task Ack_OtherAppsMessage_Returns404_AndLeavesUnacked()
+    {
+        await database.SaveMessage("xyz9999", "x"u8.ToArray(), salt: null,
+            destination: "chat@N0CALL", sourceCallsign: "G0SRC", additionalProperties: "{}", ttl: null);
+        controller.HttpContext.Items[BearerAuthMiddleware.AuthenticatedAppKey] = "evil";
+
+        var result = await controller.Ack("evil", "xyz9999");
+
+        result.Should().BeOfType<NotFoundResult>();
+        (await database.GetUnacknowledgedLocalMessagesForApp("chat")).Should().ContainSingle(
+            "one app must not be able to ack another app's message");
+    }
+
+    [Fact]
+    public async Task Ack_QueuedOutboundId_Returns404_AndStillForwards()
+    {
+        var id = await database.SubmitOutboundMessage("myapp", "G1AAA", "hello"u8.ToArray());
+
+        var result = await controller.Ack("myapp", id);
+
+        result.Should().BeOfType<NotFoundResult>();
+        (await database.GetPendingOutboundMessages()).Select(m => m.Id).Should().Contain(id,
+            "acking an outbound id must not cancel its forwarding");
+    }
+
+    [Fact]
+    public async Task Ack_UnknownId_Returns404()
+    {
+        (await controller.Ack("myapp", "nothere")).Should().BeOfType<NotFoundResult>();
+    }
+
     private sealed class TestOptionsMonitor<T>(T value) : IOptionsMonitor<T>
     {
         public T CurrentValue { get; } = value;

@@ -34,7 +34,7 @@
             <li>The app's MQTT CONNECT uses the app name as <code>username</code> and the token as <code>password</code>.</li>
             <li>REST calls send <code>Authorization: Bearer &lt;token&gt;</code>.</li>
             <li>The token is shown once, right below, immediately after minting - copy it now. DAPPS only stores a salted hash, so it can't be shown again; mint a new one (below) if it's lost.</li>
-            <li>Minting for an app name that already has a token rotates it (you'll be asked to confirm first): REST calls using the old token fail on their very next request, but an already-connected MQTT client for that app keeps working until it next reconnects - the broker only checks the token at CONNECT.</li>
+            <li>Minting for an app name that already has a token rotates it (you'll be asked to confirm first): REST calls using the old token fail on their very next request, and the app's open MQTT connections are dropped, so it has to reconnect with the new token.</li>
             <li>App names are lowercased, plain ASCII, and can't contain '/', '+', '#', whitespace or control characters - the same characters MQTT topics and the REST path use as separators or wildcards.</li>
             <li><a href="https://packet-net.github.io/dapps/app-developers/reference/#authentication" target="_blank" rel="noopener">Manual: app authentication</a>, including the equivalent curl recipe for scripting this.</li>
         </ul>
@@ -112,7 +112,7 @@
         form.addEventListener('submit', function (e) {
             var app = form.dataset.app || '';
             var ok = confirm('Revoke the token for "' + app + '"? ' +
-                'REST calls using it fail on their next request; an already-connected MQTT client for it keeps working until it next reconnects.');
+                'REST calls using it fail on their next request, and its open MQTT connections are dropped.');
             if (!ok) e.preventDefault();
         });
     });
@@ -135,7 +135,7 @@
             if (existingNames.indexOf(candidate) === -1) return;
 
             var ok = confirm('This replaces "' + candidate + '"\'s existing token; apps using it will stop working ' +
-                '(REST calls fail on their next request; an already-connected MQTT client keeps working until it next reconnects). Continue?');
+                '(REST calls fail on their next request, and its open MQTT connections are dropped). Continue?');
             if (!ok) e.preventDefault();
         });
     })();

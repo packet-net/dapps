@@ -62,6 +62,8 @@ The destination is encoded in the topic, not the payload. So submitting to `dapp
 
 Publish a 7-character message id (as the UTF-8 payload) to mark it processed. Idempotent - re-acking is a no-op. Until you ack, DAPPS treats the message as still pending and will redeliver on next subscribe.
 
+You can only ack your own app's inbound messages. Any other id (another app's message, a message waiting to be sent onward, or an unknown id) is ignored, and an MQTT 5 client gets `NotAuthorized` in the PUBACK.
+
 QoS 1 is fine; QoS 0 is acceptable since at worst the message gets redelivered (and your idempotency check will catch it).
 
 ### Authentication
@@ -69,11 +71,17 @@ QoS 1 is fine; QoS 0 is acceptable since at worst the message gets redelivered (
 New installs turn on **Require per-app tokens for MQTT/REST** (`AuthRequired`) by default; an install upgraded from an older version keeps whatever it already had set. While it's on:
 
 - CONNECT must include `username=<app>` and `password=<token-plaintext>`.
-- An app authenticated as `chat` may only publish to `dapps/out/chat/*` and `dapps/ack/chat`, and only subscribe to `dapps/in/chat`. Cross-app traffic is rejected with `NotAuthorized`.
+- The token says which app is publishing and acking. An app authenticated as `chat` may only publish to `dapps/out/chat/*` and `dapps/ack/chat`, and its acks only count for `chat`'s own messages.
+- Reading is not restricted. A subscription to another app's topic by name (`dapps/in/mail`) is refused, but wildcard filters such as `dapps/in/#` or `#` are allowed, so apps on the same node can read each other's inbound traffic. This is by design: the tokens stop one app interfering with another, not reading it.
+- When the operator revokes or rotates an app's token, that app's open MQTT connections are dropped. It has to reconnect with its new token.
 
 The operator mints one on the dashboard's **App tokens** page (in the sidebar, under System): type an app name, mint, copy the plaintext shown once, revoke from the same page when it's no longer needed. App names are lowercased ("chat" and "Chat" are the same app) and can't contain `/`, `+`, `#`, whitespace, or control characters - the same characters MQTT topics and the REST path use as separators or wildcards. Minting over an app that already has a token rotates it, so the page asks for confirmation first.
 
-That page is a thin front-end over the admin-only `/AppTokens` REST endpoint: `POST /AppTokens` with `{"app": "chat"}` returns the token (posting again rotates it), `GET /AppTokens` lists them, and `DELETE /AppTokens/chat` revokes one - useful if you're scripting this rather than clicking through the dashboard. Revoking or rotating stops REST access with the very next request; an MQTT client that's already connected keeps working until it disconnects and reconnects, since the broker only checks the token at CONNECT, not per message.
+That page is a thin front-end over the admin-only `/AppTokens` REST endpoint: `POST /AppTokens` with `{"app": "chat"}` returns the token (posting again rotates it), `GET /AppTokens` lists them, and `DELETE /AppTokens/chat` revokes one - useful if you're scripting this rather than clicking through the dashboard. Revoking or rotating stops REST access with the very next request, and drops the app's open MQTT connections, so it has to reconnect with its new token.
+
+Whether or not tokens are required, clients can't publish to any other `dapps/` topic: `dapps/in/*`, `dapps/metrics/*` and `dapps/audit/*` are written by DAPPS alone, so nobody can fake a delivery, a heartbeat or an audit entry. Topics outside `dapps/` are left alone for apps to use as they like.
+
+Refused publishes and subscriptions get `NotAuthorized` in the PUBACK or SUBACK on MQTT 5. MQTT 3.1.1 has no way to say so: the publish or subscription is just dropped. If DAPPS fails to store an outbound message, an MQTT 5 client gets an error PUBACK and an MQTT 3.1.1 client is disconnected instead of being acked, so a QoS 1 client knows to send it again.
 
 #### Minting a token from the command line
 
@@ -164,7 +172,7 @@ curl http://localhost:5000/AppApi/inbound/chat
 
 Mark `{id}` as processed. Idempotent.
 
-**Response**: `204 No Content`.
+**Response**: `204 No Content`, or `404 Not Found` if `{id}` is not one of `{app}`'s inbound messages (another app's message, a message waiting to be sent onward, or an unknown id). Nothing changes on a 404.
 
 ```bash
 curl -X POST http://localhost:5000/AppApi/inbound/chat/abc1234/ack

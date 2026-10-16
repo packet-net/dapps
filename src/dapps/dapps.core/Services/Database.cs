@@ -87,6 +87,24 @@ public class Database(
     }
 
     /// <summary>
+    /// An app's ack: marks <paramref name="id"/> delivered only when it is
+    /// a message for <paramref name="appName"/> at our own callsign, SSID
+    /// included, so one app cannot ack another app's mail, and nobody can
+    /// ack a queued outbound or transit message and so stop it being
+    /// forwarded. Returns false when the id is not one of that app's
+    /// messages. A repeat ack of the app's own message still returns true
+    /// and keeps the first CompletedAt.
+    /// </summary>
+    public async Task<bool> MarkLocallyDeliveredForApp(string appName, string id)
+    {
+        var (local, local0) = DestinationParser.LocalLikePatterns(options.CurrentValue.Callsign, appName);
+        var updated = await DbInfo.GetAsyncConnection().ExecuteAsync(
+            "update messages set locallydelivered=1, CompletedAt=coalesce(CompletedAt, ?) where id=? and (destination like ? escape '\\' or destination like ? escape '\\')",
+            timeProvider.GetUtcNow().UtcDateTime.Ticks, id, local, local0);
+        return updated > 0;
+    }
+
+    /// <summary>
     /// Persist a fresh outbound message submitted by a local app via the MQTT
     /// or REST app interface. Computes the message id from the payload + a
     /// salt; returns the id for the caller to log/echo back to the app.

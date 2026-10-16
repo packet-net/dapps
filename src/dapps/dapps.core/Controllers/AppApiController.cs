@@ -66,13 +66,16 @@ public class AppApiController(Database database) : ControllerBase
     /// <summary>
     /// Acknowledge receipt of an inbound message - once ack'd, the message
     /// no longer appears in subsequent /inbound responses or MQTT replays.
-    /// Equivalent to publishing the id on `dapps/ack/{app}`.
+    /// Equivalent to publishing the id on `dapps/ack/{app}`. Only the
+    /// app's own inbound messages can be acked; any other id (another
+    /// app's message, a queued outbound or transit message, or an unknown
+    /// id) returns 404 and changes nothing.
     /// </summary>
     [HttpPost("inbound/{app}/{id}/ack")]
     public async Task<IActionResult> Ack(string app, string id)
     {
         if (!HttpContext.IsAuthorisedForApp(app)) return Forbid();
-        await database.MarkLocallyDelivered(id);
+        if (!await database.MarkLocallyDeliveredForApp(app, id)) return NotFound();
         return NoContent();
     }
 }
