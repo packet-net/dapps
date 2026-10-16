@@ -68,6 +68,37 @@ internal static class ExchangeTestKit
     /// <summary>The <c>msg</c> or <c>ihave</c> line for a message, as a
     /// peer would send it.</summary>
     public static string Line(string verb, BackhaulMessage m) => OfferLine.Build(verb, m, "p", null);
+
+    /// <summary>Raw deflate of <paramref name="data"/>, as <c>fmt=d</c> carries it.</summary>
+    public static byte[] Deflate(byte[] data)
+    {
+        using var ms = new MemoryStream();
+        using (var deflate = new System.IO.Compression.DeflateStream(ms, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
+        {
+            deflate.Write(data);
+        }
+        return ms.ToArray();
+    }
+
+    /// <summary>
+    /// A zstd frame whose header says it holds <paramref name="claimed"/>
+    /// bytes, whatever it really holds: the frame content size is
+    /// rewritten as an 8-byte field (RFC 8878, 3.1.1.1).
+    /// </summary>
+    public static byte[] WithClaimedContentSize(byte[] frame, ulong claimed)
+    {
+        var descriptor = frame[4];
+        var fcsFlag = descriptor >> 6;
+        var singleSegment = (descriptor >> 5 & 1) == 1;
+        var didSize = new[] { 0, 1, 2, 4 }[descriptor & 3];
+        var fcsAt = 5 + (singleSegment ? 0 : 1) + didSize;
+        var fcsSize = fcsFlag == 0 ? (singleSegment ? 1 : 0) : new[] { 1, 2, 4, 8 }[fcsFlag];
+        var fcs = BitConverter.GetBytes(claimed);
+        if (!BitConverter.IsLittleEndian) Array.Reverse(fcs);
+        var patched = frame[..fcsAt];
+        patched[4] = (byte)(descriptor | 0xC0);
+        return [.. patched, .. fcs, .. frame[(fcsAt + fcsSize)..]];
+    }
 }
 
 /// <summary>

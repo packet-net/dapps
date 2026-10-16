@@ -245,9 +245,18 @@ public static class IHaveValidator
     /// still have its payload read past. False when they can't be made
     /// out, and the reader can no longer tell where the next line starts.
     /// </summary>
-    public static bool TryGetWireLength(string line, out string? id, out int wireLength)
+    public static bool TryGetWireLength(string line, out string? id, out int wireLength) =>
+        TryGetLengths(line, out id, out _, out wireLength);
+
+    /// <summary>
+    /// As <see cref="TryGetWireLength"/>, also giving the line's
+    /// <c>len=</c>, the size of the payload once decoded, or null when
+    /// it can't be made out (the line is refused once read past).
+    /// </summary>
+    public static bool TryGetLengths(string line, out string? id, out int? length, out int wireLength)
     {
         id = null;
+        length = null;
         wireLength = 0;
         var parts = line.Split(' ');
         if (parts.Length < 2) return false;
@@ -264,6 +273,7 @@ public static class IHaveValidator
                 case "clen": clen = parts[i][(eq + 1)..]; break;
             }
         }
+        if (int.TryParse(len, NumberStyles.None, CultureInfo.InvariantCulture, out var parsedLen)) length = parsedLen;
         var counted = fmt is null or "p" ? len : clen;
         return int.TryParse(counted, NumberStyles.None, CultureInfo.InvariantCulture, out wireLength);
     }
