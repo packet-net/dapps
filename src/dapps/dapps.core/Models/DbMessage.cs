@@ -7,7 +7,8 @@ namespace dapps.core.Models;
 /// existing database gets them on upgrade; an older version simply ignores
 /// them). <c>messages_state</c> serves the forwarder queue, the unacked
 /// replay and the dashboard counts, all of which filter on
-/// <see cref="LocallyDelivered"/> and <see cref="Forwarded"/>;
+/// <see cref="LocallyDelivered"/> and <see cref="Forwarded"/>, and the
+/// retention sweep's rows finished before <see cref="CompletedAt"/> existed;
 /// <c>messages_CreatedAt</c> the dashboard's newest-first list;
 /// <c>messages_CompletedAt</c> the retention sweep; <c>messages_stream</c>
 /// the ordered-stream reorder buffer.
@@ -69,6 +70,7 @@ public class DbMessage
     /// or was submitted locally. Used with <see cref="Ttl"/> to compute
     /// residual lifetime on forward and to age out expired rows.</summary>
     [Indexed]
+    [Indexed(Name = "messages_state", Order = 4)]
     public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
 
     /// <summary>
@@ -148,8 +150,8 @@ public class DbMessage
     /// still queued or unacked. The retention sweep deletes a finished
     /// message 30 days after this, so a message that sat in the queue for
     /// weeks and went out yesterday stays for another 30 days. Rows
-    /// finished by a version without this column get their
-    /// <see cref="CreatedAt"/> here, filled in by the sweep. Added last so
+    /// finished by a version without this column go by
+    /// <see cref="CreatedAt"/> instead. Added last so
     /// the column order of existing databases is unchanged.</summary>
     [Indexed]
     [Indexed(Name = "messages_state", Order = 3)]

@@ -364,11 +364,11 @@ public class Database(
     /// (<see cref="DbMessage.CompletedAt"/>). Rows still queued, unacked,
     /// or parked for ordering are never touched, whatever their age.
     ///
-    /// First gives up to <paramref name="batchSize"/> finished rows that
-    /// have no <see cref="DbMessage.CompletedAt"/> (finished before the
-    /// column existed, or by an older version after a downgrade) their
-    /// <see cref="DbMessage.CreatedAt"/> instead: the best time there is,
-    /// and never later than when they really finished.
+    /// A finished row with no <see cref="DbMessage.CompletedAt"/> (finished
+    /// before the column existed, or by an older version after a
+    /// downgrade) goes by its <see cref="DbMessage.CreatedAt"/> instead:
+    /// the best time there is, and never later than when it really
+    /// finished.
     ///
     /// Batched so a first run over years of history doesn't hold the
     /// shared connection for long; the next tick takes the next batch.
@@ -377,18 +377,17 @@ public class Database(
     internal async Task<int> SweepFinishedMessagesAsync(DateTime cutoff, int batchSize)
     {
         var connection = DbInfo.GetAsyncConnection();
-        // Spelled out per (LocallyDelivered, Forwarded) pair so each arm is
-        // a seek on messages_state that never reads the row (or its payload).
-        await connection.ExecuteAsync(
-            "update messages set CompletedAt = CreatedAt where rowid in (select rowid from messages where " +
-            "(LocallyDelivered=1 and Forwarded=0 and CompletedAt is null) or " +
-            "(LocallyDelivered=1 and Forwarded=1 and CompletedAt is null) or " +
-            "(LocallyDelivered=0 and Forwarded=1 and CompletedAt is null) limit ?)",
-            batchSize);
+        // The first arm is a range on messages_CompletedAt. The legacy arms
+        // are spelled out per (LocallyDelivered, Forwarded) pair so each is
+        // a range seek on messages_state that reads only the rows it deletes.
+        var t = cutoff.Ticks;
         return await connection.ExecuteAsync(
-            "delete from messages where rowid in (select rowid from messages where CompletedAt < ? " +
-            "and (Forwarded=1 or LocallyDelivered=1) and PendingInOrder=0 limit ?)",
-            cutoff.Ticks, batchSize);
+            "delete from messages where rowid in (select rowid from messages where PendingInOrder=0 and (" +
+            "(CompletedAt < ? and (Forwarded=1 or LocallyDelivered=1)) or " +
+            "(LocallyDelivered=1 and Forwarded=0 and CompletedAt is null and CreatedAt < ?) or " +
+            "(LocallyDelivered=1 and Forwarded=1 and CompletedAt is null and CreatedAt < ?) or " +
+            "(LocallyDelivered=0 and Forwarded=1 and CompletedAt is null and CreatedAt < ?)) limit ?)",
+            t, t, t, t, batchSize);
     }
 
     /// <summary>

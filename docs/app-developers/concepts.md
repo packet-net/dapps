@@ -37,7 +37,7 @@ The set can be a SQLite table, a Redis key with a TTL, a file, whatever fits the
 
 When an app submits a message, it can include a **TTL** in seconds - "this is still worth delivering for the next N seconds; after that, drop it." The TTL travels on the wire and is decremented at every hop by the time the message spent queued on that hop. A message with TTL 300 that sat in two intermediate queues for 60 s each arrives at the destination with about 180 s left.
 
-On delivery, DAPPS surfaces the **residual** TTL to the receiving app - both REST and MQTT report the same number. An app reading `ttl=2` knows the message is nearly stale; an app reading `ttl=null` knows the sender didn't bother to specify one (in which case the message is kept until forwarded or manually deleted).
+On delivery, DAPPS surfaces the **residual** TTL to the receiving app - both REST and MQTT report the same number. An app reading `ttl=2` knows the message is nearly stale; an app reading `ttl=null` knows the sender didn't bother to specify one (in which case the message never expires: it waits until it is forwarded, or acked by the app it is for, and the node deletes it 30 days after that).
 
 Pick a TTL that matches the app:
 

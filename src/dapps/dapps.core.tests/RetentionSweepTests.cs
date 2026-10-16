@@ -170,8 +170,31 @@ public sealed class RetentionSweepTests : IAsyncLifetime
 
         deleted.Should().Be(1);
         Exists("legacy1").Should().BeFalse();
+        Exists("legacy2").Should().BeTrue("created 10 days ago");
+
+        clock.Advance(TimeSpan.FromDays(21));
+        (await database.SweepFinishedMessagesAsync(Now - TtlSweeperService.FinishedMessageRetention, 1000)).Should().Be(1);
+        Exists("legacy2").Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task LegacyRows_AreDeletedInBatchesToo_AndNeverRewritten()
+    {
+        CreateTables();
+        using (var c = DbInfo.GetConnection())
+        {
+            for (var i = 0; i < 5; i++) c.Insert(Row($"leg{i:D4}", T0.AddDays(-40), forwarded: true));
+            c.Insert(Row("legyoung", T0.AddDays(-5), delivered: true));
+        }
+
+        var cutoff = Now - TtlSweeperService.FinishedMessageRetention;
+        (await database.SweepFinishedMessagesAsync(cutoff, 2)).Should().Be(2);
+        (await database.SweepFinishedMessagesAsync(cutoff, 2)).Should().Be(2);
+        (await database.SweepFinishedMessagesAsync(cutoff, 2)).Should().Be(1);
+        (await database.SweepFinishedMessagesAsync(cutoff, 2)).Should().Be(0);
+
         using var c2 = DbInfo.GetConnection();
-        c2.Find<DbMessage>("legacy2")!.CompletedAt.Should().Be(T0.AddDays(-10));
+        c2.Find<DbMessage>("legyoung")!.CompletedAt.Should().BeNull("the sweep only deletes, it never rewrites a row");
     }
 
     [Fact]
@@ -231,9 +254,10 @@ public sealed class RetentionSweepTests : IAsyncLifetime
         try
         {
             // The sweep at start-up takes one batch of each.
+            // Without the bound the first sweep would take all five and
+            // the counts would never sit at 3; the fake clock means no
+            // further tick happens until Advance.
             await WaitFor(3, 3);
-            await Task.Delay(100);
-            Messages().Should().Be(3, "one tick takes no more than one batch");
 
             clock.Advance(sweeper.SweepInterval);
             await WaitFor(1, 1);
@@ -327,13 +351,15 @@ public sealed class RetentionSweepTests : IAsyncLifetime
             .Should().Contain("messages_CreatedAt");
         Plan("select * from messages where PendingInOrder=1 and OriginatorCallsign=? and StreamId=? order by StreamSeq asc", "a", "b")
             .Should().Contain("messages_stream");
-        Plan("select rowid from messages where CompletedAt < ? and (Forwarded=1 or LocallyDelivered=1) and PendingInOrder=0 limit ?", 1L, 10)
-            .Should().Contain("messages_CompletedAt");
-        Plan("select rowid from messages where " +
-             "(LocallyDelivered=1 and Forwarded=0 and CompletedAt is null) or " +
-             "(LocallyDelivered=1 and Forwarded=1 and CompletedAt is null) or " +
-             "(LocallyDelivered=0 and Forwarded=1 and CompletedAt is null) limit ?", 10)
-            .Should().Contain("COVERING INDEX messages_state").And.NotContain("SCAN");
+        var retention = Plan("select rowid from messages where PendingInOrder=0 and (" +
+            "(CompletedAt < ? and (Forwarded=1 or LocallyDelivered=1)) or " +
+            "(LocallyDelivered=1 and Forwarded=0 and CompletedAt is null and CreatedAt < ?) or " +
+            "(LocallyDelivered=1 and Forwarded=1 and CompletedAt is null and CreatedAt < ?) or " +
+            "(LocallyDelivered=0 and Forwarded=1 and CompletedAt is null and CreatedAt < ?)) limit ?", 1L, 1L, 1L, 1L, 10);
+        retention.Should().Contain("MULTI-INDEX OR")
+            .And.Contain("messages_CompletedAt (CompletedAt<?)")
+            .And.Contain("messages_state (LocallyDelivered=? AND Forwarded=? AND CompletedAt=? AND CreatedAt<?)")
+            .And.NotContain("SCAN");
         Plan("select rowid from dropped_messages where DroppedAt < ? limit ?", 1L, 10)
             .Should().Contain("dropped_messages_DroppedAt");
         Plan("select * from dropped_messages order by DroppedAt desc limit ?", 50)
