@@ -522,7 +522,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         await h.Logs.WaitForAsync("(attempt 1,", ct);
         await clock.WaitForTimerAsync(ReconnectBackoffSchedule.DelayForAttempt(1), ct);
 
-        h.Options.Set(h.SameOptions());
+        h.Options.Set(h.With(o => o.Callsign = "G5ALF-4"));
 
         using var second = await h.Host.AcceptAsync(ct);
         await second.ExpectRegisterAsync(ct);
@@ -536,7 +536,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         await using var h = new AgwInboundServiceHarness(Local, clock);
         using var first = await h.StartAsync(ct);
 
-        h.Options.Set(h.SameOptions());
+        h.Options.Set(h.With(o => o.Callsign = "G5ALF-4"));
 
         await clock.WaitForTimerAsync(AgwInboundService.NonFailureRetryDelay, ct);
         h.Host.Pending().Should().BeFalse("a cancelled cycle is not a failure, but it still pauses briefly");
@@ -545,5 +545,111 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         clock.Advance(AgwInboundService.NonFailureRetryDelay);
         using var second = await h.Host.AcceptAsync(ct);
         await second.ExpectRegisterAsync(ct);
+    }
+
+    /// <summary>Saves that change nothing the AGW connection is built
+    /// from: the TX STOP and RESUME buttons, other settings, and the RHP
+    /// bearer's own port.</summary>
+    public static TheoryData<string> UnrelatedSaves => ["TxEnabled", "HeartbeatEnabled", "CompressionEnabled", "RhpPort", "nothing"];
+
+    private static void ChangeUnrelated(SystemOptions o, string field)
+    {
+        switch (field)
+        {
+            case "TxEnabled": o.TxEnabled = !o.TxEnabled; break;
+            case "HeartbeatEnabled": o.HeartbeatEnabled = !o.HeartbeatEnabled; break;
+            case "CompressionEnabled": o.CompressionEnabled = !o.CompressionEnabled; break;
+            case "RhpPort": o.RhpPort += 1; break;
+            case "nothing": break;
+            default: throw new ArgumentOutOfRangeException(nameof(field), field, null);
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(UnrelatedSaves))]
+    public async Task ASaveThatChangesNothingTheConnectionUses_LeavesItAndItsLiveSessionsUp(string field)
+    {
+        // #273: any save used to cancel the cycle, closing the AGW socket,
+        // so BPQ sent DISC on every live inbound link and nobody was
+        // listening for the next 5 s.
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        using var bpq = await h.StartAsync(ct);
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
+
+        h.Options.Set(h.With(o => ChangeUnrelated(o, field)));
+
+        (await bpq.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'd', "the live session is not torn down");
+        // The same socket still serves: a second caller is answered on it.
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect("M0XYZ-1", Local, Port));
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
+        h.Host.Pending().Should().BeFalse("the service never dialled again");
+    }
+
+    [Fact]
+    public async Task AnUnrelatedSaveDuringTheBackoff_LeavesTheWaitAlone()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        var first = await h.StartAsync(ct);
+
+        first.Close();
+        await h.Logs.WaitForAsync("(attempt 1,", ct);
+        var firstTier = ReconnectBackoffSchedule.DelayForAttempt(1);
+        await clock.WaitForTimerAsync(firstTier, ct);
+
+        h.Options.Set(h.With(o => o.TxEnabled = false));
+
+        await Task.Delay(TimeSpan.FromMilliseconds(300), ct);
+        h.Host.Pending().Should().BeFalse("retrying with the same settings sooner would not help");
+        clock.Advance(firstTier);
+        using var second = await h.Host.AcceptAsync(ct);
+        await second.ExpectRegisterAsync(ct);
+    }
+
+    public static TheoryData<string> ConnectionSaves => ["Callsign", "NodeHost", "AgwPort", "NodeBearer"];
+
+    [Theory]
+    [MemberData(nameof(ConnectionSaves))]
+    public async Task ASaveThatChangesWhatTheConnectionUses_StillRestartsIt(string field)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        using var bpq = await h.StartAsync(ct);
+
+        h.Options.Set(h.With(o =>
+        {
+            switch (field)
+            {
+                case "Callsign": o.Callsign = "G5ALF-4"; break;
+                case "NodeHost": o.NodeHost = "127.0.0.2"; break;
+                case "AgwPort": o.AgwPort += 1; break;
+                case "NodeBearer": o.NodeBearer = "rhpv2"; break;
+                default: throw new ArgumentOutOfRangeException(nameof(field), field, null);
+            }
+        }));
+
+        (await ReadUntilClosedAsync(bpq, ct)).Should().Match<Exception>(e => e is EndOfStreamException || e is IOException,
+            "the service closed the connection built from the old settings");
+        await clock.WaitForTimerAsync(AgwInboundService.NonFailureRetryDelay, ct);
+        h.Metrics.Take().AgwReconnectAttempt.Should().Be(0, "an options change never counts against the ramp");
+    }
+
+    /// <summary>Reads until the service closes the socket and returns how
+    /// the read ended; a timeout propagates and fails the test.</summary>
+    private static async Task<Exception> ReadUntilClosedAsync(FakeAgwSocket socket, CancellationToken ct)
+    {
+        try
+        {
+            while (true) await socket.ReadFrameAsync(ct);
+        }
+        catch (Exception ex) when (ex is not TimeoutException and not OperationCanceledException)
+        {
+            return ex;
+        }
     }
 }

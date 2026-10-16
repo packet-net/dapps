@@ -72,13 +72,18 @@ public sealed class Rhpv2InboundService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // Cancel the current connection-cycle on any SystemOptions change
-        // so a /Config save (callsign, RHP host/port/auth, bearer flip)
-        // takes effect on the next iteration without a daemon restart -
-        // including collapsing an in-flight backoff wait, so a fix to
-        // the RHP host/port/callsign reconnects immediately rather than
-        // sitting out the rest of a (possibly multi-minute) delay.
-        optionsChangeSubscription = options.OnChange((_, _) => reconnect.OptionsChanged(cycleTokenSource));
+        // Cancel the current connection-cycle when a SystemOptions save
+        // changes a field the cycle is built from (bearer, callsign, node
+        // host, RHP port or credentials), so the fix takes effect on the
+        // next iteration without a daemon restart - including collapsing
+        // an in-flight backoff wait, so a fix to the RHP host/port/
+        // callsign reconnects immediately rather than sitting out the
+        // rest of a (possibly multi-minute) delay. Any other save (TX
+        // stop/resume, heartbeat, probing, ...) is ignored here: the
+        // inbound session handlers run on the cycle token, so cancelling
+        // it would drop every live session (#273).
+        optionsChangeSubscription = options.OnChange((o, _) =>
+            reconnect.OptionsChanged(CycleSettings.From(o), cycleTokenSource));
         try
         {
             while (!stoppingToken.IsCancellationRequested)
@@ -138,9 +143,21 @@ public sealed class Rhpv2InboundService(
         }
     }
 
+    /// <summary>The SystemOptions fields one RHP connection cycle is
+    /// built from, copied at cycle start: a save that changes one of
+    /// these restarts the cycle, any other save leaves it running. The
+    /// SSID probe-walk persists a new Callsign, which is meant to restart
+    /// the cycle so it binds the winner via the non-walking path.</summary>
+    internal sealed record CycleSettings(
+        string NodeBearer, string Callsign, string NodeHost, int RhpPort, string RhpUser, string RhpPass)
+    {
+        public static CycleSettings From(SystemOptions o) =>
+            new(o.NodeBearer, o.Callsign, o.NodeHost, o.RhpPort, o.RhpUser, o.RhpPass);
+    }
+
     private async Task RunOnce(CancellationToken stoppingToken)
     {
-        var opts = options.CurrentValue;
+        var opts = reconnect.BeginCycle(() => CycleSettings.From(options.CurrentValue));
 
         // Bearer-active gate: only run when RHPv2 is configured.
         // AgwInboundService runs alongside us with the matching gate on
@@ -182,7 +199,7 @@ public sealed class Rhpv2InboundService(
         // Port omitted = listen across all configured XRouter ports.
         // A callsign freshly derived from PDN_NODE_CALLSIGN may probe-
         // walk to a free SSID here; see BindListenerAsync.
-        var bound = await BindListenerAsync(rhp, opts, stoppingToken);
+        var bound = await BindListenerAsync(rhp, opts.Callsign, stoppingToken);
         if (bound is null)
         {
             return; // logged inside; the ExecuteAsync loop retries after NonFailureRetryDelay
@@ -342,20 +359,20 @@ public sealed class Rhpv2InboundService(
     /// explicitly-configured callsign is already claimed on the node, so
     /// the caller's sliding backoff escalates instead of retrying flat.</returns>
     private async Task<(int Handle, string Callsign)?> BindListenerAsync(
-        RhpClient rhp, SystemOptions opts, CancellationToken ct)
+        RhpClient rhp, string callsign, CancellationToken ct)
     {
         var pending = DbStartup.ReadPendingDerivedCallsign();
         var walkEligible =
             pending is not null
-            && string.Equals(pending, opts.Callsign, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(pending, callsign, StringComparison.OrdinalIgnoreCase)
             && string.IsNullOrEmpty(Environment.GetEnvironmentVariable(DbStartup.EnvVarFor("Callsign")))
             // Node-owned-callsign contract: a host-assigned PDN_APP_CALLSIGN
             // is bound verbatim - never probe-walk off it.
             && DbStartup.ReadNodeAssignedCallsign() is null;
 
         IReadOnlyList<string> candidates = walkEligible
-            ? SsidProbeCandidates(opts.Callsign, Environment.GetEnvironmentVariable(DbStartup.NodeCallsignEnvVar))
-            : [opts.Callsign];
+            ? SsidProbeCandidates(callsign, Environment.GetEnvironmentVariable(DbStartup.NodeCallsignEnvVar))
+            : [callsign];
         var taken = new List<string>();
 
         foreach (var candidate in candidates)
@@ -422,7 +439,7 @@ public sealed class Rhpv2InboundService(
         logger.LogError(
             "RHP inbound: no free SSID for the derived callsign {call}: every candidate ({candidates}) is taken " +
             "on the node. Reverting to setup-required mode; configure a callsign via the dashboard or DAPPS_CALLSIGN.",
-            opts.Callsign, string.Join(", ", candidates));
+            callsign, string.Join(", ", candidates));
         DbStartup.AbandonDerivedCallsign();
         ReloadOptionsStore();
         return null;

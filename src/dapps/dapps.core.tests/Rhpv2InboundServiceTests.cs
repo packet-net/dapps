@@ -169,7 +169,9 @@ public sealed class Rhpv2InboundServiceTests : IAsyncLifetime
         {
             WaitForFrames(server, count: 3, TimeSpan.FromSeconds(5));
 
-            opts.Set(Options());
+            var changed = Options();
+            changed.Callsign = "G0DPB-2";
+            opts.Set(changed);
 
             await clock.WaitForTimerAsync(Rhpv2InboundService.NonFailureRetryDelay, ct);
             await Task.Delay(500, ct);
@@ -183,6 +185,142 @@ public sealed class Rhpv2InboundServiceTests : IAsyncLifetime
         {
             await service.StopAsync(CancellationToken.None);
         }
+    }
+
+    [Theory]
+    [InlineData("TxEnabled")]
+    [InlineData("HeartbeatEnabled")]
+    [InlineData("AgwPort")]
+    [InlineData("nothing")]
+    public async Task ASaveThatChangesNothingTheListenerUses_LeavesItAndItsLiveSessionsUp(string field)
+    {
+        // #273: any save used to cancel the cycle, and the session handlers
+        // run on the cycle token, so every live inbound session dropped.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.CreateTable<DbMessage>();
+            c.CreateTable<DbReceived>();
+        }
+        // The mock only knows handles it opened itself; accept SENDs on
+        // the children pushed below so their sessions stay up.
+        await using var server = new MockRhpServer
+        {
+            Handler = msg => msg is SendMessage send
+                ? new SendReplyMessage { Handle = send.Handle, ErrCode = RhpErrorCode.Ok, ErrText = "Ok" }
+                : null,
+        };
+        server.Start();
+        SystemOptions Options() => new()
+        {
+            Callsign = "G0DPB-1",
+            NodeBearer = "rhpv2",
+            NodeHost = server.Endpoint.Address.ToString(),
+            RhpPort = server.Endpoint.Port,
+        };
+        var opts = new MutableOptionsMonitor<SystemOptions>(Options());
+        var service = new Rhpv2InboundService(
+            opts, NullLoggerFactory.Instance, NullLogger<Rhpv2InboundService>.Instance,
+            new Database(NullLogger<Database>.Instance, opts), new NoopInbox(), new OperationalMetrics(),
+            timeProvider: new ObservableTimeProvider());
+
+        var ct = TestContext.Current.CancellationToken;
+        await service.StartAsync(ct);
+        try
+        {
+            var listener = ((BindMessage)WaitForFrames(server, count: 3, TimeSpan.FromSeconds(5))[1]).Handle;
+            await AcceptAsync(server, listener, 501, "M0ABC-1", ct);
+
+            var changed = Options();
+            switch (field)
+            {
+                case "TxEnabled": changed.TxEnabled = false; break;
+                case "HeartbeatEnabled": changed.HeartbeatEnabled = false; break;
+                case "AgwPort": changed.AgwPort = 8000; break;
+            }
+            opts.Set(changed);
+
+            await Task.Delay(500, ct);
+            server.ReceivedFrames.ToArray().OfType<CloseMessage>().Should().BeEmpty("the live session is not closed");
+            // The same connection still serves: a second caller is answered on it.
+            await AcceptAsync(server, listener, 502, "M0XYZ-1", ct);
+            server.ReceivedFrames.ToArray().OfType<ListenMessage>().Should().HaveCount(1, "the listener was never set up again");
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Theory]
+    [InlineData("Callsign")]
+    [InlineData("NodeHost")]
+    [InlineData("RhpPort")]
+    [InlineData("RhpUser")]
+    [InlineData("RhpPass")]
+    [InlineData("NodeBearer")]
+    public async Task ASaveThatChangesWhatTheListenerUses_StillRestartsIt(string field)
+    {
+        await using var server = new MockRhpServer();
+        server.Start();
+        SystemOptions Options() => new()
+        {
+            Callsign = "G0DPB-1",
+            NodeBearer = "rhpv2",
+            NodeHost = server.Endpoint.Address.ToString(),
+            RhpPort = server.Endpoint.Port,
+        };
+        var opts = new MutableOptionsMonitor<SystemOptions>(Options());
+        var clock = new ObservableTimeProvider();
+        var service = new Rhpv2InboundService(
+            opts, NullLoggerFactory.Instance, NullLogger<Rhpv2InboundService>.Instance,
+            new Database(NullLogger<Database>.Instance, opts), new NoopInbox(), new OperationalMetrics(), timeProvider: clock);
+
+        var ct = TestContext.Current.CancellationToken;
+        await service.StartAsync(ct);
+        try
+        {
+            WaitForFrames(server, count: 3, TimeSpan.FromSeconds(5));
+
+            var changed = Options();
+            switch (field)
+            {
+                case "Callsign": changed.Callsign = "G0DPB-2"; break;
+                case "NodeHost": changed.NodeHost = "127.0.0.2"; break;
+                case "RhpPort": changed.RhpPort += 1; break;
+                case "RhpUser": changed.RhpUser = "op"; break;
+                case "RhpPass": changed.RhpPass = "pw"; break;
+                case "NodeBearer": changed.NodeBearer = "agw"; break;
+            }
+            opts.Set(changed);
+
+            // Only a cancelled cycle pauses for the short non-failure delay
+            // while the listener is up.
+            await clock.WaitForTimerAsync(Rhpv2InboundService.NonFailureRetryDelay, ct);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>Pushes an inbound connect for <paramref name="child"/> and
+    /// waits for the session's prompt to be sent on it. The service hooks
+    /// its ACCEPT handler only after the LISTEN reply, so an early push
+    /// can go unheard: repeat it until the prompt shows (a repeat after a
+    /// heard one is ignored as a duplicate child).</summary>
+    private static async Task AcceptAsync(MockRhpServer server, int listener, int child, string remote, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            await server.BroadcastAsync(new AcceptMessage { Handle = listener, Child = child, Remote = remote }, ct);
+            for (var i = 0; i < 25; i++)
+            {
+                if (server.ReceivedFrames.ToArray().OfType<SendMessage>().Any(m => m.Handle == child)) return;
+                await Task.Delay(10, ct);
+            }
+        }
+        throw new TimeoutException($"No prompt sent on child {child}");
     }
 
     private sealed class NoopInbox : IBackhaulInbox

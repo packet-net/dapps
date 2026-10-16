@@ -170,6 +170,67 @@ public sealed class InboundReconnectControllerTests
         await wait.WaitAsync(AssertionTimeout, ct);
     }
 
+    private sealed record Settings(string Host, int Port);
+
+    [Fact]
+    public void OptionsChanged_WithTheSettingsTheCycleWasBuiltWith_LeavesTheCycleRunning()
+    {
+        // #273: a TX STOP or any other unrelated save must not cancel the cycle.
+        var controller = new InboundReconnectController();
+        using var cycle = new CancellationTokenSource();
+        controller.BeginCycle(() => new Settings("node", 8000));
+
+        controller.OptionsChanged(new Settings("node", 8000), cycle);
+
+        cycle.IsCancellationRequested.Should().BeFalse();
+    }
+
+    [Fact]
+    public void OptionsChanged_ComparesWithTheCycleNotThePreviousSave()
+    {
+        // Two saves before the next cycle starts: the second carries the
+        // same changed settings as the first. Against the previous save it
+        // would look unchanged; against the cycle it is still a change.
+        var controller = new InboundReconnectController();
+        controller.BeginCycle(() => new Settings("node", 8000));
+        using var first = new CancellationTokenSource();
+        using var second = new CancellationTokenSource();
+
+        controller.OptionsChanged(new Settings("other", 8000), first);
+        controller.OptionsChanged(new Settings("other", 8000), second);
+
+        first.IsCancellationRequested.Should().BeTrue();
+        second.IsCancellationRequested.Should().BeTrue();
+    }
+
+    [Fact]
+    public void OptionsChanged_BeforeAnyCycle_CountsAsAChange()
+    {
+        var controller = new InboundReconnectController();
+        using var cycle = new CancellationTokenSource();
+
+        controller.OptionsChanged(new Settings("node", 8000), cycle);
+
+        cycle.IsCancellationRequested.Should().BeTrue();
+    }
+
+    [Fact]
+    public void BeginCycle_ASaveBetweenTheReadAndTheRecord_IsNotLost()
+    {
+        // The options change after the cycle first reads them but before it
+        // records them, so the save compared itself with the last cycle's
+        // settings. BeginCycle reads again and records the newer settings.
+        var controller = new InboundReconnectController();
+        var reads = new Queue<Settings>([new("old", 8000), new("new", 8000), new("new", 8000), new("new", 8000)]);
+
+        var settings = controller.BeginCycle(() => reads.Dequeue());
+
+        settings.Should().Be(new Settings("new", 8000));
+        using var cycle = new CancellationTokenSource();
+        controller.OptionsChanged(new Settings("new", 8000), cycle);
+        cycle.IsCancellationRequested.Should().BeFalse("the cycle is built from the newer settings");
+    }
+
     [Fact]
     public async Task WaitAsync_HonoursTheOuterCancellationToken()
     {

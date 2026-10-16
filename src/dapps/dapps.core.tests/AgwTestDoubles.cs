@@ -175,6 +175,16 @@ internal sealed class AgwInboundServiceHarness : IAsyncDisposable
         AgwPort = Options.CurrentValue.AgwPort,
     };
 
+    /// <summary>A fresh copy of the current options with
+    /// <paramref name="change"/> applied, the way a /Config save that
+    /// changed one field republishes them.</summary>
+    public SystemOptions With(Action<SystemOptions> change)
+    {
+        var options = SameOptions();
+        change(options);
+        return options;
+    }
+
     /// <summary>Starts the service, accepts its connection and consumes the 'X' registration.</summary>
     public async Task<FakeAgwSocket> StartAsync(CancellationToken ct)
     {

@@ -118,16 +118,19 @@ public sealed class AgwInboundService(
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        // Kick the current connect-cycle on any SystemOptions change so
-        // a /Config save (callsign, node host/port, bearer flip, RHP
-        // creds) takes effect on the next iteration - including
-        // collapsing an in-flight backoff wait, so a fix to NodeHost/
-        // AgwPort/Callsign reconnects immediately rather than sitting
-        // out the rest of a (possibly multi-minute) scheduled delay.
-        // Subscribed in StartAsync so test fixtures that construct the
-        // service without ever calling StartAsync don't accumulate
-        // listeners.
-        optionsChangeSubscription = options.OnChange((_, _) => reconnect.OptionsChanged(cycleTokenSource));
+        // Kick the current connect-cycle when a SystemOptions save changes
+        // a field the cycle is built from (bearer, callsign, node host or
+        // AGW port), so the fix takes effect on the next iteration -
+        // including collapsing an in-flight backoff wait, so a fix to
+        // NodeHost/AgwPort/Callsign reconnects immediately rather than
+        // sitting out the rest of a (possibly multi-minute) scheduled
+        // delay. Any other save (TX stop/resume, heartbeat, probing, ...)
+        // is ignored here: closing the AGW socket makes BPQ disconnect
+        // every live inbound link on it (#273). Subscribed in StartAsync
+        // so test fixtures that construct the service without ever
+        // calling StartAsync don't accumulate listeners.
+        optionsChangeSubscription = options.OnChange((o, _) =>
+            reconnect.OptionsChanged(CycleSettings.From(o), cycleTokenSource));
         loopTask = Task.Run(() => RunLoop(stoppingTokenSource.Token));
         return Task.CompletedTask;
     }
@@ -201,9 +204,17 @@ public sealed class AgwInboundService(
         }
     }
 
+    /// <summary>The SystemOptions fields one AGW connection cycle is
+    /// built from, copied at cycle start: a save that changes one of
+    /// these restarts the cycle, any other save leaves it running.</summary>
+    internal sealed record CycleSettings(string NodeBearer, string Callsign, string NodeHost, int AgwPort)
+    {
+        public static CycleSettings From(SystemOptions o) => new(o.NodeBearer, o.Callsign, o.NodeHost, o.AgwPort);
+    }
+
     private async Task RunOnce(CancellationToken ct)
     {
-        var opts = options.CurrentValue;
+        var opts = reconnect.BeginCycle(() => CycleSettings.From(options.CurrentValue));
 
         // Bearer-active gate: only run when AGW is the configured bearer.
         // The Rhpv2InboundService runs alongside us and gates the same way

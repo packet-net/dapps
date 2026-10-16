@@ -162,6 +162,48 @@ public sealed class InboundReconnectController(TimeProvider? timeProvider = null
         catch (ObjectDisposedException) { /* wait already completing */ }
     }
 
+    // The settings the current (or, between cycles, the last) connection
+    // cycle was built from: a value copy, never the live SystemOptions
+    // object, which some save paths change in place. Written on the loop
+    // thread (BeginCycle), read on the IOptionsMonitor callback thread.
+    private volatile object? cycleSettings;
+
+    /// <summary>
+    /// Records the settings a connection cycle is about to be built from,
+    /// so <see cref="OptionsChanged(object, CancellationTokenSource?)"/>
+    /// can tell a save that matters to the cycle from one that doesn't.
+    /// <paramref name="read"/> takes a value copy of the fields the cycle
+    /// uses from the current options. It is read again after recording:
+    /// a save that lands between the first read and the record compared
+    /// itself against the previous cycle's settings and may have been let
+    /// through, so on a mismatch this records the newer settings instead.
+    /// </summary>
+    public T BeginCycle<T>(Func<T> read) where T : class
+    {
+        while (true)
+        {
+            var settings = read();
+            Interlocked.Exchange(ref cycleSettings, settings);
+            if (Equals(read(), settings)) return settings;
+        }
+    }
+
+    /// <summary>
+    /// For a /Config save: does what <see cref="OptionsChanged(CancellationTokenSource?)"/>
+    /// does, but only when <paramref name="settings"/>, the saved options'
+    /// copy of the fields the cycle uses, differs from what the cycle was
+    /// built with (<see cref="BeginCycle"/>). Any other save (TX stop and
+    /// resume, heartbeat, probing, MeshCore, ...) leaves the connection and
+    /// every session on it alone, and doesn't collapse a backoff wait
+    /// either: retrying with the same settings sooner wouldn't help. Before
+    /// the first cycle has started any save counts as a change.
+    /// </summary>
+    public void OptionsChanged(object settings, CancellationTokenSource? cycle)
+    {
+        if (Equals(settings, cycleSettings)) return;
+        OptionsChanged(cycle);
+    }
+
     /// <summary>
     /// For a /Config save: collapses a wait under way (<see cref="Interrupt"/>),
     /// then cancels <paramref name="cycle"/>, the connection cycle the loop
