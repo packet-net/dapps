@@ -333,6 +333,54 @@ public sealed class FloodFallbackAlgorithmTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Resolve_Transit_FromABpqInvertedLinkSource_NotRoutedBackByLearnedRoute()
+    {
+        // G0NA-1 called us through a BPQ node, so the link source is G0NA-14.
+        var ct = TestContext.Current.CancellationToken;
+        await context.UpsertLearnedRouteAsync("G0XYZ-1", "G0NA-1", ct);
+
+        var decision = await defaultStack.ResolveAsync(TransitFor("chat@G0XYZ-1", from: "G0NA-14"), context, ct);
+
+        decision.Should().BeOfType<RouteDecision.Unreachable>("G0NA-14 is G0NA-1 calling through BPQ");
+    }
+
+    [Fact]
+    public async Task Resolve_Transit_FromABpqInvertedLinkSource_NotRoutedBackByRouteHint()
+    {
+        using (var c = DbInfo.GetConnection())
+            c.Insert(new DbRouteHint { Destination = "G0XYZ-1", NextHop = "G0NA-1" });
+        var decision = await defaultStack.ResolveAsync(TransitFor("chat@G0XYZ-1", from: "G0NA-14"), context, TestContext.Current.CancellationToken);
+        decision.Should().BeOfType<RouteDecision.Unreachable>();
+    }
+
+    [Fact]
+    public async Task Resolve_SiblingThroughBpq_WithNoSrc_IsNotOurs_AndDoesNotFlood()
+    {
+        // Our sibling G0US-14 calls via BPQ and arrives as G0US-1 (us), and
+        // the message has no src=: not ours, so not ours to flood.
+        var msg = OutboundFor("G0XYZ", sourceCallsign: OurCallsign, originatorCallsign: "");
+        var decision = await defaultStack.ResolveAsync(msg, context, TestContext.Current.CancellationToken);
+        decision.Should().BeOfType<RouteDecision.Unreachable>("a relayed message should not flood");
+    }
+
+    [Fact]
+    public async Task Resolve_Transit_FromABpqInvertedLinkSource_WithAnExactRowToo_AvoidsOnlyTheExactRow()
+    {
+        // When a neighbour row has the link source's exact callsign, that's
+        // where it came from; the row it would be inverted from is another
+        // station and is still used.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "G0NA-14", UdpEndpoint = "127.0.0.1:65504" });
+            c.Insert(new DbRouteHint { Destination = "G0XYZ-1", NextHop = "G0NA-1" });
+        }
+
+        var decision = await defaultStack.ResolveAsync(TransitFor("chat@G0XYZ-1", from: "G0NA-14"), context, TestContext.Current.CancellationToken);
+
+        decision.Should().BeOfType<RouteDecision.NextHop>().Which.Route.Callsign.Should().Be("G0NA-1");
+    }
+
+    [Fact]
     public async Task Resolve_Unreachable_AndNoNeighbours_StaysUnreachable()
     {
         // Wipe neighbours so the flood has no destinations. Without

@@ -90,8 +90,9 @@ public sealed class RelayIntegrationTests(ThreeInstanceLinbpqFixture fixture) : 
         // Same topology, but A has no route hint either - nothing at all
         // says how to reach C. The default passive-flood algorithm's
         // cold-start fallback (FloodFallbackAlgorithm) has to flood to
-        // its only neighbour (B), which floods on to its neighbours other
-        // than A (i.e. C), covering "and floods" from the issue.
+        // its only neighbour (B). B doesn't flood on: only the node a
+        // message started at floods it (#295). B has C as a neighbour, so
+        // it routes the message straight there.
         var ct = TestContext.Current.CancellationToken;
         var a = await StartNodeAsync("floodA", fixture.ApplCallA, fixture.AgwPortA,
             [new(fixture.ApplCallB, fixture.AxipPortIndex)], null, ct);

@@ -95,7 +95,7 @@ A sender offers a message again whenever it didn't see your `ack`: it restarted 
 - A repeat of a message for another node, arriving from a different neighbour from the first copy, usually means a routing loop: the message was passed on and came back. It is still dropped, but it's worth logging.
 - A message whose `src=` is your own callsign (the exact call and SSID) is one you sent, come back. Treat it as a repeat: `ack` it and discard it, rather than queueing it to send again.
 
-A node passing a message on MUST NOT send it back to the neighbour it came from, whatever its routes say; if that is the only way it knows, it has no route and keeps the message. Only the node a message started at floods it. A relay with no route waits for one, because the text protocol carries no hop count to bound a flood with.
+A node passing a message on MUST NOT send it back to the neighbour it came from, whatever its routes say; if that is the only way it knows, it has no route and keeps the message. Only the node a message started at floods it. A relay with no route waits for one, because the text protocol carries no hop count to bound a flood with. (The reference daemon's default `passive-flood` routing follows both rules. Its optional `meshcore` routing doesn't yet, see #296.)
 
 A sender that gets `ack <id>` in reply to `ihave` treats the message as delivered.
 

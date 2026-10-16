@@ -125,7 +125,7 @@ The probed-nodes table shows the recent failure reason. Common ones:
 
 ### "Forwarding loops"
 
-The default `passive-flood` algorithm has a hop-count cap and won't loop indefinitely, but if you have a complex topology where it's mis-deciding routes, switch to the `meshcore` algorithm (DSR-style source routing) for more deterministic forwarding. `DAPPS_ROUTING_ALGORITHM=meshcore` + restart.
+The default `passive-flood` algorithm never sends a message back to the neighbour it came from, and only the node a message started at floods it, so a message can't bounce between two nodes. A node that receives a copy of a message it already has drops it, and logs a warning ("came back ... look for a routing loop") when that copy came from a different neighbour from the first. If that keeps happening, look at the route hints and neighbours on the nodes involved: a hint pointing the wrong way is the usual cause. What each node has learned is in the `learnedroutes2` table of its database.
 
 ## App-interface problems
 

@@ -68,7 +68,7 @@ public sealed class PassiveLearningAlgorithm(
             return new RouteDecision.Unreachable();
         }
 
-        if (cameFrom is not null && DestinationParser.SameStation(nextHop.Callsign, cameFrom))
+        if (cameFrom is not null && SplitHorizon.Avoids(cameFrom, await ctx.GetNeighboursAsync(ct))(nextHop.Callsign))
         {
             // The route stays: it's still right for traffic from elsewhere.
             logger.LogDebug("Learned route for {0} goes via {1}, where {2} came from; not sending it back",

@@ -1103,6 +1103,59 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         public Task RunAsync(IRoutingContext ctx, CancellationToken ct) => Task.CompletedTask;
     }
 
+    [Fact]
+    public async Task DoRun_Transit_IsNotHandedBackToTheLinkSourcesOpenSession()
+    {
+        // Transit mail from N0FAR-2 for app@N0FAR-7, and N0FAR-2 has its
+        // session open with us. It would stand in for N0FAR-7 and take the
+        // message straight back (#297).
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection()) c.CreateTable<DbLearnedRoute>();
+        var stack = new FloodFallbackAlgorithm(
+            new PassiveLearningAlgorithm(routingAlgorithm, NullLogger<PassiveLearningAlgorithm>.Instance),
+            NullLogger<FloodFallbackAlgorithm>.Instance);
+        var directory = new SessionDirectory();
+        var peer = await EstablishedInboundSessionAsync("N0FAR-2", directory);
+        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], stack, routingContext,
+            openSessions: directory);
+        using (var c = DbInfo.GetConnection())
+            c.Insert(new DbMessage { Id = "back001", Payload = "x"u8.ToArray(), Salt = 1L, Destination = "app@N0FAR-7",
+                SourceCallsign = "N0FAR-2", OriginatorCallsign = "G0ORG-1", AdditionalProperties = "{}", CreatedAt = DateTime.UtcNow });
+
+        await m.DoRun(ct);
+
+        string? line = null;
+        try { line = await peer.ReadLineAsync(ct).WaitAsync(TimeSpan.FromSeconds(3), ct); } catch (TimeoutException) { }
+        (line ?? "").Should().NotStartWith("msg back001 ", "split horizon: never back to the link source");
+    }
+
+    [Fact]
+    public async Task DoRun_Transit_WithNoRoute_WaitsQueued_AndGoesOnceARouteTurnsUp()
+    {
+        // #295: a relay doesn't flood what it didn't originate. It keeps it,
+        // and sends it on a later run when a route appears.
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection()) c.CreateTable<DbLearnedRoute>();
+        var stack = new FloodFallbackAlgorithm(
+            new PassiveLearningAlgorithm(routingAlgorithm, NullLogger<PassiveLearningAlgorithm>.Instance),
+            NullLogger<FloodFallbackAlgorithm>.Instance);
+        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], stack, routingContext);
+        using (var c = DbInfo.GetConnection())
+            c.Insert(new DbMessage { Id = "wait001", Payload = "x"u8.ToArray(), Salt = 1L, Destination = "app@N0FAR-7", Ttl = 600,
+                SourceCallsign = "N0DEST", OriginatorCallsign = "G0ORG-1", AdditionalProperties = "{}", CreatedAt = DateTime.UtcNow });
+
+        await m.DoRun(ct);
+        await m.DoRun(ct);
+
+        backhaul.Sent.Should().BeEmpty("no route, and not ours to flood");
+        (await database.GetPendingOutboundMessages()).Select(r => r.Id).Should().Contain("wait001");
+
+        await database.UpsertNeighbour("N0FAR-7", bearerPort: 0);
+        await m.DoRun(ct);
+
+        backhaul.Sent.Should().ContainSingle().Which.Route.Callsign.Should().Be("N0FAR-7");
+    }
+
     private static void InsertMessage(string id, int? ttl, DateTime createdAt, string destination = "app@N0DEST")
     {
         using var c = DbInfo.GetConnection();

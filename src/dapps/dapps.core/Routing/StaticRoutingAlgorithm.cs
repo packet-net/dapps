@@ -28,18 +28,19 @@ namespace dapps.core.Routing;
 public sealed class StaticRoutingAlgorithm(ILogger<StaticRoutingAlgorithm> logger) : IRoutingAlgorithm
 {
     public Task<RouteDecision> ResolveAsync(DbMessage message, IRoutingContext ctx, CancellationToken ct)
-        => ResolveAsync(message, ctx, avoid: null, ct);
+        => ResolveAsync(message, ctx, cameFrom: null, ct);
 
     /// <summary>
     /// As <see cref="ResolveAsync(DbMessage, IRoutingContext, CancellationToken)"/>,
-    /// passing over any next hop that is <paramref name="avoid"/> (the
-    /// exact call+SSID) on every tier, so a lower tier gets its turn: the
-    /// neighbour a message passing through came from (#297).
+    /// passing over the neighbour a message passing through came from,
+    /// <paramref name="cameFrom"/> (see <see cref="SplitHorizon.Avoids"/>),
+    /// on every tier, so a lower tier gets its turn (#297).
     /// </summary>
-    internal async Task<RouteDecision> ResolveAsync(DbMessage message, IRoutingContext ctx, string? avoid, CancellationToken ct)
+    internal async Task<RouteDecision> ResolveAsync(DbMessage message, IRoutingContext ctx, string? cameFrom, CancellationToken ct)
     {
-        bool Avoided(string callsign) => avoid is not null && DestinationParser.SameStation(callsign, avoid);
-        var neighbours = (await ctx.GetNeighboursAsync(ct)).Where(n => !Avoided(n.Callsign)).ToList();
+        var allNeighbours = await ctx.GetNeighboursAsync(ct);
+        var Avoided = SplitHorizon.Avoids(cameFrom, allNeighbours);
+        var neighbours = allNeighbours.Where(n => !Avoided(n.Callsign)).ToList();
         var peers = await ctx.GetDiscoveredPeersAsync(ct);
 
         // Destinations are `app@call[-ssid]`. A neighbour with the exact

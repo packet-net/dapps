@@ -83,11 +83,13 @@ On UDP and MeshCore links the flood carries a hop limit, and a node that receive
 
 Learned routes are kept per station, SSID included: a route to `G6FCI-7` says nothing about `G6FCI-8`, and two nodes under one callsign learn routes to each other like any other pair.
 
-Works well on small meshes. The trade-off is no proactive route discovery - until traffic has taught a route, mail to a far station goes out as a flood.
+Works well on small meshes. The trade-off is no proactive route discovery. Until traffic, gossip or a hint has given a route, mail to a far station goes out as a flood from the sender, and over AGW or RHP that flood reaches only the sender's neighbours: one with no route of its own keeps the message until a route turns up. Add a route hint if you need mail to get further sooner.
 
 ### `meshcore`
 
 DSR-flavoured. The sender stamps the path on the message; intermediate nodes follow it. Adds a few bytes per message; works better when the topology is volatile, when you want explicit per-message path control, or when you're emulating MeshCore-on-AX.25 for testing.
+
+The rules above about only the sender flooding and never sending a message back where it came from belong to `passive-flood`. The `meshcore` stack doesn't follow them yet: a relay with no path still starts a fresh flood of its own (tracked in #295 and #296).
 
 ## Route gossip
 

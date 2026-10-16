@@ -72,6 +72,10 @@ public class OutboundMessageManager(
     /// an hour, not on every run.</summary>
     private readonly ConcurrentDictionary<string, DateTime> failureLoggedAt = new(StringComparer.Ordinal);
 
+    /// <summary>Messages passing through, waiting for a route, that have
+    /// been logged as waiting: the line appears once per message.</summary>
+    private readonly ConcurrentDictionary<string, byte> waitingTransit = new(StringComparer.Ordinal);
+
     /// <summary>How long a hand-off holds a message back from later runs,
     /// in case the session never gets to it.</summary>
     internal TimeSpan HandOffPatience { get; set; } = TimeSpan.FromMinutes(10);
@@ -139,6 +143,7 @@ public class OutboundMessageManager(
         foreach (var key in refusals.Keys.Where(k => !queuedKeys.Contains(k)).ToList()) refusals.TryRemove(key, out _);
         foreach (var id in handedToSession.Keys.Where(id => !seen.Contains(id)).ToList()) handedToSession.TryRemove(id, out _);
         foreach (var id in failureLoggedAt.Keys.Where(id => !seen.Contains(id)).ToList()) failureLoggedAt.TryRemove(id, out _);
+        foreach (var id in waitingTransit.Keys.Where(id => !seen.Contains(id)).ToList()) waitingTransit.TryRemove(id, out _);
 
         // Messages for the same next hop go out together on one session
         // rather than one session each. The work runs in queue order: a
@@ -189,6 +194,13 @@ public class OutboundMessageManager(
                     continue;
                 }
 
+                // No route, but the node it's for may have a session open with
+                // us. Never the one it came from, though (#297).
+                var caller = decision is RouteDecision.Unreachable
+                    && openSessions?.CallerFor(message.Destination, options.CurrentValue.Callsign) is { } c
+                    && !SplitHorizon.Avoids(SplitHorizon.CameFrom(message, optionsValue.Callsign), await routingContext.GetNeighboursAsync(stoppingToken))(c)
+                    ? c : null;
+
                 switch (decision)
                 {
                     case RouteDecision.NextHop nh:
@@ -205,7 +217,7 @@ public class OutboundMessageManager(
                         work.Add(new PendingFlood(message, flood));
                         break;
 
-                    case RouteDecision.Unreachable when openSessions?.CallerFor(message.Destination, options.CurrentValue.Callsign) is { } caller:
+                    case RouteDecision.Unreachable when caller is not null:
                         // No route, but the node it's for has a session open
                         // with us: it goes on that session (what `rev` used to
                         // collect), and nowhere else. We have no route to dial.
@@ -216,6 +228,18 @@ public class OutboundMessageManager(
                             work.Add(callerBatch);
                         }
                         callerBatch.Add(message, null);
+                        break;
+
+                    case RouteDecision.Unreachable when !SplitHorizon.OriginatedHere(message, optionsValue.Callsign):
+                        // Passing through with no route: it waits for one (#295).
+                        // Said once per message, not on every run.
+                        if (waitingTransit.TryAdd(message.Id, 0))
+                        {
+                            logger.LogInformation("No route for {0} from {1}; it stays queued until a route turns up or its ttl runs out",
+                                message.Id, message.SourceCallsign);
+                            metrics.RecordNoRoute(message.Id, message.Destination);
+                        }
+                        else logger.LogDebug("Still no route for {0}, leaving in queue", message.Id);
                         break;
 
                     case RouteDecision.Unreachable:

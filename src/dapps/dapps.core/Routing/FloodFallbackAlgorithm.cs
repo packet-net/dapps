@@ -45,11 +45,6 @@ public sealed class FloodFallbackAlgorithm(
     /// to bound the impact of a misconfigured node.</summary>
     public const byte DefaultHopBudget = 6;
 
-    /// <summary>Messages passing through with no route that have been
-    /// logged as waiting, so the line appears once per message. Only in
-    /// memory, and cleared if it ever grows large.</summary>
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> waitingForRoute = new(StringComparer.Ordinal);
-
     public async Task<RouteDecision> ResolveAsync(DbMessage message, IRoutingContext ctx, CancellationToken ct)
     {
         // In-flight flood: this node is mid-propagating. Continue the
@@ -88,15 +83,9 @@ public sealed class FloodFallbackAlgorithm(
 
         if (!SplitHorizon.OriginatedHere(message, ctx.LocalCallsign))
         {
-            // Not ours to flood: it waits for a route (#295). Said once
-            // per message, not on every forwarder run.
-            if (waitingForRoute.TryAdd(message.Id, 0))
-            {
-                if (waitingForRoute.Count > 10_000) waitingForRoute.Clear();
-                logger.LogInformation(
-                    "No route for {0} (from {1}); only the node it started at floods, so it stays queued until a route turns up or its ttl runs out",
-                    message.Id, message.SourceCallsign);
-            }
+            // Not ours to flood: it waits for a route (#295). The
+            // forwarder says so, once per message.
+            logger.LogDebug("No route for {0} (from {1}); not ours to flood, leaving it queued", message.Id, message.SourceCallsign);
             return new RouteDecision.Unreachable();
         }
 
