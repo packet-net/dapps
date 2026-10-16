@@ -92,7 +92,7 @@ The advertiser filters: only routes whose failure counter is zero, only routes t
 
 Each route is advertised under the destination's full callsign, SSID included, so two SSIDs of one callsign are two routes. Every node needs 0.47.0 or later for this to help; with an older node on either end the route simply goes unused, and mail falls back to the other ways of finding a path.
 
-There's no dashboard view of learned routes; each row's source (`gossip` or `traffic`) is visible only in the `learnedroutes2` table of the DAPPS database. Resolution priority unchanged: neighbour -> discovered -> hint -> learned (gossip and traffic share the learned tier).
+Learned routes have no dashboard view or REST endpoint: they live in the `learnedroutes2` table of the DAPPS database, each with its source (`gossip` or `traffic`). Resolution priority unchanged: neighbour -> discovered -> hint -> learned (gossip and traffic share the learned tier).
 
 ## Route hints
 

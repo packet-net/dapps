@@ -59,7 +59,7 @@ public class DbLearnedRoute
     /// inbound message with this originator. <c>"gossip"</c> - a peer
     /// advertised this destination via the <c>routes</c> command.
     /// Gossip-learned rows ride the same invalidation/failure path as
-    /// traffic-learned rows but the dashboard surfaces the source so an
-    /// operator can tell hearsay from observed.</summary>
+    /// traffic-learned rows; the source lets an operator reading the
+    /// table tell hearsay from observed.</summary>
     public string Source { get; set; } = "";
 }

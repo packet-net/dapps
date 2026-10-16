@@ -24,14 +24,13 @@ text of the licence is reproduced at the end of this file rather than referenced
 BUNDLED THIRD-PARTY COMPONENTS
 ------------------------------
 
-The package bundles the .NET 8 runtime and base class libraries (Copyright ©
+The package bundles the .NET 10 runtime and base class libraries (Copyright ©
 .NET Foundation and Contributors, MIT licence), together with:
 
   MQTTnet              - Copyright © The MQTTnet Team.  MIT licence.
   sqlite-net-pcl       - Copyright © Krueger Systems, Inc.  MIT licence.
   SQLitePCLRaw         - Copyright © Eric Sink.  Apache-2.0, together with the
                          bundled SQLite library itself, which is public domain.
-  ModelContextProtocol - Copyright © Anthropic, PBC and contributors.  MIT.
   RhpV2.Client         - Copyright © Packet.NET contributors.  MIT licence.
   ZstdSharp.Port       - Copyright © Oleg Stepanischev.  MIT licence, a port of
                          Zstandard (Copyright © Meta Platforms, BSD/GPLv2).
