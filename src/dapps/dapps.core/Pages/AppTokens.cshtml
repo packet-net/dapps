@@ -1,0 +1,106 @@
+@page "/Tokens"
+@model AppTokensModel
+@{
+    ViewData["Title"] = "DAPPS - app tokens";
+    ViewData["Active"] = "apptokens";
+    ViewData["PageTitle"] = "App tokens";
+    ViewData["PageSubtitle"] = "Per-app credentials for MQTT and REST. A token is shown once, right after you mint it.";
+}
+
+@if (Model.FlashOk is not null)
+{
+    <div class="ok-banner">@Model.FlashOk</div>
+}
+@if (Model.FlashError is not null)
+{
+    <div class="err-banner">@Model.FlashError</div>
+}
+
+<div class="panel">
+    <h3>Mint a token</h3>
+    <p class="panel-sub">
+        @if (Model.Options.AuthRequired)
+        {
+            @:Apps need one of these to use MQTT or REST on this install (<em>Require per-app tokens for MQTT/REST</em> is on in Settings).
+        }
+        else
+        {
+            @:<em>Require per-app tokens for MQTT/REST</em> is currently off in Settings, so a token isn't enforced yet - mint one now if you want it ready before turning that on.
+        }
+    </p>
+    <details class="help">
+        <summary>How this works</summary>
+        <ul>
+            <li>The app's MQTT CONNECT uses the app name as <code>username</code> and the token as <code>password</code>.</li>
+            <li>REST calls send <code>Authorization: Bearer &lt;token&gt;</code>.</li>
+            <li>The token is shown once, right below, immediately after minting - copy it now. DAPPS only stores a salted hash, so it can't be shown again; mint a new one (below) if it's lost.</li>
+            <li>Minting for an app name that already has a token rotates it - the old token stops working immediately.</li>
+            <li><a href="https://packet-net.github.io/dapps/app-developers/reference/#authentication" target="_blank" rel="noopener">Manual: app authentication</a>, including the equivalent curl recipe for scripting this.</li>
+        </ul>
+    </details>
+    <form method="post" asp-page-handler="Create" class="row-form" id="create-token-form">
+        <div class="field">
+            <label for="App">App name</label>
+            <input id="App" name="App" type="text" required placeholder="hello" autocomplete="off" />
+        </div>
+        <button class="btn" type="submit" id="mint-token-btn">Mint / rotate token</button>
+    </form>
+
+    @if (Model.MintedToken is not null)
+    {
+        <div class="panel" style="margin-top: 1rem; border-color: var(--accent);">
+            <h4 style="margin-top: 0;">Token for &quot;@Model.MintedApp&quot;</h4>
+            <p class="panel-sub" style="color: var(--err); font-weight: 600;">
+                Shown once - copy it now. Reloading or leaving this page loses it for good; mint again (above) if that happens, which revokes this one.
+            </p>
+            <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                <code id="minted-token" style="word-break: break-all; padding: 0.4rem 0.6rem; background: var(--surface-2); border-radius: 6px;">@Model.MintedToken</code>
+                <button class="btn ghost" type="button" id="copy-token-btn" onclick="dappsCopyMintedToken()">Copy</button>
+            </div>
+        </div>
+    }
+</div>
+
+<div class="panel" style="margin-top: 1rem;">
+    <h3>Existing tokens</h3>
+    <p class="panel-sub">Only the app name and mint time are kept here - the token itself is never shown again after creation.</p>
+    @if (Model.Tokens.Count == 0)
+    {
+        <p class="panel-sub">No app tokens minted yet.</p>
+    }
+    else
+    {
+        <table>
+            <thead><tr><th>App</th><th>Minted (UTC)</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var t in Model.Tokens)
+                {
+                    <tr>
+                        <td>@t.AppName</td>
+                        <td>@t.CreatedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                        <td style="text-align: right;">
+                            <form method="post" asp-page-handler="Revoke" style="display: inline;"
+                                  onsubmit="return confirm('Revoke the token for &quot;@t.AppName&quot;? Anything using it stops working immediately.');">
+                                <input type="hidden" name="app" value="@t.AppName" />
+                                <button class="btn danger" type="submit">Revoke</button>
+                            </form>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+<script>
+    function dappsCopyMintedToken() {
+        const el = document.getElementById('minted-token');
+        const btn = document.getElementById('copy-token-btn');
+        if (!el || !btn) return;
+        navigator.clipboard.writeText(el.textContent || '').then(() => {
+            const prev = btn.textContent;
+            btn.textContent = 'Copied';
+            setTimeout(() => { btn.textContent = prev; }, 1500);
+        });
+    }
+</script>

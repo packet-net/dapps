@@ -48,7 +48,7 @@ The dashboard / REST endpoint port is configured via `ASPNETCORE_URLS` (a .NET c
 
 | Name         | Env var             | Default | What it does                                                              |
 |--------------|---------------------|---------|---------------------------------------------------------------------------|
-| Auth required| `DAPPS_AUTH_REQUIRED` | `false` | When true, MQTT / REST app-interface clients must present a per-app token. |
+| Auth required| `DAPPS_AUTH_REQUIRED` | `true` on a new install; an upgrade keeps its stored value | When true, MQTT / REST app-interface clients must present a per-app token. |
 
 The admin password (for the dashboard cookie) is set on `/Setup` first-run flow, not via env var.
 

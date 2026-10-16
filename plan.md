@@ -184,6 +184,8 @@ When enabled:
 
 Not PKI-grade by design (no TLS, OAuth, JWT, 2FA). For TLS, sysops front the REST API with a reverse proxy.
 
+**2026-10-16: new installs default `AuthRequired` to true (#316).** The "off by default" note above described the original rollout; a brand new database now seeds it `true` instead, an upgrade keeps whatever it already had. See `DbStartup`'s `isFreshInstall` check.
+
 **Browser support (MQTT-over-WebSocket).** The embedded broker now runs alongside Kestrel via MQTTnet.AspNetCore - the same broker instance backs the TCP listener on `:MqttPort` AND a WebSocket endpoint at `/mqtt` on the dashboard's HTTP listener. Browser apps subscribe to `dapps/in/<app>` and publish to `dapps/out/<app>/<dest>` directly; no REST proxy needed for real-time delivery. CONNECT-time auth + topic-scope interceptors are shared between transports. WebSocket has no CORS preflight, so a browser app served from `file://`, a static server, or a different host can speak to a DAPPS daemon without operator-side CORS configuration.
 
 ## Phase B - peer discovery and routing evolution

@@ -71,7 +71,24 @@ New installs turn on **Require per-app tokens for MQTT/REST** (`AuthRequired`) b
 - CONNECT must include `username=<app>` and `password=<token-plaintext>`.
 - An app authenticated as `chat` may only publish to `dapps/out/chat/*` and `dapps/ack/chat`, and only subscribe to `dapps/in/chat`. Cross-app traffic is rejected with `NotAuthorized`.
 
-There's no dashboard page for tokens. The operator mints one with the admin-only `/AppTokens` REST endpoint: `POST /AppTokens` with `{"app": "chat"}` returns the token (posting again rotates it), `GET /AppTokens` lists them, and `DELETE /AppTokens/chat` revokes one.
+The operator mints one on the dashboard's **App tokens** page (in the sidebar, under System): type an app name, mint, copy the plaintext shown once, revoke from the same page when it's no longer needed. That page is a thin front-end over the admin-only `/AppTokens` REST endpoint: `POST /AppTokens` with `{"app": "chat"}` returns the token (posting again rotates it), `GET /AppTokens` lists them, and `DELETE /AppTokens/chat` revokes one - useful if you're scripting this rather than clicking through the dashboard.
+
+#### Minting a token from the command line
+
+If you'd rather script it than use the **App tokens** page: `/AppTokens` sits behind the same admin cookie as the rest of the dashboard, not open on its own, and it only accepts a JSON body - a plain `curl -d` form post gets a `415`. The working recipe is two requests: log in to get the cookie, then use it on `/AppTokens`.
+
+```bash
+# 1. Log in with the admin password set during /Setup, saving the cookie.
+curl -c jar.txt -d "password=<your-admin-password>" http://localhost:5000/Login
+
+# 2. Mint (or rotate) a token for app "hello", using that cookie.
+curl -b jar.txt -H 'Content-Type: application/json' \
+  -d '{"app":"hello"}' http://localhost:5000/AppTokens
+```
+
+The second call's response is JSON, `{"app":"hello","token":"<plaintext>"}` - the `token` field is the plaintext credential, shown once; it is not recoverable afterwards, only rotatable (POST again for the same app).
+
+The easier alternative is the API explorer at `http://localhost:5000/scalar`, open in the same browser you're signed in on: it carries the dashboard cookie automatically, so "Try it" on `POST /AppTokens` works with no extra auth step.
 
 ## REST
 

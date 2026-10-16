@@ -11,10 +11,11 @@ namespace dapps.core.Services;
 /// controllers can scope-check (e.g. an app authenticated as "myapp"
 /// can't ack messages for app "yourapp").
 ///
-/// Off by default: enforcement only kicks in when
-/// <see cref="SystemOptions.AuthRequired"/> is true. In open mode the
-/// middleware is a no-op so existing single-host loopback deployments
-/// don't break on upgrade. Plan A4.
+/// Enforcement only kicks in when <see cref="SystemOptions.AuthRequired"/>
+/// is true - on by default for a brand new install (#316), but an
+/// upgrade from an older DAPPS keeps whatever it already had set, so
+/// existing single-host loopback deployments don't break on upgrade.
+/// In open mode the middleware is a no-op. Plan A4.
 /// </summary>
 public sealed class BearerAuthMiddleware(
     RequestDelegate next,

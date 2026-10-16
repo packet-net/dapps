@@ -133,6 +133,7 @@ The default `passive-flood` algorithm has a hop-count cap and won't loop indefin
 
 Check, in order:
 
+- Whether this install requires an app token (`AuthRequired` is on by default on a new install) and, if so, whether the subscriber's CONNECT carries no token or the wrong one. The broker rejects the connection with `BadUserNameOrPassword`, and the journal shows `MQTT: rejected client <id> - missing credentials` or `- invalid credentials`; most MQTT libraries surface that to the app as a plain connection-refused error, so it's easy to mistake for a port or network problem. Mint or check a token on the dashboard's **App tokens** page, or see [Authentication](app-developers/reference.md#authentication) for the scripted recipe.
 - The subscriber is connected to the right port (default 1883, configurable).
 - The subscriber is subscribed to the right topic (`dapps/in/<app>` for incoming).
 - Your MQTT client supports MQTT 5 user properties. DAPPS publishes `dapps-id`, `dapps-source`, `dapps-via`, `dapps-ttl` etc. as user properties - MQTT 3.1.1 clients will get the payload but not the metadata.

@@ -33,9 +33,30 @@ public sealed class WebAppFixture : IAsyncLifetime
     private static readonly Regex ListeningRegex =
         new(@"Now listening on:\s*(http://[^\s]+)", RegexOptions.Compiled);
 
+    private readonly bool _authRequired;
     private Process? _process;
     private string? _baseUrl;
     private string? _workDir;
+
+    // xunit requires a collection-fixture type (ICollectionFixture<WebAppFixture>
+    // in UiCollection) to expose exactly one public constructor, so the
+    // authRequired switch below is internal rather than a second public
+    // overload or a default-parameter - either of those trips xunit's
+    // "may only define a single public constructor" / "unresolved
+    // constructor arguments" validation when it activates this as a
+    // fixture, even for test classes that never go through that path.
+    public WebAppFixture() : this(authRequired: false) { }
+
+    /// <param name="authRequired">Seeds <c>DAPPS_AUTH_REQUIRED</c> for this
+    /// instance's subprocess. Most UI tests talk to MQTT/REST without an
+    /// app token, so the shared collection fixture uses the public
+    /// parameterless constructor (false); a test that specifically wants
+    /// the real new-install default - AuthRequired true - constructs its
+    /// own instance via this internal overload instead.</param>
+    internal WebAppFixture(bool authRequired)
+    {
+        _authRequired = authRequired;
+    }
 
     public string BaseUrl => _baseUrl
         ?? throw new InvalidOperationException("Fixture not initialised - call InitializeAsync first.");
@@ -69,9 +90,12 @@ public sealed class WebAppFixture : IAsyncLifetime
         env["DAPPS_PROBING_ENABLED"] = "false";
         env["DAPPS_UPDATE_CHECK_ENABLED"] = "false";
         // Fresh DB every run, which now defaults AuthRequired to true
-        // (#316). The UI tests talk to MQTT/REST without an app token,
-        // so pin this fixture to the old open-access behaviour.
-        env["DAPPS_AUTH_REQUIRED"] = "false";
+        // (#316). Most UI tests talk to MQTT/REST without an app token,
+        // so the default here pins the fixture to the old open-access
+        // behaviour; a caller that specifically wants to exercise the
+        // AuthRequired=true path (e.g. the Setup page's token hint)
+        // passes authRequired: true.
+        env["DAPPS_AUTH_REQUIRED"] = _authRequired ? "true" : "false";
 
         var listening = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
 

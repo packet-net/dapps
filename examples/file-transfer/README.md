@@ -47,9 +47,9 @@ App slug: `files`. If you want a different slug, change the constant at the top 
 
 ## Auth-required mode
 
-If the operator turned on `AuthRequired`, each end needs an app token for the `files` slot:
+New installs require a token by default (`AuthRequired`), so each end usually needs an app token for the `files` slot:
 
-1. From the dashboard, mint a token via **App tokens** for app slug `files`. Copy the plaintext token (only shown once).
+1. Mint a token for app slug `files` on the dashboard's **App tokens** page (or see [Authentication](https://packet-net.github.io/dapps/app-developers/reference/#authentication) in the app-developers reference for the scripted recipe). Copy the plaintext token (only shown once).
 2. In `index.html`'s connect form, paste the token into the **Token** field. The app uses it as the MQTT CONNECT password (with username `files`).
 
 Each end needs its own token from its own DAPPS instance.

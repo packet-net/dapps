@@ -63,7 +63,7 @@ App slug: `letters`.
 
 ## Auth-required mode
 
-If the operator turned on `AuthRequired`, mint a token via the dashboard's **App tokens** page for app slug `letters`, then paste the plaintext token into the **Token** field of the Connect modal. The app uses it as the MQTT CONNECT password (with username `letters`).
+New installs require a token by default (`AuthRequired`); mint one for app slug `letters` on the dashboard's **App tokens** page (or see [Authentication](https://packet-net.github.io/dapps/app-developers/reference/#authentication) in the app-developers reference for the scripted recipe), then paste the plaintext token into the **Token** field of the Connect modal. The app uses it as the MQTT CONNECT password (with username `letters`).
 
 Each end needs its own token from its own DAPPS instance.
 

@@ -237,10 +237,9 @@
             @if (Model.AuthRequired)
             {
                 <div class="hint">
-                    Apps need a token for MQTT and REST on this install. Mint one with
-                    <code>curl -X POST /AppTokens -d '{"app":"yourapp"}'</code> (see
-                    <em>Settings &rarr; App interface</em>, or the app-developers docs) before
-                    pointing an app at this node.
+                    Apps need a token for MQTT and REST on this install before you can point one at this node.
+                    Mint one on the <a href="~/Tokens">App tokens</a> page (or see the
+                    <a href="https://packet-net.github.io/dapps/app-developers/reference/#authentication" target="_blank" rel="noopener">scripted recipe</a>).
                 </div>
             }
 
