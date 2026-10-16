@@ -603,6 +603,11 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
 
         h.Options.Set(h.With(o => o.TxEnabled = false));
 
+        // A redial that does not happen cannot be awaited, and nothing the
+        // service exposes says "a save was ignored", hence the short real-
+        // time settle. A collapsed wait redials within milliseconds (this
+        // test fails without the fix); a slow box can only make it pass
+        // when it should fail, never the reverse.
         await Task.Delay(TimeSpan.FromMilliseconds(300), ct);
         h.Host.Pending().Should().BeFalse("retrying with the same settings sooner would not help");
         clock.Advance(firstTier);

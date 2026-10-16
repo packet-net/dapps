@@ -239,10 +239,14 @@ public sealed class Rhpv2InboundServiceTests : IAsyncLifetime
             }
             opts.Set(changed);
 
-            await Task.Delay(500, ct);
-            server.ReceivedFrames.ToArray().OfType<CloseMessage>().Should().BeEmpty("the live session is not closed");
-            // The same connection still serves: a second caller is answered on it.
+            // No sleep needed: OnChange runs inside Set, so had the save
+            // cancelled the cycle, its token (which the session handlers
+            // run on) would already be cancelled. A handler for a second
+            // caller would then never start, and the connection goes, so
+            // no prompt could be sent: answering it proves the cycle,
+            // and the first session with it, is still up.
             await AcceptAsync(server, listener, 502, "M0XYZ-1", ct);
+            server.ReceivedFrames.ToArray().OfType<CloseMessage>().Should().BeEmpty("the live session is not closed");
             server.ReceivedFrames.ToArray().OfType<ListenMessage>().Should().HaveCount(1, "the listener was never set up again");
         }
         finally
@@ -262,6 +266,9 @@ public sealed class Rhpv2InboundServiceTests : IAsyncLifetime
     {
         await using var server = new MockRhpServer();
         server.Start();
+        // A second node, so a port change still lands somewhere to bind.
+        await using var otherServer = new MockRhpServer();
+        otherServer.Start();
         SystemOptions Options() => new()
         {
             Callsign = "G0DPB-1",
@@ -282,11 +289,14 @@ public sealed class Rhpv2InboundServiceTests : IAsyncLifetime
             WaitForFrames(server, count: 3, TimeSpan.FromSeconds(5));
 
             var changed = Options();
+            var target = server;
+            var before = 3;
             switch (field)
             {
                 case "Callsign": changed.Callsign = "G0DPB-2"; break;
-                case "NodeHost": changed.NodeHost = "127.0.0.2"; break;
-                case "RhpPort": changed.RhpPort += 1; break;
+                // Empty means 127.0.0.1: a different setting, the same node.
+                case "NodeHost": changed.NodeHost = ""; break;
+                case "RhpPort": changed.RhpPort = otherServer.Endpoint.Port; target = otherServer; before = 0; break;
                 case "RhpUser": changed.RhpUser = "op"; break;
                 case "RhpPass": changed.RhpPass = "pw"; break;
                 case "NodeBearer": changed.NodeBearer = "agw"; break;
@@ -296,6 +306,15 @@ public sealed class Rhpv2InboundServiceTests : IAsyncLifetime
             // Only a cancelled cycle pauses for the short non-failure delay
             // while the listener is up.
             await clock.WaitForTimerAsync(Rhpv2InboundService.NonFailureRetryDelay, ct);
+            if (field == "NodeBearer") return; // now idle on the other bearer: nothing more to bind
+
+            clock.Advance(Rhpv2InboundService.NonFailureRetryDelay);
+            var expected = field == "RhpUser"
+                ? new[] { typeof(AuthMessage), typeof(SocketMessage), typeof(BindMessage), typeof(ListenMessage) }
+                : new[] { typeof(SocketMessage), typeof(BindMessage), typeof(ListenMessage) };
+            var again = WaitForFrames(target, count: before + expected.Length, TimeSpan.FromSeconds(5)).Skip(before).ToList();
+            again.Select(f => f.GetType()).Should().Equal(expected, "the restarted cycle sets the listener up again");
+            again.OfType<BindMessage>().Single().Local.Should().Be(changed.Callsign);
         }
         finally
         {
@@ -457,6 +476,40 @@ public sealed class Rhpv2SsidProbeWalkTests : IAsyncLifetime
             await service2.StopAsync(CancellationToken.None);
         }
         ReadOption("Callsign").Should().Be("M9YYY-8");
+    }
+
+    [Fact]
+    public async Task WalkOn9_TheConfirmedWinner_RestartsTheCycle_AndBindsItAgain()
+    {
+        // The walk saves the winner as the callsign and reloads the
+        // options. That save changes what the cycle was built from, so it
+        // must still restart the cycle (#273 only stopped unrelated saves
+        // doing so): binds go -7 (taken), -8 (won), then -8 again on the
+        // new connection, via the non-walking path.
+        await using var server = new MockRhpServer { Handler = RefuseListenOn("M9YYY-7") };
+        server.Start();
+        SeedDb(server.Endpoint.Port, callsign: "M9YYY-7", pendingMarker: "M9YYY-7");
+        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        var clock = new ObservableTimeProvider();
+        var service = NewService(store, clock);
+        var ct = TestContext.Current.CancellationToken;
+        await service.StartAsync(ct);
+        try
+        {
+            await clock.WaitForTimerAsync(Rhpv2InboundService.NonFailureRetryDelay, ct);
+            clock.Advance(Rhpv2InboundService.NonFailureRetryDelay);
+            WaitUntil(() => server.ReceivedFrames.OfType<BindMessage>().Count() >= 3, TimeSpan.FromSeconds(5),
+                "the restarted cycle binds the winner");
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+
+        server.ReceivedFrames.OfType<BindMessage>().Select(b => b.Local).Take(3).Should()
+            .Equal("M9YYY-7", "M9YYY-8", "M9YYY-8");
     }
 
     [Fact]
@@ -645,12 +698,12 @@ public sealed class Rhpv2SsidProbeWalkTests : IAsyncLifetime
         };
     }
 
-    private static Rhpv2InboundService NewService(SystemOptionsStore store)
+    private static Rhpv2InboundService NewService(SystemOptionsStore store, TimeProvider? clock = null)
     {
         var database = new Database(NullLogger<Database>.Instance, store);
         return new Rhpv2InboundService(
             store, NullLoggerFactory.Instance, NullLogger<Rhpv2InboundService>.Instance,
-            database, new NoopInbox(), new OperationalMetrics());
+            database, new NoopInbox(), new OperationalMetrics(), timeProvider: clock);
     }
 
     private static void SeedDb(int rhpPort, string callsign, string? pendingMarker)

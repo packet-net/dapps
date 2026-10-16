@@ -204,6 +204,27 @@ public sealed class InboundReconnectControllerTests
     }
 
     [Fact]
+    public async Task OptionsChanged_CollapsesABackoffWait_OnlyWhenTheSettingsChanged()
+    {
+        var controller = new InboundReconnectController();
+        var ct = TestContext.Current.CancellationToken;
+        controller.BeginCycle(() => new Settings("node", 8000));
+        var wait = controller.WaitAsync(TimeSpan.FromMinutes(10), ct);
+        // WaitAsync assigns its cancellation source synchronously, before
+        // its first await, so the decisions below are made against a wait
+        // that already exists. A collapsed wait finishes on the thread
+        // pool, so "still running" needs a short settle (as in
+        // OptionsChanged_KeepsThePauseThatTheCancelledCycleStarts).
+
+        controller.OptionsChanged(new Settings("node", 8000), null);
+        (await Task.WhenAny(wait, Task.Delay(TimeSpan.FromMilliseconds(300), ct))).Should().NotBeSameAs(wait,
+            "the same settings leave the wait running");
+
+        controller.OptionsChanged(new Settings("other", 8000), null);
+        await wait.WaitAsync(AssertionTimeout, ct);
+    }
+
+    [Fact]
     public void OptionsChanged_BeforeAnyCycle_CountsAsAChange()
     {
         var controller = new InboundReconnectController();
