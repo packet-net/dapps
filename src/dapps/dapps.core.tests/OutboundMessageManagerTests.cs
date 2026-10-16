@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using AwesomeAssertions;
 using dapps.client.Backhaul;
 using dapps.client.Discovery;
@@ -174,6 +174,28 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         var fresh = c.Find<DbMessage>("fresh02");
         fresh.Should().NotBeNull();
         fresh!.Forwarded.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task DoRun_ARowThatThrows_DoesNotStopTheOthersGoing()
+    {
+        // #284: an exception for one message used to escape the loop
+        // before any batch was sent, so nothing went, on every run.
+        // A trigger makes dropping this one expired row fail.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Execute("create trigger poison before insert on dropped_messages when new.Id = 'poison1' begin select raise(abort, 'poisoned'); end");
+        }
+        InsertMessage(id: "poison1", ttl: 5, createdAt: DateTime.UtcNow.AddSeconds(-3600));
+        InsertMessage(id: "fresh03", ttl: 600, createdAt: DateTime.UtcNow.AddSeconds(-1));
+
+        await manager.DoRun(TestContext.Current.CancellationToken);
+
+        backhaul.Sent.Should().ContainSingle();
+        backhaul.Sent.Single().Message.Id.Should().Be("fresh03");
+        using var check = DbInfo.GetConnection();
+        check.Find<DbMessage>("poison1").Should().NotBeNull("the failed drop was rolled back, not half done");
+        check.Find<DbDroppedMessage>("poison1").Should().BeNull();
     }
 
     [Fact]

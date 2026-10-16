@@ -247,33 +247,55 @@ public class Database(
     /// have been concurrently dropped). Used by the forwarder and TTL
     /// sweeper instead of <see cref="DeleteMessage"/> when discarding
     /// rather than acknowledging.
+    ///
+    /// The copy and the delete happen in one transaction, so a crash
+    /// cannot leave the message in both tables or in neither. Ids are
+    /// only 28 bits and <c>dropped_messages</c> is never purged, so an
+    /// id can already be there from an earlier, unrelated message: the
+    /// newer drop replaces that record rather than failing (#284).
     /// </summary>
-    internal async Task SoftDeleteMessage(string id, string reason)
+    internal Task SoftDeleteMessage(string id, string reason) => Task.Run(() =>
     {
-        var c = DbInfo.GetAsyncConnection();
-        var row = await c.FindAsync<DbMessage>(id);
-        if (row is null) return;
-        await c.InsertAsync(new DbDroppedMessage
+        using var c = DbInfo.GetConnection();
+        // Immediate: take the write lock before reading, so a forwarder
+        // and the sweeper dropping the same row at once queue up behind
+        // each other instead of failing on a lock upgrade. The second
+        // finds the row gone and does nothing.
+        c.Execute("begin immediate");
+        try
         {
-            Id = row.Id,
-            Payload = row.Payload,
-            Salt = row.Salt,
-            Destination = row.Destination,
-            SourceCallsign = row.SourceCallsign,
-            OriginatorCallsign = row.OriginatorCallsign,
-            AdditionalProperties = row.AdditionalProperties,
-            Forwarded = row.Forwarded,
-            LocallyDelivered = row.LocallyDelivered,
-            Ttl = row.Ttl,
-            CreatedAt = row.CreatedAt,
-            DroppedAt = timeProvider.GetUtcNow().UtcDateTime,
-            Reason = reason,
-            StreamId = row.StreamId,
-            StreamSeq = row.StreamSeq,
-            StreamGapTimeoutSeconds = row.StreamGapTimeoutSeconds,
-        });
-        await c.DeleteAsync<DbMessage>(id);
-    }
+            var row = c.Find<DbMessage>(id);
+            if (row is not null)
+            {
+                c.InsertOrReplace(new DbDroppedMessage
+                {
+                    Id = row.Id,
+                    Payload = row.Payload,
+                    Salt = row.Salt,
+                    Destination = row.Destination,
+                    SourceCallsign = row.SourceCallsign,
+                    OriginatorCallsign = row.OriginatorCallsign,
+                    AdditionalProperties = row.AdditionalProperties,
+                    Forwarded = row.Forwarded,
+                    LocallyDelivered = row.LocallyDelivered,
+                    Ttl = row.Ttl,
+                    CreatedAt = row.CreatedAt,
+                    DroppedAt = timeProvider.GetUtcNow().UtcDateTime,
+                    Reason = reason,
+                    StreamId = row.StreamId,
+                    StreamSeq = row.StreamSeq,
+                    StreamGapTimeoutSeconds = row.StreamGapTimeoutSeconds,
+                });
+                c.Delete<DbMessage>(id);
+            }
+            c.Execute("commit");
+        }
+        catch
+        {
+            try { c.Execute("rollback"); } catch { /* already rolled back */ }
+            throw;
+        }
+    });
 
     public async Task<IReadOnlyList<DbDroppedMessage>> GetRecentDroppedMessages(int limit = 50)
     {
@@ -291,7 +313,9 @@ public class Database(
         => await DbInfo.GetAsyncConnection().FindAsync<DbDroppedMessage>(id);
 
     /// <summary>
-    /// Soft-delete every message whose TTL has elapsed. Returns how many.
+    /// Remove every message whose TTL has elapsed. Ones still queued are
+    /// soft-deleted as <c>ttl-expired</c>; ones already forwarded or
+    /// delivered locally are simply deleted. Returns how many went.
     /// </summary>
     internal async Task<int> DeleteExpired(DateTime now)
     {
@@ -304,12 +328,35 @@ public class Database(
                 "select * from messages where Ttl is not null"))
             .Where(m => TtlMath.HasExpired(m.Ttl, m.CreatedAt, now))
             .ToList();
+        var actioned = 0;
         foreach (var message in expiredMessages)
         {
-            await SoftDeleteMessage(message.Id, "ttl-expired");
+            // One bad row must not stop the sweep for every row after it,
+            // on this sweep and every later one (#284).
+            try
+            {
+                if (message.Forwarded || message.LocallyDelivered)
+                {
+                    // Already sent on or delivered to its app: it did not
+                    // expire, its job is done. Remove it without recording
+                    // a ttl-expired drop, which would tell the operator it
+                    // never went (#285).
+                    await connection.ExecuteAsync(
+                        "delete from messages where id=? and (forwarded=1 or locallydelivered=1)", message.Id);
+                }
+                else
+                {
+                    await SoftDeleteMessage(message.Id, "ttl-expired");
+                }
+                actioned++;
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "TTL sweep: could not remove expired message {0}, carrying on with the rest", message.Id);
+            }
         }
 
-        return expiredMessages.Count;
+        return actioned;
     }
 
     internal async Task<ICollection<DbNeighbour>> GetNeighbours()
