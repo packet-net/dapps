@@ -35,7 +35,7 @@
             <li>REST calls send <code>Authorization: Bearer &lt;token&gt;</code>.</li>
             <li>The token is shown once, right below, immediately after minting - copy it now. DAPPS only stores a salted hash, so it can't be shown again; mint a new one (below) if it's lost.</li>
             <li>Minting for an app name that already has a token rotates it (you'll be asked to confirm first): REST calls using the old token fail on their very next request, but an already-connected MQTT client for that app keeps working until it next reconnects - the broker only checks the token at CONNECT.</li>
-            <li>App names are lowercased and can't contain '/', '+', '#', whitespace or control characters - the same characters MQTT topics and the REST path use as separators or wildcards.</li>
+            <li>App names are lowercased, plain ASCII, and can't contain '/', '+', '#', whitespace or control characters - the same characters MQTT topics and the REST path use as separators or wildcards.</li>
             <li><a href="https://packet-net.github.io/dapps/app-developers/reference/#authentication" target="_blank" rel="noopener">Manual: app authentication</a>, including the equivalent curl recipe for scripting this.</li>
         </ul>
     </details>

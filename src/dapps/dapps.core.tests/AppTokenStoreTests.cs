@@ -158,6 +158,52 @@ public sealed class AppTokenStoreTests : IAsyncLifetime
         (await store.ListAsync()).Should().BeEmpty();
     }
 
+    /// <summary>Databases from before names were normalised can hold both
+    /// "Chat" and "chat". Rotating must replace both, not fail on the
+    /// unique key after deleting only one.</summary>
+    [Fact]
+    public async Task CreateOrRotate_ReplacesEveryCaseVariantOfALegacyName()
+    {
+        var oldUpper = await store.CreateOrRotateAsync("Chat");
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbAppToken
+            {
+                AppName = "chat",
+                TokenHash = Convert.ToHexString(new byte[32]),
+                Salt = Convert.ToHexString(new byte[16]),
+                CreatedAt = DateTime.UtcNow,
+            });
+        }
+
+        var fresh = await store.CreateOrRotateAsync("chat");
+
+        (await store.ListAsync()).Should().ContainSingle();
+        (await store.VerifyAsync(fresh)).Should().Be("chat");
+        (await store.VerifyAsync(oldUpper)).Should().BeNull("the legacy 'Chat' token must stop working");
+    }
+
+    [Fact]
+    public async Task RevokeAsync_RemovesEveryCaseVariantOfALegacyName()
+    {
+        var upper = await store.CreateOrRotateAsync("Chat");
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Execute("update apptokens set AppName = 'Chat'");
+        }
+        var lower = await store.CreateOrRotateAsync("other");
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Execute("update apptokens set AppName = 'chat' where AppName = 'other'");
+        }
+
+        (await store.RevokeAsync("chat")).Should().BeTrue();
+
+        (await store.VerifyAsync(upper)).Should().BeNull();
+        (await store.VerifyAsync(lower)).Should().BeNull();
+        (await store.ListAsync()).Should().BeEmpty();
+    }
+
 }
 
 /// <summary>Tests for the static app-name validator used by both the
@@ -191,6 +237,8 @@ public sealed class AppTokenStoreNameValidationTests
     [InlineData("chat\t1")]
     [InlineData("chat\n1")]
     [InlineData("chat\u0001")]
+    [InlineData("\u212Aelvin")]
+    [InlineData("caf\u00e9")]
     public void TryNormalizeAppName_RejectsBlankSlashPlusHashWhitespaceAndControlChars(string? raw)
     {
         var ok = AppTokenStore.TryNormalizeAppName(raw, out _, out var error);

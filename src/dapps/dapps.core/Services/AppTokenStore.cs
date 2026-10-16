@@ -45,11 +45,9 @@ public sealed class AppTokenStore(ILogger<AppTokenStore> logger)
         var hash = Pbkdf2(plaintext, salt);
 
         var connection = DbInfo.GetAsyncConnection();
-        var existing = await FindRowCaseInsensitiveAsync(connection, appName);
-        if (existing != null)
-        {
-            await connection.DeleteAsync<DbAppToken>(existing.AppName);
-        }
+        // Every row for this name, whatever its case: databases from before
+        // names were normalised can hold both "Chat" and "chat".
+        await connection.ExecuteAsync("delete from apptokens where AppName = ? collate nocase", appName);
 
         await connection.InsertAsync(new DbAppToken
         {
@@ -99,10 +97,8 @@ public sealed class AppTokenStore(ILogger<AppTokenStore> logger)
     public async Task<bool> RevokeAsync(string appName)
     {
         var connection = DbInfo.GetAsyncConnection();
-        var existing = await FindRowCaseInsensitiveAsync(connection, appName);
-        if (existing is null) return false;
         var deleted = await connection.ExecuteAsync(
-            "delete from apptokens where AppName=?", existing.AppName);
+            "delete from apptokens where AppName = ? collate nocase", appName);
         return deleted > 0;
     }
 
@@ -149,10 +145,10 @@ public sealed class AppTokenStore(ILogger<AppTokenStore> logger)
 
         foreach (var c in trimmed)
         {
-            if (char.IsWhiteSpace(c) || char.IsControl(c) || c is '/' or '+' or '#')
+            if (c > '~' || char.IsWhiteSpace(c) || char.IsControl(c) || c is '/' or '+' or '#')
             {
                 normalized = "";
-                error = "App name can't contain '/', '+', '#', whitespace, or control characters.";
+                error = "App name must be plain ASCII and can't contain '/', '+', '#', whitespace, or control characters.";
                 return false;
             }
         }
@@ -165,16 +161,6 @@ public sealed class AppTokenStore(ILogger<AppTokenStore> logger)
     private static byte[] Pbkdf2(string plaintext, byte[] salt)
     {
         return Rfc2898DeriveBytes.Pbkdf2(plaintext, salt, Iterations, Hash, HashBytes);
-    }
-
-    /// <summary>Case-insensitive lookup by app name. The table holds a
-    /// handful of rows at most (a few apps per node), so a full scan
-    /// plus an ordinal-ignore-case comparison in C# is simpler than a
-    /// COLLATE NOCASE query and costs nothing measurable at this scale.</summary>
-    private static async Task<DbAppToken?> FindRowCaseInsensitiveAsync(SQLiteAsyncConnection connection, string appName)
-    {
-        var rows = await connection.QueryAsync<DbAppToken>("select * from apptokens");
-        return rows.FirstOrDefault(r => string.Equals(r.AppName, appName, StringComparison.OrdinalIgnoreCase));
     }
 
     private static string GenerateRandomToken()
