@@ -32,6 +32,9 @@ public sealed class AgwFrameTransport
     private readonly IDappsTxGate txGate;
     private readonly ILogger? logger;
     private readonly SemaphoreSlim writeLock = new(1, 1);
+    // Ports over MaxPort already warned about on this connection: one
+    // warning each, not one per frame. Touched only by the reader.
+    private readonly HashSet<byte> warnedPorts = [];
 
     public AgwFrameTransport(Stream stream, IDappsTxGate? txGate = null, ILogger? logger = null)
     {
@@ -166,8 +169,11 @@ public sealed class AgwFrameTransport
             var port = header[0];
             if (port > MaxPort)
             {
-                logger?.LogWarning(
-                    "AGW: dropped a '{0}' frame for port {1}; AGW ports go up to {2}", (char)kind, port, MaxPort);
+                if (warnedPorts.Add(port))
+                {
+                    logger?.LogWarning(
+                        "AGW: dropping frames for port {0}; AGW ports go up to {1} (warned once per connection)", port, MaxPort);
+                }
                 continue;
             }
             return AgwFrame.ParseHeader(header, payload);

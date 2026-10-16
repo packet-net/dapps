@@ -21,6 +21,8 @@ The rule behind `FRACK`: a burst of `MAXFRAME` frames of `PACLEN` bytes takes ab
 
 If your TNC supports it, `KISSOPTIONS=ACKMODE` has the TNC tell BPQ when each frame has actually gone, so `FRACK` runs from then. pdn-soundmodem supports it; Dire Wolf doesn't. With `FRACK` set as above it made no difference.
 
+On AGW, DAPPS waits at most 3 minutes for the node to connect a call. If the first hop is slow (an HF port with a long `FRACK` and many retries, or a VHF connect through a digipeater on a busy channel), keep `FRACK` x `RETRIES` under 180 s, or DAPPS gives up on the call before the node does.
+
 ## Airtime budget
 
 The single biggest knob. By default DAPPS imposes **no cap** on discovery transmissions - beacons go out on their per-channel cadence, probes fire on their interval, solicit replies happen whenever a solicit arrives. If you turn discovery features on without thinking about airtime, this can be a lot.

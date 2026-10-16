@@ -153,18 +153,25 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
             // connected or the far end's data arrives, false if the node
             // closes the handle first.
             var linkUp = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            void Push(byte[] bytes)
+            {
+                if (stream.TryPush(bytes) == PushResult.Overflowed)
+                {
+                    logger.LogWarning("RHP: session {local}->{remote} left more than {kb} KB unread; closing it",
+                        localCallsign, remoteCallsign, MultiplexedAgwSessionStream.MaxUnreadBytes / 1024);
+                }
+            }
             EventHandler<RhpReceivedEventArgs> recvHandler = (_, e) =>
             {
                 var bytes = RhpDataEncoding.FromWireString(e.Message.Data);
                 lock (early)
                 {
                     if (opened is null) early.Add((e.Message.Handle, bytes));
-                    // Fire-and-forget: PushIncoming awaits the pipe write,
-                    // which is bounded only by the consumer's read pace.
+                    // TryPush never waits on the reader (see its doc).
                     else if (e.Message.Handle == opened)
                     {
                         linkUp.TrySetResult(true);
-                        _ = stream.PushIncoming(bytes, CancellationToken.None);
+                        Push(bytes);
                     }
                 }
             };
@@ -251,7 +258,7 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
                     else
                     {
                         linkUp.TrySetResult(true);
-                        _ = stream.PushIncoming(data, CancellationToken.None);
+                        Push(data);
                     }
                 }
                 early.Clear();

@@ -182,10 +182,12 @@ public class AgwFrameTests
     }
 
     [Fact]
-    public async Task ReadFrameAsync_FrameForAPortOver64_IsDroppedWithAWarning()
+    public async Task ReadFrameAsync_FramesForAPortOver64_AreDroppedWithOneWarning()
     {
         var wire = new MemoryStream([
             .. new AgwFrame(65, 'U', 0xF0, "G0XYZ", "DAPPS", "dropped"u8.ToArray()).ToBytes(),
+            .. new AgwFrame(65, 'U', 0xF0, "G0XYZ", "DAPPS", "dropped too"u8.ToArray()).ToBytes(),
+            .. new AgwFrame(65, 'S', 0xF0, "G0XYZ", "DAPPS", "and this"u8.ToArray()).ToBytes(),
             .. new AgwFrame(64, 'U', 0xF0, "G0XYZ", "DAPPS", "kept"u8.ToArray()).ToBytes(),
         ]);
         var logs = new CapturingLoggerFactory();
@@ -195,7 +197,7 @@ public class AgwFrameTests
 
         frame.Port.Should().Be(64);
         Encoding.ASCII.GetString(frame.Payload).Should().Be("kept");
-        logs.Warnings.Should().ContainSingle().Which.Message.Should().Contain("port 65");
+        logs.Warnings.Should().ContainSingle("one warning per port, not one per frame").Which.Message.Should().Contain("port 65");
     }
 
     public static TheoryData<AgwFrame> FramesBpqWouldCallCorrupt => new()

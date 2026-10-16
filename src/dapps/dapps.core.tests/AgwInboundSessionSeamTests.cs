@@ -668,6 +668,33 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AConnectWhoseSetupFails_IsCleanedUp_SoThePeerIsLetGoAndCanRedial()
+    {
+        // Failing after the session is in the table but before its handler
+        // starts used to leave the half-made entry there and the peer's
+        // lease held: the peer's link hung until it timed out, and its
+        // redial was taken for a stale entry.
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
+        var bpq = await h.StartAsync(ct);
+
+        h.Logs.ThrowWhen = e => e.Message.Contains($"session {Local}<->{Remote} on port {Port} registered", StringComparison.Ordinal);
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        await h.Logs.WaitForAsync("carrying on with the connection", ct);
+
+        var bye = await bpq.ReadUntilAsync('d', ct);
+        bye.CallTo.Should().Be(Remote, "the peer is let go at once rather than left waiting for a prompt");
+        bye.Port.Should().Be(Port);
+        await peers.WaitUntilIdleAsync(Remote, ct).WaitAsync(FakeAgwHost.FrameTimeout, ct);
+
+        h.Logs.ThrowWhen = null;
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
+        h.Logs.Any("while a session was still registered").Should().BeFalse("the failed session left nothing behind in the table");
+    }
+
+    [Fact]
     public async Task ARegisterReplyOtherThanSuccess_BacksOffAndSaysTheCallsignWasRefused()
     {
         // #278: the reply used to be ignored, leaving the listener up but

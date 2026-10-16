@@ -283,7 +283,11 @@ public sealed class Rhpv2InboundService(
             if (sessions.TryGetValue(e.Message.Handle, out var stream))
             {
                 var bytes = RhpDataEncoding.FromWireString(e.Message.Data);
-                _ = stream.PushIncoming(bytes, stoppingToken);
+                if (stream.TryPush(bytes) == PushResult.Overflowed)
+                {
+                    logger.LogWarning("RHP inbound: session on handle {0} left more than {1} KB unread; closing it",
+                        e.Message.Handle, MultiplexedAgwSessionStream.MaxUnreadBytes / 1024);
+                }
             }
         };
 

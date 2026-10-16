@@ -472,68 +472,91 @@ public sealed class AgwInboundService(
                 "retiring the stale entry (its 'd' never reached us in a form we could match)",
                 local, remote, port);
         }
-        sessions[key] = stream;
 
-        // #178: while this session is open the forwarder must not dial
-        // this peer (see PeerSessionRegistry). Released once the
-        // handler is done and our 'd', if any, has gone out. Connected
-        // now, so any older session with this peer is retired.
-        lease = peerSessions?.Acquire(remote, "inbound", port);
-
-        // Retired: a newer session with this peer has connected here, and
-        // the link is that one's. Out of the table, so nothing more is
-        // routed to it, and marked closed by the far end, so its teardown
-        // never sends the 'd' that BPQ would apply to the newer session
-        // (rule 3).
-        lease?.Retired.Register(() =>
+        try
         {
-            sessions.TryRemove(new KeyValuePair<SessionKey, MultiplexedAgwSessionStream>(key, stream));
-            stream.SignalRemoteDisconnect();
-            logger.LogInformation("AGW inbound: session {0}<->{1} retired: a newer session with that peer has the link", local, remote);
-        });
+            sessions[key] = stream;
 
-        // #205: our own call to this peer may already be on its way, the
-        // two calls made a moment apart. Our node then sends our SABM down
-        // this link, and the peer's node keeps its call up, sharing the link
-        // with ours, only if nothing has reached it on the link yet;
-        // otherwise it resets the link, and both calls are lost. So no
-        // prompt until our call has connected (this session is then
-        // retired, having said nothing) or given up.
-        var ownCall = lease is null ? Task.CompletedTask : peerSessions!.OwnCallsSettledAsync(lease);
+            // #178: while this session is open the forwarder must not dial
+            // this peer (see PeerSessionRegistry). Released once the
+            // handler is done and our 'd', if any, has gone out. Connected
+            // now, so any older session with this peer is retired.
+            lease = peerSessions?.Acquire(remote, "inbound", port);
+            logger.LogDebug("AGW inbound: session {0}<->{1} on port {2} registered", local, remote, port);
 
-        var handler = new InboundConnectionHandler(
-            stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics,
-            settingsFor: exchangePolicy is null ? null : exchangePolicy.ForPeerAsync,
-            directory: openSessions);
-
-        // Not tied to the cycle token: a cancellation landing in the gap
-        // after the 'C' was read would skip the handler, leaving the
-        // stream undisposed and the peer's lease held for good. The
-        // cycle's teardown ends this session through the table instead.
-        _ = Task.Run(async () =>
-        {
-            using var session = CancellationTokenSource.CreateLinkedTokenSource(
-                stoppingTokenSource.Token, lease?.Retired ?? CancellationToken.None);
-            try
+            // Retired: a newer session with this peer has connected here, and
+            // the link is that one's. Out of the table, so nothing more is
+            // routed to it, and marked closed by the far end, so its teardown
+            // never sends the 'd' that BPQ would apply to the newer session
+            // (rule 3).
+            lease?.Retired.Register(() =>
             {
-                if (await HoldForOwnCallAsync(ownCall, remote, stream.RemoteClosed, session.Token)) await handler.Handle(session.Token);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "AGW inbound: session handler {0}<->{1} failed", local, remote);
-            }
-            finally
-            {
-                // Remove only *our* stream. The 'd' frame handler may
-                // already have removed it, and a reconnect from the same
-                // callsign pair may since have registered a new stream
-                // under this key - removing by key alone would evict and
-                // dispose that one.
                 sessions.TryRemove(new KeyValuePair<SessionKey, MultiplexedAgwSessionStream>(key, stream));
+                stream.SignalRemoteDisconnect();
+                logger.LogInformation("AGW inbound: session {0}<->{1} retired: a newer session with that peer has the link", local, remote);
+            });
+
+            // #205: our own call to this peer may already be on its way, the
+            // two calls made a moment apart. Our node then sends our SABM down
+            // this link, and the peer's node keeps its call up, sharing the link
+            // with ours, only if nothing has reached it on the link yet;
+            // otherwise it resets the link, and both calls are lost. So no
+            // prompt until our call has connected (this session is then
+            // retired, having said nothing) or given up.
+            var ownCall = lease is null ? Task.CompletedTask : peerSessions!.OwnCallsSettledAsync(lease);
+
+            var handler = new InboundConnectionHandler(
+                stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics,
+                settingsFor: exchangePolicy is null ? null : exchangePolicy.ForPeerAsync,
+                directory: openSessions);
+
+            // Not tied to the cycle token: a cancellation landing in the gap
+            // after the 'C' was read would skip the handler, leaving the
+            // stream undisposed and the peer's lease held for good. The
+            // cycle's teardown ends this session through the table instead.
+            _ = Task.Run(async () =>
+            {
+                using var session = CancellationTokenSource.CreateLinkedTokenSource(
+                    stoppingTokenSource.Token, lease?.Retired ?? CancellationToken.None);
+                try
+                {
+                    if (await HoldForOwnCallAsync(ownCall, remote, stream.RemoteClosed, session.Token)) await handler.Handle(session.Token);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "AGW inbound: session handler {0}<->{1} failed", local, remote);
+                }
+                finally
+                {
+                    // Remove only *our* stream. The 'd' frame handler may
+                    // already have removed it, and a reconnect from the same
+                    // callsign pair may since have registered a new stream
+                    // under this key - removing by key alone would evict and
+                    // dispose that one.
+                    sessions.TryRemove(new KeyValuePair<SessionKey, MultiplexedAgwSessionStream>(key, stream));
+                    try { await stream.DisposeAsync(); } catch { /* best effort */ }
+                    lease?.Dispose();
+                }
+            });
+        }
+        catch
+        {
+            // Failed between registering the session and starting its
+            // handler: nothing else would ever end it. Take it out of the
+            // table (only this stream), let the peer go with a 'd' (the
+            // stream's dispose sends it unless the link was retired or
+            // closed meanwhile) and release the peer's lease, so the link
+            // does not hang until it times out. The dispatcher logs the
+            // exception itself.
+            sessions.TryRemove(new KeyValuePair<SessionKey, MultiplexedAgwSessionStream>(key, stream));
+            var failedLease = lease;
+            _ = Task.Run(async () =>
+            {
                 try { await stream.DisposeAsync(); } catch { /* best effort */ }
-                lease?.Dispose();
-            }
-        });
+                failedLease?.Dispose();
+            });
+            throw;
+        }
     }
 
     /// <summary>
