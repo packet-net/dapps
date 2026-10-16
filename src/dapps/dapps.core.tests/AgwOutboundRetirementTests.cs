@@ -4,6 +4,7 @@ using dapps.client.Transport.Agw;
 using dapps.client.Tx;
 using dapps.core.Models;
 using dapps.core.Services;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace dapps.core.tests;
@@ -160,6 +161,55 @@ public sealed class AgwOutboundRetirementTests
         (await node.ReadUntilAsync('d', ct)).CallTo.Should().Be(Remote);
     }
 
+    [Fact]
+    public async Task MonitoredFrames_DoNotExtendTheConfirmDeadline()
+    {
+        // #278: the wait for the node's answer used to restart its 3
+        // minute timeout on every frame read, and the monitor is on, so
+        // on a busy channel a node that never answered held the dial for
+        // good.
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        var logs = new CapturingLoggerFactory();
+        using var host = new FakeAgwHost();
+        var transport = MakeTransport(host, clock: clock, logs: logs);
+
+        var connecting = transport.ConnectAsync(Local, Remote, 0, ct);
+        using var node = await AcceptCallAsync(host, ct);
+        await clock.WaitForTimerAsync(AgwOutboundTransport.ConnectConfirmDeadline, ct);
+
+        clock.Advance(TimeSpan.FromMinutes(2));
+        // A frame the transport demonstrably reads: it logs the crossing.
+        await node.WriteAsync(ct, Monitored(" 1:Fm N0BBB-3 To N0AAA-3 <C C P>[12:00:00]\r"));
+        await logs.WaitForAsync("the calls crossed", ct);
+        clock.Advance(TimeSpan.FromMinutes(1));
+
+        var act = () => connecting.WaitAsync(FakeAgwHost.FrameTimeout, ct);
+        (await act.Should().ThrowAsync<TimeoutException>()).Which.Message.Should().Contain("did not answer the connect");
+    }
+
+    [Fact]
+    public async Task NoReplyToTheRegister_GivesUpAfterTenSeconds()
+    {
+        // #278: a host that takes the TCP connection and never answers
+        // the 'X' (the AGW port setting pointing at some other service)
+        // used to hold the forwarder for good.
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        using var host = new FakeAgwHost();
+        var transport = MakeTransport(host, clock: clock);
+
+        var connecting = transport.ConnectAsync(Local, Remote, 0, ct);
+        using var node = await host.AcceptAsync(ct);
+        await node.ExpectRegisterAsync(ct);
+        await clock.WaitForTimerAsync(AgwFrameTransport.RegisterReplyTimeout, ct);
+        clock.Advance(AgwFrameTransport.RegisterReplyTimeout);
+
+        var act = () => connecting.WaitAsync(FakeAgwHost.FrameTimeout, ct);
+        (await act.Should().ThrowAsync<TimeoutException>()).Which.Message.Should().Contain("no reply to registering");
+        (await node.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'C', "no connect request goes out unregistered");
+    }
+
     private static AgwFrame Confirm() =>
         new(0, 'C', 0, Remote, Local, Encoding.ASCII.GetBytes($"*** CONNECTED With Station {Remote}\r\0"));
 
@@ -175,7 +225,8 @@ public sealed class AgwOutboundRetirementTests
         return socket;
     }
 
-    private static BearerSwitchingOutboundTransport MakeTransport(FakeAgwHost host, PeerSessionRegistry? peers = null)
+    private static BearerSwitchingOutboundTransport MakeTransport(
+        FakeAgwHost host, PeerSessionRegistry? peers = null, TimeProvider? clock = null, CapturingLoggerFactory? logs = null)
     {
         var options = new StaticOptionsMonitor<SystemOptions>(new SystemOptions
         {
@@ -184,7 +235,7 @@ public sealed class AgwOutboundRetirementTests
             AgwPort = host.Port,
         });
         return new BearerSwitchingOutboundTransport(
-            options, NullLoggerFactory.Instance, AlwaysOpenTxGate.Instance, TimeProvider.System, TimeSpan.Zero, peers,
+            options, (ILoggerFactory?)logs ?? NullLoggerFactory.Instance, AlwaysOpenTxGate.Instance, clock ?? TimeProvider.System, TimeSpan.Zero, peers,
             linkSettleSpread: TimeSpan.Zero);
     }
 }

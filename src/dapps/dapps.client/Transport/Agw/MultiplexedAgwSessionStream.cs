@@ -10,7 +10,11 @@ namespace dapps.client.Transport.Agw;
 /// matching session by callfrom/callto).
 ///
 /// Reads pull bytes from an internal pipe fed by the dispatcher via
-/// <see cref="PushIncoming"/>; writes serialise bytes into a 'D' frame
+/// <see cref="TryPush"/>, which never waits: the dispatcher reads every
+/// session's frames off one socket and must not stall on a slow reader.
+/// A session that leaves more than <see cref="MaxUnreadBytes"/> unread
+/// is closed locally instead (its next read fails, and its teardown
+/// sends the 'd'). Writes serialise bytes into a 'D' frame
 /// and hand them to the supplied write callback so the dispatcher's
 /// shared <see cref="AgwFrameTransport"/> stays the only place frames
 /// hit the wire. <see cref="SignalRemoteDisconnect"/> closes the pipe
@@ -27,7 +31,17 @@ public sealed class MultiplexedAgwSessionStream : Stream
     private const int RemotelyClosed = 1;
     private const int Disposed = 2;
 
-    private readonly Pipe incoming = new();
+    /// <summary>Most received bytes a session may leave unread before
+    /// <see cref="TryPush"/> closes it. Far beyond anything a radio link
+    /// delivers ahead of a reader that is keeping up.</summary>
+    public const int MaxUnreadBytes = 256 * 1024;
+
+    // Never pauses the writer: the unread count below is the bound.
+    private readonly Pipe incoming = new(new PipeOptions(pauseWriterThreshold: 0, resumeWriterThreshold: 0));
+    // Serialises pushes with each other and with completing the pipe.
+    private readonly Lock pushGate = new();
+    private long unreadBytes;
+    private bool overflowed;
     private readonly Func<byte[], CancellationToken, Task> writeOutgoing;
     private readonly Func<CancellationToken, Task> sendRemoteDisconnect;
     private readonly CancellationTokenSource remoteClosed = new();
@@ -43,12 +57,44 @@ public sealed class MultiplexedAgwSessionStream : Stream
         this.sendRemoteDisconnect = sendRemoteDisconnect;
     }
 
-    /// <summary>Push received bytes (typically a 'D' frame's payload)
-    /// onto the read side of the stream. Called by the dispatcher.</summary>
-    public async ValueTask PushIncoming(ReadOnlyMemory<byte> data, CancellationToken ct)
+    /// <summary>
+    /// Push received bytes (typically a 'D' frame's payload) onto the
+    /// read side of the stream, without waiting. A no-op unless the
+    /// session is open: after a remote disconnect, a retirement or a
+    /// dispose the bytes have nowhere to go. Safe to call from several
+    /// threads; pushes land whole and in the order they were made.
+    /// </summary>
+    public PushResult TryPush(ReadOnlySpan<byte> data)
     {
-        if (IsDisposed || data.IsEmpty) return;
-        await incoming.Writer.WriteAsync(data, ct);
+        if (data.IsEmpty) return PushResult.Accepted;
+        lock (pushGate)
+        {
+            if (Volatile.Read(ref closeState) != Open || overflowed) return PushResult.NotOpen;
+            if (Interlocked.Read(ref unreadBytes) + data.Length > MaxUnreadBytes)
+            {
+                overflowed = true;
+                try
+                {
+                    incoming.Writer.Complete(new IOException(
+                        $"session closed: more than {MaxUnreadBytes / 1024} KB received and not read"));
+                }
+                catch { /* already completed */ }
+                return PushResult.Overflowed;
+            }
+            incoming.Writer.Write(data);
+            Interlocked.Add(ref unreadBytes, data.Length);
+            // Never pending: the pipe does not pause its writer.
+            _ = incoming.Writer.FlushAsync();
+            return PushResult.Accepted;
+        }
+    }
+
+    /// <summary>Async form of <see cref="TryPush"/>, kept for callers
+    /// that await it; it completes at once.</summary>
+    public ValueTask PushIncoming(ReadOnlyMemory<byte> data, CancellationToken ct)
+    {
+        TryPush(data.Span);
+        return ValueTask.CompletedTask;
     }
 
     /// <summary>Mark the stream as EOF on the read side. Idempotent.
@@ -69,7 +115,10 @@ public sealed class MultiplexedAgwSessionStream : Stream
 
     private void CompleteIncoming()
     {
-        try { incoming.Writer.Complete(); } catch { /* already completed */ }
+        lock (pushGate)
+        {
+            try { incoming.Writer.Complete(); } catch { /* already completed */ }
+        }
     }
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
@@ -84,6 +133,7 @@ public sealed class MultiplexedAgwSessionStream : Stream
         var toCopy = (int)Math.Min(available.Length, buffer.Length);
         available.Slice(0, toCopy).CopyTo(buffer.Span);
         incoming.Reader.AdvanceTo(available.GetPosition(toCopy));
+        Interlocked.Add(ref unreadBytes, -toCopy);
         return toCopy;
     }
 
@@ -150,4 +200,16 @@ public sealed class MultiplexedAgwSessionStream : Stream
     }
     public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
     public override void SetLength(long value) => throw new NotSupportedException();
+}
+
+/// <summary>What <see cref="MultiplexedAgwSessionStream.TryPush"/> did with the bytes.</summary>
+public enum PushResult
+{
+    /// <summary>Queued for the reader.</summary>
+    Accepted,
+    /// <summary>Dropped: the session is closed, or closing.</summary>
+    NotOpen,
+    /// <summary>Dropped, and the session closed: its reader had left
+    /// more than <see cref="MultiplexedAgwSessionStream.MaxUnreadBytes"/> unread.</summary>
+    Overflowed,
 }

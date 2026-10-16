@@ -4,7 +4,10 @@ using System.Text;
 using AwesomeAssertions;
 using dapps.client.Discovery;
 using dapps.client.Transport.Agw;
+using dapps.core.Models;
+using dapps.core.Services;
 using Microsoft.Extensions.Logging.Abstractions;
+using SQLite;
 
 namespace dapps.core.tests;
 
@@ -13,6 +16,7 @@ namespace dapps.core.tests;
 /// running on a TCP loopback socket. Validates the AX.25-side discovery
 /// path end-to-end at the AGW frame layer - without a real BPQ.
 /// </summary>
+[Collection(SqliteOverridePathCollection.Name)]
 public sealed class AgwUiDiscoveryTests
 {
     private static DiscoveryChannelInfo Channel(int id, byte port) =>
@@ -39,7 +43,7 @@ public sealed class AgwUiDiscoveryTests
         frames.Should().HaveCount(3);
         frames[0].Kind.Should().Be('X');
         frames[1].Kind.Should().Be('m');
-        frames[1].Payload[0].Should().Be(1);
+        frames[1].Payload.Should().BeEmpty("a plain 'm' toggles BPQ's monitor; a 12-byte one is a different request");
         frames[2].Kind.Should().Be('M');
         Encoding.ASCII.GetString(frames[2].Payload).Should().StartWith("DAPPS v1");
     }
@@ -229,6 +233,85 @@ public sealed class AgwUiDiscoveryTests
         got.Beacon.Callsign.Should().Be("G7XYZ-9");
         got.Beacon.Hops.Should().Be(2,
             "the bearer must skip the self-echo and the wrong-kind frame and surface only the genuine peer beacon");
+    }
+
+    [Fact]
+    public async Task TwoPorts_TurnTheMonitorOnWithASingleToggle()
+    {
+        // #274: BPQ keeps one monitor flag per socket and flips it on
+        // every plain 'm', whatever port the frame names. One 'm' per
+        // port left it off with two ports, and no beacon was ever heard.
+        using var server = new FakeAgwServer();
+        await using var bearer = new AgwUiDiscoveryBearer(
+            server.Host, server.Port, ourCallsign: "M0SEND", NullLoggerFactory.Instance);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var serverTask = Task.Run(() => server.AcceptOneAsync(cts.Token), cts.Token);
+
+        await bearer.StartAsync([Channel(1, 0), Channel(2, 1)], cts.Token);
+        await bearer.AnnounceAsync(new BeaconFrame("M0SEND", 0, 600, new AgwBearerHint(1)), "1", cts.Token);
+
+        var frames = await server.WaitForFramesAsync(3, TimeSpan.FromSeconds(3));
+        frames.Select(f => f.Kind).Should().Equal(['X', 'm', 'M']);
+    }
+
+    [Fact]
+    public async Task ACallsignChange_RestartsTheBearerUnderTheNewCallsign()
+    {
+        // #274: the bearer was built with the callsign of the moment and
+        // restarted only when its channels changed, so after a callsign
+        // change it went on registering and beaconing as the old one.
+        var ct = TestContext.Current.CancellationToken;
+        var dbPath = Path.Combine(Path.GetTempPath(), $"dapps-agw-disc-test-{Guid.NewGuid():N}.db");
+        DbInfo.OverridePath = dbPath;
+        try
+        {
+            using (var c = DbInfo.GetConnection())
+            {
+                c.CreateTable<DbDiscoveredPeer>();
+                c.CreateTable<DbDiscoveryChannel>();
+            }
+            using var host = new FakeAgwHost();
+            var options = new MutableOptionsMonitor<SystemOptions>(new SystemOptions
+            {
+                Callsign = "M0OLD-1", NodeHost = "127.0.0.1", AgwPort = host.Port,
+            });
+            var database = new Database(NullLogger<Database>.Instance, options);
+            await database.UpsertDiscoveryChannel(new DbDiscoveryChannel
+            {
+                Bearer = "agw", ChannelKey = "0", LinkClass = LinkClass.VhfUhfFm, BeaconIntervalSeconds = 1800,
+            });
+            var service = new DiscoveryService(
+                database, options, TimeProvider.System, NullLoggerFactory.Instance, NullLogger<DiscoveryService>.Instance)
+            {
+                ChannelReloadInterval = TimeSpan.FromMilliseconds(100),
+            };
+
+            await service.StartAsync(ct);
+            try
+            {
+                using var first = await host.AcceptAsync(ct);
+                (await first.ExpectRegisterAsync(ct)).CallFrom.Should().Be("M0OLD-1");
+                await first.WriteAsync(ct, FakeAgwSocket.RegisterReply(0x01));
+                (await first.ReadUntilAsync('M', ct)).CallFrom.Should().Be("M0OLD-1");
+
+                options.Set(new SystemOptions { Callsign = "M0NEW-1", NodeHost = "127.0.0.1", AgwPort = host.Port });
+
+                using var second = await host.AcceptAsync(ct);
+                (await second.ExpectRegisterAsync(ct)).CallFrom.Should().Be("M0NEW-1");
+                await second.WriteAsync(ct, FakeAgwSocket.RegisterReply(0x01));
+                (await second.ReadUntilAsync('M', ct)).CallFrom.Should().Be("M0NEW-1", "beacons go out as the new callsign");
+            }
+            finally
+            {
+                await service.StopAsync(CancellationToken.None);
+            }
+        }
+        finally
+        {
+            DbInfo.OverridePath = null;
+            try { File.Delete(dbPath); } catch { /* ignore */ }
+        }
     }
 
     private sealed class FakeAgwServer : IDisposable

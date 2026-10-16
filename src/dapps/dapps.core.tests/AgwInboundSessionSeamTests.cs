@@ -456,10 +456,10 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         using var second = await h.Host.AcceptAsync(ct);
         (await second.ExpectRegisterAsync(ct)).CallFrom.Should().Be(Local, "the new connection re-registers our callsign");
 
-        // A frame from BPQ, not the bare TCP connect, is what counts as
-        // a successful reconnect and resets the ramp.
-        await second.WriteAsync(ct, new AgwFrame(0, 'X', 0, "", "", [1]));
-        await h.Logs.WaitForAsync("'X' ack", ct);
+        // The node's answer to the 'X', not the bare TCP connect, is what
+        // counts as a successful reconnect and resets the ramp.
+        await second.WriteAsync(ct, FakeAgwSocket.RegisterReply(0x01));
+        await h.Logs.WaitForCountAsync("'X' ack", 2, ct);
         h.Metrics.Take().AgwReconnectAttempt.Should().Be(0);
     }
 
@@ -642,6 +642,50 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
             "the service closed the connection built from the old settings");
         await clock.WaitForTimerAsync(AgwInboundService.NonFailureRetryDelay, ct);
         h.Metrics.Take().AgwReconnectAttempt.Should().Be(0, "an options change never counts against the ramp");
+    }
+
+    [Fact]
+    public async Task AFrameWhoseHandlingFails_LeavesTheSocketAndTheOtherSessionsUp()
+    {
+        // #276: one consumer's exception used to end the read loop, and
+        // with it the socket: BPQ then drops every inbound link at once.
+        var ct = TestContext.Current.CancellationToken;
+        await using var h = new AgwInboundServiceHarness(Local);
+        var bpq = await h.StartAsync(ct);
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
+
+        // Handling this caller's connect throws part way through.
+        h.Logs.ThrowWhen = e => e.Message.Contains("'C' from M0BAD-1", StringComparison.Ordinal);
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect("M0BAD-1", Local, Port));
+        await h.Logs.WaitForAsync("carrying on with the connection", ct);
+
+        // The first session is untouched, and the socket still serves.
+        (await bpq.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'd');
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect("M0XYZ-1", Local, Port));
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
+        h.Host.Pending().Should().BeFalse("the service never had to dial again");
+    }
+
+    [Fact]
+    public async Task ARegisterReplyOtherThanSuccess_BacksOffAndSaysTheCallsignWasRefused()
+    {
+        // #278: the reply used to be ignored, leaving the listener up but
+        // deaf: the node would never hand it a call.
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        await h.Service.StartAsync(ct);
+        using var bpq = await h.Host.AcceptAsync(ct);
+        await bpq.ExpectRegisterAsync(ct);
+
+        await bpq.WriteAsync(ct, FakeAgwSocket.RegisterReply(0x00));
+
+        var warning = await h.Logs.WaitForAsync(e => e.Message.Contains("(attempt 1,", StringComparison.Ordinal), ct);
+        warning.Exception!.Message.Should().Contain("callsign refused").And.Contain(Local);
+        await clock.WaitForTimerAsync(ReconnectBackoffSchedule.DelayForAttempt(1), ct);
+        h.Metrics.Take().AgwReconnectAttempt.Should().Be(1, "a refused callsign is a failure to back off from");
+        h.Logs.Any("'X' ack").Should().BeFalse();
     }
 
     /// <summary>Reads until the service closes the socket and returns how

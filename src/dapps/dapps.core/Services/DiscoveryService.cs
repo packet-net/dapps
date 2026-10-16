@@ -45,10 +45,23 @@ public sealed class DiscoveryService(
     public TimeSpan ChannelReloadInterval { get; init; } = TimeSpan.FromSeconds(10);
 
     /// <summary>A bearer the service has started: the bearer, its listen
-    /// loop, and the channel keys it was started with. The listen loop
+    /// loop, the channel keys it was started with, and the node settings
+    /// it was built from (<see cref="NodeSettingsFor"/>). The listen loop
     /// ending other than on shutdown means the bearer has died (the AGW
     /// bearer ends its loop when the node connection drops).</summary>
-    private sealed record RunningBearer(IDiscoveryBearer Bearer, Task Listen, HashSet<string> Keys);
+    private sealed record RunningBearer(IDiscoveryBearer Bearer, Task Listen, HashSet<string> Keys, object? NodeSettings);
+
+    /// <summary>The SystemOptions fields a bearer is built from, copied
+    /// when it starts: a save that changes them restarts the bearer, so
+    /// it does not go on beaconing as the old callsign or talking to the
+    /// old node (#274). Null for a bearer built from none of them.</summary>
+    internal sealed record AgwNodeSettings(string Callsign, string NodeHost, int AgwPort);
+
+    private static object? NodeSettingsFor(string bearerName, SystemOptions opts) => bearerName switch
+    {
+        "agw" => new AgwNodeSettings(opts.Callsign, opts.NodeHost, opts.AgwPort),
+        _ => null,
+    };
 
     /// <summary>Delay before the next attempt to start a bearer that
     /// failed or died: the node is usually just not up yet, so quick
@@ -137,7 +150,8 @@ public sealed class DiscoveryService(
                 ? w.Select(c => c.ChannelKey).ToHashSet(StringComparer.Ordinal)
                 : new HashSet<string>(StringComparer.Ordinal);
             var died = running.Listen.IsCompleted && !stoppingToken.IsCancellationRequested;
-            if (!died && keys.SetEquals(running.Keys)) continue;
+            var nodeChanged = !Equals(running.NodeSettings, NodeSettingsFor(name, options.CurrentValue));
+            if (!died && !nodeChanged && keys.SetEquals(running.Keys)) continue;
 
             if (died)
             {
@@ -152,6 +166,10 @@ public sealed class DiscoveryService(
             {
                 logger.LogInformation("DiscoveryService: no enabled channels left on bearer '{0}'; stopping it", name);
             }
+            else if (nodeChanged)
+            {
+                logger.LogInformation("DiscoveryService: callsign or node settings changed; restarting bearer '{0}'", name);
+            }
             else
             {
                 logger.LogInformation("DiscoveryService: channels on bearer '{0}' changed; restarting it", name);
@@ -165,7 +183,8 @@ public sealed class DiscoveryService(
         {
             if (bearers.ContainsKey(name)) continue;
             if (retryAt.TryGetValue(name, out var due) && now < due) continue;
-            var bearer = TryConstructBearer(name);
+            var opts = options.CurrentValue;
+            var bearer = TryConstructBearer(name, opts);
             if (bearer is null)
             {
                 if (_unknownBearersLogged.Add(name))
@@ -197,7 +216,7 @@ public sealed class DiscoveryService(
             attempts.Remove(name);
             retryAt.Remove(name);
             var listen = Task.Run(() => ListenLoopAsync(bearer, channelsByBearer, stoppingToken), stoppingToken);
-            bearers[name] = new RunningBearer(bearer, listen, info.Select(c => c.ChannelKey).ToHashSet(StringComparer.Ordinal));
+            bearers[name] = new RunningBearer(bearer, listen, info.Select(c => c.ChannelKey).ToHashSet(StringComparer.Ordinal), NodeSettingsFor(name, opts));
             lock (_activeBearers) _activeBearers[name] = bearer;
             foreach (var ch in info) added.Add((name, ch));
             logger.LogInformation(
@@ -228,9 +247,8 @@ public sealed class DiscoveryService(
         try { await Task.WhenAny(running.Listen, Task.Delay(StopGrace, timeProvider)); } catch { /* best effort */ }
     }
 
-    private IDiscoveryBearer? TryConstructBearer(string bearerName)
+    private IDiscoveryBearer? TryConstructBearer(string bearerName, SystemOptions opts)
     {
-        var opts = options.CurrentValue;
         return bearerName switch
         {
             "agw" => new AgwUiDiscoveryBearer(opts.NodeHost, opts.AgwPort, opts.Callsign, loggerFactory, txGate: txGate ?? AlwaysOpenTxGate.Instance),

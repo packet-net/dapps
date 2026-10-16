@@ -131,7 +131,7 @@ public sealed class BearerSwitchingOutboundTransport(
             }
             else
             {
-                var agw = new AgwOutboundTransport(opts.NodeHost, opts.AgwPort, loggerFactory, txGate);
+                var agw = new AgwOutboundTransport(opts.NodeHost, opts.AgwPort, loggerFactory, txGate, timeProvider);
                 inner = await agw.ConnectAsync(localCallsign, remoteCallsign, bearerPort, stoppingToken);
             }
         }

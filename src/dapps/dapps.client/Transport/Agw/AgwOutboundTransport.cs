@@ -23,13 +23,20 @@ public sealed class AgwOutboundTransport : IDappsOutboundTransport
     private readonly int port;
     private readonly ILogger logger;
     private readonly IDappsTxGate txGate;
+    private readonly TimeProvider clock;
 
-    public AgwOutboundTransport(string host, int port, ILoggerFactory loggerFactory, IDappsTxGate? txGate = null)
+    /// <summary>Longest wait for the node to confirm or refuse a connect
+    /// request, from the moment it goes out. Monitored frames arriving
+    /// meanwhile do not extend it.</summary>
+    public static readonly TimeSpan ConnectConfirmDeadline = TimeSpan.FromMinutes(3);
+
+    public AgwOutboundTransport(string host, int port, ILoggerFactory loggerFactory, IDappsTxGate? txGate = null, TimeProvider? timeProvider = null)
     {
         this.host = host;
         this.port = port;
         this.logger = loggerFactory.CreateLogger<AgwOutboundTransport>();
         this.txGate = txGate ?? AlwaysOpenTxGate.Instance;
+        this.clock = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<IDappsConnection> ConnectAsync(
@@ -38,9 +45,9 @@ public sealed class AgwOutboundTransport : IDappsOutboundTransport
         int bearerPort,
         CancellationToken stoppingToken)
     {
-        if (bearerPort < 0 || bearerPort > 255)
+        if (bearerPort < 0 || bearerPort > AgwFrameTransport.MaxPort)
         {
-            throw new ArgumentOutOfRangeException(nameof(bearerPort), "AGW port byte must fit in a single octet (0..255)");
+            throw new ArgumentOutOfRangeException(nameof(bearerPort), $"AGW port must be 0 to {AgwFrameTransport.MaxPort}");
         }
         var portByte = (byte)bearerPort;
 
@@ -50,7 +57,7 @@ public sealed class AgwOutboundTransport : IDappsOutboundTransport
             logger.LogInformation("AGW: connecting to {host}:{port}", host, port);
             await tcp.ConnectAsync(host, port, stoppingToken);
             var ns = tcp.GetStream();
-            var framing = new AgwFrameTransport(ns, txGate);
+            var framing = new AgwFrameTransport(ns, txGate, logger);
 
             // Register our local callsign first. Without this BPQ has no
             // valid source for the SABM and emits frames with a blank src
@@ -75,8 +82,8 @@ public sealed class AgwOutboundTransport : IDappsOutboundTransport
             await framing.WriteFrameAsync(
                 new AgwFrame(0, 'X', 0, localCallsign, "", []),
                 stoppingToken);
-            var registerReply = await framing.ReadFrameAsync(stoppingToken);
-            if (registerReply.Kind != 'X' || registerReply.Payload.Length != 1)
+            var registerReply = await framing.ReadRegisterReplyAsync(localCallsign, clock, stoppingToken);
+            if (registerReply.Payload.Length != 1)
             {
                 throw new IOException(
                     $"AGW register {localCallsign} unexpected reply (kind '{registerReply.Kind}', payload [{string.Join(',', registerReply.Payload)}])");
@@ -113,27 +120,26 @@ public sealed class AgwOutboundTransport : IDappsOutboundTransport
             // Wait for the connect to confirm. BPQ replies with 'C' echoing
             // the request on success, or 'd' on failure. Other frames may
             // arrive ahead of the answer (e.g. 'G' if we'd queried, port
-            // descriptors, monitor traffic if turned on); skip them.
+            // descriptors, monitor traffic); skip them.
             //
-            // Per-read inactivity timeout (Plan A3): if BPQ goes silent
-            // mid-handshake, the per-frame read times out at 3 minutes
-            // and we surface a TimeoutException to the caller rather
-            // than wedging the forwarder run forever.
+            // One overall deadline for the answer (Plan A3, #278): if BPQ
+            // never answers, the wait ends with a TimeoutException rather
+            // than wedging the forwarder run forever. A per-read timeout
+            // would not do: the monitor is on, so on a busy channel every
+            // monitored frame would restart it.
+            using var deadline = new CancellationTokenSource(ConnectConfirmDeadline, clock);
+            using var confirmWait = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, deadline.Token);
             while (true)
             {
                 AgwFrame frame;
-                using (var perReadCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken))
+                try
                 {
-                    perReadCts.CancelAfter(TimeSpan.FromMinutes(3));
-                    try
-                    {
-                        frame = await framing.ReadFrameAsync(perReadCts.Token);
-                    }
-                    catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
-                    {
-                        throw new TimeoutException(
-                            $"AGW: no frame from BPQ for 3 minutes while awaiting connect confirmation to {remoteCallsign}");
-                    }
+                    frame = await framing.ReadFrameAsync(confirmWait.Token);
+                }
+                catch (OperationCanceledException) when (deadline.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException(
+                        $"AGW: the node did not answer the connect to {remoteCallsign} within {ConnectConfirmDeadline.TotalMinutes:F0} minutes");
                 }
 
                 // BPQ's 'C' confirmation comes back with callfrom/callto

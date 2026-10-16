@@ -15,7 +15,10 @@ namespace dapps.client.Discovery;
 ///
 /// AGW protocol primitives:
 ///   `X` - register our callsign (BPQ won't accept emitted frames otherwise)
-///   `m` - toggle monitor mode on a port (sent once per port we want)
+///   `m` - toggle monitor mode for the whole socket (sent once: BPQ
+///         keeps one flag per socket, ignores the port, and flips it on
+///         every plain `m`, so one per port would leave it off with an
+///         even number of ports; the read loop filters by port instead)
 ///   `M` - emit a UI frame on a port
 ///   `U` - inbound monitored UI frame (BPQ → us)
 ///
@@ -82,26 +85,32 @@ public sealed class AgwUiDiscoveryBearer : IDiscoveryBearer
 
         var tcp = new TcpClient();
         await tcp.ConnectAsync(_host, _port, ct);
-        var framing = new AgwFrameTransport(tcp.GetStream(), _txGate);
+        var framing = new AgwFrameTransport(tcp.GetStream(), _txGate, _logger);
 
-        // Register our callsign once for the whole connection.
-        await framing.WriteFrameAsync(
-            new AgwFrame(0, 'X', 0, _ourCallsign, "", []),
-            ct);
-        var registerReply = await framing.ReadFrameAsync(ct);
-        if (registerReply.Kind != 'X' || registerReply.Payload.Length != 1 || registerReply.Payload[0] != 0x01)
+        try
+        {
+            // Register our callsign once for the whole connection. The
+            // reply is awaited under a timeout: the discovery loop awaits
+            // this start inline, so a host that never answers would stall
+            // beacons on every bearer.
+            await framing.WriteFrameAsync(
+                new AgwFrame(0, 'X', 0, _ourCallsign, "", []),
+                ct);
+            var registerReply = await framing.ReadRegisterReplyAsync(_ourCallsign, TimeProvider.System, ct);
+            if (registerReply.Payload is not [0x01])
+            {
+                throw new IOException(
+                    $"AGW register {_ourCallsign} for discovery failed: callsign refused (reply [{string.Join(',', registerReply.Payload)}])");
+            }
+
+            // Turn the monitor on, once for the socket: it covers every
+            // port (see the class doc).
+            await framing.WriteFrameAsync(new AgwFrame(0, 'm', 0, "", "", []), ct);
+        }
+        catch
         {
             tcp.Dispose();
-            throw new IOException(
-                $"AGW register {_ourCallsign} for discovery failed (kind '{registerReply.Kind}')");
-        }
-
-        // Enable monitor mode on each configured port.
-        foreach (var portByte in _portToChannelKey.Keys)
-        {
-            await framing.WriteFrameAsync(
-                new AgwFrame(portByte, 'm', 0, _ourCallsign, "", [1]),
-                ct);
+            throw;
         }
 
         _tcp = tcp;

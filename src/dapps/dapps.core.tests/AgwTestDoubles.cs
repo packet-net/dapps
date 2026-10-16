@@ -122,6 +122,10 @@ internal sealed class FakeAgwSocket : IDisposable
     public static AgwFrame Disconnect(string remote, string local, byte port) =>
         new(port, 'd', 0, remote, local, Encoding.ASCII.GetBytes($"*** DISCONNECTED From Station {remote}\r\0"));
 
+    /// <summary>The node's answer to an 'X': BPQ always sends 0x01; XRouter
+    /// sends 0x00 when another connection already holds the callsign.</summary>
+    public static AgwFrame RegisterReply(byte result) => new(0, 'X', 0, "", "", [result]);
+
     public static AgwFrame Data(string remote, string local, byte port, string text) =>
         new(port, 'D', 0xF0, remote, local, Encoding.UTF8.GetBytes(text));
 }
@@ -185,12 +189,14 @@ internal sealed class AgwInboundServiceHarness : IAsyncDisposable
         return options;
     }
 
-    /// <summary>Starts the service, accepts its connection and consumes the 'X' registration.</summary>
+    /// <summary>Starts the service, accepts its connection, consumes the
+    /// 'X' registration and answers it the way BPQ does (0x01).</summary>
     public async Task<FakeAgwSocket> StartAsync(CancellationToken ct)
     {
         await Service.StartAsync(ct);
         var socket = await Host.AcceptAsync(ct);
         await socket.ExpectRegisterAsync(ct);
+        await socket.WriteAsync(ct, FakeAgwSocket.RegisterReply(0x01));
         return socket;
     }
 
@@ -221,6 +227,11 @@ internal sealed class CapturingLoggerFactory : ILoggerFactory
 
     public IEnumerable<LogEntry> Warnings => Entries.Where(e => e.Level >= LogLevel.Warning);
 
+    /// <summary>When set, logging an entry that matches it throws, after
+    /// the entry is recorded: a way to make one step of the code under
+    /// test fail.</summary>
+    public Func<LogEntry, bool>? ThrowWhen { get; set; }
+
     public bool Any(string fragment) => Entries.Any(e => e.Message.Contains(fragment, StringComparison.Ordinal));
 
     /// <summary>Returns the first entry matching <paramref name="predicate"/>,
@@ -245,6 +256,24 @@ internal sealed class CapturingLoggerFactory : ILoggerFactory
     public Task<LogEntry> WaitForAsync(string fragment, CancellationToken ct)
         => WaitForAsync(e => e.Message.Contains(fragment, StringComparison.Ordinal), ct);
 
+    /// <summary>Waits until <paramref name="fragment"/> has been logged at
+    /// least <paramref name="count"/> times.</summary>
+    public async Task WaitForCountAsync(string fragment, int count, CancellationToken ct)
+    {
+        using var timeout = new CancellationTokenSource(FakeAgwHost.FrameTimeout);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+        while (true)
+        {
+            Task signal;
+            lock (gate)
+            {
+                if (entries.Count(e => e.Message.Contains(fragment, StringComparison.Ordinal)) >= count) return;
+                signal = changed.Task;
+            }
+            await signal.WaitAsync(linked.Token);
+        }
+    }
+
     public ILogger CreateLogger(string categoryName) => new Sink(this, categoryName);
 
     public void AddProvider(ILoggerProvider provider) { }
@@ -267,7 +296,11 @@ internal sealed class CapturingLoggerFactory : ILoggerFactory
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-            => owner.Record(new LogEntry(category, logLevel, formatter(state, exception), exception));
+        {
+            var entry = new LogEntry(category, logLevel, formatter(state, exception), exception);
+            owner.Record(entry);
+            if (owner.ThrowWhen?.Invoke(entry) == true) throw new InvalidOperationException($"test fault on: {entry.Message}");
+        }
     }
 }
 

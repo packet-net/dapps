@@ -212,4 +212,121 @@ public class MultiplexedAgwSessionStreamTests
                 .WaitAsync(TimeSpan.FromSeconds(5), ct)).Should().Be(0);
         }
     }
+
+    // #276: pushes never throw, never wait, and never lose or reorder bytes.
+
+    private static MultiplexedAgwSessionStream NewStream(Action? onDisconnect = null) => new(
+        writeOutgoing: (_, _) => Task.CompletedTask,
+        sendRemoteDisconnect: _ => { onDisconnect?.Invoke(); return Task.CompletedTask; });
+
+    [Fact]
+    public async Task PushAfterRemoteDisconnect_IsANoOp()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var stream = NewStream();
+        stream.SignalRemoteDisconnect();
+
+        await stream.PushIncoming("late"u8.ToArray(), ct);
+        stream.TryPush("later"u8).Should().Be(PushResult.NotOpen);
+
+        (await stream.ReadAsync(new byte[16].AsMemory(), ct)).Should().Be(0, "nothing pushed after the close is readable");
+    }
+
+    [Fact]
+    public async Task PushAfterDispose_IsANoOp()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var stream = NewStream();
+        await stream.DisposeAsync();
+
+        await stream.PushIncoming("late"u8.ToArray(), ct);
+        stream.TryPush("later"u8).Should().Be(PushResult.NotOpen);
+    }
+
+    [Fact]
+    public async Task OverlappingPushes_PastThePipesOldPauseThreshold_KeepOrderAndLoseNothing()
+    {
+        // What the RHP paths do: push and move on without awaiting. A
+        // push used to park once 64 KB sat unread, and the next one then
+        // overlapped it and corrupted the pipe.
+        var ct = TestContext.Current.CancellationToken;
+        var stream = NewStream();
+        var big = Enumerable.Range(0, 70_000).Select(i => (byte)i).ToArray();
+        var small = "0123456789"u8.ToArray();
+
+        var pushes = new[] { stream.PushIncoming(big, ct).AsTask(), stream.PushIncoming(small, ct).AsTask() };
+
+        var got = new MemoryStream();
+        var buf = new byte[4096];
+        while (got.Length < big.Length + small.Length)
+        {
+            var n = await stream.ReadAsync(buf.AsMemory(), ct).AsTask().WaitAsync(TimeSpan.FromSeconds(5), ct);
+            n.Should().BePositive();
+            got.Write(buf, 0, n);
+        }
+        await Task.WhenAll(pushes).WaitAsync(TimeSpan.FromSeconds(5), ct);
+        got.ToArray().Should().Equal([.. big, .. small]);
+    }
+
+    [Fact]
+    public async Task ConcurrentPushes_EachLandWholeAndInOrderPerPusher()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var stream = NewStream();
+        const int pushers = 8;
+        const int chunks = 200;
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var tasks = Enumerable.Range(0, pushers).Select(p => Task.Run(async () =>
+        {
+            await start.Task;
+            for (var c = 0; c < chunks; c++)
+            {
+                // 4 bytes: pusher, chunk high, chunk low, end marker.
+                stream.TryPush([(byte)p, (byte)(c >> 8), (byte)c, 0xFF]).Should().Be(PushResult.Accepted);
+            }
+        }, ct)).ToArray();
+        start.SetResult();
+        await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(5), ct);
+
+        var all = new byte[pushers * chunks * 4];
+        await stream.ReadExactlyAsync(all, ct).AsTask().WaitAsync(TimeSpan.FromSeconds(5), ct);
+        var next = new int[pushers];
+        for (var i = 0; i < all.Length; i += 4)
+        {
+            all[i + 3].Should().Be(0xFF, "a push lands whole, never interleaved with another");
+            var p = all[i];
+            ((all[i + 1] << 8) | all[i + 2]).Should().Be(next[p]++, "each pusher's bytes arrive in the order it pushed them");
+        }
+        next.Should().AllSatisfy(n => n.Should().Be(chunks));
+    }
+
+    [Fact]
+    public async Task ASessionThatLeavesTooMuchUnread_IsClosedLocally_AndItsTeardownSendsTheDisconnect()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var disconnects = 0;
+        var stream = NewStream(() => Interlocked.Increment(ref disconnects));
+
+        stream.TryPush(new byte[MultiplexedAgwSessionStream.MaxUnreadBytes]).Should().Be(PushResult.Accepted);
+        stream.TryPush([1]).Should().Be(PushResult.Overflowed);
+        stream.TryPush([2]).Should().Be(PushResult.NotOpen, "the session is closed from then on");
+
+        await Assert.ThrowsAsync<IOException>(() => stream.ReadAsync(new byte[16].AsMemory(), ct).AsTask());
+        await stream.DisposeAsync();
+        disconnects.Should().Be(1, "the link is still up at the node, and still ours to close");
+    }
+
+    [Fact]
+    public async Task BytesRead_NoLongerCountAgainstTheLimit()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var stream = NewStream();
+        var chunk = new byte[MultiplexedAgwSessionStream.MaxUnreadBytes * 3 / 4];
+
+        for (var round = 0; round < 4; round++)
+        {
+            stream.TryPush(chunk).Should().Be(PushResult.Accepted);
+            await stream.ReadExactlyAsync(new byte[chunk.Length], ct);
+        }
+    }
 }

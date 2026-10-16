@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Text;
 using dapps.client.Transport.Agw;
 using AwesomeAssertions;
+using Microsoft.Extensions.Logging;
 
 namespace dapps.core.tests;
 
@@ -122,5 +123,123 @@ public class AgwFrameTests
 
         var act = () => frame.WriteHeader(buffer);
         act.Should().Throw<ArgumentException>();
+    }
+
+    // #279: the read side trusts nothing from the header before it has
+    // checked it, and the write side never sends what BPQ would call corrupt.
+
+    /// <summary>A frame's bytes with the header's DataLength (and nothing
+    /// else) changed after the fact, as a corrupt or non-AGW stream would
+    /// present it.</summary>
+    private static byte[] WithDataLength(AgwFrame frame, int dataLength)
+    {
+        var bytes = frame.ToBytes();
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(28, 4), dataLength);
+        return bytes;
+    }
+
+    [Theory]
+    [InlineData(AgwFrameTransport.MaxReceivedDataLength + 1)]
+    [InlineData(100_000_000)]
+    [InlineData(-1)]
+    public async Task ReadFrameAsync_ImplausibleDataLength_ThrowsBeforeAllocating(int dataLength)
+    {
+        var wire = new MemoryStream(WithDataLength(new AgwFrame(0, 'D', 0xF0, "A", "B", []), dataLength));
+        var transport = new AgwFrameTransport(wire);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var act = () => transport.ReadFrameAsync(TestContext.Current.CancellationToken);
+        await act.Should().ThrowAsync<InvalidDataException>();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        allocated.Should().BeLessThan(256 * 1024, "nothing is allocated on the header's say-so");
+    }
+
+    [Fact]
+    public async Task ReadFrameAsync_LargestAcceptedDataLength_Reads()
+    {
+        var payload = new byte[AgwFrameTransport.MaxReceivedDataLength];
+        var wire = new MemoryStream(new AgwFrame(0, 'G', 0, "", "", payload).ToBytes());
+
+        var frame = await new AgwFrameTransport(wire).ReadFrameAsync(TestContext.Current.CancellationToken);
+
+        frame.Payload.Length.Should().Be(AgwFrameTransport.MaxReceivedDataLength);
+    }
+
+    [Theory]
+    [InlineData((byte)0x00)]
+    [InlineData((byte)'1')]
+    [InlineData((byte)0xC4)]
+    public async Task ReadFrameAsync_KindThatIsNotALetter_Throws(byte kind)
+    {
+        var bytes = new AgwFrame(0, 'D', 0xF0, "A", "B", [1, 2, 3]).ToBytes();
+        bytes[4] = kind;
+        var transport = new AgwFrameTransport(new MemoryStream(bytes));
+
+        var act = () => transport.ReadFrameAsync(TestContext.Current.CancellationToken);
+
+        await act.Should().ThrowAsync<InvalidDataException>();
+    }
+
+    [Fact]
+    public async Task ReadFrameAsync_FrameForAPortOver64_IsDroppedWithAWarning()
+    {
+        var wire = new MemoryStream([
+            .. new AgwFrame(65, 'U', 0xF0, "G0XYZ", "DAPPS", "dropped"u8.ToArray()).ToBytes(),
+            .. new AgwFrame(64, 'U', 0xF0, "G0XYZ", "DAPPS", "kept"u8.ToArray()).ToBytes(),
+        ]);
+        var logs = new CapturingLoggerFactory();
+        var transport = new AgwFrameTransport(wire, logger: logs.CreateLogger("test"));
+
+        var frame = await transport.ReadFrameAsync(TestContext.Current.CancellationToken);
+
+        frame.Port.Should().Be(64);
+        Encoding.ASCII.GetString(frame.Payload).Should().Be("kept");
+        logs.Warnings.Should().ContainSingle().Which.Message.Should().Contain("port 65");
+    }
+
+    public static TheoryData<AgwFrame> FramesBpqWouldCallCorrupt => new()
+    {
+        new AgwFrame(65, 'G', 0, "", "", []),
+        new AgwFrame(255, 'D', 0xF0, "A", "B", [1]),
+        new AgwFrame(0, 'D', 0xF0, "A", "B", new byte[AgwFrameTransport.MaxFrameDataBytes + 1]),
+        new AgwFrame(0, 'X', 0, "A", "", new byte[AgwFrameTransport.MaxFrameDataBytes + 1]),
+        new AgwFrame(0, 'M', 0xF0, "A", "DAPPS", new byte[AgwFrameTransport.MaxUnprotoBytes + 1]),
+        new AgwFrame(0, 'V', 0xF0, "A", "DAPPS", new byte[AgwFrameTransport.MaxUnprotoBytes + 1]),
+    };
+
+    [Theory]
+    [MemberData(nameof(FramesBpqWouldCallCorrupt))]
+    public async Task WriteFrameAsync_AFrameBpqWouldCallCorrupt_IsRefusedToTheCallerAndNothingIsSent(AgwFrame frame)
+    {
+        var wire = new MemoryStream();
+        var transport = new AgwFrameTransport(wire);
+
+        var act = () => transport.WriteFrameAsync(frame, TestContext.Current.CancellationToken);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        wire.Length.Should().Be(0);
+
+        // The transport is still usable afterwards.
+        await transport.WriteFrameAsync(new AgwFrame(0, 'G', 0, "", "", []), TestContext.Current.CancellationToken);
+        wire.Length.Should().Be(AgwFrame.HeaderLength);
+    }
+
+    public static TheoryData<AgwFrame> FramesAtTheLimits => new()
+    {
+        new AgwFrame((byte)AgwFrameTransport.MaxPort, 'G', 0, "", "", []),
+        new AgwFrame(0, 'D', 0xF0, "A", "B", new byte[AgwFrameTransport.MaxFrameDataBytes]),
+        new AgwFrame(0, 'M', 0xF0, "A", "DAPPS", new byte[AgwFrameTransport.MaxUnprotoBytes]),
+    };
+
+    [Theory]
+    [MemberData(nameof(FramesAtTheLimits))]
+    public async Task WriteFrameAsync_AFrameAtTheLimits_IsSent(AgwFrame frame)
+    {
+        var wire = new MemoryStream();
+
+        await new AgwFrameTransport(wire).WriteFrameAsync(frame, TestContext.Current.CancellationToken);
+
+        wire.Length.Should().Be(AgwFrame.HeaderLength + frame.Payload.Length);
     }
 }

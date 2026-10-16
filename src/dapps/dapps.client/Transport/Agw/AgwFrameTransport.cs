@@ -1,4 +1,5 @@
 using dapps.client.Tx;
+using Microsoft.Extensions.Logging;
 
 namespace dapps.client.Transport.Agw;
 
@@ -14,18 +15,53 @@ namespace dapps.client.Transport.Agw;
 /// (register, login, port queries, monitor toggle, ...) are always permitted
 /// so admin traffic to BPQ/XR keeps flowing while TX is gagged. Disconnect
 /// frames ('d') are likewise allowed through to avoid leaking sessions.
+///
+/// Both directions are bounded by what BPQ itself accepts. A frame we
+/// send with a port over 64 or more than 400 bytes of data makes BPQ's
+/// AGW reader call the stream corrupt and drop the whole connection,
+/// every session on it included, so <see cref="WriteFrameAsync"/>
+/// refuses such a frame to its caller instead. On the read side a
+/// header claiming more than <see cref="MaxReceivedDataLength"/> bytes,
+/// or a kind that is not a letter, means the stream is not AGW (a
+/// wrong port setting) or has lost its framing; reading it fails
+/// before anything is allocated for it.
 /// </summary>
 public sealed class AgwFrameTransport
 {
     private readonly Stream stream;
     private readonly IDappsTxGate txGate;
+    private readonly ILogger? logger;
     private readonly SemaphoreSlim writeLock = new(1, 1);
 
-    public AgwFrameTransport(Stream stream, IDappsTxGate? txGate = null)
+    public AgwFrameTransport(Stream stream, IDappsTxGate? txGate = null, ILogger? logger = null)
     {
         this.stream = stream;
         this.txGate = txGate ?? AlwaysOpenTxGate.Instance;
+        this.logger = logger;
     }
+
+    /// <summary>Highest AGW port number BPQ accepts in a frame header.
+    /// Above it BPQ's reader drops the connection as corrupt.</summary>
+    public const int MaxPort = 64;
+
+    /// <summary>Most data bytes BPQ accepts in one frame from us, of any
+    /// kind. Above it BPQ's reader drops the connection as corrupt.</summary>
+    public const int MaxFrameDataBytes = 400;
+
+    /// <summary>Most data bytes an UNPROTO frame ('M' or 'V') may carry:
+    /// the same host-API limit as a 'D' frame (<see cref="MaxDataFrameBytes"/>).</summary>
+    public const int MaxUnprotoBytes = 256;
+
+    /// <summary>Largest DataLength accepted on a received frame. BPQ
+    /// sends nothing near it (a monitor line or a 'G' port list is a few
+    /// hundred bytes); a header claiming more is not an AGW stream.</summary>
+    public const int MaxReceivedDataLength = 8192;
+
+    /// <summary>How long to wait for the reply to an 'X' registration.
+    /// A host that accepts the TCP connection and never answers (the
+    /// AGW port setting pointing at some other service, or a node that
+    /// wedged) would otherwise hold the caller for good.</summary>
+    public static readonly TimeSpan RegisterReplyTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// Most bytes one AGW 'D' frame may carry. BPQ hands a data frame to
@@ -56,6 +92,23 @@ public sealed class AgwFrameTransport
 
     public async Task WriteFrameAsync(AgwFrame frame, CancellationToken ct)
     {
+        var length = frame.Payload?.Length ?? 0;
+        if (frame.Port > MaxPort)
+        {
+            throw new ArgumentException(
+                $"AGW frame kind '{frame.Kind}' on port {frame.Port}: BPQ accepts ports 0 to {MaxPort} and drops the connection otherwise", nameof(frame));
+        }
+        if (length > MaxFrameDataBytes)
+        {
+            throw new ArgumentException(
+                $"AGW frame kind '{frame.Kind}' with {length} bytes: BPQ accepts at most {MaxFrameDataBytes} and drops the connection otherwise", nameof(frame));
+        }
+        if (frame.Kind is 'M' or 'V' && length > MaxUnprotoBytes)
+        {
+            throw new ArgumentException(
+                $"AGW UNPROTO frame with {length} bytes: BPQ sends at most {MaxUnprotoBytes} and drops the rest without a word", nameof(frame));
+        }
+
         if (IsRfEmitting(frame.Kind) && !txGate.TxAllowed)
         {
             throw new TxStoppedException(
@@ -75,23 +128,75 @@ public sealed class AgwFrameTransport
         }
     }
 
+    /// <summary>
+    /// Reads the next frame. Throws <see cref="InvalidDataException"/>,
+    /// before allocating anything for the payload, when the header's
+    /// DataLength is negative or over <see cref="MaxReceivedDataLength"/>
+    /// or its kind is not an ASCII letter: the stream is not AGW, or has
+    /// lost its framing, and the connection has to go. A frame for a
+    /// port over <see cref="MaxPort"/> is read past and dropped with a
+    /// warning.
+    /// </summary>
     public async Task<AgwFrame> ReadFrameAsync(CancellationToken ct)
     {
         var header = new byte[AgwFrame.HeaderLength];
-        await stream.ReadExactlyAsync(header, ct);
-        var dataLength = AgwFrame.ReadDataLength(header);
-
-        if (dataLength < 0)
+        while (true)
         {
-            throw new InvalidDataException($"AGW header has negative DataLength: {dataLength}");
-        }
+            await stream.ReadExactlyAsync(header, ct);
+            var dataLength = AgwFrame.ReadDataLength(header);
 
-        var payload = dataLength == 0 ? [] : new byte[dataLength];
-        if (dataLength > 0)
-        {
-            await stream.ReadExactlyAsync(payload, ct);
+            if (dataLength < 0 || dataLength > MaxReceivedDataLength)
+            {
+                throw new InvalidDataException(
+                    $"AGW header claims {dataLength} bytes of data (at most {MaxReceivedDataLength} accepted): not an AGW stream, or its framing is lost");
+            }
+            var kind = header[4];
+            if (!char.IsAsciiLetter((char)kind))
+            {
+                throw new InvalidDataException(
+                    $"AGW header has kind byte 0x{kind:X2}, not a letter: not an AGW stream, or its framing is lost");
+            }
+
+            var payload = dataLength == 0 ? [] : new byte[dataLength];
+            if (dataLength > 0)
+            {
+                await stream.ReadExactlyAsync(payload, ct);
+            }
+
+            var port = header[0];
+            if (port > MaxPort)
+            {
+                logger?.LogWarning(
+                    "AGW: dropped a '{0}' frame for port {1}; AGW ports go up to {2}", (char)kind, port, MaxPort);
+                continue;
+            }
+            return AgwFrame.ParseHeader(header, payload);
         }
-        return AgwFrame.ParseHeader(header, payload);
+    }
+
+    /// <summary>
+    /// Waits for the host's reply to an 'X' registration, at most
+    /// <see cref="RegisterReplyTimeout"/> on <paramref name="clock"/>.
+    /// Frames of other kinds ahead of it are skipped. Throws
+    /// <see cref="TimeoutException"/> if no reply comes in time.
+    /// </summary>
+    public async Task<AgwFrame> ReadRegisterReplyAsync(string callsign, TimeProvider clock, CancellationToken ct)
+    {
+        using var timeout = new CancellationTokenSource(RegisterReplyTimeout, clock);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+        try
+        {
+            while (true)
+            {
+                var frame = await ReadFrameAsync(linked.Token);
+                if (frame.Kind == 'X') return frame;
+            }
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"AGW: no reply to registering {callsign} within {RegisterReplyTimeout.TotalSeconds:F0}s; is the AGW port setting really the node's AGW port?");
+        }
     }
 
     /// <summary>
