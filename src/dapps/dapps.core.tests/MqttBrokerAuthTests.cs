@@ -448,6 +448,259 @@ public sealed class MqttBrokerAuthTests : IAsyncLifetime
         again.IsConnected.Should().BeTrue();
     }
 
+    // ---- Review follow-ups (#350) ----
+
+    [Theory]
+    [InlineData("dapps/in/#", false)]
+    [InlineData("dapps/in/+", false)]
+    [InlineData("dapps/#", true)]
+    [InlineData("#", true)]
+    public async Task WildcardSubscribe_InTopicWildcardsRefused_BroaderOnesAllowed(string filter, bool granted)
+    {
+        var token = await tokens.CreateOrRotateAsync("chat");
+        var ct = TestContext.Current.CancellationToken;
+        var c = await ConnectAsync("chat", token, ct);
+
+        var sub = await c.SubscribeAsync(filter, cancellationToken: ct);
+
+        sub.Items.Single().ResultCode.Should().Be(granted
+            ? MqttClientSubscribeResultCode.GrantedQoS0
+            : MqttClientSubscribeResultCode.NotAuthorized);
+    }
+
+    [Fact]
+    public async Task RefusedSubscribe_Mqtt311_GetsFailureCode()
+    {
+        var token = await tokens.CreateOrRotateAsync("chat");
+        var ct = TestContext.Current.CancellationToken;
+        var c = await ConnectAsync("chat", token, ct, MQTTnet.Formatter.MqttProtocolVersion.V311);
+
+        var sub = await c.SubscribeAsync("dapps/in/other", cancellationToken: ct);
+
+        sub.Items.Single().ResultCode.Should().Be(MqttClientSubscribeResultCode.UnspecifiedError,
+            "MQTT 3.1.1 SUBACK has a 0x80 failure code, so a refused subscription is not silent");
+    }
+
+    [Fact]
+    public async Task RefusedAck_Mqtt311_StaysConnected_AndRowUntouched()
+    {
+        await tokens.CreateOrRotateAsync("chat");
+        var evilToken = await tokens.CreateOrRotateAsync("evil");
+        await SaveInbound("abc9999", "chat@N0CALL");
+        var ct = TestContext.Current.CancellationToken;
+        var evil = await ConnectAsync("evil", evilToken, ct, MQTTnet.Formatter.MqttProtocolVersion.V311);
+
+        await evil.PublishAsync(Qos1("dapps/ack/evil", "abc9999"), ct);
+
+        evil.IsConnected.Should().BeTrue();
+        DbInfo.GetConnection().Find<DbMessage>("abc9999").LocallyDelivered.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task WillMessageOnHeartbeat_NotPublished()
+    {
+        var token = await tokens.CreateOrRotateAsync("chat");
+        var ct = TestContext.Current.CancellationToken;
+        var evil = new MqttFactory().CreateMqttClient();
+        openClients.Add(evil);
+        var opts = new MqttClientOptionsBuilder()
+            .WithProtocolVersion(MQTTnet.Formatter.MqttProtocolVersion.V500)
+            .WithTcpServer("127.0.0.1", brokerPort)
+            .WithClientId("will-client").WithCleanSession(true)
+            .WithCredentials("chat", token)
+            .WithWillTopic("dapps/metrics/heartbeat").WithWillPayload("{\"spoofed\":true}"u8.ToArray())
+            .WithWillRetain(true)
+            .Build();
+        await evil.ConnectAsync(opts, ct);
+        await mqttServer.DisconnectClientAsync("will-client", MQTTnet.Protocol.MqttDisconnectReasonCode.UnspecifiedError);
+        await Task.Delay(500, ct);
+
+        var monitor = await ConnectAsync("chat", token, ct);
+        var seen = 0;
+        monitor.ApplicationMessageReceivedAsync += _ => { Interlocked.Increment(ref seen); return Task.CompletedTask; };
+        await monitor.SubscribeAsync("dapps/metrics/#", cancellationToken: ct);
+        await Task.Delay(500, ct);
+        seen.Should().Be(0, "a will on a DAPPS-owned topic must not become the retained heartbeat");
+    }
+
+    [Fact]
+    public async Task Ack_TransitId_Refused_AndStillForwards()
+    {
+        var token = await tokens.CreateOrRotateAsync("chat");
+        await SaveInbound("trn0001", "chat@G1AAA");
+        var ct = TestContext.Current.CancellationToken;
+        var chat = await ConnectAsync("chat", token, ct);
+
+        var r = await chat.PublishAsync(Qos1("dapps/ack/chat", "trn0001"), ct);
+
+        r.ReasonCode.Should().Be(MqttClientPublishReasonCode.NotAuthorized);
+        (await database.GetPendingOutboundMessages()).Select(m => m.Id).Should().Contain("trn0001");
+    }
+
+    [Fact]
+    public async Task Ack_TopicAppInOtherCase_OwnMessage_Works()
+    {
+        var token = await tokens.CreateOrRotateAsync("chat");
+        await SaveInbound("case001", "chat@N0CALL");
+        var ct = TestContext.Current.CancellationToken;
+        var chat = await ConnectAsync("chat", token, ct);
+
+        var r = await chat.PublishAsync(Qos1("dapps/ack/CHAT", "case001"), ct);
+
+        r.ReasonCode.Should().Be(MqttClientPublishReasonCode.Success);
+        DbInfo.GetConnection().Find<DbMessage>("case001").LocallyDelivered.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Ack_SsidZeroForm_Works()
+    {
+        var token = await tokens.CreateOrRotateAsync("chat");
+        await SaveInbound("ssid0a1", "chat@n0call-0");
+        var ct = TestContext.Current.CancellationToken;
+        var chat = await ConnectAsync("chat", token, ct);
+
+        var r = await chat.PublishAsync(Qos1("dapps/ack/chat", "ssid0a1"), ct);
+
+        r.ReasonCode.Should().Be(MqttClientPublishReasonCode.Success);
+    }
+
+    [Fact]
+    public async Task AuthOff_NoAppClient_OutAndAckStillWork()
+    {
+        systemOptions.AuthRequired = false;
+        await SaveInbound("off0001", "mail@N0CALL");
+        var ct = TestContext.Current.CancellationToken;
+        var c = await ConnectAsync(null, null, ct);
+
+        var o = await c.PublishAsync(Qos1("dapps/out/anyapp/G1AAA", "x"), ct);
+        var a = await c.PublishAsync(Qos1("dapps/ack/mail", "off0001"), ct);
+
+        o.ReasonCode.Should().Be(MqttClientPublishReasonCode.Success);
+        a.ReasonCode.Should().Be(MqttClientPublishReasonCode.Success);
+        var row = DbInfo.GetConnection().Find<DbMessage>("off0001");
+        row.LocallyDelivered.Should().BeTrue();
+        row.CompletedAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task InternalPublishes_StillDelivered()
+    {
+        systemOptions.AuthRequired = false;
+        var ct = TestContext.Current.CancellationToken;
+        var c = await ConnectAsync(null, null, ct);
+        var got = new System.Collections.Concurrent.ConcurrentBag<string>();
+        c.ApplicationMessageReceivedAsync += e => { got.Add(e.ApplicationMessage.Topic); return Task.CompletedTask; };
+        await c.SubscribeAsync("dapps/#", cancellationToken: ct);
+
+        (await broker.PublishRetainedAsync("dapps/metrics/heartbeat", "{}"u8.ToArray(), ct)).Should().BeTrue();
+        (await broker.PublishAsync("dapps/audit/tx", "{}"u8.ToArray(), ct)).Should().BeTrue();
+        await broker.InjectInboundMessage(new DbMessage { Id = "inj0001", Destination = "chat@N0CALL", Payload = "x"u8.ToArray() });
+
+        await Eventually(() => Task.FromResult(got.Count >= 3));
+        got.Should().Contain(["dapps/metrics/heartbeat", "dapps/audit/tx", "dapps/in/chat"]);
+    }
+
+    [Fact]
+    public async Task DestinationWithTwoAts_DeliveredOnTheTopicItCanBeAckedOn()
+    {
+        var token = await tokens.CreateOrRotateAsync("a@b");
+        await SaveInbound("twoat01", "a@b@N0CALL");
+        var ct = TestContext.Current.CancellationToken;
+        var c = await ConnectAsync("a@b", token, ct);
+        var got = new System.Collections.Concurrent.ConcurrentBag<string>();
+        c.ApplicationMessageReceivedAsync += e => { got.Add(e.ApplicationMessage.Topic); return Task.CompletedTask; };
+        await c.SubscribeAsync("#", cancellationToken: ct);
+
+        await broker.InjectInboundMessage(DbInfo.GetConnection().Find<DbMessage>("twoat01"));
+        await Eventually(() => Task.FromResult(!got.IsEmpty));
+        got.Should().Contain("dapps/in/a@b");
+
+        var r = await c.PublishAsync(Qos1("dapps/ack/a@b", "twoat01"), ct);
+        r.ReasonCode.Should().Be(MqttClientPublishReasonCode.Success);
+    }
+
+    [Fact]
+    public async Task ClientEntries_TrackLiveClientsExactly()
+    {
+        var token = await tokens.CreateOrRotateAsync("chat");
+        var ct = TestContext.Current.CancellationToken;
+        for (var i = 0; i < 30; i++)
+        {
+            var c = await ConnectAsync("chat", token, ct);
+            await c.DisconnectAsync(cancellationToken: ct);
+        }
+        for (var i = 0; i < 10; i++)
+        {
+            await ConnectAsync("chat", token, ct, clientId: "same-id");
+        }
+        for (var i = 0; i < 5; i++)
+        {
+            var bad = new MqttFactory().CreateMqttClient();
+            try { await bad.ConnectAsync(BuildClientOpts("chat", "wrong"), ct); } catch { /* expected */ }
+            bad.Dispose();
+        }
+        await ConnectAsync("chat", token, ct, clientId: "drop-id");
+        await mqttServer.DisconnectClientAsync("drop-id", MQTTnet.Protocol.MqttDisconnectReasonCode.UnspecifiedError);
+        await Task.Delay(500, ct);
+
+        var live = (await mqttServer.GetClientsAsync()).Select(x => x.Id).ToHashSet();
+        ClientEntryIds().Should().BeEquivalentTo(live, "entries must track live clients exactly");
+        ClientEntryIds().Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task RevokeDuringConnectTokenCheck_ConnectionDoesNotSurvive()
+    {
+        // Mint chat last so the token check hashes every other row first,
+        // widening the window between reading the rows and registering.
+        for (var i = 0; i < 15; i++) await tokens.CreateOrRotateAsync("pad" + i);
+        var token = await tokens.CreateOrRotateAsync("chat");
+        var ct = TestContext.Current.CancellationToken;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        (await tokens.VerifyAsync(token)).Should().Be("chat");
+        var verifyMs = sw.ElapsedMilliseconds;
+
+        var client = new MqttFactory().CreateMqttClient();
+        openClients.Add(client);
+        var connect = client.ConnectAsync(BuildClientOpts("chat", token), ct);
+        await Task.Delay((int)(verifyMs / 3), ct);
+        await tokens.RevokeAsync("chat");
+        try { await connect; } catch { /* refused at CONNECT is also fine */ }
+        await Task.Delay(1000, ct);
+
+        client.IsConnected.Should().BeFalse($"the token was revoked mid-connect (the check takes {verifyMs} ms)");
+    }
+
+    [Fact]
+    public async Task LateOrdinaryDisconnectOfOldConnection_KeepsNewConnectionsEntry()
+    {
+        // Stand-in for the takeover gap: the new connection has written its
+        // entry, then the old socket for the same ClientId dies with an
+        // ordinary (not Takeover) disconnect. Only the old connection's own
+        // entry may be removed.
+        var token = await tokens.CreateOrRotateAsync("chat");
+        var ct = TestContext.Current.CancellationToken;
+        var c = await ConnectAsync("chat", token, ct, clientId: "chat-client");
+
+        var handler = typeof(MqttBrokerService).GetMethod("OnClientDisconnected",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        await (Task)handler.Invoke(broker, [new ClientDisconnectedEventArgs(
+            "chat-client", null!, MqttClientDisconnectType.NotClean, "127.0.0.1:1", new Dictionary<object, object>())])!;
+
+        var result = await c.PublishAsync(Qos1("dapps/out/chat/G1AAA", "still me"), ct);
+        result.ReasonCode.Should().NotBe(MqttClientPublishReasonCode.NotAuthorized);
+        await Eventually(async () => (await database.GetPendingOutboundMessages()).Count == 1);
+        (await database.GetPendingOutboundMessages()).Should().ContainSingle();
+    }
+
+    private IEnumerable<string> ClientEntryIds()
+    {
+        var field = typeof(MqttBrokerService).GetField("clientApps",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var dict = (System.Collections.IDictionary)field.GetValue(broker)!;
+        return dict.Keys.Cast<string>().ToList();
+    }
+
     private readonly List<IMqttClient> openClients = [];
 
     private async Task<IMqttClient> ConnectAsync(string? user, string? pass, CancellationToken ct,

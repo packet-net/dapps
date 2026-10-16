@@ -72,7 +72,7 @@ New installs turn on **Require per-app tokens for MQTT/REST** (`AuthRequired`) b
 
 - CONNECT must include `username=<app>` and `password=<token-plaintext>`.
 - The token says which app is publishing and acking. An app authenticated as `chat` may only publish to `dapps/out/chat/*` and `dapps/ack/chat`, and its acks only count for `chat`'s own messages.
-- Reading is not restricted. A subscription to another app's topic by name (`dapps/in/mail`) is refused, but wildcard filters such as `dapps/in/#` or `#` are allowed, so apps on the same node can read each other's inbound traffic. This is by design: the tokens stop one app interfering with another, not reading it.
+- A filter starting `dapps/in/` must be exactly your own `dapps/in/<app>`: `dapps/in/mail`, `dapps/in/+` and `dapps/in/#` are refused. Broader filters such as `dapps/#` or `#` are allowed, so apps on the same node can still read each other's inbound traffic. This is by design: the tokens stop one app interfering with another, not reading it.
 - When the operator revokes or rotates an app's token, that app's open MQTT connections are dropped. It has to reconnect with its new token.
 
 The operator mints one on the dashboard's **App tokens** page (in the sidebar, under System): type an app name, mint, copy the plaintext shown once, revoke from the same page when it's no longer needed. App names are lowercased ("chat" and "Chat" are the same app) and can't contain `/`, `+`, `#`, whitespace, or control characters - the same characters MQTT topics and the REST path use as separators or wildcards. Minting over an app that already has a token rotates it, so the page asks for confirmation first.
@@ -81,7 +81,7 @@ That page is a thin front-end over the admin-only `/AppTokens` REST endpoint: `P
 
 Whether or not tokens are required, clients can't publish to any other `dapps/` topic: `dapps/in/*`, `dapps/metrics/*` and `dapps/audit/*` are written by DAPPS alone, so nobody can fake a delivery, a heartbeat or an audit entry. Topics outside `dapps/` are left alone for apps to use as they like.
 
-Refused publishes and subscriptions get `NotAuthorized` in the PUBACK or SUBACK on MQTT 5. MQTT 3.1.1 has no way to say so: the publish or subscription is just dropped. If DAPPS fails to store an outbound message, an MQTT 5 client gets an error PUBACK and an MQTT 3.1.1 client is disconnected instead of being acked, so a QoS 1 client knows to send it again.
+Refused publishes and subscriptions get `NotAuthorized` in the PUBACK or SUBACK on MQTT 5. On MQTT 3.1.1 a refused subscription gets the SUBACK failure code (`0x80`), but a refused publish is silent: a 3.1.1 PUBACK can't carry an error, so the publish is just dropped. If DAPPS fails to store an outbound message, an MQTT 5 client gets an error PUBACK and an MQTT 3.1.1 client is disconnected instead of being acked. Either way the client is never told the message is safe. A QoS 1 client only re-sends it by itself after reconnecting if it connected with clean session off (a persistent session); otherwise the app sees the publish fail and has to send it again.
 
 #### Minting a token from the command line
 
