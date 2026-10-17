@@ -59,7 +59,7 @@ Anatomy of the `ihave` line:
 
 Plus the optional features documented under [Full interoperability](#full-interoperability) (`ttl`, `src`, `mid`, `frag`, `sid`, `sn`, `gt`).
 
-No value may contain whitespace or a control character: a space would start another key, and a CR or LF another command. A sender must never write such a value, and the reference daemon answers `error <id>` to a line that has one (a tab, say). In `dst=`, the app name is plain ASCII without `/`, `+`, `#` or `=`, and the callsign is letters and digits with an optional SSID from 0 to 15; the reference daemon refuses anything else from its apps.
+No value may contain whitespace or a control character: a space would start another key, and a CR or LF another command. A sender must never write such a value, and the reference daemon answers `error <id>` to a line that has one (a tab, say). In `dst=`, the app name is plain ASCII, at most 64 characters, without `/`, `+`, `#` or `=`, and the callsign is letters and digits with an optional SSID from 0 to 15 written without a leading zero; the reference daemon refuses anything else from its apps.
 
 Reserved key names are validated by [IHaveValidator.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/IHaveValidator.cs). Any other `key=value` token is treated as an opaque application header and preserved through to the receiving app.
 

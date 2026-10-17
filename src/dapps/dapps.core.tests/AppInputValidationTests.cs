@@ -54,7 +54,7 @@ public sealed class MessageFieldsTests
     [InlineData("G1AAA-0")]
     [InlineData("G1AAA-15")]
     [InlineData("G0CALLER")]
-    [InlineData("N0DEST-07")]
+    [InlineData("N0DEST-7")]
     public void Callsign_Valid(string call) => MessageFields.CallsignError(call).Should().BeNull();
 
     [Theory]
@@ -72,6 +72,8 @@ public sealed class MessageFieldsTests
     [InlineData("chat@G1AAA")]
     [InlineData("G1AAA=")]
     [InlineData("ABCDEFGHIJK")]
+    [InlineData("N0DEST-07")]
+    [InlineData("N0DEST-00")]
     public void Callsign_Invalid(string? call) => MessageFields.CallsignError(call).Should().NotBeNull();
 
     [Theory]
@@ -105,6 +107,17 @@ public sealed class MessageFieldsTests
         MessageFields.StreamIdError(new string('a', 255)).Should().BeNull();
         MessageFields.StreamIdError(new string('a', 256)).Should().NotBeNull();
         MessageFields.StreamIdError(new string('é', 128)).Should().NotBeNull("256 bytes of UTF-8");
+    }
+
+    [Fact]
+    public void AppName_Over64Characters_Invalid()
+    {
+        // An 8000-character name once put a line too long for the
+        // receiver's buffer on the air.
+        MessageFields.AppNameError(new string('a', MessageFields.MaxAppNameLength)).Should().BeNull();
+        MessageFields.AppNameError(new string('a', MessageFields.MaxAppNameLength + 1)).Should().NotBeNull();
+        MessageFields.AppNameError(new string('a', 8200)).Should().NotBeNull();
+        MessageFields.DestinationError(new string('a', 8200) + "@G1AAA").Should().NotBeNull();
     }
 
     [Fact]
@@ -214,6 +227,7 @@ public sealed class DashboardSendValidationTests : IAsyncLifetime
             c.CreateTable<DbDroppedMessage>();
             c.CreateTable<DbNeighbour>();
             c.CreateTable<DbRouteHint>();
+            c.CreateTable<DbSystemOption>();
         }
         options = new TestOptionsMonitor<SystemOptions>(new SystemOptions { Callsign = "N0CALL" });
         database = new Database(NullLogger<Database>.Instance, options);
@@ -282,6 +296,67 @@ public sealed class DashboardSendValidationTests : IAsyncLifetime
 
         page.FlashError.Should().NotBeNullOrEmpty();
         StoredCount().Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("G1AAA\nquit")]
+    [InlineData("G1AAA src=G0EVIL")]
+    [InlineData("G1AAA-07")]
+    public async Task Config_RefusesABadNodeCallsign(string callsign)
+    {
+        // The node's callsign goes out as src= on every message it sends.
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        var ctrl = new ConfigController(store, new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance));
+
+        var result = await ctrl.Post(new System.Text.Json.Nodes.JsonObject { ["Callsign"] = callsign });
+
+        result.Should().BeOfType<BadRequestObjectResult>().Which.Value.Should().BeOfType<string>()
+            .Which.Should().StartWith("Callsign:");
+        store.CurrentValue.Callsign.Should().NotBe(callsign);
+    }
+
+    [Fact]
+    public async Task Config_AcceptsAGoodCallsign_AndAnUnchangedOldOne()
+    {
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        var ctrl = new ConfigController(store, new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance));
+
+        (await ctrl.Post(new System.Text.Json.Nodes.JsonObject { ["Callsign"] = "M0LTE-2" })).Should().BeOfType<OkResult>();
+        store.CurrentValue.Callsign.Should().Be("M0LTE-2");
+
+        // A value stored before the rule existed must not stop the
+        // Settings page (which always sends the callsign) saving the rest.
+        var legacy = store.CurrentValue;
+        legacy.Callsign = "M0LTE/P";
+        await store.SaveAsync(legacy);
+        (await ctrl.Post(new System.Text.Json.Nodes.JsonObject { ["Callsign"] = "M0LTE/P", ["MqttPort"] = 1884 }))
+            .Should().BeOfType<OkResult>();
+        store.CurrentValue.MqttPort.Should().Be(1884);
+    }
+
+    [Theory]
+    [InlineData("G1AAA SRC=G0EVIL")]
+    [InlineData("G1AAA\nQUIT")]
+    [InlineData("G1AAA-07")]
+    public async Task Setup_RefusesABadNodeCallsign(string callsign)
+    {
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        var page = new SetupModel(new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance), store)
+        {
+            Callsign = callsign,
+            PageContext = new Microsoft.AspNetCore.Mvc.RazorPages.PageContext
+            {
+                HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext
+                {
+                    User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity("test")),
+                },
+            },
+        };
+
+        await page.OnPostBearerAsync();
+
+        page.Error.Should().NotBeNullOrEmpty();
+        store.CurrentValue.Callsign.Should().NotBe(callsign.Trim().ToUpperInvariant());
     }
 
     [Theory]

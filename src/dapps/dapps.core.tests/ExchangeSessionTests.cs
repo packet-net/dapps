@@ -126,7 +126,7 @@ public sealed class ExchangeSessionTests : IDisposable
     }
 
     [Fact]
-    public async Task AMessageWhoseDestinationWouldBreakTheLine_FailsAndNeverReachesTheWire()
+    public async Task AMessageWhoseDestinationWouldBreakTheLine_IsRefusedAndNeverReachesTheWire()
     {
         // #313: a destination holding a line break would read as a
         // separate command on the far end.
@@ -145,7 +145,7 @@ public sealed class ExchangeSessionTests : IDisposable
         await peer.WriteLineAsync($"ack {good.Id}", Ct);
         await batch.WaitForOutcomesAsync(2, Ct);
 
-        batch.Outcomes.Single(o => o.Id == bad.Id).Result.Accepted.Should().BeFalse();
+        batch.Outcomes.Single(o => o.Id == bad.Id).Result.Refused.Should().BeTrue("the message can never go, but the link is fine");
         batch.Outcomes.Single(o => o.Id == good.Id).Result.Accepted.Should().BeTrue();
         wire.Writes.Should().NotContain(w => w.Contains($"{Them}\nquit") || w.Contains(bad.Id));
     }

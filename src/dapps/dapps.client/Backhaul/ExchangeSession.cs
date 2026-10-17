@@ -1047,7 +1047,12 @@ public sealed class ExchangeSession
         }
         catch (ArgumentException ex)
         {
-            await CompleteAsync(o, BackhaulSendResult.Fail(ex.Message));
+            // The message itself can't be put on a header line (#313):
+            // no fault of the link, and it will never get better, so it
+            // is refused rather than failed. The forwarder then drops it
+            // with this reason instead of backing off the neighbour.
+            logger.LogWarning("Not sending {0}: {1}", message.Id, ex.Message);
+            await CompleteAsync(o, BackhaulSendResult.Refuse($"{message.Id} can't be sent: {ex.Message}"));
             return;
         }
         if (compressed is not null)

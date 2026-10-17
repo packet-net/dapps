@@ -493,7 +493,7 @@ public sealed class MqttBrokerService(
         if (!string.Equals(requested, authedApp, StringComparison.OrdinalIgnoreCase))
         {
             logger.LogInformation("MQTT: client {0} (auth={1}) blocked from subscribing to {2}",
-                e.ClientId, authedApp, topic);
+                Printable(e.ClientId), authedApp, Printable(topic));
             e.ProcessSubscription = false;
             e.Response.ReasonCode = MqttSubscribeReasonCode.NotAuthorized;
         }
@@ -523,7 +523,7 @@ public sealed class MqttBrokerService(
             var slash = rest.IndexOf('/');
             if (slash <= 0 || slash == rest.Length - 1)
             {
-                logger.LogWarning("MQTT: ignoring publish to malformed topic {0}", topic);
+                logger.LogWarning("MQTT: ignoring publish to malformed topic {0}", Printable(topic));
                 Refuse(e, MqttPubAckReasonCode.TopicNameInvalid);
                 return;
             }
@@ -533,7 +533,7 @@ public sealed class MqttBrokerService(
             if (authRequired && !string.Equals(authedApp, app, StringComparison.OrdinalIgnoreCase))
             {
                 logger.LogInformation("MQTT: client {0} (auth={1}) blocked from publishing on {2}",
-                    e.ClientId, authedApp ?? "?", topic);
+                    Printable(e.ClientId), authedApp ?? "?", Printable(topic));
                 Refuse(e, MqttPubAckReasonCode.NotAuthorized);
                 return;
             }
@@ -546,7 +546,7 @@ public sealed class MqttBrokerService(
             if (topicError is not null)
             {
                 logger.LogWarning("MQTT: refused publish from client {0} on {1}: {2}",
-                    e.ClientId, Printable(topic), topicError);
+                    Printable(e.ClientId), Printable(topic), topicError);
                 Refuse(e, MqttPubAckReasonCode.TopicNameInvalid, topicError);
                 return;
             }
@@ -577,7 +577,7 @@ public sealed class MqttBrokerService(
                 // Refused rather than sent unordered: the app asked for
                 // ordering and would not get it.
                 logger.LogWarning("MQTT: refused publish from client {0} on {1}: dapps-stream: {2}",
-                    e.ClientId, Printable(topic), sidError);
+                    Printable(e.ClientId), Printable(topic), sidError);
                 Refuse(e, MqttPubAckReasonCode.ImplementationSpecificError, $"dapps-stream: {sidError}");
                 return;
             }
@@ -607,7 +607,7 @@ public sealed class MqttBrokerService(
                 // Never let the app think a message it handed us is safe
                 // when it is not stored: report the failure instead of a
                 // success PUBACK.
-                logger.LogError(ex, "MQTT: failed to persist outbound publish on {0}", topic);
+                logger.LogError(ex, "MQTT: failed to persist outbound publish on {0}", Printable(topic));
                 FailStore(e, client);
                 return;
             }
@@ -624,7 +624,7 @@ public sealed class MqttBrokerService(
             if (authRequired && !string.Equals(authedApp, ackApp, StringComparison.OrdinalIgnoreCase))
             {
                 logger.LogInformation("MQTT: client {0} (auth={1}) blocked from publishing on {2}",
-                    e.ClientId, authedApp ?? "?", topic);
+                    Printable(e.ClientId), authedApp ?? "?", Printable(topic));
                 Refuse(e, MqttPubAckReasonCode.NotAuthorized);
                 return;
             }
@@ -662,7 +662,7 @@ public sealed class MqttBrokerService(
         // (DAPPS to app), dapps/metrics/* and dapps/audit/*. A client
         // publish there, retained or not, could fake a delivery or a
         // heartbeat, so it is refused.
-        logger.LogInformation("MQTT: client {0} blocked from publishing on {1}", e.ClientId, topic);
+        logger.LogInformation("MQTT: client {0} blocked from publishing on {1}", Printable(e.ClientId), Printable(topic));
         Refuse(e, MqttPubAckReasonCode.NotAuthorized);
     }
 
@@ -676,8 +676,9 @@ public sealed class MqttBrokerService(
         if (why is not null) e.Response.ReasonString = why;
     }
 
-    /// <summary>A topic or value fit for a log line: control characters
-    /// shown as escapes, so a refused CR or LF can't forge log lines.</summary>
+    /// <summary>A client-supplied topic or client id fit for a log line:
+    /// control characters shown as escapes, so a CR or LF can't forge
+    /// log lines.</summary>
     private static string Printable(string s)
         => string.Concat(s.Select(c => char.IsControl(c) ? $"\\x{(int)c:x2}" : c.ToString()));
 

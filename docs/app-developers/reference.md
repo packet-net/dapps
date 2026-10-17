@@ -54,7 +54,7 @@ The destination is encoded in the topic, not the payload. So submitting to `dapp
 
 **Payload**: the raw bytes you want delivered. DAPPS does not transform them.
 
-`<app>` must follow the app name rule under [Authentication](#authentication), and `<dest-callsign>` must be `CALL` or `CALL-SSID` (letters and digits, SSID 0 to 15). Anything else is refused: an MQTT 5 client gets `TopicNameInvalid` in the PUBACK, with the reason in its reason string.
+`<app>` must follow the app name rule under [Authentication](#authentication), and `<dest-callsign>` must be `CALL` or `CALL-SSID` (letters and digits, SSID 0 to 15 with no leading zero). Anything else is refused: an MQTT 5 client gets `TopicNameInvalid` in the PUBACK, with the reason in its reason string.
 
 **User properties** (all optional):
 
@@ -79,7 +79,7 @@ New installs turn on **Require per-app tokens for MQTT/REST** (`AuthRequired`) b
 - A filter starting `dapps/in/` must be exactly your own `dapps/in/<app>`: `dapps/in/mail`, `dapps/in/+` and `dapps/in/#` are refused. Broader filters such as `dapps/#` or `#` are allowed, so apps on the same node can still read each other's inbound traffic. This is by design: the tokens stop one app interfering with another, not reading it.
 - When the operator revokes or rotates an app's token, that app's open MQTT connections are dropped. It has to reconnect with its new token.
 
-The operator mints one on the dashboard's **App tokens** page (in the sidebar, under System): type an app name, mint, copy the plaintext shown once, revoke from the same page when it's no longer needed. App names are lowercased ("chat" and "Chat" are the same app) and must be plain ASCII with no `/`, `+`, `#`, `=`, whitespace, or control characters: the first three are what MQTT topics and the REST path use as separators or wildcards, and the rest would break the line the name travels on between nodes. Minting over an app that already has a token rotates it, so the page asks for confirmation first.
+The operator mints one on the dashboard's **App tokens** page (in the sidebar, under System): type an app name, mint, copy the plaintext shown once, revoke from the same page when it's no longer needed. App names are lowercased ("chat" and "Chat" are the same app) and must be plain ASCII, at most 64 characters, with no `/`, `+`, `#`, `=`, whitespace, or control characters: the first three are what MQTT topics and the REST path use as separators or wildcards, and the rest would break the line the name travels on between nodes. Minting over an app that already has a token rotates it, so the page asks for confirmation first.
 
 That page is a thin front-end over the admin-only `/AppTokens` REST endpoint: `POST /AppTokens` with `{"app": "chat"}` returns the token (posting again rotates it), `GET /AppTokens` lists them, and `DELETE /AppTokens/chat` revokes one - useful if you're scripting this rather than clicking through the dashboard. Revoking or rotating stops REST access with the very next request, and drops the app's open MQTT connections, so it has to reconnect with its new token.
 
@@ -126,7 +126,7 @@ Submit a message.
 | Field          | Type                  | Required | Notes                                                  |
 |----------------|-----------------------|----------|--------------------------------------------------------|
 | `app`          | string                | yes      | App name, as under [Authentication](#authentication).  |
-| `destCallsign` | string                | yes      | `CALL` or `CALL-SSID`: letters and digits, SSID 0 to 15. |
+| `destCallsign` | string                | yes      | `CALL` or `CALL-SSID`: letters and digits, SSID 0 to 15 (no leading zero). |
 | `payload`      | bytes (base64 in JSON)| yes      | Must be at least one byte. Empty payloads return `400`.|
 | `ttl`          | int seconds           | no       | Must be positive if present. `0` or negative returns `400`. |
 

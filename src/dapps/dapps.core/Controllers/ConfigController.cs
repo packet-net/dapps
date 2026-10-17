@@ -1,6 +1,7 @@
 ﻿using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using dapps.client;
 using dapps.core.Models;
 using dapps.core.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -30,6 +31,16 @@ public class ConfigController(SystemOptionsStore options, AdminPasswordStore adm
         SystemOptions merged;
         try { merged = Merge(options.CurrentValue, changes); }
         catch (JsonException ex) { return BadRequest(ex.Message); }
+        // The node's callsign goes on the air as src= on every message
+        // we send, so it must be one the offer line can carry (#313).
+        // Checked only when it changes: the Settings page always sends
+        // it, and an older stored value must not stop other settings
+        // being saved.
+        if (!string.Equals(merged.Callsign, options.CurrentValue.Callsign, StringComparison.Ordinal)
+            && MessageFields.CallsignError(merged.Callsign) is { } callError)
+        {
+            return BadRequest($"Callsign: {callError}");
+        }
         await options.SaveAsync(merged);
         return Ok();
     }

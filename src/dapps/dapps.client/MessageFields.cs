@@ -17,16 +17,24 @@ public static class MessageFields
     /// carries its length in one byte.</summary>
     public const int MaxStreamIdBytes = 255;
 
+    /// <summary>An app name's limit in characters (all ASCII, so also
+    /// bytes). The spec sets none, but a header line has to fit the
+    /// receiver's line buffer (8 KiB in the reference daemon), and no
+    /// real app needs more than a few words.</summary>
+    public const int MaxAppNameLength = 64;
+
     /// <summary>
     /// An app name: plain printable ASCII, with no whitespace, control
     /// characters, '/', '+' or '#' (MQTT topic separator and wildcards,
     /// the same rule app tokens follow) and no '=' (it would end the key
-    /// of the <c>dst=</c> token). Case is not changed or checked; app
+    /// of the <c>dst=</c> token), and at most <see cref="MaxAppNameLength"/>
+    /// characters. Case is not changed or checked; app
     /// names match case-insensitively everywhere.
     /// </summary>
     public static string? AppNameError(string? app)
     {
         if (string.IsNullOrEmpty(app)) return "App name is required.";
+        if (app.Length > MaxAppNameLength) return $"App name can be at most {MaxAppNameLength} characters.";
         foreach (var c in app)
         {
             if (c <= ' ' || c > '~' || c is '/' or '+' or '#' or '=')
@@ -39,18 +47,21 @@ public static class MessageFields
 
     /// <summary>
     /// A station callsign: CALL or CALL-SSID, where CALL is 1 to 10
-    /// ASCII letters and digits and SSID is 0 to 15. Either case.
+    /// ASCII letters and digits and SSID is 0 to 15, with no leading zero
+    /// (G1AAA-07 would be a different station key from G1AAA-7). Either
+    /// case.
     /// </summary>
     public static string? CallsignError(string? callsign)
     {
-        const string Rule = "Callsign must be CALL or CALL-SSID: letters and digits, then an optional SSID from 0 to 15.";
+        const string Rule = "Callsign must be CALL or CALL-SSID: letters and digits, then an optional SSID from 0 to 15 with no leading zero.";
         if (string.IsNullOrEmpty(callsign)) return "Callsign is required.";
         var dash = callsign.IndexOf('-');
         var call = dash < 0 ? callsign : callsign[..dash];
         if (call.Length is 0 or > 10 || !call.All(char.IsAsciiLetterOrDigit)) return Rule;
         if (dash < 0) return null;
         var ssid = callsign[(dash + 1)..];
-        if (ssid.Length is 0 or > 2 || !ssid.All(char.IsAsciiDigit) || int.Parse(ssid) > 15) return Rule;
+        if (ssid.Length is 0 or > 2 || !ssid.All(char.IsAsciiDigit) || (ssid.Length == 2 && ssid[0] == '0')
+            || int.Parse(ssid) > 15) return Rule;
         return null;
     }
 

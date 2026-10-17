@@ -1,3 +1,4 @@
+using dapps.client;
 using System.Security.Claims;
 using dapps.core.Models;
 using dapps.core.Services;
@@ -172,6 +173,12 @@ public sealed class SetupModel(
         if (string.IsNullOrEmpty(trimmedCall))
         {
             Error = "Callsign is required.";
+            return Page();
+        }
+        // It goes on the air as src= on every message we send (#313).
+        if (MessageFields.CallsignError(trimmedCall) is { } callError)
+        {
+            Error = callError;
             return Page();
         }
         if (IsCallsignPlaceholder(trimmedCall))

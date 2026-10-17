@@ -1279,6 +1279,44 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DoRun_AMessageTheOfferLineWontCarry_IsDroppedWithTheReason_AndTheNeighbourIsNotBackedOff()
+    {
+        // #313: a stored destination with a space in it (from before the
+        // app interface checked) can never go on a header line. That is
+        // the message's fault, not the link's: it is dropped with the
+        // reason, the neighbour is not put in a cooldown, and good mail
+        // on the same session goes as normal.
+        var ct = TestContext.Current.CancellationToken;
+        var backoff = new OutboundDestinationBackoff();
+        var directory = new SessionDirectory();
+        var peer = await EstablishedInboundSessionAsync("N0FAR-2", directory);
+        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
+            destinationBackoff: backoff, openSessions: directory);
+        InsertMessage(id: "badline", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-1), destination: "bad app@N0FAR");
+        InsertMessage(id: "good001", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR");
+
+        await m.DoRun(ct);
+
+        (await peer.ReadLineAsync(ct)).Should().StartWith("msg good001 ", "the bad one never reaches the wire");
+        var deadline = DateTime.UtcNow + ExchangeTestKit.Patience;
+        while (DateTime.UtcNow < deadline
+               && (await database.GetPendingOutboundMessages()).Any(r => r.Id == "badline"))
+        {
+            await m.DoRun(ct);
+            await Task.Delay(50, ct);
+        }
+
+        (await database.GetPendingOutboundMessages()).Select(r => r.Id).Should().NotContain("badline");
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Find<DbDroppedMessage>("badline")!.Reason.Should().Contain("whitespace");
+        }
+        backoff.IsInCooldown("N0FAR-2", out _).Should().BeFalse("the link is fine");
+        backoff.IsInCooldown("N0FAR", out _).Should().BeFalse("the link is fine");
+        backhaul.Sent.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task DoRun_MailForANodeWhoseSessionHasJustEnded_IsNotDialledForWithoutARoute()
     {
         // The session still shows in the directory when the run looks, but
