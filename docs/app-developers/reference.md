@@ -19,6 +19,8 @@ The same broker is also exposed at **`/mqtt` over WebSocket** on the dashboard's
 const client = mqtt.connect("ws://<host>:5000/mqtt", {
     protocolVersion: 5,
     clientId: "myapp-" + crypto.randomUUID(),
+    username: "myapp",           // app name
+    password: "<myapp's token>", // leave both out if app tokens are off
 });
 ```
 
@@ -128,10 +130,11 @@ Submit a message.
 
 **Response**: `200 OK` with `{ "id": "abc1234" }`.
 
-**Errors**: `400` on missing/empty fields or non-positive TTL. `403` if `AuthRequired` is on and the bearer token doesn't match `app`.
+**Errors**: `400` on missing/empty fields or non-positive TTL. `401` if `AuthRequired` is on and the bearer token is missing or not a current token; `403` if it's a token for a different app. The examples here send a token, as new installs require one (see [Authentication](#authentication_1) below); with tokens off, leave the `Authorization` header out.
 
 ```bash
 curl -X POST http://localhost:5000/AppApi/outbound \
+    -H 'Authorization: Bearer <chat token>' \
     -H 'Content-Type: application/json' \
     -d '{"app":"chat","destCallsign":"G7XYZ","payload":"aGVsbG8=","ttl":300}'
 # {"id":"abc1234"}
@@ -164,7 +167,7 @@ List currently unacknowledged messages for `{app}`.
 | `viaCallsign`    | string, nullable      | Same as `dapps-via` on MQTT: the last hop.                                             |
 
 ```bash
-curl http://localhost:5000/AppApi/inbound/chat
+curl -H 'Authorization: Bearer <chat token>' http://localhost:5000/AppApi/inbound/chat
 # [{"id":"abc1234","sourceCallsign":"G7XYZ","payload":"aGVsbG8=","ttl":287,"originatorCallsign":"G7XYZ","viaCallsign":"G4ABC"}]
 ```
 
@@ -175,12 +178,12 @@ Mark `{id}` as processed. Idempotent.
 **Response**: `204 No Content`, or `404 Not Found` if `{id}` is not one of `{app}`'s inbound messages (another app's message, a message waiting to be sent onward, or an unknown id). Nothing changes on a 404.
 
 ```bash
-curl -X POST http://localhost:5000/AppApi/inbound/chat/abc1234/ack
+curl -X POST -H 'Authorization: Bearer <chat token>' http://localhost:5000/AppApi/inbound/chat/abc1234/ack
 ```
 
 ### Authentication
 
-When `AuthRequired` is on, send `Authorization: Bearer <token>` on every `/AppApi/*` request. The token's app scope must match the `{app}` path segment (or the `app` field in the body for `POST /AppApi/outbound`); mismatches return `403`.
+When `AuthRequired` is on, send `Authorization: Bearer <token>` on every `/AppApi/*` request. The token's app scope must match the `{app}` path segment (or the `app` field in the body for `POST /AppApi/outbound`); a missing or unknown token returns `401`, a token for another app `403`. With `AuthRequired` off the header isn't needed, and is ignored if sent.
 
 ## Idempotency contract
 
@@ -283,7 +286,8 @@ When an app does care - chat transcripts, telemetry sequences, change-log stream
 REST:
 
 ```bash
-curl -sS -X POST http://localhost:5086/AppApi/outbound \
+curl -sS -X POST http://localhost:5000/AppApi/outbound \
+  -H 'Authorization: Bearer <chat token>' \
   -H 'content-type: application/json' \
   -d '{
     "app": "chat",

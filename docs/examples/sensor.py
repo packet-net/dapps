@@ -28,6 +28,7 @@ that subscribes to dapps/in/sensor and pretty-prints the JSON.
 
 import argparse
 import json
+import os
 import random
 import time
 
@@ -39,6 +40,9 @@ from paho.mqtt.packettypes import PacketTypes
 HOST = "127.0.0.1"
 PORT = 1883
 APP = "sensor"
+# The app token from the dashboard's App tokens page. Leave unset if
+# your node has app tokens turned off.
+TOKEN = os.environ.get("DAPPS_TOKEN")
 
 
 def read_sensor() -> dict:
@@ -83,6 +87,8 @@ def main():
         protocol=mqtt.MQTTv5,
         client_id="sensor-app",
     )
+    if TOKEN:
+        client.username_pw_set(APP, TOKEN)
     client.connect(HOST, PORT, keepalive=30)
     client.loop_start()
 

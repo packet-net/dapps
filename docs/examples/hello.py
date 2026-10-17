@@ -12,18 +12,26 @@ not as production code.  Install paho-mqtt 2.x first:
 
     pip install paho-mqtt
 
-Run a DAPPS instance locally (default port 1883), then:
+Run a DAPPS instance locally (default port 1883). If it requires app
+tokens (new installs do), mint one for "hello" on the dashboard's App
+tokens page and export it first:
+
+    export DAPPS_TOKEN='<token>'
+
+Then:
 
     python hello.py
 
 In another terminal, send "world" to yourself with mosquitto_pub:
 
-    mosquitto_pub -h 127.0.0.1 -V mqttv5 \\
+    mosquitto_pub -h 127.0.0.1 -V mqttv5 -u hello -P "$DAPPS_TOKEN" \\
         -t 'dapps/out/hello/<your-callsign>' -m 'world'
 
 Replace <your-callsign> with whatever Callsign your DAPPS is configured
 with - the reply will loop back to you.
 """
+
+import os
 
 import paho.mqtt.client as mqtt
 from paho.mqtt.properties import Properties
@@ -33,6 +41,9 @@ from paho.mqtt.packettypes import PacketTypes
 HOST = "127.0.0.1"
 PORT = 1883
 APP = "hello"
+# The app token from the dashboard's App tokens page. Leave unset if
+# your node has app tokens turned off.
+TOKEN = os.environ.get("DAPPS_TOKEN")
 INBOX = f"dapps/in/{APP}"
 ACK = f"dapps/ack/{APP}"
 
@@ -102,6 +113,8 @@ def main():
     )
     client.on_connect = on_connect
     client.on_message = on_message
+    if TOKEN:
+        client.username_pw_set(APP, TOKEN)
     client.connect(HOST, PORT, keepalive=30)
     client.loop_forever()
 

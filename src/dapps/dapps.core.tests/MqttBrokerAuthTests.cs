@@ -693,6 +693,191 @@ public sealed class MqttBrokerAuthTests : IAsyncLifetime
         (await database.GetPendingOutboundMessages()).Should().ContainSingle();
     }
 
+    // ---- Refused CONNECT reason codes, and clients with no client id (#340) ----
+
+    // mosquitto_pub and mosquitto_sub send an empty client id unless given
+    // -i. MQTTnet on its own refuses that as "identifier rejected", which
+    // also hid the real reason (no token) behind the wrong return code.
+    // The MQTT 3.1.1 cases write the CONNECT by hand, as mosquitto_pub
+    // does, and read the CONNACK return code straight off the wire.
+
+    [Theory]
+    [InlineData("", null, null)]
+    [InlineData("", "myapp", "not-the-token")]
+    [InlineData("given-id", null, null)]
+    [InlineData("given-id", "myapp", "not-the-token")]
+    public async Task Refused_Mqtt311_ReturnCodeIsBadUserNameOrPassword(string clientId, string? user, string? pass)
+    {
+        await tokens.CreateOrRotateAsync("myapp");
+        var ct = TestContext.Current.CancellationToken;
+
+        var code = await RawConnectReturnCode("MQTT", 4, cleanSession: true, clientId, user, pass, ct);
+
+        code.Should().Be((byte)0x04, "a missing or wrong token is a bad user name or password, not a bad client id");
+    }
+
+    [Theory]
+    [InlineData("", null, null)]
+    [InlineData("", "myapp", "not-the-token")]
+    [InlineData("given-id", null, null)]
+    [InlineData("given-id", "myapp", "not-the-token")]
+    public async Task Refused_Mqtt5_ReasonCodeIsBadUserNameOrPassword(string clientId, string? user, string? pass)
+    {
+        await tokens.CreateOrRotateAsync("myapp");
+        var ct = TestContext.Current.CancellationToken;
+        var client = new MqttFactory().CreateMqttClient();
+        openClients.Add(client);
+
+        var act = async () => await client.ConnectAsync(BuildClientOpts(user, pass, clientId: clientId), ct);
+
+        var thrown = await act.Should().ThrowAsync<MQTTnet.Adapter.MqttConnectingFailedException>();
+        thrown.Which.ResultCode.Should().Be(MqttClientConnectResultCode.BadUserNameOrPassword);
+    }
+
+    [Fact]
+    public async Task EmptyClientId_Mqtt311_WithToken_AcceptedAndCanPublish()
+    {
+        var token = await tokens.CreateOrRotateAsync("myapp");
+        var ct = TestContext.Current.CancellationToken;
+
+        var c = await ConnectAsync("myapp", token, ct, MQTTnet.Formatter.MqttProtocolVersion.V311, clientId: "");
+        await c.PublishAsync(Qos1("dapps/out/myapp/N0DEST-1", "hello"), ct);
+
+        await Eventually(async () => (await database.GetPendingOutboundMessages()).Count == 1);
+        (await database.GetPendingOutboundMessages()).Should().ContainSingle();
+        ClientEntryIds().Should().ContainSingle(id => id.StartsWith("dapps-"),
+            "the broker gives the client an id of its own and tracks it under that");
+    }
+
+    [Fact]
+    public async Task EmptyClientId_Mqtt5_GetsAssignedClientIdentifier()
+    {
+        var token = await tokens.CreateOrRotateAsync("myapp");
+        var ct = TestContext.Current.CancellationToken;
+        var client = new MqttFactory().CreateMqttClient();
+        openClients.Add(client);
+
+        var result = await client.ConnectAsync(BuildClientOpts("myapp", token, clientId: ""), ct);
+        var publish = await client.PublishAsync(Qos1("dapps/out/myapp/N0DEST-1", "hello"), ct);
+
+        result.ResultCode.Should().Be(MqttClientConnectResultCode.Success);
+        result.AssignedClientIdentifier.Should().StartWith("dapps-");
+        publish.ReasonCode.Should().Be(MqttClientPublishReasonCode.Success);
+        ClientEntryIds().Should().Equal(result.AssignedClientIdentifier);
+    }
+
+    [Fact]
+    public async Task EmptyClientIds_EachGetTheirOwn()
+    {
+        var token = await tokens.CreateOrRotateAsync("myapp");
+        var ct = TestContext.Current.CancellationToken;
+
+        var a = await ConnectAsync("myapp", token, ct, MQTTnet.Formatter.MqttProtocolVersion.V311, clientId: "");
+        var b = await ConnectAsync("myapp", token, ct, MQTTnet.Formatter.MqttProtocolVersion.V311, clientId: "");
+        await Task.Delay(300, ct);
+
+        a.IsConnected.Should().BeTrue("a second client with no id must not take over the first one's session");
+        b.IsConnected.Should().BeTrue();
+        ClientEntryIds().Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task AuthOff_EmptyClientId_Mqtt311_AcceptedAndCanPublish()
+    {
+        // The reporter's exact case: mosquitto_pub with no -i, -u or -P
+        // against a node with app tokens off.
+        systemOptions.AuthRequired = false;
+        var ct = TestContext.Current.CancellationToken;
+
+        var c = await ConnectAsync(null, null, ct, MQTTnet.Formatter.MqttProtocolVersion.V311, clientId: "");
+        await c.PublishAsync(Qos1("dapps/out/hello/G7XYZ-1", "hello from M0LTE"), ct);
+        await Eventually(async () => (await database.GetPendingOutboundMessages()).Count == 1);
+        (await database.GetPendingOutboundMessages()).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task EmptyClientId_Mqtt311_PersistentSession_IdentifierRejected()
+    {
+        // MQTT 3.1.1 only lets the server assign an id for a clean
+        // session [MQTT-3.1.3-8]. MQTTnet's decoder drops this CONNECT
+        // before the broker sees it, closing the connection rather than
+        // answering 0x02; either way it must not be let in.
+        var token = await tokens.CreateOrRotateAsync("myapp");
+        var ct = TestContext.Current.CancellationToken;
+
+        var code = await RawConnectReturnCode("MQTT", 4, cleanSession: false, "", "myapp", token, ct);
+
+        code.Should().NotBe((byte)0x00);
+    }
+
+    [Fact]
+    public async Task EmptyClientId_Mqtt31_IdentifierRejected()
+    {
+        // MQTT 3.1 needs a client id of 1 to 23 characters.
+        var token = await tokens.CreateOrRotateAsync("myapp");
+        var ct = TestContext.Current.CancellationToken;
+
+        var code = await RawConnectReturnCode("MQIsdp", 3, cleanSession: true, "", "myapp", token, ct);
+
+        code.Should().Be((byte)0x02);
+    }
+
+    /// <summary>Send a hand-built MQTT 3.x CONNECT and return the CONNACK
+    /// return code byte, or null if the broker closed the connection
+    /// without one.</summary>
+    private async Task<byte?> RawConnectReturnCode(string protocolName, byte level, bool cleanSession,
+        string clientId, string? user, string? pass, CancellationToken ct)
+    {
+        var body = new List<byte>();
+        void Str(string value)
+        {
+            var bytes = System.Text.Encoding.UTF8.GetBytes(value);
+            body.Add((byte)(bytes.Length >> 8));
+            body.Add((byte)bytes.Length);
+            body.AddRange(bytes);
+        }
+        Str(protocolName);
+        body.Add(level);
+        byte flags = 0;
+        if (cleanSession) flags |= 0x02;
+        if (user is not null) flags |= 0x80;
+        if (pass is not null) flags |= 0x40;
+        body.Add(flags);
+        body.Add(0); body.Add(60); // keep-alive 60 s
+        Str(clientId);
+        if (user is not null) Str(user);
+        if (pass is not null) Str(pass);
+
+        var packet = new List<byte> { 0x10 };
+        var remaining = body.Count;
+        do
+        {
+            var digit = (byte)(remaining % 128);
+            remaining /= 128;
+            if (remaining > 0) digit |= 0x80;
+            packet.Add(digit);
+        } while (remaining > 0);
+        packet.AddRange(body);
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(IPAddress.Loopback, brokerPort, timeout.Token);
+        var stream = tcp.GetStream();
+        await stream.WriteAsync(packet.ToArray(), timeout.Token);
+        var connack = new byte[4];
+        try
+        {
+            await stream.ReadExactlyAsync(connack, timeout.Token);
+        }
+        catch (EndOfStreamException)
+        {
+            return null;
+        }
+        connack[0].Should().Be(0x20, "the broker answers a CONNECT with a CONNACK");
+        return connack[3];
+    }
+
     private IEnumerable<string> ClientEntryIds()
     {
         var field = typeof(MqttBrokerService).GetField("clientApps",

@@ -28,6 +28,7 @@ What this demonstrates:
     almost always noise.
 """
 
+import os
 import sys
 import time
 
@@ -39,6 +40,9 @@ from paho.mqtt.packettypes import PacketTypes
 HOST = "127.0.0.1"
 PORT = 1883
 APP = "pager"
+# The app token from the dashboard's App tokens page. Leave unset if
+# your node has app tokens turned off.
+TOKEN = os.environ.get("DAPPS_TOKEN")
 INBOX = f"dapps/in/{APP}"
 ACK = f"dapps/ack/{APP}"
 
@@ -87,6 +91,8 @@ def run_receiver():
     )
     client.on_connect = on_connect_recv
     client.on_message = on_message_recv
+    if TOKEN:
+        client.username_pw_set(APP, TOKEN)
     client.connect(HOST, PORT, keepalive=30)
     client.loop_forever()
 
@@ -99,6 +105,8 @@ def run_sender(callsign: str, message: str):
         protocol=mqtt.MQTTv5,
         client_id=f"pager-send-{int(time.time())}",
     )
+    if TOKEN:
+        client.username_pw_set(APP, TOKEN)
     client.connect(HOST, PORT, keepalive=10)
     client.loop_start()
 

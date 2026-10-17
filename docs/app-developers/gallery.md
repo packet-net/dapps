@@ -10,6 +10,8 @@ The first three are Python + paho-mqtt:
 pip install paho-mqtt
 ```
 
+If your node requires app tokens (new installs do), mint one on the dashboard's **App tokens** page for the script's app (`chat`, `sensor` or `pager`) and pass it in `DAPPS_TOKEN`, for example `DAPPS_TOKEN='<chat token>' python chat.py ...`. With tokens off, leave it unset.
+
 The last two are browser apps (HTML + vanilla JS, MQTT-over-WebSocket via mqtt.js).
 
 Run a DAPPS instance locally, replace `<your-callsign>` with your own throughout, and try the examples in any order.

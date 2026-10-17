@@ -14,6 +14,13 @@ If you haven't yet, read [Concepts](concepts.md) first.
 - Python 3.11+.
 - `paho-mqtt` 2.x: `pip install paho-mqtt`.
 - `mosquitto-clients` (for `mosquitto_pub`) on the side, so we can poke the app from the command line. On Debian/Ubuntu: `apt install mosquitto-clients`. macOS: `brew install mosquitto`.
+- An app token for `hello`, if your node requires them (new installs do). Mint one on the dashboard's **App tokens** page and put it in your shell, where both the script and the commands below pick it up:
+
+    ```bash
+    export DAPPS_TOKEN='<token from the App tokens page>'
+    ```
+
+    If your node has app tokens turned off, skip this; everything below works without it.
 
 We'll use MQTT in this tutorial. The same flow works against the REST endpoints - there's a `curl`-only version at the end.
 
@@ -26,6 +33,8 @@ The complete script lives in the repo at [`docs/examples/hello.py`](https://gith
 DAPPS speaks MQTT 5. We'll use paho-mqtt's v5 mode and pick a stable client id so we can debug from the broker side later if needed.
 
 ```python
+import os
+
 import paho.mqtt.client as mqtt
 
 client = mqtt.Client(
@@ -33,6 +42,9 @@ client = mqtt.Client(
     protocol=mqtt.MQTTv5,
     client_id="hello-app",
 )
+token = os.environ.get("DAPPS_TOKEN")
+if token:
+    client.username_pw_set("hello", token)  # app name, app token
 client.on_connect = on_connect
 client.on_message = on_message
 client.connect("127.0.0.1", 1883, keepalive=30)
@@ -142,7 +154,7 @@ python hello.py
 In another terminal, send a message to `hello` at your own callsign (replace `<your-callsign>` with whatever your DAPPS is configured with):
 
 ```bash
-mosquitto_pub -h 127.0.0.1 -V mqttv5 \
+mosquitto_pub -h 127.0.0.1 -V mqttv5 -u hello -P "$DAPPS_TOKEN" \
     -t 'dapps/out/hello/<your-callsign>' -m 'world'
 ```
 
@@ -156,7 +168,7 @@ You should see, in the script's terminal:
 The script published a reply, and because the destination was your own callsign, your DAPPS forwarded it straight back into `dapps/in/hello`. To watch it round-trip without re-triggering your handler, subscribe with `mosquitto_sub` in a separate terminal:
 
 ```bash
-mosquitto_sub -h 127.0.0.1 -V mqttv5 -t 'dapps/in/hello' -F '%P\n%p'
+mosquitto_sub -h 127.0.0.1 -V mqttv5 -u hello -P "$DAPPS_TOKEN" -t 'dapps/in/hello' -F '%P\n%p'
 ```
 
 ## Same thing in `curl`
@@ -165,6 +177,7 @@ If you'd rather not pull in an MQTT library, the REST endpoints offer the same s
 
 ```bash
 curl -X POST http://127.0.0.1:5000/AppApi/outbound \
+    -H "Authorization: Bearer $DAPPS_TOKEN" \
     -H 'Content-Type: application/json' \
     -d '{
         "app": "hello",
@@ -179,7 +192,7 @@ curl -X POST http://127.0.0.1:5000/AppApi/outbound \
 Poll the inbox:
 
 ```bash
-curl http://127.0.0.1:5000/AppApi/inbound/hello
+curl -H "Authorization: Bearer $DAPPS_TOKEN" http://127.0.0.1:5000/AppApi/inbound/hello
 # [{"id":"abc1234","sourceCallsign":"G7XYZ","payload":"d29ybGQ=","ttl":287,"originatorCallsign":"G7XYZ","viaCallsign":"G7XYZ"}]
 ```
 
@@ -188,7 +201,7 @@ curl http://127.0.0.1:5000/AppApi/inbound/hello
 Ack:
 
 ```bash
-curl -X POST http://127.0.0.1:5000/AppApi/inbound/hello/abc1234/ack
+curl -X POST -H "Authorization: Bearer $DAPPS_TOKEN" http://127.0.0.1:5000/AppApi/inbound/hello/abc1234/ack
 ```
 
 Both surfaces share the same queue. An app written against MQTT and a cron job hitting REST can run side by side and won't see each other's traffic - they're both authenticated as `hello` in the queue's view, but the queue handles concurrency for them.

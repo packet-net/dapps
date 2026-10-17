@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using AwesomeAssertions;
 using MQTTnet;
 using MQTTnet.Client;
@@ -83,6 +84,73 @@ public sealed class MqttAppInterfaceIntegrationTests(TwoInstanceLinbpqFixture fi
         await bClient.DisconnectAsync(cancellationToken: ct);
     }
 
+    /// <summary>
+    /// The Getting started page's MQTT step (#340), on nodes with app
+    /// tokens on as a new install has them: the operator mints a token for
+    /// <c>hello</c> the way the docs say, and both apps connect the way
+    /// <c>mosquitto_pub</c> and <c>mosquitto_sub</c> do by default - MQTT
+    /// 3.1.1, clean session, and no client id of their own.
+    /// </summary>
+    [Fact]
+    public async Task GettingStartedFlow_MosquittoStyleClientsWithTokens_DeliverAcrossNodes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var tokensOn = new Dictionary<string, string> { ["DAPPS_AUTH_REQUIRED"] = "true" };
+        var a = await StartNodeAsync("gsA", fixture.ApplCallA, fixture.AgwPortA, fixture.ApplCallB, ct, tokensOn);
+        var b = await StartNodeAsync("gsB", fixture.ApplCallB, fixture.AgwPortB, fixture.ApplCallA, ct, tokensOn);
+        var tokenA = await MintTokenAsync(a, "hello", ct);
+        var tokenB = await MintTokenAsync(b, "hello", ct);
+
+        using var sub = await ConnectLikeMosquittoAsync(b.MqttPort, "hello", tokenB, ct);
+        var received = new TaskCompletionSource<MqttApplicationMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        sub.ApplicationMessageReceivedAsync += e =>
+        {
+            received.TrySetResult(e.ApplicationMessage);
+            return Task.CompletedTask;
+        };
+        await sub.SubscribeAsync("dapps/in/hello", MqttQualityOfServiceLevel.AtLeastOnce, ct);
+
+        using var pub = await ConnectLikeMosquittoAsync(a.MqttPort, "hello", tokenA, ct);
+        await pub.PublishAsync(new MqttApplicationMessageBuilder()
+            .WithTopic($"dapps/out/hello/{b.Callsign}")
+            .WithPayload("hello from M0LTE"u8.ToArray())
+            .Build(), ct);
+        await pub.DisconnectAsync(cancellationToken: ct);
+
+        var msg = await received.Task.WaitAsync(TimeSpan.FromSeconds(45), ct);
+        msg.Topic.Should().Be("dapps/in/hello");
+        msg.PayloadSegment.ToArray().Should().Equal("hello from M0LTE"u8.ToArray());
+
+        await sub.DisconnectAsync(cancellationToken: ct);
+    }
+
+    /// <summary>Mint an app token the way reference.md's command-line
+    /// recipe does: admin cookie, then a JSON POST to /AppTokens.</summary>
+    private static async Task<string> MintTokenAsync(DappsDaemon node, string app, CancellationToken ct)
+    {
+        await node.SignInAsAdminAsync(ct);
+        var response = await node.Http.PostAsJsonAsync("AppTokens", new { app }, ct);
+        response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>(ct);
+        return body.GetProperty("token").GetString()!;
+    }
+
+    /// <summary>Connect as mosquitto_pub / mosquitto_sub do without
+    /// <c>-i</c>: MQTT 3.1.1, clean session, empty client id.</summary>
+    private static async Task<IMqttClient> ConnectLikeMosquittoAsync(int port, string user, string token, CancellationToken ct)
+    {
+        var client = new MqttFactory().CreateMqttClient();
+        var opts = new MqttClientOptionsBuilder()
+            .WithProtocolVersion(MQTTnet.Formatter.MqttProtocolVersion.V311)
+            .WithTcpServer("127.0.0.1", port)
+            .WithClientId("")
+            .WithCleanSession(true)
+            .WithCredentials(user, token)
+            .Build();
+        await client.ConnectAsync(opts, ct);
+        return client;
+    }
+
     private static async Task<IMqttClient> ConnectAsync(int port, CancellationToken ct)
     {
         var client = new MqttFactory().CreateMqttClient();
@@ -106,10 +174,11 @@ public sealed class MqttAppInterfaceIntegrationTests(TwoInstanceLinbpqFixture fi
         }
     }
 
-    private async Task<DappsDaemon> StartNodeAsync(string name, string callsign, int agwPort, string neighbour, CancellationToken ct)
+    private async Task<DappsDaemon> StartNodeAsync(string name, string callsign, int agwPort, string neighbour, CancellationToken ct,
+        IReadOnlyDictionary<string, string>? settings = null)
     {
         var node = await DappsDaemon.StartAsync(name, callsign, fixture.Host, agwPort, fixture.AxipPortIndex,
-            [new(neighbour, fixture.AxipPortIndex)], settings: null, ct);
+            [new(neighbour, fixture.AxipPortIndex)], settings, ct);
         running.Add(node);
         return node;
     }

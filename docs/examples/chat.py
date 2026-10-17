@@ -27,6 +27,7 @@ Like hello.py, this is a teaching example, not production code. The
 backlog. For a real app, persist it.
 """
 
+import os
 import sys
 
 import paho.mqtt.client as mqtt
@@ -37,6 +38,9 @@ from paho.mqtt.packettypes import PacketTypes
 HOST = "127.0.0.1"
 PORT = 1883
 APP = "chat"
+# The app token from the dashboard's App tokens page. Leave unset if
+# your node has app tokens turned off.
+TOKEN = os.environ.get("DAPPS_TOKEN")
 INBOX = f"dapps/in/{APP}"
 ACK = f"dapps/ack/{APP}"
 
@@ -112,6 +116,8 @@ def main():
     )
     client.on_connect = on_connect
     client.on_message = on_message
+    if TOKEN:
+        client.username_pw_set(APP, TOKEN)
     client.connect(HOST, PORT, keepalive=30)
     client.loop_start()
 

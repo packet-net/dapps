@@ -94,6 +94,8 @@ mosquitto_pub -h localhost -p 1883 \
   -u hello -P '<token from above>'
 ```
 
+`-u` is the app name you minted the token for and `-P` is the token itself. If you turned app tokens off, leave both out. On DAPPS 0.51.0 and earlier, also add `-i hello-test` (any name will do): those versions refuse a client that doesn't send its own client id, as `mosquitto_pub` doesn't by default, and it reports `Connection Refused: identifier rejected`.
+
 The dashboard's outbound queue should show the message; once forwarded, it disappears from the queue. On the receiving node, an app subscribed to `dapps/in/hello` will get it.
 
 That's the full loop. From here:

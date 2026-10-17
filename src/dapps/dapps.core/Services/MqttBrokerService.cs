@@ -4,6 +4,7 @@ using MQTTnet;
 using MQTTnet.Formatter;
 using MQTTnet.Protocol;
 using MQTTnet.Server;
+using System.Reflection;
 using System.Text;
 
 namespace dapps.core.Services;
@@ -285,7 +286,11 @@ public sealed class MqttBrokerService(
     /// <summary>
     /// MQTT CONNECT validation. Username = app name, password = token
     /// plaintext. When <see cref="SystemOptions.AuthRequired"/> is true,
-    /// rejects with NotAuthorized on missing or invalid creds.
+    /// rejects with BadUserNameOrPassword (0x04 on MQTT 3.1.1, 0x86 on
+    /// MQTT 5) on missing or invalid creds.
+    /// A client that sends an empty ClientId is given one first (see
+    /// <see cref="AssignClientId"/>), so a plain <c>mosquitto_pub</c>
+    /// without <c>-i</c> isn't refused as "identifier rejected".
     /// On accept, records ClientId → app-name so the publish/subscribe
     /// interceptors can enforce topic-app scoping. A connection accepted
     /// without valid credentials (auth off) is recorded with no app, so
@@ -294,6 +299,9 @@ public sealed class MqttBrokerService(
     /// </summary>
     private async Task OnValidatingConnection(ValidatingConnectionEventArgs e)
     {
+        if (string.IsNullOrEmpty(e.ClientId) && !AssignClientId(e))
+            return;
+
         var authRequired = options.CurrentValue.AuthRequired;
 
         var hasCreds = !string.IsNullOrEmpty(e.UserName)
@@ -304,7 +312,7 @@ public sealed class MqttBrokerService(
             if (authRequired)
             {
                 e.ReasonCode = MQTTnet.Protocol.MqttConnectReasonCode.BadUserNameOrPassword;
-                logger.LogInformation("MQTT: rejected client {0} - missing credentials", e.ClientId);
+                logger.LogInformation("MQTT: rejected client {0} - no username or password; app tokens are required, so connect with username = app name, password = its token from the App tokens page", e.ClientId);
                 return;
             }
             Remember(e, null, 0);
@@ -323,7 +331,7 @@ public sealed class MqttBrokerService(
             if (authRequired)
             {
                 e.ReasonCode = MQTTnet.Protocol.MqttConnectReasonCode.BadUserNameOrPassword;
-                logger.LogInformation("MQTT: rejected client {0} - invalid credentials", e.ClientId);
+                logger.LogInformation("MQTT: rejected client {0} - the password is not the current token for app '{1}'", e.ClientId, e.UserName);
                 return;
             }
             Remember(e, null, 0);
@@ -333,6 +341,56 @@ public sealed class MqttBrokerService(
         Remember(e, app, generation);
         logger.LogInformation("MQTT: client {0} authenticated as {1}", e.ClientId, app);
     }
+
+    private static readonly FieldInfo? ConnectPacketField =
+        typeof(ValidatingConnectionEventArgs).GetField("_connectPacket", BindingFlags.Instance | BindingFlags.NonPublic);
+
+    /// <summary>
+    /// Gives a client that sent an empty ClientId a unique one, as both
+    /// MQTT versions allow: MQTT 5 always (the id goes back in the CONNACK
+    /// as the Assigned Client Identifier), MQTT 3.1.1 when it asked for a
+    /// clean session [MQTT-3.1.3-6]. mosquitto_pub and mosquitto_sub send
+    /// an empty id unless given <c>-i</c>, and MQTTnet on its own refuses
+    /// that with "identifier rejected". MQTTnet 4.3 offers no public way
+    /// to set the id for MQTT 3.1.1, so this sets it on the CONNECT packet
+    /// the event args wrap. Returns false, with the refusal already set
+    /// and logged, when the client can't be given an id.
+    /// </summary>
+    private bool AssignClientId(ValidatingConnectionEventArgs e)
+    {
+        var mqtt5 = e.ProtocolVersion == MqttProtocolVersion.V500;
+        if (!mqtt5 && !(e.ProtocolVersion == MqttProtocolVersion.V311 && e.CleanSession == true))
+        {
+            e.ReasonCode = MqttConnectReasonCode.ClientIdentifierNotValid;
+            logger.LogInformation(
+                "MQTT: rejected client from {0} - it sent no client id, which MQTT {1} only allows with a clean session; give it one (mosquitto_pub -i <id>)",
+                e.Endpoint, ProtocolName(e.ProtocolVersion));
+            return false;
+        }
+
+        if (ConnectPacketField?.GetValue(e) is not MQTTnet.Packets.MqttConnectPacket packet)
+        {
+            e.ReasonCode = MqttConnectReasonCode.ClientIdentifierNotValid;
+            logger.LogWarning(
+                "MQTT: rejected client from {0} - it sent no client id and this MQTTnet build gives no way to assign one; give it one (mosquitto_pub -i <id>)",
+                e.Endpoint);
+            return false;
+        }
+
+        var id = "dapps-" + Guid.NewGuid().ToString("N")[..16];
+        packet.ClientId = id;
+        if (mqtt5) e.AssignedClientIdentifier = id;
+        logger.LogInformation("MQTT: client from {0} sent no client id; assigned {1}", e.Endpoint, id);
+        return true;
+    }
+
+    private static string ProtocolName(MqttProtocolVersion version) => version switch
+    {
+        MqttProtocolVersion.V310 => "3.1",
+        MqttProtocolVersion.V311 => "3.1.1",
+        MqttProtocolVersion.V500 => "5",
+        _ => version.ToString(),
+    };
 
     private void Remember(ValidatingConnectionEventArgs e, string? app, long generation)
     {
