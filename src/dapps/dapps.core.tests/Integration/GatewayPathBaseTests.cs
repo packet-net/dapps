@@ -204,39 +204,24 @@ public sealed class GatewayPathBaseTests
                 },
             };
 
-            var env = self._process.StartInfo.EnvironmentVariables;
-
-            // The child inherits THIS test process's environment, and
-            // sibling tests (DbStartupTests, Rhpv2InboundServiceTests)
-            // mutate DAPPS_*/PDN_* vars process-wide via
-            // Environment.SetEnvironmentVariable. Those classes live in a
-            // different xUnit collection, so they run in PARALLEL with us;
-            // if e.g. PDN_NODE_CALLSIGN happens to be set at the instant we
-            // spawn, DbStartup in the child derives a real callsign, the
-            // fresh-install /Setup journey skips the bearer step (OnGet
-            // sees a configured callsign and 302s to /), and the assertion
-            // for 200 fails - an intermittent flake that depends purely on
-            // parallel timing, not on anything this test does. Scrub every
-            // inherited DAPPS_*/PDN_* key so the subprocess always boots a
-            // pristine first-run state, then set only what we need below.
-            foreach (var key in env.Keys.Cast<string>()
-                         .Where(k => k.StartsWith("DAPPS_", StringComparison.OrdinalIgnoreCase)
-                                  || k.StartsWith("PDN_", StringComparison.OrdinalIgnoreCase))
-                         .ToList())
+            // The child inherits THIS test process's environment, so scrub
+            // every inherited DAPPS_*/PDN_* key and boot a pristine first-run
+            // state: a stray PDN_NODE_CALLSIGN makes DbStartup derive a real
+            // callsign, the /Setup journey skips the bearer step and the
+            // assertion for 200 fails (#152, #330).
+            ChildEnvironment.Apply(self._process.StartInfo.Environment, new Dictionary<string, string>
             {
-                env.Remove(key);
-            }
-
-            // Lets the built binary run on a newer host runtime than it targets; harmless
-            // where the targeted runtime is the latest installed.
-            env["DOTNET_ROLL_FORWARD"] = "LatestMajor";
-            env["ASPNETCORE_URLS"] = "http://127.0.0.1:0";
-            env["DAPPS_MQTT_PORT"] = PickEphemeralPort().ToString();
-            env["DAPPS_AGW_PORT"] = "0";
-            env["DAPPS_UDP_LISTEN_PORT"] = "0";
-            env["DAPPS_HEARTBEAT_ENABLED"] = "false";
-            env["DAPPS_PROBING_ENABLED"] = "false";
-            env["DAPPS_UPDATE_CHECK_ENABLED"] = "false";
+                // Lets the built binary run on a newer host runtime than it targets; harmless
+                // where the targeted runtime is the latest installed.
+                ["DOTNET_ROLL_FORWARD"] = "LatestMajor",
+                ["ASPNETCORE_URLS"] = "http://127.0.0.1:0",
+                ["DAPPS_MQTT_PORT"] = PickEphemeralPort().ToString(),
+                ["DAPPS_AGW_PORT"] = "0",
+                ["DAPPS_UDP_LISTEN_PORT"] = "0",
+                ["DAPPS_HEARTBEAT_ENABLED"] = "false",
+                ["DAPPS_PROBING_ENABLED"] = "false",
+                ["DAPPS_UPDATE_CHECK_ENABLED"] = "false",
+            });
 
             var listening = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             self._process.OutputDataReceived += (_, e) =>

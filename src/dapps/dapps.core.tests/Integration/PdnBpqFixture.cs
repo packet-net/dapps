@@ -160,6 +160,9 @@ public sealed class SwappedPair(IDappsNodePair pair) : IDappsNodePair
         public Task<bool> WaitForAsync(string from, string contains, TimeSpan timeout, CancellationToken ct) =>
             air.WaitForAsync(Other(from), contains, timeout, ct);
 
+        public IReadOnlyList<(string From, string Text)> Sequence() =>
+            [.. air.Sequence().Select(f => (Other(f.From), f.Text))];
+
         public string Transcript() => air.Transcript();
 
         public ValueTask DisposeAsync() => air.DisposeAsync();

@@ -80,6 +80,9 @@ public interface IAirMonitor : IAsyncDisposable
 
     int CountSentBy(string from, string contains);
 
+    /// <summary>Every frame heard, in the order heard, with the side that sent it.</summary>
+    IReadOnlyList<(string From, string Text)> Sequence();
+
     Task<bool> WaitForAsync(string from, string contains, TimeSpan timeout, CancellationToken ct);
 
     /// <summary>Everything heard, for a failure message.</summary>

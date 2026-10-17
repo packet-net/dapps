@@ -176,6 +176,11 @@ internal sealed class AirMonitor : IAirMonitor
     /// <summary>Frames sent from <paramref name="from"/>'s side: heard by the other node.</summary>
     public IReadOnlyList<string> SentBy(string from) => HeardBy(from == "A" ? "B" : "A");
 
+    public IReadOnlyList<(string From, string Text)> Sequence()
+    {
+        lock (frames) return [.. frames.Select(f => (f.HeardBy == "A" ? "B" : "A", f.Text))];
+    }
+
     public int CountSentBy(string from, string contains) => SentBy(from).Count(f => f.Contains(contains, StringComparison.Ordinal));
 
     public async Task<bool> WaitForAsync(string from, string contains, TimeSpan timeout, CancellationToken ct)

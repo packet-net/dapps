@@ -64,7 +64,7 @@ public abstract class DappsExchangeTests(IDappsNodePair pair) : IAsyncLifetime
         AirSent("A", "\nroutes").Should().Be(1, Transcript());
         AirSent("B", "route ").Should().BeGreaterThan(0, Transcript());
         AirSent("A", "exchange id=").Should().Be(1, Transcript());
-        air.SentBy("A").Should().ContainSingle(f => f.Contains("exchange id=") && f.Contains($"msg {id} "),
+        FramesSentBy("A").Should().ContainSingle(f => f.Contains("exchange id=") && f.Contains($"msg {id} "),
             "the rules and the message share a frame\n" + Transcript());
         AirSent("B", $"ack {id}").Should().Be(1, Transcript());
         AirSent("A", "ihave ").Should().Be(0, "a message this small goes unasked\n" + Transcript());
@@ -219,8 +219,26 @@ public abstract class DappsExchangeTests(IDappsNodePair pair) : IAsyncLifetime
 
     /// <summary>Connects (SABM) from one DAPPS node to the other. Two BPQs
     /// also link up between their node callsigns for NET/ROM, which isn't
-    /// DAPPS traffic and doesn't count.</summary>
-    protected int Connects(string side) => air.CountSentBy(side, $"Fm {Call(side)} To {Call(Other(side))} <C C");
+    /// DAPPS traffic and doesn't count. A SABM the node sent again because
+    /// nothing came back in time (no frame either way on that link since
+    /// its last one) is the same connect retried, not a second dial: a
+    /// loaded host can be slow enough to make the node retry (#352). A
+    /// SABM after the other end answered, with a UA, a DM or anything else,
+    /// still counts.</summary>
+    protected int Connects(string side)
+    {
+        var sabm = $"Fm {Call(side)} To {Call(Other(side))} <C C";
+        var count = 0;
+        var lastWasOurSabm = false;
+        foreach (var (from, text) in air.Sequence())
+        {
+            if (!text.Contains($"Fm {Call(from)} To {Call(Other(from))} ", StringComparison.Ordinal)) continue; // not this link
+            var isOurSabm = from == side && text.Contains(sabm, StringComparison.Ordinal);
+            if (isOurSabm && !lastWasOurSabm) count++;
+            lastWasOurSabm = isOurSabm;
+        }
+        return count;
+    }
 
     protected int HangUps(string side) => air.CountSentBy(side, $"Fm {Call(side)} To {Call(Other(side))} <D C");
 
@@ -228,7 +246,40 @@ public abstract class DappsExchangeTests(IDappsNodePair pair) : IAsyncLifetime
 
     private static string Other(string side) => side == "A" ? "B" : "A";
 
-    protected int AirSent(string side, string contains) => air.CountSentBy(side, contains.Replace("\\n", "\n"));
+    /// <summary>Frames from <paramref name="side"/> with <paramref name="contains"/> in them, each frame once
+    /// (<see cref="FramesSentBy"/>).</summary>
+    protected int AirSent(string side, string contains)
+    {
+        var text = contains.Replace("\\n", "\n");
+        return FramesSentBy(side).Count(f => f.Contains(text, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// What <paramref name="side"/> sent, each frame once: an I-frame its
+    /// node sent again (the same N(S) and the same text) because the ack
+    /// was slow coming is one frame. That is AX.25 recovering on a loaded
+    /// host, not DAPPS saying something twice (#352); a second frame with
+    /// the same text and a new sequence number still counts twice.
+    /// </summary>
+    protected IReadOnlyList<string> FramesSentBy(string side)
+    {
+        var seen = new HashSet<string>();
+        var frames = new List<string>();
+        foreach (var f in air.SentBy(side))
+        {
+            var header = IFrameHeader.Match(f);
+            if (header.Success && !seen.Add(header.Groups["ns"].Value + "|" + IFrameHeader.Replace(f, ""))) continue;
+            frames.Add(f);
+        }
+        return frames;
+    }
+
+    /// <summary>An I-frame's header as either node's monitor writes it, BPQ's
+    /// <c>&lt;I C S3 R2&gt;[12:00:00]</c> or pdn's with milliseconds: what can
+    /// differ between a frame and its retransmission is N(R), the poll bit
+    /// and the time.</summary>
+    private static readonly System.Text.RegularExpressions.Regex IFrameHeader =
+        new(@"<I(?: [CR])?(?: [PF])? S(?<ns>\d+) R\d+>(?:\[[\d:.]+\])?");
 
     /// <summary>
     /// Wait for either node to hang up the link between the two DAPPS

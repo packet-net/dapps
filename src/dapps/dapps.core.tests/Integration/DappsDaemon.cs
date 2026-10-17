@@ -125,7 +125,7 @@ internal sealed class DappsDaemon : IAsyncDisposable
             env["DAPPS_AGW_PORT"] = node.Port.ToString();
         }
         foreach (var (key, value) in settings ?? new Dictionary<string, string>()) env[key] = value;
-        foreach (var (key, value) in env) start.Environment[key] = value;
+        ChildEnvironment.Apply(start.Environment, env);
 
         // Cookies for the admin session (see SignInAsAdminAsync); no
         // redirects followed, so an auth redirect shows up as one.

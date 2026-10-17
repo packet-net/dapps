@@ -20,42 +20,25 @@ namespace dapps.core.tests;
 public sealed class DbStartupTests : IAsyncLifetime
 {
     private string dbPath = null!;
-    private readonly Dictionary<string, string?> savedEnv = [];
+    private readonly Dictionary<string, string?> env = [];
 
-    private static readonly string[] EnvKeys =
-    [
-        "DAPPS_NODE_HOST",
-        "DAPPS_AGW_PORT",
-        "DAPPS_DEFAULT_BEARER_PORT",
-        "DAPPS_CALLSIGN",
-        "DAPPS_MQTT_PORT",
-        "DAPPS_SSID",
-        "DAPPS_ENV_MANAGED",
-        "DAPPS_AUTH_REQUIRED",
-        "PDN_NODE_CALLSIGN",
-        "PDN_APP_CALLSIGN",
-    ];
+    private void SetEnv(string key, string? value) => env[key] = value;
+
 
     public ValueTask InitializeAsync()
     {
         dbPath = Path.Combine(Path.GetTempPath(), $"dapps-startup-test-{Guid.NewGuid():N}.db");
         DbInfo.OverridePath = dbPath;
 
-        // Snapshot env so tests don't bleed into each other or into the host.
-        foreach (var k in EnvKeys)
-        {
-            savedEnv[k] = Environment.GetEnvironmentVariable(k);
-            Environment.SetEnvironmentVariable(k, null);
-        }
+        // Startup reads this dictionary, not the process environment, so
+        // nothing set here can leak into a daemon another test starts (#330).
+        DbStartup.ReadEnvironment = k => env.GetValueOrDefault(k);
         return ValueTask.CompletedTask;
     }
 
     public ValueTask DisposeAsync()
     {
-        foreach (var (k, v) in savedEnv)
-        {
-            Environment.SetEnvironmentVariable(k, v);
-        }
+        DbStartup.ReadEnvironment = Environment.GetEnvironmentVariable;
         DbInfo.OverridePath = null;
         try { File.Delete(dbPath); } catch { /* ignore */ }
         return ValueTask.CompletedTask;
@@ -116,7 +99,7 @@ public sealed class DbStartupTests : IAsyncLifetime
     {
         // An explicit DAPPS_AUTH_REQUIRED still overrides the new
         // fresh-install default, same as every other seeded option.
-        Environment.SetEnvironmentVariable("DAPPS_AUTH_REQUIRED", "false");
+        SetEnv("DAPPS_AUTH_REQUIRED", "false");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -146,7 +129,7 @@ public sealed class DbStartupTests : IAsyncLifetime
     [Fact]
     public void EnsureSchemaAndSeed_CallsignFromEnvVar_SeedsAndStarts()
     {
-        Environment.SetEnvironmentVariable("DAPPS_CALLSIGN", "G0TST");
+        SetEnv("DAPPS_CALLSIGN", "G0TST");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -159,11 +142,11 @@ public sealed class DbStartupTests : IAsyncLifetime
     [Fact]
     public void EnsureSchemaAndSeed_AllEnvVars_SeedsEachOption()
     {
-        Environment.SetEnvironmentVariable("DAPPS_CALLSIGN", "G0TST");
-        Environment.SetEnvironmentVariable("DAPPS_NODE_HOST", "bpq.local");
-        Environment.SetEnvironmentVariable("DAPPS_AGW_PORT", "8001");
-        Environment.SetEnvironmentVariable("DAPPS_DEFAULT_BEARER_PORT", "2");
-        Environment.SetEnvironmentVariable("DAPPS_MQTT_PORT", "1884");
+        SetEnv("DAPPS_CALLSIGN", "G0TST");
+        SetEnv("DAPPS_NODE_HOST", "bpq.local");
+        SetEnv("DAPPS_AGW_PORT", "8001");
+        SetEnv("DAPPS_DEFAULT_BEARER_PORT", "2");
+        SetEnv("DAPPS_MQTT_PORT", "1884");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -190,7 +173,7 @@ public sealed class DbStartupTests : IAsyncLifetime
             c.CreateTable<DbSystemOption>();
             c.Insert(new DbSystemOption { Option = "Callsign", Value = "M0LTE-3" });
         }
-        Environment.SetEnvironmentVariable("DAPPS_CALLSIGN", "DIFFERENT-CALL");
+        SetEnv("DAPPS_CALLSIGN", "DIFFERENT-CALL");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -208,8 +191,8 @@ public sealed class DbStartupTests : IAsyncLifetime
             c.CreateTable<DbSystemOption>();
             c.Insert(new DbSystemOption { Option = "Callsign", Value = "M0LTE-3" });
         }
-        Environment.SetEnvironmentVariable("DAPPS_ENV_MANAGED", "false");
-        Environment.SetEnvironmentVariable("DAPPS_CALLSIGN", "DIFFERENT-CALL");
+        SetEnv("DAPPS_ENV_MANAGED", "false");
+        SetEnv("DAPPS_CALLSIGN", "DIFFERENT-CALL");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -229,8 +212,8 @@ public sealed class DbStartupTests : IAsyncLifetime
             c.CreateTable<DbSystemOption>();
             c.Insert(new DbSystemOption { Option = "Callsign", Value = "M0LTE-3" });
         }
-        Environment.SetEnvironmentVariable("DAPPS_ENV_MANAGED", "true");
-        Environment.SetEnvironmentVariable("DAPPS_CALLSIGN", "G0TST-7");
+        SetEnv("DAPPS_ENV_MANAGED", "true");
+        SetEnv("DAPPS_CALLSIGN", "G0TST-7");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -246,12 +229,12 @@ public sealed class DbStartupTests : IAsyncLifetime
         // IsEnvManaged / EnvManagedKeys; without the opt-in they must
         // stay dark even when DAPPS_* vars are set (standalone installs
         // routinely keep /etc/dapps.env applied).
-        Environment.SetEnvironmentVariable("DAPPS_CALLSIGN", "G0TST-7");
+        SetEnv("DAPPS_CALLSIGN", "G0TST-7");
 
         DbStartup.IsEnvManaged("Callsign").Should().BeFalse("no DAPPS_ENV_MANAGED opt-in");
         DbStartup.EnvManagedKeys().Should().BeEmpty();
 
-        Environment.SetEnvironmentVariable("DAPPS_ENV_MANAGED", "true");
+        SetEnv("DAPPS_ENV_MANAGED", "true");
 
         DbStartup.IsEnvManaged("Callsign").Should().BeTrue();
         DbStartup.EnvManagedKeys().Should().Contain("Callsign");
@@ -282,9 +265,9 @@ public sealed class DbStartupTests : IAsyncLifetime
     {
         // A standalone operator who seeds once via env then unsets it
         // keeps dashboard control exactly as before this change.
-        Environment.SetEnvironmentVariable("DAPPS_CALLSIGN", "G0TST");
+        SetEnv("DAPPS_CALLSIGN", "G0TST");
         DbStartup.EnsureSchemaAndSeed();
-        Environment.SetEnvironmentVariable("DAPPS_CALLSIGN", null);
+        SetEnv("DAPPS_CALLSIGN", null);
 
         // Restart without the env var: seeded value sticks.
         DbStartup.EnsureSchemaAndSeed();
@@ -307,7 +290,7 @@ public sealed class DbStartupTests : IAsyncLifetime
         // pdn-hosted fresh install: no DAPPS_CALLSIGN, host injects
         // PDN_NODE_CALLSIGN -> DAPPS takes up residence at SSID -7 of
         // the node callsign.
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -319,7 +302,7 @@ public sealed class DbStartupTests : IAsyncLifetime
     [Fact]
     public void EnsureSchemaAndSeed_PdnNodeCallsignWithSsid_StripsItBeforeComposing()
     {
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "m9yyy-2");
+        SetEnv("PDN_NODE_CALLSIGN", "m9yyy-2");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -331,8 +314,8 @@ public sealed class DbStartupTests : IAsyncLifetime
     [Fact]
     public void EnsureSchemaAndSeed_DappsSsidEnv_OverridesDerivationSsid()
     {
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
-        Environment.SetEnvironmentVariable("DAPPS_SSID", "4");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("DAPPS_SSID", "4");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -343,8 +326,8 @@ public sealed class DbStartupTests : IAsyncLifetime
     [Fact]
     public void EnsureSchemaAndSeed_ExplicitDappsCallsign_WinsOverDerivation()
     {
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
-        Environment.SetEnvironmentVariable("DAPPS_CALLSIGN", "G0TST-1");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("DAPPS_CALLSIGN", "G0TST-1");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -367,7 +350,7 @@ public sealed class DbStartupTests : IAsyncLifetime
         // The host assigned the on-air identity: it is stored verbatim
         // and nothing is pending confirmation (so the listener never
         // probe-walks).
-        Environment.SetEnvironmentVariable("PDN_APP_CALLSIGN", "M9YYY-7");
+        SetEnv("PDN_APP_CALLSIGN", "M9YYY-7");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -383,8 +366,8 @@ public sealed class DbStartupTests : IAsyncLifetime
     {
         // Both injected (transitional host): the explicit assignment
         // wins; DAPPS does NOT self-derive <node>-7 underneath it.
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
-        Environment.SetEnvironmentVariable("PDN_APP_CALLSIGN", "M9YYY-9");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_APP_CALLSIGN", "M9YYY-9");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -405,7 +388,7 @@ public sealed class DbStartupTests : IAsyncLifetime
             c.CreateTable<DbSystemOption>();
             c.Insert(new DbSystemOption { Option = "Callsign", Value = "M0LTE-3" });
         }
-        Environment.SetEnvironmentVariable("PDN_APP_CALLSIGN", "M9YYY-7");
+        SetEnv("PDN_APP_CALLSIGN", "M9YYY-7");
 
         DbStartup.EnsureSchemaAndSeed();
         using (var c = DbInfo.GetConnection())
@@ -426,11 +409,11 @@ public sealed class DbStartupTests : IAsyncLifetime
         // is upgraded to inject PDN_APP_CALLSIGN: the next start adopts
         // the assigned identity and drops the stale pending marker so the
         // listener never walks.
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
         DbStartup.EnsureSchemaAndSeed();
         DbStartup.ReadPendingDerivedCallsign().Should().Be("M9YYY-7", "preconditon: derivation pending");
 
-        Environment.SetEnvironmentVariable("PDN_APP_CALLSIGN", "M9YYY-9");
+        SetEnv("PDN_APP_CALLSIGN", "M9YYY-9");
         DbStartup.EnsureSchemaAndSeed();
 
         using var c = DbInfo.GetConnection();
@@ -444,8 +427,8 @@ public sealed class DbStartupTests : IAsyncLifetime
     {
         // Older node / contract not honoured: PDN_APP_CALLSIGN empty, so
         // the legacy PDN_NODE_CALLSIGN derivation still runs.
-        Environment.SetEnvironmentVariable("PDN_APP_CALLSIGN", "");
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_APP_CALLSIGN", "");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -458,7 +441,7 @@ public sealed class DbStartupTests : IAsyncLifetime
     [Fact]
     public void EnsureSchemaAndSeed_PdnAppCallsign_TrimsWhitespace()
     {
-        Environment.SetEnvironmentVariable("PDN_APP_CALLSIGN", "  M9YYY-7  ");
+        SetEnv("PDN_APP_CALLSIGN", "  M9YYY-7  ");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -474,7 +457,7 @@ public sealed class DbStartupTests : IAsyncLifetime
             c.CreateTable<DbSystemOption>();
             c.Insert(new DbSystemOption { Option = "Callsign", Value = "M0LTE-3" });
         }
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -494,7 +477,7 @@ public sealed class DbStartupTests : IAsyncLifetime
             c.CreateTable<DbSystemOption>();
             c.Insert(new DbSystemOption { Option = "Callsign", Value = "N0CALL" });
         }
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -521,7 +504,7 @@ public sealed class DbStartupTests : IAsyncLifetime
     {
         // The derived identity is provisional until the RHPv2 listener
         // confirms the SSID is free on the node (errCode 9 probe-walk).
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
 
         DbStartup.EnsureSchemaAndSeed();
 
@@ -537,7 +520,7 @@ public sealed class DbStartupTests : IAsyncLifetime
         // down, say): the stored callsign is real now, so derivation
         // skips, but the pending marker must survive so the probe-walk
         // can still run on this start.
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
         DbStartup.EnsureSchemaAndSeed();
 
         DbStartup.EnsureSchemaAndSeed(); // restart, still unconfirmed
@@ -551,7 +534,7 @@ public sealed class DbStartupTests : IAsyncLifetime
         // Derive, then the operator pins an identity via the dashboard
         // before the listener confirmed: the explicit identity must
         // never probe-walk, so the next start drops the stale marker.
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
         DbStartup.EnsureSchemaAndSeed();
         using (var c = DbInfo.GetConnection())
         {
@@ -569,10 +552,10 @@ public sealed class DbStartupTests : IAsyncLifetime
     [Fact]
     public void PendingMarker_ClearedByExplicitDappsCallsignEnv()
     {
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
         DbStartup.EnsureSchemaAndSeed();
 
-        Environment.SetEnvironmentVariable("DAPPS_CALLSIGN", "G0TST-1");
+        SetEnv("DAPPS_CALLSIGN", "G0TST-1");
         DbStartup.EnsureSchemaAndSeed();
 
         DbStartup.ReadPendingDerivedCallsign().Should().BeNull(
@@ -585,7 +568,7 @@ public sealed class DbStartupTests : IAsyncLifetime
         // The probe-walk found -7 taken and -8 free: the winner becomes
         // the stored identity and nothing is pending any more, so every
         // later start binds M9YYY-8 directly (never walks again).
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
         DbStartup.EnsureSchemaAndSeed();
 
         DbStartup.ConfirmDerivedCallsign("M9YYY-8");
@@ -607,7 +590,7 @@ public sealed class DbStartupTests : IAsyncLifetime
         // Every candidate SSID taken on the node: back to the
         // placeholder (setup-required mode) so the bearer idles instead
         // of hammering the node; a restart re-derives and tries again.
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
         DbStartup.EnsureSchemaAndSeed();
 
         DbStartup.AbandonDerivedCallsign();

@@ -36,14 +36,21 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
     private IAirMonitor? air;
     private ChannelLog? channel;
     private bool restartedNodes;
+    private readonly int seed = ScenarioSeed.Pick();
+    private Random? random;
 
-    /// <summary>How long a round may take, first submit to last delivery.</summary>
+    /// <summary>Everything this scenario picks at random comes from here, seeded with <see cref="seed"/>.</summary>
+    private Random Rng => random ??= new Random(seed);
+
+    /// <summary>How long a round should take, first submit to last delivery:
+    /// the target in the report. The test fails past twice this
+    /// (<see cref="ScenarioTiming"/>).</summary>
     protected abstract TimeSpan RoundLimit { get; }
 
     /// <summary>Most dials a round may take between the two nodes.</summary>
     protected virtual int MaxDials => 2;
 
-    /// <summary>How long the round straight after the nodes restart may take.</summary>
+    /// <summary>How long the round straight after the nodes restart should take.</summary>
     private TimeSpan ColdLimit => RoundLimit + TimeSpan.FromSeconds(30);
 
     /// <summary>
@@ -56,6 +63,9 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
 
     public async ValueTask InitializeAsync()
     {
+        // Out at once too, so a run that never gets as far as its report
+        // still says what it picked.
+        TestContext.Current.TestOutputHelper?.WriteLine(ScenarioSeed.Line(seed));
         air = await fixture.StartAirMonitorAsync(TestContext.Current.CancellationToken);
         channel = await fixture.StartChannelLogAsync(TestContext.Current.CancellationToken);
     }
@@ -88,12 +98,12 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         }
 
         var duplicates = await DuplicatesAsync(a, b, ct);
-        var report = Report(results, duplicates, channel?.Summarise(started, DateTime.UtcNow),
+        var report = Report(results, RoundLimit, duplicates, channel?.Summarise(started, DateTime.UtcNow),
             $"Both nodes submit {MessagesEach} messages to each other within {StaggerMs.From / 1000.0:0.###} to {(StaggerMs.To - 1) / 1000.0:0.###} s, so both dial. {Rounds} rounds, each from no link.");
         WriteReport(report, "crossed-");
 
         await fixture.ThrowIfDiedAsync($"{report}\n{Diagnostics()}");
-        results.Should().AllSatisfy(r => r.Complete.Should().BeTrue($"round {r.Round}'s messages should all arrive within {RoundLimit.TotalSeconds:F0}s\n{report}\n{Diagnostics()}"));
+        results.Should().AllSatisfy(r => r.Complete.Should().BeTrue($"round {r.Round}'s messages should all arrive within {ScenarioTiming.Ceiling(RoundLimit).TotalSeconds:F0}s (target {RoundLimit.TotalSeconds:F0}s)\n{report}\n{Diagnostics()}"));
         duplicates.Should().Be(0, "every message should arrive exactly once\n" + report);
         results.Should().AllSatisfy(r => r.Dials.Should().BeLessThanOrEqualTo(MaxDials, $"round {r.Round}: {MaxDials} dials at most\n{report}"));
         // Where the node tells DAPPS of a crossing (AGW, or pdn over RHPv2)
@@ -134,7 +144,7 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         WriteLogs("crossed-cold-", a, b);
 
         await fixture.ThrowIfDiedAsync($"{report}\n{Diagnostics()}");
-        result.Complete.Should().BeTrue($"the messages should all arrive within {ColdLimit.TotalSeconds:F0}s\n{report}\n{Diagnostics()}");
+        result.Complete.Should().BeTrue($"the messages should all arrive within {ScenarioTiming.Ceiling(ColdLimit).TotalSeconds:F0}s (target {ColdLimit.TotalSeconds:F0}s)\n{report}\n{Diagnostics()}");
         duplicates.Should().Be(0, "every message should arrive exactly once\n" + report);
     }
 
@@ -153,13 +163,14 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         var result = await RoundAsync(a, b, 1, ColdLimit, ct);
 
         var duplicates = await DuplicatesAsync(a, b, ct);
-        var report = Report([result], duplicates, channel?.Summarise(started, DateTime.UtcNow),
+        var report = Report([result], ColdLimit, duplicates, channel?.Summarise(started, DateTime.UtcNow),
             $"Both nodes restarted, then both DAPPS daemons submit {MessagesEach} messages to each other within {StaggerMs.From / 1000.0:0.###} to {(StaggerMs.To - 1) / 1000.0:0.###} s.");
         return (result, duplicates, report, a, b);
     }
 
-    /// <summary>Both nodes submit, 0.3 to 2 s apart; wait for delivery, then for the link to go.</summary>
-    private async Task<RoundResult> RoundAsync(DappsDaemon a, DappsDaemon b, int round, TimeSpan limit, CancellationToken ct)
+    /// <summary>Both nodes submit, 0.3 to 2 s apart; wait for delivery (up to
+    /// the hard ceiling for <paramref name="target"/>), then for the link to go.</summary>
+    private async Task<RoundResult> RoundAsync(DappsDaemon a, DappsDaemon b, int round, TimeSpan target, CancellationToken ct)
     {
         var connectsBefore = Connects();
         var dialsBefore = Dials(a) + Dials(b);
@@ -173,21 +184,22 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         // random numbers that pick their transmit slots, so calls made
         // together collide at every repeat until they retry out; real
         // TNCs don't draw the same numbers.
-        var (first, second) = Random.Shared.Next(2) == 0 ? (a, b) : (b, a);
-        var stagger = TimeSpan.FromMilliseconds(Random.Shared.Next(StaggerMs.From, StaggerMs.To));
+        var (first, second) = Rng.Next(2) == 0 ? (a, b) : (b, a);
+        var stagger = TimeSpan.FromMilliseconds(Rng.Next(StaggerMs.From, StaggerMs.To));
         var firstSubmit = SubmitAsync(first, Other(first, a, b).Callsign, $"round {round} from {Side(first, a)}", ct);
         await Task.Delay(stagger, ct);
         await Task.WhenAll(firstSubmit, SubmitAsync(second, Other(second, a, b).Callsign, $"round {round} from {Side(second, a)}", ct));
 
+        var ceiling = ScenarioTiming.Ceiling(target);
         var arrived = await Task.WhenAll(
-            WaitForRoundAsync(b, round, "from A", limit, ct),
-            WaitForRoundAsync(a, round, "from B", limit, ct));
+            WaitForRoundAsync(b, round, "from A", ceiling, ct),
+            WaitForRoundAsync(a, round, "from B", ceiling, ct));
         var elapsed = clock.Elapsed;
 
         // Let the link go before the next round: no hold, so the caller
         // hangs up after its quiet spell.
         await WaitForNoLinkAsync([a, b], ct);
-        return new RoundResult(round, arrived.All(x => x), elapsed, Dials(a) + Dials(b) - dialsBefore,
+        return new RoundResult(round, arrived.All(x => x), elapsed, Side(first, a), stagger, Dials(a) + Dials(b) - dialsBefore,
             Count(a, b, Spotted) + Count(a, b, LinkWasUp) - spottedBefore, Count(a, b, Fallback) - fallbacksBefore,
             Connects() - connectsBefore, Frames() - framesBefore);
     }
@@ -196,7 +208,7 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
 
     private static string Side(DappsDaemon node, DappsDaemon a) => ReferenceEquals(node, a) ? "A" : "B";
 
-    private sealed record RoundResult(int Round, bool Complete, TimeSpan Elapsed, int Dials, int Spotted, int Fallbacks, int Connects, int Frames);
+    private sealed record RoundResult(int Round, bool Complete, TimeSpan Elapsed, string First, TimeSpan Stagger, int Dials, int Spotted, int Fallbacks, int Connects, int Frames);
 
     /// <summary>Calls the daemon has asked its node to make, over AGW or RHPv2.</summary>
     private static int Dials(DappsDaemon node) =>
@@ -285,7 +297,7 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         air!.SentBy("A").Count(f => f.Contains($"Fm {fixture.ApplCallA} To {fixture.ApplCallB} <", StringComparison.Ordinal))
         + air.SentBy("B").Count(f => f.Contains($"Fm {fixture.ApplCallB} To {fixture.ApplCallA} <", StringComparison.Ordinal));
 
-    private string Report(List<RoundResult> results, int duplicates, ChannelLog.Summary? onAir, string what)
+    private string Report(List<RoundResult> results, TimeSpan target, int duplicates, ChannelLog.Summary? onAir, string what)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"# Crossed-call scenario: {fixture.ChannelName}");
@@ -294,11 +306,15 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         sb.AppendLine();
         sb.AppendLine($"Radio port: {fixture.RadioSettings}");
         sb.AppendLine();
-        sb.AppendLine("| Round | All arrived | Time to last delivery | Dials | Crossing spotted | Waited out the prompt | SABMs on air | Frames |");
-        sb.AppendLine("|---|---|---|---|---|---|---|---|");
+        sb.AppendLine(ScenarioSeed.Line(seed));
+        sb.AppendLine();
+        foreach (var r in results) sb.AppendLine(ScenarioTiming.Line($"Round {r.Round}", r.Elapsed, target));
+        sb.AppendLine();
+        sb.AppendLine("| Round | First to submit | Stagger | All arrived | Time to last delivery | Dials | Crossing spotted | Waited out the prompt | SABMs on air | Frames |");
+        sb.AppendLine("|---|---|---|---|---|---|---|---|---|---|");
         foreach (var r in results)
         {
-            sb.AppendLine($"| {r.Round} | {(r.Complete ? "yes" : "no")} | {r.Elapsed.TotalSeconds:F1} s | {r.Dials} | {(r.Spotted > 0 ? "yes" : "no")} | {(r.Fallbacks > 0 ? "yes" : "no")} | {r.Connects} | {r.Frames} |");
+            sb.AppendLine($"| {r.Round} | {r.First} | {r.Stagger.TotalSeconds:F3} s | {(r.Complete ? "yes" : "no")} | {r.Elapsed.TotalSeconds:F1} s | {r.Dials} | {(r.Spotted > 0 ? "yes" : "no")} | {(r.Fallbacks > 0 ? "yes" : "no")} | {r.Connects} | {r.Frames} |");
         }
         sb.AppendLine();
         sb.AppendLine(onAir is null

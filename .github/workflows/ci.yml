@@ -29,12 +29,53 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  # The unit tests on their own, so a broken one shows in a few minutes
+  # rather than after the half-hour integration run. Everything that isn't
+  # an integration test runs here, the soaks included (they skip
+  # themselves unless DAPPS_SOAK_MINUTES asks for one).
+  #
+  # scripts/ci-test.sh retries only the tests that failed, never the whole
+  # suite, and names every test that needed a retry in the job summary and
+  # in a warning on the run, so a flake is seen rather than absorbed (#331).
+  # A test that fails all three times fails the job.
+  unit:
     runs-on: ubuntu-latest
-    # The simulated-radio scenarios run in real time. One attempt takes about 30
-    # minutes with the pdn tests, so 110 leaves room for the pulls, the build and
-    # all three attempts below.
-    timeout-minutes: 110
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore src/dapps/dapps.sln
+
+      - name: Build
+        run: dotnet build src/dapps/dapps.sln --no-restore --configuration Release
+
+      - name: Unit tests
+        run: >-
+          scripts/ci-test.sh "Unit tests" src/dapps/dapps.core.tests/bin/Release/net10.0/dapps.core.tests 3
+          --filter-not-trait Category=Integration
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: unit-test-results
+          path: src/dapps/dapps.core.tests/bin/Release/net10.0/TestResults/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The integration tests: DAPPS daemons on real linbpq, XRouter and pdn
+  # containers, and the simulated-radio scenarios on net-sim, which run in
+  # real time. One pass takes about 30 minutes; 100 leaves room for the
+  # pulls, the build and reruns of a few failed tests.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v6
 
@@ -63,47 +104,25 @@ jobs:
       - name: Build
         run: dotnet build src/dapps/dapps.sln --no-restore --configuration Release
 
-      - name: Test
-        # Why a retry loop instead of a single `dotnet test`:
-        #
-        # The suite has a known intermittent failure (~1/683, a broker-port bind race -
-        # see issue #152). A single flake turning a PR red trains people to ignore red,
-        # and the same job gates release.yml, where a flake must not be able to strand a
-        # tagged release.
-        #
-        # So: run the suite up to N times. A transient flake heals on a later attempt; a
-        # genuine regression fails all N and correctly (and loudly) fails the build.
-        #
-        # On every failed attempt we dump the per-test results log to the console. Under
-        # `dotnet test`, MTP writes the failing test NAME only to that log file (stdout
-        # carries just the summary count), so without this dump a flake is invisible
-        # without downloading the artifact. Printing it makes "which test flaked"
-        # greppable in the job log.
-        run: |
-          set -uo pipefail
-          proj=src/dapps/dapps.core.tests/dapps.core.tests.csproj
-          results=src/dapps/dapps.core.tests/bin/Release/net10.0/TestResults
-          attempts=3
-          for i in $(seq 1 "$attempts"); do
-            echo "::group::Test attempt $i/$attempts"
-            if dotnet test "$proj" --no-build --configuration Release -- --output detailed; then
-              echo "::endgroup::"
-              echo "Tests passed on attempt $i/$attempts."
-              exit 0
-            fi
-            echo "::endgroup::"
-            echo "::warning::Test attempt $i/$attempts failed - dumping per-test results (the failing test name lives here, not in stdout):"
-            find "$results" -name '*.log' -print -exec cat {} \; 2>/dev/null || true
-            [ "$i" -lt "$attempts" ] && { echo "Retrying after transient failure..."; sleep 5; }
-          done
-          echo "::error::Tests failed after $attempts attempts - treating as a real failure, not a flake."
-          exit 1
+      - name: Integration tests
+        # Same retry rules as the unit tests: only the failed tests rerun,
+        # and any test that needed a rerun is named in the summary.
+        run: >-
+          scripts/ci-test.sh "Integration tests" src/dapps/dapps.core.tests/bin/Release/net10.0/dapps.core.tests 3
+          --filter-trait Category=Integration
 
-      - name: Upload test results on failure
-        if: failure() || cancelled()   # cancelled covers hitting the time limit
+      - name: Scenarios over their time target
+        # The simulated-radio scenarios report their timings against a
+        # target and fail only past twice it (#352). Missing the target
+        # once is a busy runner; say so where it will be seen.
+        if: always()
+        run: scripts/scenario-targets.sh src/dapps/dapps.core.tests/bin/Release/net10.0/scenario-reports
+
+      - name: Upload test results
+        if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: test-results
+          name: integration-test-results
           path: src/dapps/dapps.core.tests/bin/Release/net10.0/TestResults/
           if-no-files-found: ignore
           retention-days: 7
@@ -122,9 +141,9 @@ jobs:
 
   # UI tests live in dapps.core.uitests - they boot dapps.core as a
   # subprocess and drive Razor pages with headless Chromium via
-  # Playwright. Separate job rather than rolled into `test` because:
+  # Playwright. Separate job rather than rolled into `unit` because:
   # (1) Chromium install + browser deps are a noticeable slowdown the
-  # unit suite shouldn't pay; (2) UI tests run as their own subprocess
+  # unit tests shouldn't pay; (2) UI tests run as their own subprocess
   # so docker / port collisions are isolated.
   ui-test:
     runs-on: ubuntu-latest
@@ -157,7 +176,18 @@ jobs:
         run: dotnet build src/dapps/dapps.core/dapps.core.csproj --configuration Release
 
       - name: Run UI tests
-        run: dotnet test src/dapps/dapps.core.uitests/dapps.core.uitests.csproj --no-build --configuration Release -- --output detailed
+        # One attempt, as before, but through the same script so a failure
+        # names its test in the job summary and the results are kept (#331).
+        run: scripts/ci-test.sh "UI tests" src/dapps/dapps.core.uitests/bin/Release/net10.0/dapps.core.uitests 1
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ui-test-results
+          path: src/dapps/dapps.core.uitests/bin/Release/net10.0/TestResults/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload screenshots
         # Always upload - screenshots are useful both for failure
@@ -174,7 +204,7 @@ jobs:
   # The .deb build is part of the release, but a packaging break that only shows up when
   # someone tags is a release held hostage to a five-line shell bug. So build the amd64
   # package here too and actually install it. One architecture and no release plumbing,
-  # so it finishes well inside the `test` job it runs beside and costs nothing on the
+  # so it finishes well inside the `integration` job it runs beside and costs nothing on the
   # critical path - and it catches the whole class, including the ones that only appear
   # at dpkg-configure time.
   deb:

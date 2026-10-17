@@ -24,6 +24,12 @@ public static class DbInfo
 
 public static class DbStartup
 {
+    /// <summary>Where startup reads its environment variables. Tests swap
+    /// in a dictionary rather than setting process-wide variables, which
+    /// any daemon another test starts at the same moment would inherit
+    /// (#330). Production never changes it.</summary>
+    internal static Func<string, string?> ReadEnvironment { get; set; } = Environment.GetEnvironmentVariable;
+
     /// <summary>Sentinel callsign in the seeded defaults. The daemon
     /// starts with this in place but refuses to operate (won't bind
     /// the inbound bearer, won't forward outbound, /Health reports
@@ -150,7 +156,7 @@ public static class DbStartup
     {
         get
         {
-            var v = Environment.GetEnvironmentVariable(EnvManagedModeVar);
+            var v = ReadEnvironment(EnvManagedModeVar);
             return string.Equals(v, "true", StringComparison.OrdinalIgnoreCase) || v == "1";
         }
     }
@@ -299,7 +305,7 @@ public static class DbStartup
     private static void SeedOrApplyEnv(SQLiteConnection db, List<DbSystemOption> options, string key, string defaultValue, ILogger? logger)
     {
         var envKey = EnvVarFor(key);
-        var envValue = Environment.GetEnvironmentVariable(envKey);
+        var envValue = ReadEnvironment(envKey);
 
         var existing = options.FirstOrDefault(o => string.Equals(o.Option, key, StringComparison.OrdinalIgnoreCase));
         if (existing is null)
@@ -332,7 +338,7 @@ public static class DbStartup
     /// derivation, no SSID probe.</summary>
     public static string? ReadNodeAssignedCallsign()
     {
-        var value = Environment.GetEnvironmentVariable(AppCallsignEnvVar);
+        var value = ReadEnvironment(AppCallsignEnvVar);
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
@@ -411,7 +417,7 @@ public static class DbStartup
         // An explicit DAPPS_CALLSIGN wins over derivation. (It was
         // already applied above; this guard also keeps a pathological
         // DAPPS_CALLSIGN=N0CALL from being re-derived underneath.)
-        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable(EnvVarFor("Callsign"))))
+        if (!string.IsNullOrEmpty(ReadEnvironment(EnvVarFor("Callsign"))))
         {
             ClearPendingMarker(db, markerRow); // identity explicitly pinned - nothing pending
             return;
@@ -475,7 +481,7 @@ public static class DbStartup
             "Callsign {Derived} derived from the host node ({EnvVar}={NodeCall}, SSID {Ssid}). " +
             "If the node already has a {DerivedDup} the RHPv2 listener will probe for a free SSID and keep it. " +
             "Set DAPPS_CALLSIGN or configure a callsign via the dashboard to pin a different identity.",
-            derived, NodeCallsignEnvVar, Environment.GetEnvironmentVariable(NodeCallsignEnvVar), ssid, derived);
+            derived, NodeCallsignEnvVar, ReadEnvironment(NodeCallsignEnvVar), ssid, derived);
     }
 
     private static void ClearPendingMarker(SQLiteConnection db, DbSystemOption? markerRow)
@@ -541,7 +547,7 @@ public static class DbStartup
     /// is not set or empty (standalone install).</summary>
     public static string? DeriveCallsignFromHostNode(string ssid)
     {
-        var nodeCall = Environment.GetEnvironmentVariable(NodeCallsignEnvVar);
+        var nodeCall = ReadEnvironment(NodeCallsignEnvVar);
         if (string.IsNullOrWhiteSpace(nodeCall))
         {
             return null;
@@ -581,7 +587,7 @@ public static class DbStartup
     /// false in the standalone default mode, where a set env var only
     /// seeds first-start values and the dashboard stays in charge.</summary>
     public static bool IsEnvManaged(string key) =>
-        IsEnvManagedMode && !string.IsNullOrEmpty(Environment.GetEnvironmentVariable(EnvVarFor(key)));
+        IsEnvManagedMode && !string.IsNullOrEmpty(ReadEnvironment(EnvVarFor(key)));
 
     /// <summary>Seeded option keys that are deployment-managed right
     /// now (<see cref="IsEnvManaged"/>), for the dashboard's "managed

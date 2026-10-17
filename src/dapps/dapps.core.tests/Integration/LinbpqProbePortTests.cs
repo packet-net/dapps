@@ -29,9 +29,14 @@ namespace dapps.core.tests.Integration;
 /// Y and Z share X's network namespace, as in <see cref="ThreeInstanceLinbpqFixture"/>,
 /// so the AXIP links are on 127.0.0.1 and X publishes every AGW port.
 /// </summary>
+[Collection(Name)]
 [Trait("Category", "Integration")]
 public sealed class LinbpqProbePortTests : IAsyncLifetime
 {
+    /// <summary>Its own collection, run on its own like every other
+    /// container test, rather than alongside the unit tests (#330).</summary>
+    public const string Name = "Linbpq probe port";
+
     private const string CallA = "N0AAA-9";
     private const string CallB = "N0BBB-9";
     private const string CallC = "N0CCC-9";
@@ -185,3 +190,6 @@ public sealed class LinbpqProbePortTests : IAsyncLifetime
         return config.Append(axipPorts).ToString();
     }
 }
+
+[CollectionDefinition(LinbpqProbePortTests.Name, DisableParallelization = true)]
+public sealed class LinbpqProbePortCollection;

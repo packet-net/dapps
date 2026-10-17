@@ -81,7 +81,18 @@ public sealed class WebAppFixture : IAsyncLifetime
             },
         };
 
-        var env = _process.StartInfo.EnvironmentVariables;
+        var env = _process.StartInfo.Environment;
+        // The child inherits this process's environment. A stray DAPPS_* or
+        // PDN_* variable changes how the daemon starts (a PDN_APP_CALLSIGN
+        // makes it bind that callsign verbatim), so drop every inherited one
+        // before setting the fixture's own (#330).
+        foreach (var key in env.Keys
+                     .Where(k => k.StartsWith("DAPPS_", StringComparison.OrdinalIgnoreCase)
+                              || k.StartsWith("PDN_", StringComparison.OrdinalIgnoreCase))
+                     .ToList())
+        {
+            env.Remove(key);
+        }
         env["ASPNETCORE_URLS"] = "http://127.0.0.1:0";
         env["DAPPS_MQTT_PORT"] = PickEphemeralPort().ToString();
         env["DAPPS_AGW_PORT"] = "0";

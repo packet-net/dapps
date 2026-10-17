@@ -388,34 +388,24 @@ public sealed class Rhpv2InboundServiceTests : IAsyncLifetime
 public sealed class Rhpv2SsidProbeWalkTests : IAsyncLifetime
 {
     private string dbPath = null!;
-    private readonly Dictionary<string, string?> savedEnv = [];
+    private readonly Dictionary<string, string?> env = [];
 
-    private static readonly string[] EnvKeys =
-    [
-        "DAPPS_CALLSIGN",
-        "DAPPS_ENV_MANAGED",
-        "PDN_NODE_CALLSIGN",
-        "PDN_APP_CALLSIGN",
-    ];
+    private void SetEnv(string key, string? value) => env[key] = value;
+
 
     public ValueTask InitializeAsync()
     {
         dbPath = Path.Combine(Path.GetTempPath(), $"dapps-ssid-walk-test-{Guid.NewGuid():N}.db");
         DbInfo.OverridePath = dbPath;
-        foreach (var k in EnvKeys)
-        {
-            savedEnv[k] = Environment.GetEnvironmentVariable(k);
-            Environment.SetEnvironmentVariable(k, null);
-        }
+        // Startup reads this dictionary, not the process environment, so
+        // nothing set here can leak into a daemon another test starts (#330).
+        DbStartup.ReadEnvironment = k => env.GetValueOrDefault(k);
         return ValueTask.CompletedTask;
     }
 
     public ValueTask DisposeAsync()
     {
-        foreach (var (k, v) in savedEnv)
-        {
-            Environment.SetEnvironmentVariable(k, v);
-        }
+        DbStartup.ReadEnvironment = Environment.GetEnvironmentVariable;
         DbInfo.OverridePath = null;
         try { File.Delete(dbPath); } catch { /* ignore */ }
         return ValueTask.CompletedTask;
@@ -430,7 +420,7 @@ public sealed class Rhpv2SsidProbeWalkTests : IAsyncLifetime
         await using var server = new MockRhpServer { Handler = RefuseListenOn("M9YYY-7") };
         server.Start();
         SeedDb(server.Endpoint.Port, callsign: "M9YYY-7", pendingMarker: "M9YYY-7");
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
 
         var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
         var service = NewService(store);
@@ -489,7 +479,7 @@ public sealed class Rhpv2SsidProbeWalkTests : IAsyncLifetime
         await using var server = new MockRhpServer { Handler = RefuseListenOn("M9YYY-7") };
         server.Start();
         SeedDb(server.Endpoint.Port, callsign: "M9YYY-7", pendingMarker: "M9YYY-7");
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
 
         var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
         var clock = new ObservableTimeProvider();
@@ -522,7 +512,7 @@ public sealed class Rhpv2SsidProbeWalkTests : IAsyncLifetime
         await using var server = new MockRhpServer { Handler = RefuseListenOn("G0DPB-1") };
         server.Start();
         SeedDb(server.Endpoint.Port, callsign: "G0DPB-1", pendingMarker: null);
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY"); // present but irrelevant: not a derivation
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY"); // present but irrelevant: not a derivation
 
         var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
         var service = NewService(store);
@@ -556,8 +546,8 @@ public sealed class Rhpv2SsidProbeWalkTests : IAsyncLifetime
         await using var server = new MockRhpServer { Handler = RefuseListenOn("M9YYY-7") };
         server.Start();
         SeedDb(server.Endpoint.Port, callsign: "M9YYY-7", pendingMarker: "M9YYY-7");
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
-        Environment.SetEnvironmentVariable("PDN_APP_CALLSIGN", "M9YYY-7");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_APP_CALLSIGN", "M9YYY-7");
 
         var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
         var service = NewService(store);
@@ -593,7 +583,7 @@ public sealed class Rhpv2SsidProbeWalkTests : IAsyncLifetime
         };
         server.Start();
         SeedDb(server.Endpoint.Port, callsign: "M9YYY-7", pendingMarker: "M9YYY-7");
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY");
 
         var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
         var service = NewService(store);
@@ -626,7 +616,7 @@ public sealed class Rhpv2SsidProbeWalkTests : IAsyncLifetime
         await using var server = new MockRhpServer { Handler = RefuseListenOn(call => true) };
         server.Start();
         SeedDb(server.Endpoint.Port, callsign: "M9YYY-7", pendingMarker: "M9YYY-7");
-        Environment.SetEnvironmentVariable("PDN_NODE_CALLSIGN", "M9YYY-2");
+        SetEnv("PDN_NODE_CALLSIGN", "M9YYY-2");
 
         var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
         var service = NewService(store);

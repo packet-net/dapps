@@ -98,9 +98,13 @@ jobs:
           fi
           echo "releasing $version (publish: $(if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.publish }}" = "true" ]; then echo yes; else echo 'no - dry run'; fi))"
 
-  # The release gate: the same suite as ci.yml, the simulated-radio scenarios included, and
-  # the same retry rationale. A single known-flaky test must not be able to strand a tagged
-  # release, but three consecutive failures are a real regression and must block it.
+  # The release gate: the same tests as ci.yml, in the same two jobs, the
+  # simulated-radio scenarios included. scripts/ci-test.sh reruns only the
+  # tests that failed, up to three attempts in all, so one flaky test can't
+  # strand a tagged release while a test that fails every time blocks it.
+  # Any test that needed a rerun is named in the job summary and in a
+  # warning on the run (#331), so a release that got through on a retry is
+  # visible as one.
   #
   # The scenarios on net-sim (crossed calls and Kevin's WPS trace, on BPQ and on pdn) were
   # left out of this gate from 2026-09-28 while they failed now and then for reasons outside
@@ -110,10 +114,42 @@ jobs:
   # node-v0.65.0; the tests pin node-v0.67.0). And DAPPS now takes pdn's "Already
   # connected" refusal of a dial as the crossing it is when the peer's call reaches its
   # listener. The soaks and the BPQ experiments skip themselves unless asked for
-  # (DAPPS_SOAK_MINUTES, DAPPS_BPQ_EXPERIMENTS), so nothing is filtered out.
-  test:
+  # (DAPPS_SOAK_MINUTES, DAPPS_BPQ_EXPERIMENTS), so nothing is filtered out: the unit job
+  # runs everything that isn't an integration test, the integration job the rest.
+  unit:
     runs-on: ubuntu-latest
-    timeout-minutes: 110   # three attempts of the whole suite, about 30 minutes each, as in ci.yml
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore src/dapps/dapps.sln
+
+      - name: Build
+        run: dotnet build src/dapps/dapps.sln --no-restore --configuration Release
+
+      - name: Unit tests
+        run: >-
+          scripts/ci-test.sh "Unit tests" src/dapps/dapps.core.tests/bin/Release/net10.0/dapps.core.tests 3
+          --filter-not-trait Category=Integration
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: unit-test-results
+          path: src/dapps/dapps.core.tests/bin/Release/net10.0/TestResults/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100   # one pass is about 30 minutes, as in ci.yml
     steps:
       - uses: actions/checkout@v6
 
@@ -138,41 +174,38 @@ jobs:
       - name: Build
         run: dotnet build src/dapps/dapps.sln --no-restore --configuration Release
 
-      - name: Test
-        run: |
-          set -uo pipefail
-          proj=src/dapps/dapps.core.tests/dapps.core.tests.csproj
-          results=src/dapps/dapps.core.tests/bin/Release/net10.0/TestResults
-          attempts=3
-          for i in $(seq 1 "$attempts"); do
-            echo "::group::Test attempt $i/$attempts"
-            if dotnet test "$proj" --no-build --configuration Release -- --output detailed; then
-              echo "::endgroup::"
-              echo "Tests passed on attempt $i/$attempts."
-              exit 0
-            fi
-            echo "::endgroup::"
-            echo "::warning::Test attempt $i/$attempts failed - dumping per-test results (the failing test name lives here, not in stdout):"
-            find "$results" -name '*.log' -print -exec cat {} \; 2>/dev/null || true
-            [ "$i" -lt "$attempts" ] && { echo "Retrying after transient failure..."; sleep 5; }
-          done
-          echo "::error::Tests failed after $attempts attempts - refusing to release."
-          exit 1
+      - name: Integration tests
+        run: >-
+          scripts/ci-test.sh "Integration tests" src/dapps/dapps.core.tests/bin/Release/net10.0/dapps.core.tests 3
+          --filter-trait Category=Integration
 
-      - name: Upload test results on failure
-        if: failure() || cancelled()   # cancelled covers hitting the time limit
+      - name: Scenarios over their time target
+        if: always()
+        run: scripts/scenario-targets.sh src/dapps/dapps.core.tests/bin/Release/net10.0/scenario-reports
+
+      - name: Upload test results
+        if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: test-results
+          name: integration-test-results
           path: src/dapps/dapps.core.tests/bin/Release/net10.0/TestResults/
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Upload scenario reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: scenario-reports
+          path: src/dapps/dapps.core.tests/bin/Release/net10.0/scenario-reports/
+          if-no-files-found: ignore
+          retention-days: 30
 
   # Self-contained publish output is byte-identical regardless of build host, so ubuntu-latest
   # is fine for every RID. The glibc floor comes from the runtime itself: .NET 10 is built
   # against Debian 12 (Bookworm) glibc, so Raspberry Pi OS 11 (Bullseye) is out of scope.
   build:
-    needs: [version, test]
+    needs: [version, unit, integration]
     strategy:
       fail-fast: false
       matrix:
@@ -249,7 +282,7 @@ jobs:
   # dpkg-deb only packs files. The arm64 runner in the build matrix above exists because
   # nothing else was needed there, not because cross-publishing is a problem.
   deb:
-    needs: [version, test]
+    needs: [version, unit, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -373,7 +406,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [version, test, build, deb]
+    needs: [version, unit, integration, build, deb]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
