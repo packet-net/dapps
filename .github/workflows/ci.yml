@@ -34,10 +34,12 @@ jobs:
   # an integration test runs here, the soaks included (they skip
   # themselves unless DAPPS_SOAK_MINUTES asks for one).
   #
-  # scripts/ci-test.sh retries only the tests that failed, never the whole
-  # suite, and names every test that needed a retry in the job summary and
+  # scripts/ci-test.py reruns only the tests that failed, never the whole
+  # suite, and names every test that needed a rerun in the job summary and
   # in a warning on the run, so a flake is seen rather than absorbed (#331).
-  # A test that fails all three times fails the job.
+  # A test that fails all three times fails the job. A simulated-radio
+  # scenario over its time target gets one rerun; over twice its target,
+  # none (#352).
   unit:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -57,7 +59,7 @@ jobs:
 
       - name: Unit tests
         run: >-
-          scripts/ci-test.sh "Unit tests" src/dapps/dapps.core.tests/bin/Release/net10.0/dapps.core.tests 3
+          scripts/ci-test.py "Unit tests" src/dapps/dapps.core.tests/bin/Release/net10.0/dapps.core.tests 3
           --filter-not-trait Category=Integration
 
       - name: Upload test results
@@ -105,18 +107,13 @@ jobs:
         run: dotnet build src/dapps/dapps.sln --no-restore --configuration Release
 
       - name: Integration tests
-        # Same retry rules as the unit tests: only the failed tests rerun,
-        # and any test that needed a rerun is named in the summary.
+        # Same rules as the unit tests: only the failed tests rerun, and any
+        # test that needed a rerun is named in the summary. A scenario over
+        # its time target gets one rerun, over twice its target none.
         run: >-
-          scripts/ci-test.sh "Integration tests" src/dapps/dapps.core.tests/bin/Release/net10.0/dapps.core.tests 3
+          scripts/ci-test.py "Integration tests" src/dapps/dapps.core.tests/bin/Release/net10.0/dapps.core.tests 3
           --filter-trait Category=Integration
 
-      - name: Scenarios over their time target
-        # The simulated-radio scenarios report their timings against a
-        # target and fail only past twice it (#352). Missing the target
-        # once is a busy runner; say so where it will be seen.
-        if: always()
-        run: scripts/scenario-targets.sh src/dapps/dapps.core.tests/bin/Release/net10.0/scenario-reports
 
       - name: Upload test results
         if: always()
@@ -178,7 +175,7 @@ jobs:
       - name: Run UI tests
         # One attempt, as before, but through the same script so a failure
         # names its test in the job summary and the results are kept (#331).
-        run: scripts/ci-test.sh "UI tests" src/dapps/dapps.core.uitests/bin/Release/net10.0/dapps.core.uitests 1
+        run: scripts/ci-test.py "UI tests" src/dapps/dapps.core.uitests/bin/Release/net10.0/dapps.core.uitests 1
 
       - name: Upload test results
         if: always()

@@ -1842,17 +1842,18 @@ public sealed class ExchangeSessionTests : IDisposable
         run.IsCompleted.Should().BeFalse();
 
         // On past the answer deadline, 1 s after ours went, nudging the fake
-        // clock until the session acts on it rather than counting on one
-        // step landing on the right timer (#347). Only fake time decides
-        // when the session ends; the real-time waits below only let the
-        // session's thread catch up, so they are generous for a loaded
-        // run. The error says which timer ended it: the inactivity timeout
-        // (hold 60 s + 30 s) is far beyond the 2 s allowed here.
-        var limit = clock.GetUtcNow() + TimeSpan.FromSeconds(2);
+        // clock in small steps until the session acts on it rather than
+        // counting on one step landing on the right timer (#347). The clock
+        // stops 0.6 s after the last pong, short of that pong plus the 1 s
+        // answer timeout: a session that took a pong as progress would
+        // still be waiting then, and fail here. The real-time waits only
+        // let the session's thread catch up, so they are generous for a
+        // loaded run. The inactivity timeout (hold 60 s + 30 s) is far off.
+        var limit = clock.GetUtcNow() + TimeSpan.FromMilliseconds(600);
         while (batch.Outcomes.Count == 0 && clock.GetUtcNow() < limit)
         {
             await WaitForAsync(() => clock.Pending > 0 || batch.Outcomes.Count > 0 || run.IsCompleted, "the session neither waited nor ended");
-            if (batch.Outcomes.Count == 0) clock.Advance(TimeSpan.FromMilliseconds(400));
+            if (batch.Outcomes.Count == 0) clock.Advance(TimeSpan.FromMilliseconds(100));
         }
         await WaitForAsync(() => batch.Outcomes.Count > 0, "no outcome for ours, though the answer deadline has passed");
         await run.WaitAsync(LoadedPatience, Ct);

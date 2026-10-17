@@ -43,8 +43,8 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
     private Random Rng => random ??= new Random(seed);
 
     /// <summary>How long a round should take, first submit to last delivery:
-    /// the target in the report. The test fails past twice this
-    /// (<see cref="ScenarioTiming"/>).</summary>
+    /// the target. Over it, the test fails and CI reruns it once; over twice
+    /// it, the test fails for good (<see cref="ScenarioTiming"/>).</summary>
     protected abstract TimeSpan RoundLimit { get; }
 
     /// <summary>Most dials a round may take between the two nodes.</summary>
@@ -103,7 +103,7 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         WriteReport(report, "crossed-");
 
         await fixture.ThrowIfDiedAsync($"{report}\n{Diagnostics()}");
-        results.Should().AllSatisfy(r => r.Complete.Should().BeTrue($"round {r.Round}'s messages should all arrive within {ScenarioTiming.Ceiling(RoundLimit).TotalSeconds:F0}s (target {RoundLimit.TotalSeconds:F0}s)\n{report}\n{Diagnostics()}"));
+        results.Should().AllSatisfy(r => r.Complete.Should().BeTrue($"{ScenarioTiming.OverCeilingTag} round {r.Round}'s messages should all arrive within {ScenarioTiming.Ceiling(RoundLimit).TotalSeconds:F0}s (target {RoundLimit.TotalSeconds:F0}s)\n{report}\n{Diagnostics()}"));
         duplicates.Should().Be(0, "every message should arrive exactly once\n" + report);
         results.Should().AllSatisfy(r => r.Dials.Should().BeLessThanOrEqualTo(MaxDials, $"round {r.Round}: {MaxDials} dials at most\n{report}"));
         // Where the node tells DAPPS of a crossing (AGW, or pdn over RHPv2)
@@ -116,6 +116,8 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
             results.Where(r => r.Dials == 2).Should().AllSatisfy(r => r.Spotted.Should().BePositive(
                 $"round {r.Round}: both nodes dialled, so one of them should have seen the calls cross or the link already up\n{report}"));
         }
+        // Last, so a wrong result is never reported as a slow one.
+        foreach (var r in results) ScenarioTiming.AssertWithin($"Round {r.Round}", r.Elapsed, RoundLimit, report);
     }
 
     [Fact]
@@ -144,8 +146,9 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         WriteLogs("crossed-cold-", a, b);
 
         await fixture.ThrowIfDiedAsync($"{report}\n{Diagnostics()}");
-        result.Complete.Should().BeTrue($"the messages should all arrive within {ScenarioTiming.Ceiling(ColdLimit).TotalSeconds:F0}s (target {ColdLimit.TotalSeconds:F0}s)\n{report}\n{Diagnostics()}");
+        result.Complete.Should().BeTrue($"{ScenarioTiming.OverCeilingTag} the messages should all arrive within {ScenarioTiming.Ceiling(ColdLimit).TotalSeconds:F0}s (target {ColdLimit.TotalSeconds:F0}s)\n{report}\n{Diagnostics()}");
         duplicates.Should().Be(0, "every message should arrive exactly once\n" + report);
+        ScenarioTiming.AssertWithin("The round", result.Elapsed, ColdLimit, report);
     }
 
     /// <summary>Both nodes restart, then one round, with its report.</summary>

@@ -99,12 +99,13 @@ jobs:
           echo "releasing $version (publish: $(if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.publish }}" = "true" ]; then echo yes; else echo 'no - dry run'; fi))"
 
   # The release gate: the same tests as ci.yml, in the same two jobs, the
-  # simulated-radio scenarios included. scripts/ci-test.sh reruns only the
+  # simulated-radio scenarios included. scripts/ci-test.py reruns only the
   # tests that failed, up to three attempts in all, so one flaky test can't
   # strand a tagged release while a test that fails every time blocks it.
   # Any test that needed a rerun is named in the job summary and in a
-  # warning on the run (#331), so a release that got through on a retry is
-  # visible as one.
+  # warning on the run (#331), so a release that got through on a rerun is
+  # visible as one. A simulated-radio scenario over its time target gets one
+  # rerun, and none over twice its target (#352).
   #
   # The scenarios on net-sim (crossed calls and Kevin's WPS trace, on BPQ and on pdn) were
   # left out of this gate from 2026-09-28 while they failed now and then for reasons outside
@@ -135,7 +136,7 @@ jobs:
 
       - name: Unit tests
         run: >-
-          scripts/ci-test.sh "Unit tests" src/dapps/dapps.core.tests/bin/Release/net10.0/dapps.core.tests 3
+          scripts/ci-test.py "Unit tests" src/dapps/dapps.core.tests/bin/Release/net10.0/dapps.core.tests 3
           --filter-not-trait Category=Integration
 
       - name: Upload test results
@@ -176,12 +177,9 @@ jobs:
 
       - name: Integration tests
         run: >-
-          scripts/ci-test.sh "Integration tests" src/dapps/dapps.core.tests/bin/Release/net10.0/dapps.core.tests 3
+          scripts/ci-test.py "Integration tests" src/dapps/dapps.core.tests/bin/Release/net10.0/dapps.core.tests 3
           --filter-trait Category=Integration
 
-      - name: Scenarios over their time target
-        if: always()
-        run: scripts/scenario-targets.sh src/dapps/dapps.core.tests/bin/Release/net10.0/scenario-reports
 
       - name: Upload test results
         if: always()
