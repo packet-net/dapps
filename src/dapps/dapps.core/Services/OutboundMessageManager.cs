@@ -534,6 +534,7 @@ public class OutboundMessageManager(
     {
         private readonly Queue<(DbMessage Row, IReadOnlyList<string>? SourceRoute)> queued = new();
         private readonly Dictionary<string, DbMessage> handedOut = new();
+        private readonly List<DbMessage> handedOutInOrder = [];
         private readonly HashSet<string> answered = new(StringComparer.Ordinal);
         private int pickedUp;
 
@@ -605,6 +606,7 @@ public class OutboundMessageManager(
                     continue;
                 }
                 handedOut[next.Row.Id] = next.Row;
+                lock (answered) handedOutInOrder.Add(next.Row);
                 return owner.ToBackhaulMessage(next.Row, residualTtl, next.SourceRoute);
             }
         }
@@ -624,7 +626,7 @@ public class OutboundMessageManager(
         public async Task CompleteUnansweredAsync(Exception ex, CancellationToken ct)
         {
             List<DbMessage> unanswered;
-            lock (answered) unanswered = [.. handedOut.Values.Where(m => answered.Add(m.Id))];
+            lock (answered) unanswered = [.. handedOutInOrder.Where(m => answered.Add(m.Id))];
             var first = true;
             foreach (var row in unanswered)
             {
@@ -632,7 +634,20 @@ public class OutboundMessageManager(
                     ? BackhaulSendResult.Fail(ex.Message)
                     : BackhaulSendResult.Defer(ex.Message);
                 first = false;
-                await owner.RecordForwardOutcomeAsync(row, route, BackhaulName, result, TimeSpan.Zero, ct);
+                try
+                {
+                    // Releases the claim however recording goes.
+                    await owner.RecordForwardOutcomeAsync(row, route, BackhaulName, result, TimeSpan.Zero, ct);
+                }
+                catch (Exception recordFailure) when (!ct.IsCancellationRequested)
+                {
+                    // One row failing to record mustn't strand the rest.
+                    owner.logger.LogError(recordFailure, "Could not record the outcome for {0}; it stays queued", row.Id);
+                }
+                finally
+                {
+                    owner.inFlight.TryRemove(row.Id, out _);
+                }
             }
         }
 
@@ -700,54 +715,28 @@ public class OutboundMessageManager(
 
         foreach (var route in flood.Routes)
         {
-            var bm = new BackhaulMessage(
-                Id: message.Id,
-                Destination: message.Destination,
-                Salt: message.Salt,
-                Ttl: residualTtl,
-                Payload: message.Payload,
-                Originator: originator,
-                FloodHopsRemaining: flood.HopBudget,
-                TraversedHops: flood.TraversedHops,
-                MasterId: message.MasterId,
-                FragmentIndex: message.FragmentIndex,
-                FragmentTotal: message.FragmentTotal,
-                StreamId: message.StreamId,
-                StreamSeq: message.StreamSeq,
-                StreamGapTimeoutSeconds: message.StreamGapTimeoutSeconds);
-
-            var backhaul = backhauls.FirstOrDefault(b => b.CanHandle(route));
-            if (backhaul is null) continue;
-
-            // A session open with the neighbour, either way, takes the
-            // copy: with sessions held for minutes at a time, skipping
-            // them would lose most floods.
-            var copy = new FloodCopyBatch(this, message, route, bm, flood.HopBudget);
-            if (backhaul.TryHandToOpenSession(route, copy))
+            // One neighbour's trouble mustn't stop the copies to the
+            // others (#263). A copy whose send throws counts as a failed
+            // send (deferred if the kill switch refused it).
+            (BackhaulSendResult Result, TimeSpan Elapsed)? sent;
+            try
             {
-                logger.LogInformation("Flood of {0}: handed to the session we have open with {1}", message.Id, route.Callsign);
-                continue;
+                sent = await FloodCopyAsync(message, flood, residualTtl, originator, route, optionsValue, stoppingToken);
             }
-            if (RidesASession(route) && openSessions is not null && openSessions.TryHand(route.Callsign, copy))
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
             {
-                logger.LogInformation("Flood of {0}: handed to the session open with {1}", message.Id, route.Callsign);
-                continue;
+                logger.LogError(ex, "Flood of {0}: the copy for {1} failed", message.Id, route.Callsign);
+                sent = (ex is TxStoppedException ? BackhaulSendResult.Defer(ex.Message) : BackhaulSendResult.Fail(ex.Message), TimeSpan.Zero);
             }
-            if (WouldDialIntoOpenSession(route, out var openDirection))
+            if (sent is not { } s) continue;
+            try
             {
-                // #178: a flood copy is one-shot, so this one is skipped
-                // rather than deferred - the outcome a failed send to
-                // that neighbour already had, minus the collision on
-                // air and the failure on its streak.
-                logger.LogInformation(
-                    "Flood of {0}: skipping {1}, an {2} session with it is already open",
-                    message.Id, route.Callsign, openDirection);
-                continue;
+                await RecordFloodOutcomeAsync(message, route, flood.HopBudget, s.Result, s.Elapsed, stoppingToken);
             }
-
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            var result = await backhaul.SendAsync(bm, route, optionsValue.Callsign, stoppingToken);
-            await RecordFloodOutcomeAsync(message, route, flood.HopBudget, result, sw.Elapsed, stoppingToken);
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+            {
+                logger.LogError(ex, "Flood of {0}: could not record the outcome for {1}", message.Id, route.Callsign);
+            }
         }
 
         // Mark the message forwarded so it doesn't keep flooding on
@@ -755,6 +744,66 @@ public class OutboundMessageManager(
         // effectively lost - that's correct semantics; floods are
         // best-effort.
         await database.MarkMessageAsForwarded(message.Id);
+    }
+
+    /// <summary>
+    /// One flood copy to one neighbour. Returns how the send went, or
+    /// null when nothing was sent here: no bearer for the route, handed
+    /// to a session open with the neighbour (which reports through the
+    /// copy's batch), or skipped.
+    /// </summary>
+    private async Task<(BackhaulSendResult Result, TimeSpan Elapsed)?> FloodCopyAsync(
+        DbMessage message, RouteDecision.FloodToNeighbours flood, int? residualTtl,
+        string? originator, BackhaulRoute route, SystemOptions optionsValue, CancellationToken stoppingToken)
+    {
+        var bm = new BackhaulMessage(
+            Id: message.Id,
+            Destination: message.Destination,
+            Salt: message.Salt,
+            Ttl: residualTtl,
+            Payload: message.Payload,
+            Originator: originator,
+            FloodHopsRemaining: flood.HopBudget,
+            TraversedHops: flood.TraversedHops,
+            MasterId: message.MasterId,
+            FragmentIndex: message.FragmentIndex,
+            FragmentTotal: message.FragmentTotal,
+            StreamId: message.StreamId,
+            StreamSeq: message.StreamSeq,
+            StreamGapTimeoutSeconds: message.StreamGapTimeoutSeconds);
+
+        var backhaul = backhauls.FirstOrDefault(b => b.CanHandle(route));
+        if (backhaul is null) return null;
+
+        // A session open with the neighbour, either way, takes the
+        // copy: with sessions held for minutes at a time, skipping
+        // them would lose most floods.
+        var copy = new FloodCopyBatch(this, message, route, bm, flood.HopBudget);
+        if (backhaul.TryHandToOpenSession(route, copy))
+        {
+            logger.LogInformation("Flood of {0}: handed to the session we have open with {1}", message.Id, route.Callsign);
+            return null;
+        }
+        if (RidesASession(route) && openSessions is not null && openSessions.TryHand(route.Callsign, copy))
+        {
+            logger.LogInformation("Flood of {0}: handed to the session open with {1}", message.Id, route.Callsign);
+            return null;
+        }
+        if (WouldDialIntoOpenSession(route, out var openDirection))
+        {
+            // #178: a flood copy is one-shot, so this one is skipped
+            // rather than deferred - the outcome a failed send to
+            // that neighbour already had, minus the collision on
+            // air and the failure on its streak.
+            logger.LogInformation(
+                "Flood of {0}: skipping {1}, an {2} session with it is already open",
+                message.Id, route.Callsign, openDirection);
+            return null;
+        }
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var result = await backhaul.SendAsync(bm, route, optionsValue.Callsign, stoppingToken);
+        return (result, sw.Elapsed);
     }
 
     private async Task RecordFloodOutcomeAsync(

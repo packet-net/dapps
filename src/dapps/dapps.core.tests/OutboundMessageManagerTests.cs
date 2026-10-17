@@ -897,6 +897,215 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DoRun_AFloodCopyWhoseSendThrows_DoesNotStopTheCopiesToTheOthers_AndTheMessageIsMarkedForwarded()
+    {
+        // #263: one neighbour's bearer throwing used to skip the neighbours
+        // after it and leave the message to flood again on every run.
+        var backoff = new OutboundDestinationBackoff();
+        var flooding = new FloodingAlgorithm(new BackhaulRoute("N0BAD", BearerPort: 0), new BackhaulRoute("N0GOOD", BearerPort: 0));
+        var bearer = new ThrowsForOneBackhaul("N0BAD");
+        var m = new OutboundMessageManager(
+            database, NullLoggerFactory.Instance, optionsMonitor, [bearer], flooding, routingContext,
+            destinationBackoff: backoff);
+        InsertMessage(id: "flood03", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR");
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        bearer.Sent.Should().Equal("N0GOOD");
+        backoff.IsInCooldown("N0BAD", out _).Should().BeTrue("a copy whose send throws is a failed send");
+        using var c = DbInfo.GetConnection();
+        c.Find<DbMessage>("flood03")!.Forwarded.Should().BeTrue("a flood is one-shot, as before");
+    }
+
+    /// <summary>SendAsync throws for one neighbour and accepts for the rest.</summary>
+    private sealed class ThrowsForOneBackhaul(string throwFor) : IDappsBackhaul
+    {
+        public List<string> Sent { get; } = [];
+        public bool CanHandle(BackhaulRoute route) => true;
+        public Task<BackhaulSendResult> SendAsync(BackhaulMessage message, BackhaulRoute route, string localCallsign, CancellationToken ct)
+        {
+            if (route.Callsign == throwFor) throw new IOException("the node went away");
+            Sent.Add(route.Callsign);
+            return Task.FromResult(BackhaulSendResult.Ok());
+        }
+    }
+
+    private sealed class RecordingRouting : IRoutingAlgorithm
+    {
+        public List<(string Id, bool Accepted)> Observed { get; } = [];
+        public bool ThrowOnceOnFail { get; set; }
+        public Task<RouteDecision> ResolveAsync(DbMessage message, IRoutingContext ctx, CancellationToken ct) =>
+            Task.FromResult<RouteDecision>(new RouteDecision.NextHop(new BackhaulRoute("N0DEST", BearerPort: 0)));
+        public Task ObserveInboundAsync(BackhaulMessage message, string linkSourceCallsign, IRoutingContext ctx, CancellationToken ct) => Task.CompletedTask;
+        public Task ObserveForwardOutcomeAsync(DbMessage message, BackhaulRoute attemptedRoute, BackhaulSendResult result, IRoutingContext ctx, CancellationToken ct)
+        {
+            Observed.Add((message.Id, result.Accepted));
+            if (ThrowOnceOnFail && !result.Accepted) { ThrowOnceOnFail = false; throw SQLiteException.New(SQLite3.Result.Busy, "database is locked"); }
+            return Task.CompletedTask;
+        }
+        public Task ObserveProbeOutcomeAsync(string askedPeerCallsign, IReadOnlyList<dapps.client.DappsProtocolClient.DiscoveredPeerInfo> peers, IRoutingContext ctx, CancellationToken ct) => Task.CompletedTask;
+        public Task RunAsync(IRoutingContext ctx, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    /// <summary>First batch: runs the script (which ends by throwing). Later batches send everything.</summary>
+    private sealed class ScriptedOnceBackhaul(Func<IBackhaulBatch, CancellationToken, Task> script) : IDappsBackhaul
+    {
+        private bool done;
+        public List<string> Sent { get; } = [];
+        public bool CanHandle(BackhaulRoute route) => true;
+        public Task<BackhaulSendResult> SendAsync(BackhaulMessage message, BackhaulRoute route, string localCallsign, CancellationToken ct) =>
+            throw new InvalidOperationException();
+        public async Task SendBatchAsync(BackhaulRoute route, string localCallsign, IBackhaulBatch batch, CancellationToken ct)
+        {
+            if (!done) { done = true; await script(batch, ct); return; }
+            while (await batch.NextAsync(ct) is { } m)
+            {
+                Sent.Add(m.Id);
+                await batch.CompleteAsync(m, BackhaulSendResult.Ok(), TimeSpan.Zero, ct);
+            }
+        }
+    }
+
+    private (OutboundMessageManager, RecordingRouting, OutboundDestinationBackoff, FakeTimeProvider) MakeWithRecordingRouting(IDappsBackhaul b)
+    {
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var backoff = new OutboundDestinationBackoff(clock, spread: 0);
+        var routing = new RecordingRouting();
+        return (new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [b], routing, routingContext, destinationBackoff: backoff), routing, backoff, clock);
+    }
+
+    [Fact]
+    public async Task DoRun_ABearerThatReportsThenThrows_GivesTheMessageExactlyOneOutcome()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var b = new ScriptedOnceBackhaul(async (batch, c) =>
+        {
+            var a = (await batch.NextAsync(c))!;
+            await batch.CompleteAsync(a, BackhaulSendResult.Ok(), TimeSpan.Zero, c);
+            throw new IOException("after the ack");
+        });
+        var (m, routing, backoff, _) = MakeWithRecordingRouting(b);
+        InsertMessage(id: "okthr01", ttl: null, createdAt: DateTime.UtcNow);
+
+        await m.DoRun(ct);
+
+        routing.Observed.Should().Equal(("okthr01", true));
+        backoff.IsInCooldown("N0DEST", out _).Should().BeFalse();
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task DoRun_ABearerThatFailsOneThenTakesAnotherAndThrows_GivesEachExactlyOneOutcome()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var b = new ScriptedOnceBackhaul(async (batch, c) =>
+        {
+            var a = (await batch.NextAsync(c))!;
+            await batch.CompleteAsync(a, BackhaulSendResult.Fail("nope"), TimeSpan.Zero, c);
+            await batch.NextAsync(c);
+            throw new IOException("boom");
+        });
+        var (m, routing, _, _) = MakeWithRecordingRouting(b);
+        var t0 = DateTime.UtcNow.AddSeconds(-10);
+        InsertMessage(id: "ff00001", ttl: null, createdAt: t0);
+        InsertMessage(id: "ff00002", ttl: null, createdAt: t0.AddSeconds(1));
+
+        await m.DoRun(ct);
+
+        routing.Observed.Should().Equal(("ff00001", false), ("ff00002", false));
+    }
+
+    [Fact]
+    public async Task DoRun_ABearerThatTakesSeveralAndThrows_FailsTheOldest_DefersTheRest_AndAllGoAfterTheCooldown()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var b = new ScriptedOnceBackhaul(async (batch, c) =>
+        {
+            await batch.NextAsync(c); await batch.NextAsync(c); await batch.NextAsync(c);
+            throw new IOException("boom");
+        });
+        var (m, routing, backoff, clock) = MakeWithRecordingRouting(b);
+        var t0 = DateTime.UtcNow.AddSeconds(-10);
+        InsertMessage(id: "th00001", ttl: null, createdAt: t0);
+        InsertMessage(id: "th00002", ttl: null, createdAt: t0.AddSeconds(1));
+        InsertMessage(id: "th00003", ttl: null, createdAt: t0.AddSeconds(2));
+
+        await m.DoRun(ct);
+
+        routing.Observed.Should().Equal(("th00001", false));
+        backoff.IsInCooldown("N0DEST", out _).Should().BeTrue();
+        (await database.GetPendingOutboundMessages()).Should().HaveCount(3);
+
+        clock.Advance(TimeSpan.FromHours(1));
+        await m.DoRun(ct);
+        b.Sent.Should().Equal("th00001", "th00002", "th00003");
+    }
+
+    [Fact]
+    public async Task DoRun_ABearerThatTakesSeveralAndHitsTheKillSwitch_DefersThemAll_WithNoCooldown()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var b = new ScriptedOnceBackhaul(async (batch, c) =>
+        {
+            await batch.NextAsync(c); await batch.NextAsync(c);
+            throw new dapps.client.Tx.TxStoppedException("stop");
+        });
+        var (m, routing, backoff, _) = MakeWithRecordingRouting(b);
+        var t0 = DateTime.UtcNow.AddSeconds(-10);
+        InsertMessage(id: "tx00001", ttl: null, createdAt: t0);
+        InsertMessage(id: "tx00002", ttl: null, createdAt: t0.AddSeconds(1));
+
+        await m.DoRun(ct);
+        routing.Observed.Should().BeEmpty();
+        backoff.IsInCooldown("N0DEST", out _).Should().BeFalse();
+
+        await m.DoRun(ct);
+        b.Sent.Should().Equal("tx00001", "tx00002");
+    }
+
+    [Fact]
+    public async Task DoRun_CancelledMidBatch_RecordsNoOutcome()
+    {
+        using var cts = new CancellationTokenSource();
+        var b = new ScriptedOnceBackhaul(async (batch, c) =>
+        {
+            await batch.NextAsync(c);
+            await cts.CancelAsync();
+            c.ThrowIfCancellationRequested();
+        });
+        var (m, routing, backoff, _) = MakeWithRecordingRouting(b);
+        InsertMessage(id: "cc00001", ttl: null, createdAt: DateTime.UtcNow);
+
+        var act = () => m.DoRun(cts.Token);
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        routing.Observed.Should().BeEmpty();
+        backoff.IsInCooldown("N0DEST", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DoRun_ABearerThatThrows_AndRecordingTheFirstOutcomeFails_DoesNotStrandTheOthers()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var b = new ScriptedOnceBackhaul(async (batch, c) =>
+        {
+            await batch.NextAsync(c); await batch.NextAsync(c); await batch.NextAsync(c);
+            throw new IOException("boom");
+        });
+        var (m, routing, _, clock) = MakeWithRecordingRouting(b);
+        routing.ThrowOnceOnFail = true;
+        var t0 = DateTime.UtcNow.AddSeconds(-10);
+        InsertMessage(id: "db00001", ttl: null, createdAt: t0);
+        InsertMessage(id: "db00002", ttl: null, createdAt: t0.AddSeconds(1));
+        InsertMessage(id: "db00003", ttl: null, createdAt: t0.AddSeconds(2));
+
+        await m.DoRun(ct);
+        clock.Advance(TimeSpan.FromHours(1));
+        await m.DoRun(ct);
+
+        b.Sent.Should().Equal("db00001", "db00002", "db00003");
+    }
+
+    [Fact]
     public async Task DoRun_NeighbourInCooldown_SkipsItsWholeBatch()
     {
         var backoff = new OutboundDestinationBackoff();
