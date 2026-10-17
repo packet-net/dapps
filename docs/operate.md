@@ -89,7 +89,7 @@ Open access for the same reason as `/Health`.
 
 Subscribers to `dapps/metrics/heartbeat` receive the operational snapshot every `HeartbeatIntervalSeconds` (60 s by default; minimum 10). **Retained** on the broker, so a late subscriber gets the most recent snapshot immediately.
 
-If you're already running an MQTT-shaped monitoring pipeline, this is the easiest way to get DAPPS into it - one `mosquitto_sub -h <node> -t dapps/metrics/heartbeat` subscription gets you a ticking JSON document.
+If you're already running an MQTT-shaped monitoring pipeline, this is the easiest way to get DAPPS into it - one `mosquitto_sub -h <node> -t dapps/metrics/heartbeat -u <app> -P '<token>'` subscription gets you a ticking JSON document (leave out `-u` and `-P` if app tokens are off; any app's token will do).
 
 ## What to look at when
 

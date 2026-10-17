@@ -22,6 +22,21 @@ namespace dapps.core.tests;
 [Collection(SqliteOverridePathCollection.Name)]
 public sealed class MqttBrokerAuthTests : IAsyncLifetime
 {
+    /// <summary>MqttBrokerService assigns a ClientId to an id-less client
+    /// through MQTTnet's private ValidatingConnectionEventArgs._connectPacket
+    /// field (#340). If an MQTTnet upgrade renames or removes it, this fails
+    /// straight away with a clear message instead of only the behaviour tests.</summary>
+    [Fact]
+    public void MqttnetStillHasTheConnectPacketFieldUsedToAssignClientIds()
+    {
+        var field = typeof(ValidatingConnectionEventArgs).GetField(
+            "_connectPacket",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        field.Should().NotBeNull(
+            "MqttBrokerService sets the ClientId of an id-less client through this private MQTTnet field; "
+            + "after an MQTTnet upgrade, find the new way to assign it");
+    }
+
     private string dbPath = null!;
     private int brokerPort;
     private Database database = null!;

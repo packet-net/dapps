@@ -117,7 +117,10 @@ Open `index.html` directly from disk; no static server needed. The app speaks MQ
 <!-- in the HTML, abbreviated -->
 <script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
 <script>
-  const client = mqtt.connect("ws://localhost:5000/mqtt", { protocolVersion: 5 });
+  const client = mqtt.connect("ws://localhost:5000/mqtt", {
+    protocolVersion: 5,
+    username: "files", password: "<token for the files app>", // leave out if app tokens are off
+  });
   client.on("connect", () => client.subscribe("dapps/in/files", { qos: 1 }));
   client.on("message", (topic, payload, packet) => {
     // split off a one-line JSON envelope, render the rest as the file
