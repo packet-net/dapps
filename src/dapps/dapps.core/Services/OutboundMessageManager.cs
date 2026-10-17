@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using dapps.client.Backhaul;
+using dapps.client.Tx;
 using dapps.core.Models;
 using dapps.core.Routing;
 using Microsoft.Extensions.Options;
@@ -275,22 +276,37 @@ public class OutboundMessageManager(
 
         foreach (var item in work)
         {
-            switch (item)
+            // One neighbour's trouble must not stop the run: an exception
+            // here would leave every neighbour after it unserved (#263).
+            try
             {
-                case NextHopBatch batch:
-                    await SendBatchAsync(batch, optionsValue, stoppingToken);
-                    break;
-                case PendingFlood flood:
-                    // Residual TTL as of now, after the work ahead of it.
-                    var residualTtl = TtlMath.Residual(flood.Message.Ttl, flood.Message.CreatedAt, DateTime.UtcNow);
-                    if (residualTtl is <= 0)
-                    {
-                        logger.LogInformation("Not flooding {0}: its ttl ran out while it waited its turn", flood.Message.Id);
+                switch (item)
+                {
+                    case NextHopBatch batch:
+                        await SendBatchAsync(batch, optionsValue, stoppingToken);
                         break;
-                    }
-                    await FloodAndMarkAsync(flood.Message, flood.Decision, residualTtl,
-                        OriginatorOf(flood.Message), optionsValue, stoppingToken);
-                    break;
+                    case PendingFlood flood:
+                        // Residual TTL as of now, after the work ahead of it.
+                        var residualTtl = TtlMath.Residual(flood.Message.Ttl, flood.Message.CreatedAt, DateTime.UtcNow);
+                        if (residualTtl is <= 0)
+                        {
+                            logger.LogInformation("Not flooding {0}: its ttl ran out while it waited its turn", flood.Message.Id);
+                            break;
+                        }
+                        await FloodAndMarkAsync(flood.Message, flood.Decision, residualTtl,
+                            OriginatorOf(flood.Message), optionsValue, stoppingToken);
+                        break;
+                }
+            }
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+            {
+                var what = item switch
+                {
+                    NextHopBatch b => $"messages for {b.Route.Callsign}",
+                    PendingFlood f => $"the flood of {f.Message.Id}",
+                    _ => "an item",
+                };
+                logger.LogError(ex, "Forwarder: could not send {0}, carrying on with the rest", what);
             }
         }
     }
@@ -366,7 +382,19 @@ public class OutboundMessageManager(
             return;
         }
 
-        await backhaul.SendBatchAsync(route, optionsValue.Callsign, batch, stoppingToken);
+        try
+        {
+            await backhaul.SendBatchAsync(route, optionsValue.Callsign, batch, stoppingToken);
+        }
+        catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+        {
+            // A bearer should report every message it took through the
+            // batch. If it threw instead, what it took is still claimed:
+            // give each one an outcome, or no later run would send it
+            // until a restart (#263).
+            logger.LogError(ex, "Sending to {0} via {1} failed", route.Callsign, batch.BackhaulName);
+            await batch.CompleteUnansweredAsync(ex, stoppingToken);
+        }
     }
 
     private BackhaulMessage ToBackhaulMessage(DbMessage message, int? residualTtl, IReadOnlyList<string>? sourceRoute) =>
@@ -506,6 +534,7 @@ public class OutboundMessageManager(
     {
         private readonly Queue<(DbMessage Row, IReadOnlyList<string>? SourceRoute)> queued = new();
         private readonly Dictionary<string, DbMessage> handedOut = new();
+        private readonly HashSet<string> answered = new(StringComparer.Ordinal);
         private int pickedUp;
 
         public BackhaulRoute Route => route;
@@ -580,8 +609,32 @@ public class OutboundMessageManager(
             }
         }
 
-        public async ValueTask CompleteAsync(BackhaulMessage message, BackhaulSendResult result, TimeSpan elapsed, CancellationToken ct) =>
+        public async ValueTask CompleteAsync(BackhaulMessage message, BackhaulSendResult result, TimeSpan elapsed, CancellationToken ct)
+        {
+            lock (answered) answered.Add(message.Id);
             await owner.RecordForwardOutcomeAsync(handedOut[message.Id], route, BackhaulName, result, elapsed, ct);
+        }
+
+        /// <summary>
+        /// The bearer threw rather than answer everything it took. The
+        /// oldest unanswered message fails, as a failed dial would (unless
+        /// the kill switch refused it: our refusal says nothing about the
+        /// route), and the rest are deferred.
+        /// </summary>
+        public async Task CompleteUnansweredAsync(Exception ex, CancellationToken ct)
+        {
+            List<DbMessage> unanswered;
+            lock (answered) unanswered = [.. handedOut.Values.Where(m => answered.Add(m.Id))];
+            var first = true;
+            foreach (var row in unanswered)
+            {
+                var result = first && ex is not TxStoppedException
+                    ? BackhaulSendResult.Fail(ex.Message)
+                    : BackhaulSendResult.Defer(ex.Message);
+                first = false;
+                await owner.RecordForwardOutcomeAsync(row, route, BackhaulName, result, TimeSpan.Zero, ct);
+            }
+        }
 
         private async Task PickUpNewlyQueuedAsync(CancellationToken ct)
         {

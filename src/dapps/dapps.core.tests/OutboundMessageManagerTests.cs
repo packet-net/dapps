@@ -1,12 +1,15 @@
 using System.Text;
 using AwesomeAssertions;
+using dapps.client;
 using dapps.client.Backhaul;
 using dapps.client.Discovery;
+using dapps.client.Transport;
 using dapps.core.Models;
 using dapps.core.Routing;
 using dapps.core.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Time.Testing;
 using SQLite;
 
 namespace dapps.core.tests;
@@ -704,6 +707,193 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         batching.Batches.Single().Ids.Should().Equal("slow001");
         (await database.GetPendingOutboundMessages()).Should().ContainSingle(p => p.Id == "tight01",
             "an expired message isn't sent; the next run drops it");
+    }
+
+    [Fact]
+    public async Task DoRun_AConnectScriptWhoseLinkDrops_FailsTheMessage_AndAfterTheCooldownTheNextRunSendsIt()
+    {
+        // #263: the link failing mid-script with an IOException used to
+        // leave the message claimed, so no later run would send it.
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var backoff = new OutboundDestinationBackoff(clock, spread: 0);
+        var transport = new FirstDialFailsMidScriptTransport(new IOException("socket closed"), "drop001");
+        var m = ScriptedManager(transport, backoff);
+        InsertMessage(id: "drop001", ttl: null, createdAt: DateTime.UtcNow);
+
+        await m.DoRun(ct);
+
+        transport.Connects.Should().Be(1);
+        backoff.IsInCooldown("N0DEST", out _).Should().BeTrue("a link that drops mid-script is a failed dial");
+        (await database.GetPendingOutboundMessages()).Should().ContainSingle(x => x.Id == "drop001");
+
+        await m.DoRun(ct);
+        transport.Connects.Should().Be(1, "nothing redials before the cooldown is out");
+
+        clock.Advance(TimeSpan.FromHours(1));
+        await m.DoRun(ct);
+
+        transport.Connects.Should().Be(2);
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty("the next run sent it");
+    }
+
+    [Fact]
+    public async Task DoRun_TheKillSwitchClosesMidScript_DefersTheMessage_WithNoCooldown()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var backoff = new OutboundDestinationBackoff();
+        var transport = new FirstDialFailsMidScriptTransport(new dapps.client.Tx.TxStoppedException("operator stop"), "stop001");
+        var m = ScriptedManager(transport, backoff);
+        InsertMessage(id: "stop001", ttl: null, createdAt: DateTime.UtcNow);
+
+        await m.DoRun(ct);
+
+        backoff.IsInCooldown("N0DEST", out _).Should().BeFalse("our own refusal to transmit says nothing about the route");
+        (await database.GetPendingOutboundMessages()).Should().ContainSingle(x => x.Id == "stop001");
+
+        await m.DoRun(ct);
+
+        transport.Connects.Should().Be(2, "the message is no longer held in flight");
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task DoRun_ABatchThatThrows_DoesNotStopTheRunForTheNextNeighbour_AndItsMessageIsSentLater()
+    {
+        // #263: an exception from one neighbour's batch used to escape the
+        // run, so the neighbours after it waited, and the message it had
+        // taken stayed claimed until a restart.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0TWO", BearerPort = 0 });
+        }
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var backoff = new OutboundDestinationBackoff(clock, spread: 0);
+        var bearer = new ThrowingOnceBackhaul("N0DEST");
+        var m = MakeManager(bearer, backoff);
+        var t0 = DateTime.UtcNow.AddSeconds(-10);
+        InsertMessage(id: "dest001", ttl: null, createdAt: t0);
+        InsertMessage(id: "two0001", ttl: null, createdAt: t0.AddSeconds(1), destination: "app@N0TWO");
+
+        await m.DoRun(ct);
+
+        bearer.Sent.Should().Equal("two0001");
+        (await database.GetPendingOutboundMessages()).Select(p => p.Id).Should().Equal("dest001");
+        backoff.IsInCooldown("N0DEST", out _).Should().BeTrue("what the bearer took fails, as a failed dial would");
+
+        clock.Advance(TimeSpan.FromHours(1));
+        await m.DoRun(ct);
+
+        bearer.Sent.Should().Equal("two0001", "dest001");
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    private OutboundMessageManager ScriptedManager(IDappsOutboundTransport transport, OutboundDestinationBackoff backoff)
+    {
+        var script = new ConnectScript([new ConnectScriptStep("C GB7XYZ", "Connected"), new ConnectScriptStep("DAPPS", "DAPPSv1>")]);
+        var routing = new SwitchableRouting(new BackhaulRoute("N0DEST", BearerPort: 0, ConnectScript: script));
+        var bearer = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
+        return new(database, NullLoggerFactory.Instance, optionsMonitor, [bearer], routing, routingContext,
+            destinationBackoff: backoff);
+    }
+
+    /// <summary>The first dial's link fails the script's first write with
+    /// <paramref name="failure"/>; every later dial gets through the
+    /// script and has <paramref name="id"/> acked.</summary>
+    private sealed class FirstDialFailsMidScriptTransport(Exception failure, string id) : IDappsOutboundTransport
+    {
+        public int Connects { get; private set; }
+
+        public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken)
+        {
+            Connects++;
+            Stream stream = Connects == 1
+                ? new ScriptedStream([], failure)
+                : new ScriptedStream(Encoding.UTF8.GetBytes(
+                    $"Connected to GB7XYZ\nDAPPSv1>\nexchange id=far001 hold=0 inline=256\nack {id}\n"), null);
+            return Task.FromResult<IDappsConnection>(new Connection(stream));
+        }
+
+        private sealed class Connection(Stream stream) : IDappsConnection
+        {
+            public Stream Stream => stream;
+            public ValueTask DisposeAsync()
+            {
+                stream.Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
+
+        /// <summary>Reads the canned bytes then ends; writes are dropped,
+        /// or throw <paramref name="writeFailure"/>.</summary>
+        private sealed class ScriptedStream(byte[] reads, Exception? writeFailure) : Stream
+        {
+            private readonly MemoryStream canned = new(reads);
+            private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+            {
+                var n = await canned.ReadAsync(buffer, ct);
+                if (n > 0 || writeFailure is null) return n;
+                await closed.Task.WaitAsync(ct);
+                return 0;
+            }
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) =>
+                ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+            public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default) =>
+                writeFailure is null ? ValueTask.CompletedTask : throw writeFailure;
+            public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct) =>
+                WriteAsync(buffer.AsMemory(offset, count), ct).AsTask();
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                if (writeFailure is not null) throw writeFailure;
+            }
+            public override void Flush() { }
+            public override Task FlushAsync(CancellationToken ct) => Task.CompletedTask;
+            protected override void Dispose(bool disposing)
+            {
+                closed.TrySetResult();
+                base.Dispose(disposing);
+            }
+            public override bool CanRead => true;
+            public override bool CanWrite => true;
+            public override bool CanSeek => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+        }
+    }
+
+    /// <summary>For <paramref name="throwFor"/>, takes the first message
+    /// and throws without reporting on it, once; every other batch is
+    /// sent and accepted.</summary>
+    private sealed class ThrowingOnceBackhaul(string throwFor) : IDappsBackhaul
+    {
+        private bool thrown;
+        public List<string> Sent { get; } = [];
+
+        public bool CanHandle(BackhaulRoute route) => true;
+
+        public Task<BackhaulSendResult> SendAsync(BackhaulMessage message, BackhaulRoute route, string localCallsign, CancellationToken ct) =>
+            throw new InvalidOperationException("the forwarder should hand this bearer batches");
+
+        public async Task SendBatchAsync(BackhaulRoute route, string localCallsign, IBackhaulBatch batch, CancellationToken ct)
+        {
+            if (!thrown && route.Callsign == throwFor)
+            {
+                thrown = true;
+                await batch.NextAsync(ct);
+                throw new IOException("the node went away");
+            }
+            while (await batch.NextAsync(ct) is { } message)
+            {
+                Sent.Add(message.Id);
+                await batch.CompleteAsync(message, BackhaulSendResult.Ok(), TimeSpan.Zero, ct);
+            }
+        }
     }
 
     [Fact]

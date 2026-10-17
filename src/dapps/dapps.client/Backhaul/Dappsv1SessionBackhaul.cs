@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using dapps.client.Transport;
+using dapps.client.Tx;
 using Microsoft.Extensions.Logging;
 
 namespace dapps.client.Backhaul;
@@ -253,10 +254,29 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                 Opened = s => OnOpened(route, s),
             };
         }
-        catch (Exception ex) when (ex is ConnectScriptException or EndOfStreamException)
+        catch (TxStoppedException ex) when (!ct.IsCancellationRequested)
         {
+            // The kill switch closed while the script ran: we refused to
+            // send, which says nothing about the route. The message waits
+            // for the next run, with no cooldown (#263).
             await CloseAsync(connection, stream);
-            await batch.CompleteAsync(first, BackhaulSendResult.Fail($"connect-script failed for {route.Callsign}: {ex.Message}"), sw.Elapsed, ct);
+            logger.LogInformation("Deferring {0}: {1}", first.Id, ex.Message);
+            await batch.CompleteAsync(first, BackhaulSendResult.Defer(ex.Message), sw.Elapsed, ct);
+            return;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            // Anything else (the script's own failure, the link dropping
+            // mid-script, a write after the node hung up) is a failed
+            // dial. The first message has been claimed, so it must get an
+            // outcome here or it stays in flight until a restart (#263).
+            await CloseAsync(connection, stream);
+            if (ex is not (ConnectScriptException or EndOfStreamException))
+            {
+                logger.LogWarning(ex, "Setting up the session with {0} failed", route.Callsign);
+            }
+            var what = route.ConnectScript is null ? "session setup" : "connect-script";
+            await batch.CompleteAsync(first, BackhaulSendResult.Fail($"{what} failed for {route.Callsign}: {ex.Message}"), sw.Elapsed, ct);
             return;
         }
         catch

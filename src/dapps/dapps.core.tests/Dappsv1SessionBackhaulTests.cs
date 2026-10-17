@@ -279,6 +279,79 @@ public sealed class Dappsv1SessionBackhaulTests
     }
 
     [Fact]
+    public async Task SendBatchAsync_TheLinkDropsMidScript_TheFirstMessageFails()
+    {
+        // #263: the AGW socket dropping while the connect script runs used
+        // to escape without an outcome, leaving the message claimed.
+        var connection = new RetirableConnection(new WriteFailsStream(new IOException("socket closed")));
+        var sb = new Dappsv1SessionBackhaul(new SingleConnectionTransport(connection), NullLoggerFactory.Instance);
+        var batch = new ListBatch(Msg("msg0001"), Msg("msg0002"));
+        var script = new ConnectScript([new ConnectScriptStep("C GB7XYZ", "Connected"), new ConnectScriptStep("DAPPS", "DAPPSv1>")]);
+
+        await sb.SendBatchAsync(new BackhaulRoute("N0DEST", ConnectScript: script), "N0SRC", batch, TestContext.Current.CancellationToken);
+
+        batch.Outcomes.Should().ContainSingle();
+        batch.Outcomes[0].Id.Should().Be("msg0001");
+        batch.Outcomes[0].Result.Accepted.Should().BeFalse();
+        batch.Outcomes[0].Result.Deferred.Should().BeFalse("a link that drops is a failed dial");
+        batch.Outcomes[0].Result.Error.Should().Contain("socket closed");
+        batch.Remaining.Should().Be(1);
+        connection.Disposed.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task SendBatchAsync_TheKillSwitchClosesMidScript_TheFirstMessageIsDeferred()
+    {
+        // #263: our own refusal to transmit says nothing about the route,
+        // so no failure and no cooldown, but the message still needs an outcome.
+        var connection = new RetirableConnection(new WriteFailsStream(new dapps.client.Tx.TxStoppedException("operator stop")));
+        var sb = new Dappsv1SessionBackhaul(new SingleConnectionTransport(connection), NullLoggerFactory.Instance);
+        var batch = new ListBatch(Msg("msg0001"), Msg("msg0002"));
+        var script = new ConnectScript([new ConnectScriptStep("C GB7XYZ", "Connected")]);
+
+        await sb.SendBatchAsync(new BackhaulRoute("N0DEST", ConnectScript: script), "N0SRC", batch, TestContext.Current.CancellationToken);
+
+        batch.Outcomes.Should().ContainSingle();
+        batch.Outcomes[0].Id.Should().Be("msg0001");
+        batch.Outcomes[0].Result.Deferred.Should().BeTrue();
+        batch.Outcomes[0].Result.Error.Should().Contain("operator stop");
+        connection.Disposed.Should().BeTrue();
+    }
+
+    /// <summary>Every write throws the given exception; reads wait until
+    /// the stream is closed.</summary>
+    private sealed class WriteFailsStream(Exception failure) : Stream
+    {
+        private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            await closed.Task.WaitAsync(ct);
+            return 0;
+        }
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) =>
+            ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default) => throw failure;
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct) => throw failure;
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw failure;
+        public override void Flush() { }
+        public override Task FlushAsync(CancellationToken ct) => Task.CompletedTask;
+        protected override void Dispose(bool disposing)
+        {
+            closed.TrySetResult();
+            base.Dispose(disposing);
+        }
+        public override bool CanRead => true;
+        public override bool CanWrite => true;
+        public override bool CanSeek => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+    }
+
+    [Fact]
     public async Task SendBatchAsync_NothingQueued_DoesNotDial()
     {
         var transport = new FakeOutboundTransport([]);
