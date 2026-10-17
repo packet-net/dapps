@@ -412,6 +412,9 @@ jobs:
 
       - uses: actions/download-artifact@v7
         with:
+          # Only the binaries and the .debs. The test results and scenario reports are
+          # artifacts too, and without a pattern they were attached to the release (0.52.0).
+          pattern: dapps-*
           path: dist
           merge-multiple: true
 
