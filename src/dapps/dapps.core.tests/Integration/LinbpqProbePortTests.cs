@@ -117,6 +117,11 @@ public sealed class LinbpqProbePortTests : IAsyncLifetime
         probedC.LastProbedAt.Should().NotBeNull();
         probedC.LastBearerPort.Should().Be(1, $"C is reached through B, on A's port to B, not B's port to C: {probedC.LastError}\n{a.Tail()}");
         probedC.LastSuccessAt.Should().NotBeNull($"C should answer A's probe: {probedC.LastError}\n{a.Tail()}\n{c.Tail()}");
+
+        // Times read back from SQLite go out as UTC with a Z, or the
+        // dashboard shows them an hour out in BST (#238).
+        var raw = await a.Http.GetStringAsync("Probes", ct);
+        raw.Should().MatchRegex("\"lastSuccessAt\":\"[0-9T:.-]+Z\"");
     }
 
     private async Task<DappsDaemon> StartAsync(

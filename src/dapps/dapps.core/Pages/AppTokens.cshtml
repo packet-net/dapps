@@ -78,7 +78,7 @@
                 {
                     <tr>
                         <td>@t.AppName</td>
-                        <td>@t.CreatedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                        <td>@t.CreatedAt.ToString("yyyy-MM-dd HH:mm")Z</td>
                         <td style="text-align: right;">
                             <form method="post" asp-page-handler="Revoke" style="display: inline;" class="revoke-token-form" data-app="@t.AppName">
                                 <input type="hidden" name="app" value="@t.AppName" />
