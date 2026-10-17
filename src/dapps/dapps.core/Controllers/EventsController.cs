@@ -223,7 +223,8 @@ public sealed class EventsController(
         {
             await foreach (var ev in reader.ReadAllAsync(ct))
             {
-                var json = JsonSerializer.Serialize(ev);
+                // The controllers' settings: the page reads camelCase names.
+                var json = JsonSerializer.Serialize(ev, UtcDateTimeJsonConverter.WebOptions);
                 await Response.WriteAsync($"event: inbound\ndata: {json}\n\n", ct);
                 await Response.Body.FlushAsync(ct);
             }

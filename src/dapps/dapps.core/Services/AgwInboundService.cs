@@ -75,7 +75,7 @@ public sealed class AgwInboundService(
     private readonly Lock linkGate = new();
     private AgwLink? link;
     private AgwLinkState linkState = AgwLinkState.Idle;
-    private TaskCompletionSource<AgwLink> nextLink = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource<AgwLink?> nextLink = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Operator-triggered "retry now" - see
     /// <see cref="InboundReconnectController.TriggerRetry"/>. Publishes
@@ -182,6 +182,9 @@ public sealed class AgwInboundService(
                 await waitTask;
             }
         }
+        // Stopped, possibly out of a backoff wait (which swallows the
+        // cancellation): nothing is coming any more.
+        SetLinkState(AgwLinkState.Idle);
     }
 
     /// <summary>The SystemOptions fields one AGW connection cycle is
@@ -255,11 +258,12 @@ public sealed class AgwInboundService(
         var local = session.Local;
         var port = session.Port;
         var stream = session.Stream;
-        metrics.RecordInboundConnect(remote);
 
         PeerSessionLease? lease = null;
         try
         {
+            metrics.RecordInboundConnect(remote);
+
             // #178: while this session is open the forwarder must not dial
             // this peer (see PeerSessionRegistry). Released once the
             // handler is done and our 'd', if any, has gone out. Connected
@@ -394,7 +398,7 @@ public sealed class AgwInboundService(
 
     public async Task<AgwLink?> GetLinkAsync(TimeSpan wait, CancellationToken ct)
     {
-        Task<AgwLink> opening;
+        Task<AgwLink?> opening;
         lock (linkGate)
         {
             if (link is not null) return link;
@@ -413,12 +417,27 @@ public sealed class AgwInboundService(
 
     private void SetLinkState(AgwLinkState state)
     {
-        lock (linkGate) linkState = state;
+        TaskCompletionSource<AgwLink?>? giveUp;
+        lock (linkGate) giveUp = ChangeState(state);
+        giveUp?.TrySetResult(null);
+    }
+
+    /// <summary>Sets the state, under <see cref="linkGate"/>. Leaving
+    /// Connecting for Idle or Backoff hands back the waiters in
+    /// <see cref="GetLinkAsync"/>, to be released with null: no link is
+    /// coming soon.</summary>
+    private TaskCompletionSource<AgwLink?>? ChangeState(AgwLinkState state)
+    {
+        linkState = state;
+        if (state is not (AgwLinkState.Idle or AgwLinkState.Backoff)) return null;
+        var waiters = nextLink;
+        nextLink = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        return waiters;
     }
 
     private void Publish(AgwLink opened)
     {
-        TaskCompletionSource<AgwLink> waiters;
+        TaskCompletionSource<AgwLink?> waiters;
         lock (linkGate)
         {
             link = opened;
@@ -429,15 +448,19 @@ public sealed class AgwInboundService(
         waiters.TrySetResult(opened);
     }
 
-    /// <summary>Withdraws <paramref name="closed"/>; the loop decides
-    /// next whether to reconnect at once or back off.</summary>
+    /// <summary>Withdraws <paramref name="closed"/>: Backoff if it
+    /// failed, otherwise Connecting (a cycle cancelled by a save, which
+    /// reconnects shortly; on shutdown the loop then says Idle).</summary>
     private void Unpublish(AgwLink closed)
     {
+        var failed = closed.CloseReason is { } reason && reason is not OperationCanceledException;
+        TaskCompletionSource<AgwLink?>? giveUp;
         lock (linkGate)
         {
             if (!ReferenceEquals(link, closed)) return;
             link = null;
-            linkState = AgwLinkState.Connecting;
+            giveUp = ChangeState(failed ? AgwLinkState.Backoff : AgwLinkState.Connecting);
         }
+        giveUp?.TrySetResult(null);
     }
 }

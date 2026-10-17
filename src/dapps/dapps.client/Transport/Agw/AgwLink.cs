@@ -122,7 +122,8 @@ public sealed class AgwLink : IAsyncDisposable
     /// <summary>Why the link ended, once <see cref="Closed"/> has
     /// completed: what the reader failed with (an
     /// <see cref="OperationCanceledException"/> after a dispose), or
-    /// null if it stopped without one.</summary>
+    /// null when a dispose landed between two frames and the reader
+    /// stopped without one.</summary>
     public Exception? CloseReason { get; private set; }
 
     /// <summary>
@@ -246,9 +247,15 @@ public sealed class AgwLink : IAsyncDisposable
         }
         finally
         {
-            await TearDownAsync();
-            CloseReason = reason;
-            closed.TrySetResult();
+            try
+            {
+                await TearDownAsync();
+            }
+            finally
+            {
+                CloseReason = reason;
+                closed.TrySetResult();
+            }
         }
     }
 

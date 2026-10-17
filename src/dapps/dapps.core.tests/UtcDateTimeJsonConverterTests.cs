@@ -34,6 +34,9 @@ public sealed class UtcDateTimeJsonConverterTests
         json.Should().Contain("\"lastSuccessAt\":null");
     }
 
+    // Only bites where local time is not UTC: on a UTC machine (CI,
+    // studybox) it passes with the Local branch broken. Run it with
+    // TZ=Europe/London to check that branch.
     [Fact]
     public void LocalTimes_AreConverted_AndUtcTimesAreLeftAlone()
     {

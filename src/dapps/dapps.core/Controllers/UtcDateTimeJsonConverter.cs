@@ -13,6 +13,14 @@ namespace dapps.core.Controllers;
 /// </summary>
 public sealed class UtcDateTimeJsonConverter : JsonConverter<DateTime>
 {
+    /// <summary>The controllers' JSON settings (web defaults, so camelCase,
+    /// and this converter), for JSON a controller writes by hand, such as
+    /// the <c>/Events/inbound</c> stream.</summary>
+    public static readonly JsonSerializerOptions WebOptions = new(JsonSerializerOptions.Web)
+    {
+        Converters = { new UtcDateTimeJsonConverter() },
+    };
+
     public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
         => AsUtc(reader.GetDateTime());
 

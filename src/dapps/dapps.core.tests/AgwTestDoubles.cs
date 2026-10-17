@@ -232,6 +232,11 @@ internal sealed class CapturingLoggerFactory : ILoggerFactory
     /// test fail.</summary>
     public Func<LogEntry, bool>? ThrowWhen { get; set; }
 
+    /// <summary>When set, runs on the logging thread for every entry,
+    /// after it is recorded: a way to hold the code under test at one
+    /// step.</summary>
+    public Action<LogEntry>? OnLogged { get; set; }
+
     public bool Any(string fragment) => Entries.Any(e => e.Message.Contains(fragment, StringComparison.Ordinal));
 
     /// <summary>Returns the first entry matching <paramref name="predicate"/>,
@@ -299,6 +304,7 @@ internal sealed class CapturingLoggerFactory : ILoggerFactory
         {
             var entry = new LogEntry(category, logLevel, formatter(state, exception), exception);
             owner.Record(entry);
+            owner.OnLogged?.Invoke(entry);
             if (owner.ThrowWhen?.Invoke(entry) == true) throw new InvalidOperationException($"test fault on: {entry.Message}");
         }
     }

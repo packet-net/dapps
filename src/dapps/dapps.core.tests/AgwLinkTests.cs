@@ -151,6 +151,22 @@ public sealed class AgwLinkTests
     }
 
     [Fact]
+    public async Task ASessionIsInTheTable_BeforeTheConsumerHearsOfIt()
+    {
+        // So a consumer can take it straight back out (its setup failing,
+        // say) and nothing more is routed to it.
+        var ct = TestContext.Current.CancellationToken;
+        using var host = new FakeAgwHost();
+        var (link, node) = await OpenAsync(host, ct, onInbound: s => s.Remove());
+        await using var _ = link;
+        using var __ = node;
+
+        await node.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port), FakeAgwSocket.Data(Remote, Local, Port, "hello\n"));
+
+        await logs.WaitForAsync("'D' for unknown session", ct);
+    }
+
+    [Fact]
     public async Task AConsumerThatThrows_DoesNotEndTheLink()
     {
         var ct = TestContext.Current.CancellationToken;
