@@ -45,7 +45,10 @@ using (var seedLoggerFactory = LoggerFactory.Create(b => b.AddSimpleConsole()))
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
-builder.Services.AddControllers();
+// sqlite-net returns stored times with no kind; write them all as UTC
+// with a Z so the dashboard doesn't read them as local time (#238, #362).
+builder.Services.AddControllers().AddJsonOptions(o =>
+    o.JsonSerializerOptions.Converters.Add(new dapps.core.Controllers.UtcDateTimeJsonConverter()));
 builder.Services.AddRazorPages();
 // OpenAPI document for the REST surface, served at /openapi/v1.json, with
 // Scalar as the viewer at /scalar. Both sit behind AdminAuthMiddleware
@@ -160,6 +163,8 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<MqttBrokerService>
 // each exposes a manual "retry now" trigger the dashboard surfaces.
 builder.Services.AddSingleton<AgwInboundService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AgwInboundService>());
+// The daemon's one AGW connection, published for those that use it.
+builder.Services.AddSingleton<IAgwLinkSource>(sp => sp.GetRequiredService<AgwInboundService>());
 builder.Services.AddSingleton<Rhpv2InboundService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Rhpv2InboundService>());
 builder.Services.AddHostedService<TtlSweeperService>();

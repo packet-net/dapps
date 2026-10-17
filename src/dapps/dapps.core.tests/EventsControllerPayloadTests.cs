@@ -1,8 +1,11 @@
+using System.IO.Pipelines;
 using System.Text;
+using System.Text.Json;
 using AwesomeAssertions;
 using dapps.core.Controllers;
 using dapps.core.Models;
 using dapps.core.Services;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -24,6 +27,7 @@ public sealed class EventsControllerPayloadTests : IAsyncLifetime
     private string dbPath = null!;
     private Database database = null!;
     private EventsController controller = null!;
+    private readonly InboundEventBus bus = new();
 
     public ValueTask InitializeAsync()
     {
@@ -41,7 +45,7 @@ public sealed class EventsControllerPayloadTests : IAsyncLifetime
         var options = new TestOptionsMonitor<SystemOptions>(new SystemOptions { Callsign = "N0SELF" });
         database = new Database(NullLogger<Database>.Instance, options, clock);
         controller = new EventsController(
-            new InboundEventBus(),
+            bus,
             database,
             options,
             new OperationalMetrics(clock),
@@ -55,6 +59,46 @@ public sealed class EventsControllerPayloadTests : IAsyncLifetime
         try { File.Delete(dbPath); } catch { /* ignore */ }
         return ValueTask.CompletedTask;
     }
+
+    [Fact]
+    public async Task InboundStream_UsesTheNamesTheLiveTabReads_WithUtcTimes()
+    {
+        // The Messages page's live tab reads these camelCase names; the
+        // stream used to send PascalCase, and every live row came up blank.
+        var ct = TestContext.Current.CancellationToken;
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var pipe = new Pipe();
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { Response = { Body = pipe.Writer.AsStream() } },
+        };
+        var streaming = controller.GetInbound(stop.Token);
+        using var lines = new StreamReader(pipe.Reader.AsStream());
+        (await NextLineAsync(lines, ct)).Should().Be(": connected", "the stream subscribes before it says so");
+
+        bus.Publish(new InboundEvent(
+            new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Unspecified), "abc1234", "M0ABC-1", "app@N0SELF", 42, 5, "M0VIA-2"));
+        string line;
+        do line = await NextLineAsync(lines, ct);
+        while (!line.StartsWith("data: ", StringComparison.Ordinal));
+
+        using var json = JsonDocument.Parse(line["data: ".Length..]);
+        var d = json.RootElement;
+        d.GetProperty("receivedAt").GetString().Should().Be("2026-07-01T12:00:00Z");
+        d.GetProperty("id").GetString().Should().Be("abc1234");
+        d.GetProperty("sourceCallsign").GetString().Should().Be("M0ABC-1");
+        d.GetProperty("viaCallsign").GetString().Should().Be("M0VIA-2");
+        d.GetProperty("destination").GetString().Should().Be("app@N0SELF");
+        d.GetProperty("payloadLength").GetInt32().Should().Be(42);
+        d.GetProperty("ttl").GetInt32().Should().Be(5);
+
+        await stop.CancelAsync();
+        await streaming.WaitAsync(TimeSpan.FromSeconds(10), ct);
+    }
+
+    private static async Task<string> NextLineAsync(StreamReader lines, CancellationToken ct) =>
+        await lines.ReadLineAsync(ct).AsTask().WaitAsync(TimeSpan.FromSeconds(10), ct)
+            ?? throw new EndOfStreamException("the event stream ended");
 
     [Fact]
     public async Task GetPayload_UnknownId_Returns404()

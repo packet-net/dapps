@@ -715,6 +715,93 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         h.Logs.Any("'X' ack").Should().BeFalse();
     }
 
+    [Fact]
+    public async Task TheOpenLinkIsPublished_AndWithdrawnWhenItDrops()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        await h.Service.StartAsync(ct);
+        using var bpq = await h.Host.AcceptAsync(ct);
+        await bpq.ExpectRegisterAsync(ct);
+
+        h.Service.State.Should().Be(AgwLinkState.Connecting);
+        h.Service.TryGetLink().Should().BeNull("not open until the node answers the 'X'");
+        var waiting = h.Service.GetLinkAsync(TimeSpan.FromSeconds(5), ct);
+
+        await bpq.WriteAsync(ct, FakeAgwSocket.RegisterReply(0x01));
+        var link = await waiting.WaitAsync(FakeAgwHost.FrameTimeout, ct);
+        link.Should().NotBeNull("a caller waiting while the link connects gets it once it opens");
+        link!.Callsign.Should().Be(Local);
+        h.Service.TryGetLink().Should().BeSameAs(link);
+        h.Service.State.Should().Be(AgwLinkState.Open);
+
+        bpq.Close();
+        await h.Logs.WaitForAsync("(attempt 1,", ct);
+        link.Closed.IsCompleted.Should().BeTrue();
+        h.Service.State.Should().Be(AgwLinkState.Backoff);
+        h.Service.TryGetLink().Should().BeNull();
+        (await h.Service.GetLinkAsync(TimeSpan.FromSeconds(5), ct)).Should().BeNull("nothing to wait for while backing off");
+    }
+
+    [Fact]
+    public async Task ARetiredSession_IsTakenOutOfTheTableAtOnce_NotOnlyWhenItsHandlerEnds()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
+        var bpq = await h.StartAsync(ct);
+
+        // Hold the session's handler just as it starts, so only the
+        // retirement itself can take the session out of the table.
+        using var held = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        h.Logs.OnLogged = e =>
+        {
+            if (!e.Message.StartsWith("Inbound session from", StringComparison.Ordinal)) return;
+            held.Set();
+            release.Wait(FakeAgwHost.FrameTimeout);
+        };
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        held.Wait(FakeAgwHost.FrameTimeout, ct).Should().BeTrue();
+
+        try
+        {
+            using var ours = peers.Acquire(Remote, "outbound", linkPort: Port);
+            peers.Connected(ours);
+            await h.Logs.WaitForAsync("retired", ct);
+
+            await bpq.WriteAsync(ct, FakeAgwSocket.Data(Remote, Local, Port, "help\n"));
+            await h.Logs.WaitForAsync("'D' for unknown session", ct);
+        }
+        finally
+        {
+            release.Set();
+        }
+        (await bpq.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'd', "a retired session never disconnects the link");
+    }
+
+    [Fact]
+    public async Task ACallerWaitingForTheLink_IsLetGo_WhenTheOpenFails_AndTheStateIsIdleAfterAStop()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        await h.Service.StartAsync(ct);
+        using var bpq = await h.Host.AcceptAsync(ct);
+        await bpq.ExpectRegisterAsync(ct);
+        var waiting = h.Service.GetLinkAsync(TimeSpan.FromMinutes(5), ct);
+
+        await bpq.WriteAsync(ct, FakeAgwSocket.RegisterReply(0x00));
+
+        (await waiting.WaitAsync(FakeAgwHost.FrameTimeout, ct)).Should().BeNull("the open failed, and no link is coming before the backoff ends");
+        await clock.WaitForTimerAsync(ReconnectBackoffSchedule.DelayForAttempt(1), ct);
+        h.Service.State.Should().Be(AgwLinkState.Backoff);
+
+        await h.Service.StopAsync(ct);
+        h.Service.State.Should().Be(AgwLinkState.Idle, "stopped during the backoff, nothing is coming any more");
+    }
+
     /// <summary>Reads until the service closes the socket and returns how
     /// the read ended; a timeout propagates and fails the test.</summary>
     private static async Task<Exception> ReadUntilClosedAsync(FakeAgwSocket socket, CancellationToken ct)
