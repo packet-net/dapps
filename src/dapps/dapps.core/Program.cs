@@ -160,6 +160,8 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<MqttBrokerService>
 // each exposes a manual "retry now" trigger the dashboard surfaces.
 builder.Services.AddSingleton<AgwInboundService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AgwInboundService>());
+// The daemon's one AGW connection, published for those that use it.
+builder.Services.AddSingleton<IAgwLinkSource>(sp => sp.GetRequiredService<AgwInboundService>());
 builder.Services.AddSingleton<Rhpv2InboundService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Rhpv2InboundService>());
 builder.Services.AddHostedService<TtlSweeperService>();

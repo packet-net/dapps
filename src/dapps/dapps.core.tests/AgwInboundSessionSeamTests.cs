@@ -715,6 +715,35 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         h.Logs.Any("'X' ack").Should().BeFalse();
     }
 
+    [Fact]
+    public async Task TheOpenLinkIsPublished_AndWithdrawnWhenItDrops()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        await h.Service.StartAsync(ct);
+        using var bpq = await h.Host.AcceptAsync(ct);
+        await bpq.ExpectRegisterAsync(ct);
+
+        h.Service.State.Should().Be(AgwLinkState.Connecting);
+        h.Service.TryGetLink().Should().BeNull("not open until the node answers the 'X'");
+        var waiting = h.Service.GetLinkAsync(TimeSpan.FromSeconds(5), ct);
+
+        await bpq.WriteAsync(ct, FakeAgwSocket.RegisterReply(0x01));
+        var link = await waiting.WaitAsync(FakeAgwHost.FrameTimeout, ct);
+        link.Should().NotBeNull("a caller waiting while the link connects gets it once it opens");
+        link!.Callsign.Should().Be(Local);
+        h.Service.TryGetLink().Should().BeSameAs(link);
+        h.Service.State.Should().Be(AgwLinkState.Open);
+
+        bpq.Close();
+        await h.Logs.WaitForAsync("(attempt 1,", ct);
+        link.Closed.IsCompleted.Should().BeTrue();
+        h.Service.State.Should().Be(AgwLinkState.Backoff);
+        h.Service.TryGetLink().Should().BeNull();
+        (await h.Service.GetLinkAsync(TimeSpan.FromSeconds(5), ct)).Should().BeNull("nothing to wait for while backing off");
+    }
+
     /// <summary>Reads until the service closes the socket and returns how
     /// the read ended; a timeout propagates and fails the test.</summary>
     private static async Task<Exception> ReadUntilClosedAsync(FakeAgwSocket socket, CancellationToken ct)

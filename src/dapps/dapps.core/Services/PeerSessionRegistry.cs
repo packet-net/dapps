@@ -55,7 +55,7 @@ namespace dapps.core.Services;
 /// Keyed on the peer's full callsign (SSID included), case-insensitive:
 /// the identity the inbound 'C' frame and the neighbour table share.
 /// Reference-counted so an entry being retired while its replacement
-/// registers (rule 2 in <see cref="AgwInboundService"/>) never reads as
+/// registers (rule 2 in <see cref="dapps.client.Transport.Agw.AgwLink"/>) never reads as
 /// idle in between. A session whose peer vanished without a disconnect
 /// holds its lease until the handler's inactivity timeout (3 min) or
 /// the node's own link timeout ends it, whichever comes first; the
