@@ -67,6 +67,26 @@ public sealed class AppApiControllerTests : IAsyncLifetime
             .Result.Should().BeOfType<BadRequestObjectResult>();
     }
 
+    // #313: these go on the air in the offer line, where a space, CR or
+    // LF would add keys or a whole command on the far end.
+    [Theory]
+    [InlineData("myapp", "G1AAA\nquit", null, "DestCallsign")]
+    [InlineData("myapp", "G1AAA\r\nquit", null, "DestCallsign")]
+    [InlineData("myapp", "G1AAA src=G0EVIL", null, "DestCallsign")]
+    [InlineData("my\napp", "G1AAA", null, "App")]
+    [InlineData("myapp src=G0EVIL", "G1AAA", null, "App")]
+    [InlineData("myapp", "G1AAA", "c1\nquit", "StreamId")]
+    [InlineData("myapp", "G1AAA", "c1\rquit", "StreamId")]
+    [InlineData("myapp", "G1AAA", "c 1", "StreamId")]
+    public async Task SubmitOutbound_RefusesWhatCannotGoOnTheOfferLine(string app, string dest, string? streamId, string field)
+    {
+        var result = await controller.SubmitOutbound(new OutboundRequest(app, dest, [1], StreamId: streamId));
+
+        var bad = result.Result.Should().BeOfType<BadRequestObjectResult>().Subject;
+        bad.Value.Should().BeOfType<string>().Which.Should().StartWith(field + ":");
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
     [Fact]
     public async Task SubmitOutbound_OpenMode_Persists()
     {

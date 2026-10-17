@@ -59,6 +59,7 @@ public sealed class MqttBrokerAuthTests : IAsyncLifetime
             c.CreateTable<DbAppToken>();
             c.CreateTable<DbNeighbour>();
             c.CreateTable<DbRouteHint>();
+            c.CreateTable<DbStreamSendState>();
         }
 
         systemOptions = new SystemOptions
@@ -392,6 +393,93 @@ public sealed class MqttBrokerAuthTests : IAsyncLifetime
         await Task.Delay(300, ct);
         (await database.GetPendingOutboundMessages()).Select(m => m.Id).Should().Contain(outboundId,
             "acking an outbound id must not cancel its forwarding");
+    }
+
+    // ---- Malformed app, callsign or stream id (#313) ----
+
+    [Theory]
+    [InlineData("dapps/out/chat/G1AAA\nquit")]
+    [InlineData("dapps/out/chat/G1AAA\r\nquit")]
+    [InlineData("dapps/out/chat/G1AAA src=G0EVIL")]
+    [InlineData("dapps/out/chat/G1AAA/P")]
+    public async Task Publish_BadDestination_RefusedAsTopicNameInvalid(string topic)
+    {
+        var token = await tokens.CreateOrRotateAsync("chat");
+        var ct = TestContext.Current.CancellationToken;
+        var chat = await ConnectAsync("chat", token, ct);
+
+        var result = await chat.PublishAsync(Qos1(topic, "x"), ct);
+
+        result.ReasonCode.Should().Be(MqttClientPublishReasonCode.TopicNameInvalid);
+        result.ReasonString.Should().StartWith("destination:");
+        await Task.Delay(200, ct);
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("dapps/out/ch\nat/G1AAA")]
+    [InlineData("dapps/out/chat src=G0EVIL/G1AAA")]
+    public async Task Publish_BadApp_RefusedAsTopicNameInvalid(string topic)
+    {
+        // With auth on, an app that isn't the token's is refused first;
+        // with it off, the name itself must still be checked.
+        systemOptions.AuthRequired = false;
+        var ct = TestContext.Current.CancellationToken;
+        var client = await ConnectAsync(null, null, ct);
+
+        var result = await client.PublishAsync(Qos1(topic, "x"), ct);
+
+        result.ReasonCode.Should().Be(MqttClientPublishReasonCode.TopicNameInvalid);
+        result.ReasonString.Should().StartWith("app:");
+        await Task.Delay(200, ct);
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("c1\nquit")]
+    [InlineData("c1\rquit")]
+    [InlineData("c 1")]
+    [InlineData("c=1")]
+    public async Task Publish_BadStreamId_Refused(string streamId)
+    {
+        var token = await tokens.CreateOrRotateAsync("chat");
+        var ct = TestContext.Current.CancellationToken;
+        var chat = await ConnectAsync("chat", token, ct);
+        var message = new MqttApplicationMessageBuilder()
+            .WithTopic("dapps/out/chat/G1AAA")
+            .WithPayload("x"u8.ToArray())
+            .WithQualityOfServiceLevel(MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce)
+            .WithUserProperty("dapps-stream", streamId)
+            .Build();
+
+        var result = await chat.PublishAsync(message, ct);
+
+        result.ReasonCode.Should().Be(MqttClientPublishReasonCode.ImplementationSpecificError);
+        result.ReasonString.Should().StartWith("dapps-stream:");
+        await Task.Delay(200, ct);
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Publish_ValidStreamIdAndSsid_Queued()
+    {
+        var token = await tokens.CreateOrRotateAsync("chat");
+        var ct = TestContext.Current.CancellationToken;
+        var chat = await ConnectAsync("chat", token, ct);
+        var message = new MqttApplicationMessageBuilder()
+            .WithTopic("dapps/out/chat/G1AAA-3")
+            .WithPayload("x"u8.ToArray())
+            .WithQualityOfServiceLevel(MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce)
+            .WithUserProperty("dapps-stream", "chat:tom.2")
+            .Build();
+
+        var result = await chat.PublishAsync(message, ct);
+
+        result.ReasonCode.Should().Be(MqttClientPublishReasonCode.Success);
+        await Eventually(async () => (await database.GetPendingOutboundMessages()).Count == 1);
+        var queued = (await database.GetPendingOutboundMessages()).Single();
+        queued.Destination.Should().Be("chat@G1AAA-3");
+        queued.StreamId.Should().Be("chat:tom.2");
     }
 
     // ---- Session takeover (#312) ----

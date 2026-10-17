@@ -1,3 +1,4 @@
+using dapps.client;
 using dapps.core.Services;
 using Microsoft.AspNetCore.Mvc;
 
@@ -23,19 +24,15 @@ public class AppApiController(Database database) : ControllerBase
     [HttpPost("outbound")]
     public async Task<ActionResult<OutboundResponse>> SubmitOutbound([FromBody] OutboundRequest request)
     {
-        if (string.IsNullOrWhiteSpace(request.App)) return BadRequest("App is required");
-        if (string.IsNullOrWhiteSpace(request.DestCallsign)) return BadRequest("DestCallsign is required");
+        // App, callsign and stream id all go on the air in the offer
+        // line, so each is checked against the one shared rule (#313).
+        if (MessageFields.AppNameError(request.App) is { } appError) return BadRequest($"App: {appError}");
+        if (MessageFields.CallsignError(request.DestCallsign) is { } callError) return BadRequest($"DestCallsign: {callError}");
         if (request.Payload is null || request.Payload.Length == 0) return BadRequest("Payload is required");
         if (request.Ttl is { } ttl && ttl <= 0) return BadRequest("Ttl must be a positive integer (seconds)");
-        // Stream id constraints: non-empty when supplied (to keep the
-        // wire form parseable), capped at 255 bytes (datagram codec
-        // length-prefix is one byte). Spaces forbidden because the
-        // text wire form is space-delimited.
-        if (request.StreamId is { } sid)
+        if (request.StreamId is { } sid && MessageFields.StreamIdError(sid) is { } sidError)
         {
-            if (string.IsNullOrWhiteSpace(sid)) return BadRequest("StreamId, when supplied, must be non-empty");
-            if (sid.Contains(' ') || sid.Contains('=')) return BadRequest("StreamId must not contain spaces or '='");
-            if (System.Text.Encoding.UTF8.GetByteCount(sid) > 255) return BadRequest("StreamId exceeds 255 bytes");
+            return BadRequest($"StreamId: {sidError}");
         }
         if (!HttpContext.IsAuthorisedForApp(request.App)) return Forbid();
 

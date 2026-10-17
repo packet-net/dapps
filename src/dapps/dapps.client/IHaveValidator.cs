@@ -77,6 +77,12 @@ public static class IHaveValidator
         {
             return OfferValidationResult.Fail(null, "missing message id");
         }
+        // Refuse what OfferLine would refuse to send (#313): a tab or
+        // other control character is no part of a header line.
+        if (!MessageFields.IsWireSafe(id))
+        {
+            return OfferValidationResult.Fail(null, "message id contains whitespace or a control character");
+        }
 
         // Parse remaining tokens as KVs. Spec forbids `=` and space inside
         // either side, so a token's first `=` is always the separator.
@@ -84,6 +90,10 @@ public static class IHaveValidator
         for (var i = 2; i < parts.Length; i++)
         {
             var token = parts[i];
+            if (!MessageFields.IsWireSafe(token))
+            {
+                return OfferValidationResult.Fail(id, "a key=value token contains whitespace or a control character");
+            }
             var eq = token.IndexOf('=');
             if (eq <= 0 || eq == token.Length - 1)
             {

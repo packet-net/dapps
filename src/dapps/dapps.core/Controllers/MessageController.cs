@@ -12,6 +12,11 @@ public class MessageController(Database database, ILogger<MessageController> log
     [HttpPost("message")]
     public async Task<IActionResult> Post(DappsMessageModel dappsMessageModel)
     {
+        // The destination goes on the air as it is (#313).
+        if (MessageFields.DestinationError(dappsMessageModel.Destination) is { } error)
+        {
+            return BadRequest($"Destination: {error}");
+        }
         var dappsMessage = new DappsMessage
         {
             Payload = Encoding.UTF8.GetBytes(dappsMessageModel.TextPayload),

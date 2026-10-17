@@ -393,6 +393,16 @@ public static class BackhaulMessageCodec
         offset += 4;
         var payload = buffer.Slice(offset, (int)payloadLen).ToArray();
 
+        // Take nothing a DAPPSv1 header line could not carry (#313): such
+        // a message could never be passed on over a session bearer.
+        foreach (var field in new[] { id, destination, originator, masterId, streamId })
+        {
+            if (field is not null && !MessageFields.IsWireSafe(field))
+            {
+                throw new InvalidDataException("a header field contains whitespace or a control character");
+            }
+        }
+
         return new BackhaulMessage(id, destination, salt, ttl, payload, headers, originator, linkSource, floodHops, sourceRoute, traversedHops, masterId, fragmentIndex, fragmentTotal, streamId, streamSeq, streamGapTimeout);
     }
 

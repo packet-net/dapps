@@ -1,3 +1,4 @@
+using dapps.client;
 using dapps.core.Models;
 using Microsoft.Extensions.Options;
 using MQTTnet;
@@ -537,6 +538,19 @@ public sealed class MqttBrokerService(
                 return;
             }
 
+            // The app and callsign go on the air in the offer line, so
+            // they must pass the one shared rule (#313).
+            var topicError = MessageFields.AppNameError(app) is { } appError ? $"app: {appError}"
+                : MessageFields.CallsignError(dest) is { } callError ? $"destination: {callError}"
+                : null;
+            if (topicError is not null)
+            {
+                logger.LogWarning("MQTT: refused publish from client {0} on {1}: {2}",
+                    e.ClientId, Printable(topic), topicError);
+                Refuse(e, MqttPubAckReasonCode.TopicNameInvalid, topicError);
+                return;
+            }
+
             // Optional TTL: an app sets the outbound message's residual
             // lifetime via a `dapps-ttl` user property on the publish.
             // Missing or unparseable → null, i.e. "no expiry".
@@ -558,9 +572,16 @@ public sealed class MqttBrokerService(
             uint? streamGap = null;
             var sidProp = e.ApplicationMessage.UserProperties?
                 .FirstOrDefault(p => string.Equals(p.Name, "dapps-stream", StringComparison.OrdinalIgnoreCase));
-            if (sidProp is not null && !string.IsNullOrWhiteSpace(sidProp.Value)
-                && !sidProp.Value.Contains(' ') && !sidProp.Value.Contains('=')
-                && Encoding.UTF8.GetByteCount(sidProp.Value) <= 255)
+            if (sidProp is not null && MessageFields.StreamIdError(sidProp.Value) is { } sidError)
+            {
+                // Refused rather than sent unordered: the app asked for
+                // ordering and would not get it.
+                logger.LogWarning("MQTT: refused publish from client {0} on {1}: dapps-stream: {2}",
+                    e.ClientId, Printable(topic), sidError);
+                Refuse(e, MqttPubAckReasonCode.ImplementationSpecificError, $"dapps-stream: {sidError}");
+                return;
+            }
+            if (sidProp is not null)
             {
                 streamId = sidProp.Value;
                 var gtProp = e.ApplicationMessage.UserProperties?
@@ -648,11 +669,17 @@ public sealed class MqttBrokerService(
     /// <summary>Drop a client publish and say why in the PUBACK (MQTT 5;
     /// MQTT 3.1.1 has no reason codes, so those clients still see a plain
     /// PUBACK).</summary>
-    private static void Refuse(InterceptingPublishEventArgs e, MqttPubAckReasonCode reason)
+    private static void Refuse(InterceptingPublishEventArgs e, MqttPubAckReasonCode reason, string? why = null)
     {
         e.ProcessPublish = false;
         e.Response.ReasonCode = reason;
+        if (why is not null) e.Response.ReasonString = why;
     }
+
+    /// <summary>A topic or value fit for a log line: control characters
+    /// shown as escapes, so a refused CR or LF can't forge log lines.</summary>
+    private static string Printable(string s)
+        => string.Concat(s.Select(c => char.IsControl(c) ? $"\\x{(int)c:x2}" : c.ToString()));
 
     /// <summary>
     /// Storing a publish failed. An MQTT 5 client gets an error PUBACK; an

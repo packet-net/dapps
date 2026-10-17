@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using dapps.client;
 using dapps.core.Models;
 using SQLite;
 
@@ -134,7 +135,8 @@ public sealed class AppTokenStore(ILogger<AppTokenStore> logger)
     /// REST route segment, so '/', '+', '#' (MQTT topic wildcards and
     /// separator) and whitespace would either break topic matching or
     /// never round-trip through a URL cleanly; control characters are
-    /// rejected for the same reason nothing else accepts them. Lower-
+    /// rejected for the same reason nothing else accepts them, and '='
+    /// because the name goes in the <c>dst=</c> token on the air. Lower-
     /// cases the result because MQTT CONNECT and the REST bearer check
     /// both compare app names case-insensitively already (see
     /// <see cref="MqttBrokerService"/> and <see cref="BearerAuthMiddleware"/>) -
@@ -143,22 +145,15 @@ public sealed class AppTokenStore(ILogger<AppTokenStore> logger)
     /// </summary>
     public static bool TryNormalizeAppName(string? raw, out string normalized, out string? error)
     {
+        // The same rule the app interface applies to the app a message
+        // is sent from or to (MessageFields, #313), so a token is only
+        // ever minted for an app that can actually send.
         var trimmed = (raw ?? "").Trim();
-        if (trimmed.Length == 0)
+        if (MessageFields.AppNameError(trimmed) is { } invalid)
         {
             normalized = "";
-            error = "App name is required.";
+            error = invalid;
             return false;
-        }
-
-        foreach (var c in trimmed)
-        {
-            if (c > '~' || char.IsWhiteSpace(c) || char.IsControl(c) || c is '/' or '+' or '#')
-            {
-                normalized = "";
-                error = "App name must be plain ASCII and can't contain '/', '+', '#', whitespace, or control characters.";
-                return false;
-            }
         }
 
         normalized = trimmed.ToLowerInvariant();

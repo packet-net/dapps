@@ -59,6 +59,8 @@ Anatomy of the `ihave` line:
 
 Plus the optional features documented under [Full interoperability](#full-interoperability) (`ttl`, `src`, `mid`, `frag`, `sid`, `sn`, `gt`).
 
+No value may contain whitespace or a control character: a space would start another key, and a CR or LF another command. A sender must never write such a value, and the reference daemon answers `error <id>` to a line that has one (a tab, say). In `dst=`, the app name is plain ASCII without `/`, `+`, `#` or `=`, and the callsign is letters and digits with an optional SSID from 0 to 15; the reference daemon refuses anything else from its apps.
+
 Reserved key names are validated by [IHaveValidator.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/IHaveValidator.cs). Any other `key=value` token is treated as an opaque application header and preserved through to the receiving app.
 
 Receiver replies are one of:
@@ -270,7 +272,7 @@ ihave d2e7f0a len=42 fmt=p s=1714982401000 src=G0ORIG sid=chat sn=1 gt=600 dst=c
 ihave e3f8a1b len=42 fmt=p s=1714982401500 src=G0ORIG sid=chat sn=2 gt=600 dst=chat@G0RCV chk=...
 ```
 
-- `sid=<string>`: stream id. UTF-8, no spaces or `=`, max 255 bytes. Sender-scoped: two senders can pick the same id without collision (the receiver keys its cursor on `(originator, sid)`).
+- `sid=<string>`: stream id. UTF-8, no whitespace, control characters or `=`, max 255 bytes. Sender-scoped: two senders can pick the same id without collision (the receiver keys its cursor on `(originator, sid)`).
 - `sn=<uint32>`: sequence number, monotonic per `(sender, sid)`.
 - `gt=<uint32>`: gap timeout in seconds. `0` = strict (stall forever waiting for the missing prior); `>0` = skip the gap after that many seconds.
 

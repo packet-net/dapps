@@ -126,6 +126,31 @@ public sealed class ExchangeSessionTests : IDisposable
     }
 
     [Fact]
+    public async Task AMessageWhoseDestinationWouldBreakTheLine_FailsAndNeverReachesTheWire()
+    {
+        // #313: a destination holding a line break would read as a
+        // separate command on the far end.
+        var bad = Message("evil", $"app@{Them}\nquit", 1);
+        var good = Message("fine", $"app@{Them}", 2);
+        var batch = new RecordingBatch(bad, good);
+        var (session, peer, _, wire) = await CallerAsync();
+        session.TryTake(batch);
+
+        await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules() + "\n"), Ct);
+
+        (await peer.ReadLineAsync(Ct)).Should().StartWith("exchange ");
+        var (line, payload) = await peer.ReadWithPayloadAsync(Ct);
+        line.Should().StartWith($"msg {good.Id} ");
+        payload.Should().Equal(good.Payload);
+        await peer.WriteLineAsync($"ack {good.Id}", Ct);
+        await batch.WaitForOutcomesAsync(2, Ct);
+
+        batch.Outcomes.Single(o => o.Id == bad.Id).Result.Accepted.Should().BeFalse();
+        batch.Outcomes.Single(o => o.Id == good.Id).Result.Accepted.Should().BeTrue();
+        wire.Writes.Should().NotContain(w => w.Contains($"{Them}\nquit") || w.Contains(bad.Id));
+    }
+
+    [Fact]
     public async Task ACaller_SendsNoContents_BeforeThePeersRulesArrive()
     {
         var m = Message("hello", $"app@{Them}");

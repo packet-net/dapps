@@ -1,4 +1,5 @@
 using System.Text;
+using dapps.client;
 using dapps.core.Models;
 using dapps.core.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -43,6 +44,9 @@ public sealed class IndexModel(
         if (string.IsNullOrWhiteSpace(Send.App)) FlashError = "App is required";
         else if (string.IsNullOrWhiteSpace(Send.Destination)) FlashError = "Destination callsign is required";
         else if (string.IsNullOrWhiteSpace(Send.Payload)) FlashError = "Payload is required";
+        // Both go on the air in the offer line (#313).
+        else if (MessageFields.AppNameError(Send.App.Trim()) is { } appError) FlashError = appError;
+        else if (MessageFields.CallsignError(Send.Destination.Trim()) is { } callError) FlashError = $"Destination: {callError}";
 
         if (FlashError is null)
         {

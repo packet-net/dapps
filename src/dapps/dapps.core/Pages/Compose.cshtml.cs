@@ -1,4 +1,5 @@
 using System.Text;
+using dapps.client;
 using dapps.core.Models;
 using dapps.core.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -45,6 +46,9 @@ public sealed class ComposeModel(
         if (string.IsNullOrWhiteSpace(Form.App)) FlashError = "App is required";
         else if (string.IsNullOrWhiteSpace(Form.Destination)) FlashError = "Destination callsign is required";
         else if (string.IsNullOrWhiteSpace(Form.Payload)) FlashError = "Payload is required";
+        // Both go on the air in the offer line (#313).
+        else if (MessageFields.AppNameError(Form.App.Trim()) is { } appError) FlashError = appError;
+        else if (MessageFields.CallsignError(Form.Destination.Trim()) is { } callError) FlashError = $"Destination: {callError}";
 
         int? ttl = null;
         if (FlashError is null && !string.IsNullOrWhiteSpace(Form.TtlSeconds))

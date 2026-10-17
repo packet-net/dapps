@@ -59,6 +59,17 @@ public static class OfferLine
                 "streamId, streamSeq, streamGapTimeoutSeconds must all be set together (opt-in ordering) or all be null");
         }
 
+        // Every text field goes on the line as it is, so one holding a
+        // space, CR, LF or control character would add keys or whole
+        // commands on the far end (#313). The app interface refuses such
+        // values; this makes sure nothing else can put one on the air.
+        RequireWireSafe(id, nameof(id), required: true);
+        RequireWireSafe(format, nameof(format), required: true);
+        RequireWireSafe(destination, nameof(destination), required: true);
+        RequireWireSafe(originator, nameof(originator), required: false);
+        RequireWireSafe(masterId, nameof(masterId), required: false);
+        RequireWireSafe(streamId, nameof(streamId), required: false);
+
         var sb = new StringBuilder($"{verb} {id} len={length} fmt={format}");
         if (compressedLength.HasValue)
         {
@@ -91,5 +102,18 @@ public static class OfferLine
         }
         sb.Append('\n');
         return sb.ToString();
+    }
+
+    private static void RequireWireSafe(string? value, string field, bool required)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            if (required) throw new ArgumentException($"{field} is empty", field);
+            return;
+        }
+        if (!MessageFields.IsWireSafe(value))
+        {
+            throw new ArgumentException($"{field} contains whitespace or a control character, so it can't go on a header line", field);
+        }
     }
 }
