@@ -76,6 +76,10 @@ public sealed class AgwInboundService(
     /// the link backs off: with the node down, every dial would otherwise
     /// cost a connect attempt and its log lines.</summary>
     internal static readonly TimeSpan DialReopenInterval = TimeSpan.FromSeconds(30);
+    /// <summary>How long a listen-only link stays up once nothing wants
+    /// it, for a discovery channel edit, which restarts the bearer, to
+    /// take it over rather than close and reopen it.</summary>
+    internal static readonly TimeSpan ListenOnlyLinger = TimeSpan.FromSeconds(5);
 
     private readonly CancellationTokenSource stoppingTokenSource = new();
     private readonly OperationalMetrics metrics = metrics ?? new OperationalMetrics();
@@ -269,11 +273,12 @@ public sealed class AgwInboundService(
         // a host that accepts the TCP socket and closes it straight
         // back would otherwise reset FailureStreak to 0 just before the
         // failure puts it back to 1, capping the delay at the ramp's
-        // fastest tier instead of escalating. A reply from the node is
-        // proof the connection is more than a TCP handshake.
+        // fastest tier instead of escalating. A reply from the node (to
+        // the 'X', or on a listen-only link to a 'G') is proof the
+        // connection is more than a TCP handshake.
         reconnect.RecordSuccess();
         PublishBackoffState();
-        logger.LogDebug("AGW inbound: 'X' ack");
+        logger.LogDebug(listenOnly ? "AGW inbound: 'G' answered" : "AGW inbound: 'X' ack");
 
         // Before it is published, so a subscriber hears it from the start.
         using var uiFrames = ui.Attach(opened);
@@ -283,11 +288,16 @@ public sealed class AgwInboundService(
         {
             if (listenOnly)
             {
-                // Open only for discovery: closed once nothing wants it.
-                await Task.WhenAny(opened.Closed, ui.WhenEmptyAsync()).WaitAsync(ct);
-                unwanted = !opened.Closed.IsCompleted;
-                if (unwanted)
+                // Open only for discovery: closed once nothing wants it. A
+                // channel edit stops the old bearer a moment before it
+                // starts the new one, so wait a little before closing.
+                while (!opened.Closed.IsCompleted)
                 {
+                    await Task.WhenAny(opened.Closed, ui.WhenEmptyAsync()).WaitAsync(ct);
+                    if (opened.Closed.IsCompleted) break;
+                    await Task.WhenAny(opened.Closed, Task.Delay(ListenOnlyLinger, timeProvider, ct)).WaitAsync(ct);
+                    if (opened.Closed.IsCompleted || ui.Any) continue;
+                    unwanted = true;
                     logger.LogInformation("AGW inbound: no AGW discovery channel is running any more; closing the listen-only connection");
                     return;
                 }

@@ -16,7 +16,7 @@ public class BeaconCodecTests
     {
         var beacon = new BeaconFrame("M0LTE-9", Hops: 0, Ttl: 300, Bearer: new AgwBearerHint(0));
         var bytes = BeaconCodec.Encode(beacon);
-        Encoding.ASCII.GetString(bytes).Should().Be("DAPPS v1 callsign=M0LTE-9 hops=0 ttl=300");
+        Encoding.ASCII.GetString(bytes).Should().Be("DAPPS v1 callsign=M0LTE-9 hops=0 ttl=300 end=1");
     }
 
     [Fact]
@@ -69,5 +69,49 @@ public class BeaconCodecTests
     {
         var bytes = Encoding.ASCII.GetBytes(raw);
         BeaconCodec.TryParse(bytes, new AgwBearerHint(0), out var b).Should().BeFalse();
+    }
+
+    // 64-bit LinBPQ's AGW monitor hands a UI frame over with 4 stale
+    // bytes after its data (M0LTE/linbpq#75): printable, digits, spaces.
+    [Theory]
+    [InlineData("@`\u0001x")]
+    [InlineData("W~12")]
+    [InlineData("9 Z3")]
+    [InlineData("1234")]
+    public void Decode_JunkAfterTheEndField_IsIgnored(string junk)
+    {
+        var bytes = Encoding.ASCII.GetBytes($"DAPPS v1 callsign=M0LTE-9 hops=1 ttl=600 end=1{junk}\r");
+        BeaconCodec.TryParse(bytes, new AgwBearerHint(0), out var b).Should().BeTrue();
+        (b!.Callsign, b.Hops, b.Ttl).Should().Be(("M0LTE-9", 1, 600));
+    }
+
+    [Theory]
+    [InlineData("@`\u0001x")]
+    [InlineData("W~")]
+    [InlineData("#9")]
+    public void Decode_FromAnOlderSender_JunkOnTheLastField_IsCutOff(string junk)
+    {
+        // No end field: the junk lands on ttl, which takes its leading digits.
+        var bytes = Encoding.ASCII.GetBytes($"DAPPS v1 callsign=M0LTE-9 hops=1 ttl=600{junk}\r");
+        BeaconCodec.TryParse(bytes, new AgwBearerHint(0), out var b).Should().BeTrue();
+        (b!.Callsign, b.Hops, b.Ttl).Should().Be(("M0LTE-9", 1, 600));
+    }
+
+    [Fact]
+    public void Decode_FromAnOlderSender_DigitJunk_IsCappedAtADay()
+    {
+        var bytes = Encoding.ASCII.GetBytes("DAPPS v1 callsign=M0LTE-9 hops=1 ttl=5400123\r");
+        BeaconCodec.TryParse(bytes, new AgwBearerHint(0), out var b).Should().BeTrue();
+        b!.Ttl.Should().Be(BeaconCodec.MaxTolerantTtlSeconds);
+    }
+
+    [Theory]
+    [InlineData("DAPPS v1 callsign=A hops=0x ttl=60 end=1")]      // junk on a field that isn't last
+    [InlineData("DAPPS v1 callsign=A hops=0 ttl=60x end=1")]      // nor on the last one when end= follows it
+    [InlineData("DAPPS v1 callsign=A hops=0 ttl=x60")]            // no leading digits
+    [InlineData("DAPPS v1 callsign=A hops=0 ttl=0@`")]            // still positive
+    public void Decode_JunkAnywhereElse_Fails(string raw)
+    {
+        BeaconCodec.TryParse(Encoding.ASCII.GetBytes(raw), new AgwBearerHint(0), out _).Should().BeFalse();
     }
 }

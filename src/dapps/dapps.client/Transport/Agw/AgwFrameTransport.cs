@@ -186,7 +186,17 @@ public sealed class AgwFrameTransport
     /// Frames of other kinds ahead of it are skipped. Throws
     /// <see cref="TimeoutException"/> if no reply comes in time.
     /// </summary>
-    public async Task<AgwFrame> ReadRegisterReplyAsync(string callsign, TimeProvider clock, CancellationToken ct)
+    public Task<AgwFrame> ReadRegisterReplyAsync(string callsign, TimeProvider clock, CancellationToken ct) =>
+        ReadReplyAsync('X', $"registering {callsign}", clock, ct);
+
+    /// <summary>
+    /// Waits for the host's reply to a <paramref name="kind"/> request
+    /// (<paramref name="request"/> names it in the error), at most
+    /// <see cref="RegisterReplyTimeout"/> on <paramref name="clock"/>.
+    /// Frames of other kinds ahead of it are skipped. Throws
+    /// <see cref="TimeoutException"/> if no reply comes in time.
+    /// </summary>
+    public async Task<AgwFrame> ReadReplyAsync(char kind, string request, TimeProvider clock, CancellationToken ct)
     {
         using var timeout = new CancellationTokenSource(RegisterReplyTimeout, clock);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
@@ -195,13 +205,13 @@ public sealed class AgwFrameTransport
             while (true)
             {
                 var frame = await ReadFrameAsync(linked.Token);
-                if (frame.Kind == 'X') return frame;
+                if (frame.Kind == kind) return frame;
             }
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested && !ct.IsCancellationRequested)
         {
             throw new TimeoutException(
-                $"AGW: no reply to registering {callsign} within {RegisterReplyTimeout.TotalSeconds:F0}s; is the AGW port setting really the node's AGW port?");
+                $"AGW: no reply to {request} within {RegisterReplyTimeout.TotalSeconds:F0}s; is the AGW port setting really the node's AGW port?");
         }
     }
 

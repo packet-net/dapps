@@ -68,6 +68,12 @@ public sealed class DiscoveryService(
     /// not stall the beacon loop.</summary>
     private static readonly TimeSpan StopGrace = TimeSpan.FromSeconds(5);
 
+    /// <summary>How recently a channel may have beaconed for a reconnect
+    /// not to beacon again: its interval, at most 5 minutes. A callsign
+    /// change always beacons at once.</summary>
+    private static TimeSpan ReconnectAnnounceAfter(DiscoveryChannelInfo ch) =>
+        TimeSpan.FromSeconds(Math.Min(Math.Max(5, ch.BeaconIntervalSeconds), 300));
+
     private bool _noChannelsLogged;
     private readonly HashSet<string> _unknownBearersLogged = new(StringComparer.Ordinal);
 
@@ -268,6 +274,9 @@ public sealed class DiscoveryService(
         // What each bearer last sent over (IDiscoveryBearer.Connection):
         // a new one means it has just reconnected.
         var connections = new Dictionary<string, object>(StringComparer.Ordinal);
+        // When each channel last beaconed, and as whom: a reconnect soon
+        // after does not beacon again (ReconnectAnnounceAfter).
+        var lastBeacon = new Dictionary<(string Bearer, string ChannelKey), (DateTime At, string Callsign)>();
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -332,12 +341,22 @@ public sealed class DiscoveryService(
                 if (!connections.TryGetValue(kv.Key, out var last) || !ReferenceEquals(last, connection))
                 {
                     // Just (re)connected, maybe under a new callsign or to
-                    // another node: announce now, as on a bearer's start.
+                    // another node: announce now, as on a bearer's start,
+                    // unless this channel beaconed as the same callsign a
+                    // moment ago (a link flapping must not beacon each time).
                     connections[kv.Key] = connection;
+                    var callsign = options.CurrentValue.Callsign;
                     foreach (var ch in kv.Value)
                     {
                         var key = (kv.Key, ch.ChannelKey);
-                        if (nextEmit.ContainsKey(key)) nextEmit[key] = now.AddMilliseconds(Random.Shared.Next(50, 250));
+                        if (!nextEmit.ContainsKey(key)) continue;
+                        if (lastBeacon.TryGetValue(key, out var sent)
+                            && string.Equals(sent.Callsign, callsign, StringComparison.OrdinalIgnoreCase)
+                            && now - sent.At < ReconnectAnnounceAfter(ch))
+                        {
+                            continue;
+                        }
+                        nextEmit[key] = now.AddMilliseconds(Random.Shared.Next(50, 250));
                     }
                 }
                 foreach (var ch in kv.Value)
@@ -378,11 +397,13 @@ public sealed class DiscoveryService(
                     {
                         await bearer.AnnounceAsync(beacon, ch.ChannelKey, stoppingToken);
                         beaconOk = true;
+                        lastBeacon[key] = (now, beacon.Callsign);
                     }
                     catch (AgwLinkDownException ex)
                     {
                         // The node is not connected: one line, and no
-                        // beacon held back for when it is.
+                        // beacon held back for when it is, nor charged.
+                        airtime?.Release($"beacon {kv.Key}/{ch.ChannelKey}", ch.ChannelKey);
                         logger.LogWarning("DiscoveryService: announce on {0}/{1} failed: {2}", kv.Key, ch.ChannelKey, ex.Message);
                         beaconErr = ex.GetType().Name;
                     }
@@ -447,6 +468,7 @@ public sealed class DiscoveryService(
                     }
                     catch (AgwLinkDownException ex)
                     {
+                        airtime?.Release($"scheduled-solicit {kv.Key}/{ch.ChannelKey}", ch.ChannelKey);
                         logger.LogWarning("DiscoveryService: scheduled solicit on {0}/{1} failed: {2}", kv.Key, ch.ChannelKey, ex.Message);
                         solErr = ex.GetType().Name;
                     }
@@ -650,6 +672,7 @@ public sealed class DiscoveryService(
         catch (OperationCanceledException) { /* shutdown */ }
         catch (AgwLinkDownException ex)
         {
+            airtime?.Release($"solicit-reply {bearer.Name}/{rs.ChannelKey}", rs.ChannelKey);
             logger.LogWarning("DiscoveryService: failed to reply to solicit on {0}/{1}: {2}", bearer.Name, rs.ChannelKey, ex.Message);
         }
         catch (Exception ex)

@@ -101,6 +101,26 @@ public sealed class AirtimeAccountant(
         }
     }
 
+    /// <summary>
+    /// Gives back the latest reservation made with this
+    /// <paramref name="reason"/> and <paramref name="channelKey"/>: the
+    /// transmission it was for never went (the connection to the node
+    /// was down).
+    /// </summary>
+    public void Release(string reason, string? channelKey = null)
+    {
+        lock (_lock)
+        {
+            var entries = _entries.ToList();
+            var i = entries.FindLastIndex(e =>
+                e.Reason == reason && string.Equals(e.ChannelKey, channelKey, StringComparison.Ordinal));
+            if (i < 0) return;
+            entries.RemoveAt(i);
+            _entries.Clear();
+            foreach (var e in entries) _entries.Enqueue(e);
+        }
+    }
+
     /// <summary>Trailing-hour airtime consumption, in seconds, across
     /// every channel. For dashboards / diagnostics; not part of the
     /// reservation flow.</summary>

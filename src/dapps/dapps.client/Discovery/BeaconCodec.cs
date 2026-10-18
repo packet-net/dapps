@@ -11,11 +11,14 @@ namespace dapps.client.Discovery;
 ///
 /// Wire form:
 /// <code>
-///   DAPPS v1 callsign=M0LTE-9 hops=0 ttl=300
+///   DAPPS v1 callsign=M0LTE-9 hops=0 ttl=300 end=1
 /// </code>
 ///
 /// One line, no trailing newline. ASCII-only on the wire - callsigns
-/// are ASCII anyway and the KV values are integers.
+/// are ASCII anyway and the KV values are integers. The closing
+/// <c>end=1</c> takes whatever a node appends after the data (see
+/// <see cref="DiscoveryFields"/>); lines without it, from older
+/// senders, are still read, their last field tolerantly.
 ///
 /// The bearer-specific source hint (<see cref="BeaconFrame.Bearer"/>) is
 /// NOT carried in the wire form - it's stamped by the receive bearer
@@ -27,9 +30,15 @@ public static class BeaconCodec
 {
     public const string Magic = "DAPPS v1";
 
+    /// <summary>The largest ttl read from an older sender's line, whose
+    /// last field (ttl) may carry junk digits: 24 hours, the longest any
+    /// link class advertises (<see cref="LinkClassDefaults.AdvertisedTtlSeconds"/>,
+    /// HF). Lines that end with <c>end=1</c> are not capped.</summary>
+    public const int MaxTolerantTtlSeconds = 86400;
+
     public static byte[] Encode(BeaconFrame beacon)
     {
-        var line = $"{Magic} callsign={beacon.Callsign} hops={beacon.Hops} ttl={beacon.Ttl}";
+        var line = $"{Magic} callsign={beacon.Callsign} hops={beacon.Hops} ttl={beacon.Ttl} {DiscoveryFields.End}";
         return Encoding.ASCII.GetBytes(line);
     }
 
@@ -40,29 +49,28 @@ public static class BeaconCodec
 
         var text = Encoding.ASCII.GetString(payload).TrimEnd('\r', '\n');
         if (!text.StartsWith(Magic + " ", StringComparison.Ordinal)) return false;
+        if (!DiscoveryFields.TryRead(text[(Magic.Length + 1)..], out var fields, out var lastIsTolerant)) return false;
 
-        var rest = text[(Magic.Length + 1)..];
         string? callsign = null;
         int? hops = null;
         int? ttl = null;
 
-        foreach (var token in rest.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        for (var i = 0; i < fields.Count; i++)
         {
-            var eq = token.IndexOf('=');
-            if (eq <= 0 || eq == token.Length - 1) return false;
-            var key = token[..eq];
-            var value = token[(eq + 1)..];
+            var (key, value) = fields[i];
+            var tolerant = lastIsTolerant && i == fields.Count - 1;
             switch (key)
             {
                 case "callsign":
-                    callsign = value;
+                    if (!DiscoveryFields.TryCallsign(value, tolerant, out var c)) return false;
+                    callsign = c;
                     break;
                 case "hops":
-                    if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var h) || h < 0) return false;
+                    if (!DiscoveryFields.TryInt(value, tolerant, int.MaxValue, out var h)) return false;
                     hops = h;
                     break;
                 case "ttl":
-                    if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var t) || t <= 0) return false;
+                    if (!DiscoveryFields.TryInt(value, tolerant, MaxTolerantTtlSeconds, out var t) || t <= 0) return false;
                     ttl = t;
                     break;
                 // Unknown keys ignored - forward-compat with future fields.

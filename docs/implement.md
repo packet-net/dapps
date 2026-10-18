@@ -493,25 +493,28 @@ Optional. When implemented, lets nodes find each other without manual neighbour 
 A beacon is a single ASCII line, sent on a discovery channel (an AX.25 UI frame on a known frequency, a UDP multicast group, etc.) on a slow cadence (default ~30 minutes per channel):
 
 ```
-DAPPS v1 callsign=M0LTE-9 hops=0 ttl=300
+DAPPS v1 callsign=M0LTE-9 hops=0 ttl=300 end=1
 ```
 
 - `DAPPS v1` is the literal magic + version prefix. Required.
 - `callsign=<call>` is the originator. Required, non-empty.
 - `hops=<int>` is the number of intermediate hops the beacon has been forwarded over. 0 = direct. Required, ≥ 0.
 - `ttl=<int>` is how long (seconds) a receiver should treat this peer as fresh. Required, > 0.
+- `end=1` closes the line. Send it last. A receiver ignores everything from the `end` field on, in the same token or after it.
 
-No trailing newline. ASCII-only. Unknown KVs are ignored - forward-compat. Reference: [BeaconCodec.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/Discovery/BeaconCodec.cs).
+No trailing newline. ASCII-only. Unknown KVs are ignored - forward-compat.
+
+Why `end=1`: 64-bit LinBPQ's AGW monitor hands every received UI frame to the application with 4 stale bytes after its data (printable, digits or spaces; the frame shows as `Len=44` for 40 bytes of data). On a beacon those bytes land on `end=1`, which a receiver ignores, rather than on `ttl`. Senders from before `end=1` put the junk on their last field, so when a line has no `end` field read its last field tolerantly and every other field strictly: a number takes its leading digits (at least one; the reference daemon caps a ttl read this way at 86400, the longest a link class advertises), a callsign the leading run of letters, digits and `-`, which must then be a whole callsign (1 to 6 letters or digits, optional SSID 0 to 15) or the line is dropped. Junk containing a space still splits off a token that isn't `key=value`, and the line is dropped, on an old sender's line only. Reference: [BeaconCodec.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/Discovery/BeaconCodec.cs).
 
 The receiver records the beacon as a discovered peer, stamped with the bearer it arrived on (so the routing layer knows how to reach back). The bearer hint is **not** carried in the wire form - it's whatever the receive bearer says it is. Including it on the wire would let a misbehaving peer claim to be reachable on routes it isn't.
 
 Solicits run alongside, on the same channels:
 
 ```
-DAPPS v1 solicit callsign=M0LTE-9
+DAPPS v1 solicit callsign=M0LTE-9 end=1
 ```
 
-A solicit asks "everyone within earshot, please beacon now (with a small random jitter so we don't all collide)". The reference daemon answers with a normal beacon emission delayed by [0, 5] seconds. Unknown senders that haven't beacon'd yet show up promptly without waiting for the next scheduled beacon. Reference: [SolicitCodec.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/Discovery/SolicitCodec.cs).
+The same `end=1` rule applies; on a line without it the callsign is the tolerantly read last field. A solicit asks "everyone within earshot, please beacon now (with a small random jitter so we don't all collide)". The reference daemon answers with a normal beacon emission delayed by [0, 5] seconds. Unknown senders that haven't beacon'd yet show up promptly without waiting for the next scheduled beacon. Reference: [SolicitCodec.cs](https://github.com/packet-net/dapps/blob/master/src/dapps/dapps.client/Discovery/SolicitCodec.cs).
 
 An implementation can skip beacons entirely and rely on configured neighbours. It can also implement beacons but skip solicits (you'll just converge on the beacon cadence rather than on demand).
 

@@ -250,6 +250,15 @@ public sealed class AgwLink : IAsyncDisposable
             {
                 link = new AgwLink(tcp, framing, callsign, listenOnly: true, logger, onInbound, keepalive, clock ?? TimeProvider.System, stopping);
                 await framing.WriteFrameAsync(new AgwFrame(0, 'm', 0, "", "", []), ct);
+
+                // With no 'X' to answer, a port query ('G') stands in as
+                // proof the host speaks AGW: a service that takes the TCP
+                // connection and closes it, or never answers, fails the
+                // open and backs off like a refused registration. Real
+                // time, as the 'X' reply below.
+                await framing.WriteFrameAsync(new AgwFrame(0, 'G', 0, "", "", []), ct);
+                await framing.ReadReplyAsync('G', "a port query", TimeProvider.System, ct);
+
                 link.readerTask = Task.Run(link.ReadLoopAsync);
                 return link;
             }

@@ -16,7 +16,7 @@ public sealed class SolicitCodecTests
     public void Encode_HappyPath_ProducesAsciiLine()
     {
         var bytes = SolicitCodec.Encode(new SolicitFrame("M0LTE-9"));
-        Encoding.ASCII.GetString(bytes).Should().Be("DAPPS v1 solicit callsign=M0LTE-9");
+        Encoding.ASCII.GetString(bytes).Should().Be("DAPPS v1 solicit callsign=M0LTE-9 end=1");
     }
 
     [Fact]
@@ -77,5 +77,36 @@ public sealed class SolicitCodecTests
         var bytes = Encoding.ASCII.GetBytes("DAPPS v1 solicit callsign=M0LTE-9 future=value");
         SolicitCodec.TryParse(bytes, out var solicit).Should().BeTrue();
         solicit!.Callsign.Should().Be("M0LTE-9");
+    }
+
+    [Theory]
+    [InlineData("@`\u0001x")]
+    [InlineData("9 Z3")]
+    [InlineData("12AB")]
+    public void TryParse_JunkAfterTheEndField_IsIgnored(string junk)
+    {
+        var bytes = Encoding.ASCII.GetBytes($"DAPPS v1 solicit callsign=M0LTE-9 end=1{junk}\r");
+        SolicitCodec.TryParse(bytes, out var solicit).Should().BeTrue();
+        solicit!.Callsign.Should().Be("M0LTE-9");
+    }
+
+    [Theory]
+    [InlineData("@`\u0001x")]
+    [InlineData("~#")]
+    [InlineData(" ")]
+    public void TryParse_FromAnOlderSender_JunkAfterTheCallsign_IsCutOff(string junk)
+    {
+        var bytes = Encoding.ASCII.GetBytes($"DAPPS v1 solicit callsign=M0LTE-9{junk}\r");
+        SolicitCodec.TryParse(bytes, out var solicit).Should().BeTrue();
+        solicit!.Callsign.Should().Be("M0LTE-9");
+    }
+
+    [Theory]
+    [InlineData("DAPPS v1 solicit callsign=M0LTE-912")]   // digit junk: not a callsign any more
+    [InlineData("DAPPS v1 solicit callsign=M0LTE-9AB")]   // letter junk: likewise
+    [InlineData("DAPPS v1 solicit callsign=@`")]          // nothing callsign-like at all
+    public void TryParse_FromAnOlderSender_JunkThatLeavesNoCallsign_Fails(string raw)
+    {
+        SolicitCodec.TryParse(Encoding.ASCII.GetBytes(raw), out _).Should().BeFalse();
     }
 }
