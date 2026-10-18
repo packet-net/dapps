@@ -395,7 +395,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var ours = await bpq.ReadUntilAsync('d', ct);
         ours.Port.Should().Be(Port, "dapps closed this one, so it tells BPQ");
 
-        // BPQ answers an application's 'd' with two of its own: "***
+        // BPQ answers an application's 'd' with up to two of its own: "***
         // DISCONNECTED RETRYOUT With" at once, stamped with the port we
         // just used, and "*** DISCONNECTED From Station" once the link
         // has gone, stamped with whatever port we used last. The entry is

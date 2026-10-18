@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using dapps.client.Transport;
+using dapps.client.Transport.Agw;
 using dapps.client.Tx;
 using Microsoft.Extensions.Logging;
 
@@ -219,6 +220,13 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             // nobody has looked), it's a failed dial like any other, below.
             logger.LogInformation("Deferring {0}: {1}; it goes on that session", first.Id, ex.Message);
             await batch.CompleteAsync(first, BackhaulSendResult.Defer(ex.Message), sw.Elapsed, ct);
+            return;
+        }
+        catch (AgwLinkDownException ex) when (!ct.IsCancellationRequested)
+        {
+            // Our own connection to the node is down: one line, no stack.
+            logger.LogWarning("Backhaul send failed for {0} to {1}: {2}", first.Id, route.Callsign, ex.Message);
+            await batch.CompleteAsync(first, BackhaulSendResult.Fail(ex.Message), sw.Elapsed, ct);
             return;
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)

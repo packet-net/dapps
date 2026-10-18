@@ -12,7 +12,7 @@ Mainline BPQ does not yet ship RHPv2; when it does, DAPPS will work over it with
 
 AGW is a 1990s protocol - it works fine on hosts that don't constrain callsign claims per connection (BPQ being the obvious one), but it has limits that show up under modern use. RHPv2 addresses several of them:
 
-- **Better session multiplexing.** AGW assumes one TCP connection per host application. RHPv2 multiplexes many sessions over one TCP connection, with handle-based addressing. DAPPS's inbound listener and per-outbound-forward sends share one socket on RHPv2; on AGW each outbound forward needs its own TCP connection.
+- **Better session multiplexing.** RHPv2 multiplexes many sessions over one TCP connection with handle-based addressing. AGW tells sessions on a connection apart only by port and callsign pair, so DAPPS has to work out which session each frame belongs to from that and from the text of the node's messages. DAPPS carries its inbound and outbound sessions over one connection on either.
 - **Cleaner inbound dispatch.** AGW's "register a callsign and receive every connect that matches" model has edge cases around shared callsigns and SSIDs. XRouter's per-TCP-connection AGW callsign claim is the most painful manifestation of this; RHPv2's handle-based binding sidesteps it entirely.
 - **Actually defined error semantics.** AGW's behaviour on TNC reconnect, port up/down events, etc., is empirically discovered; RHPv2 makes it part of the spec.
 

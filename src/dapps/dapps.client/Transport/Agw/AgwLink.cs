@@ -46,9 +46,12 @@ namespace dapps.client.Transport.Agw;
 /// The two kinds of 'C' are told apart by their text alone: the
 /// confirmation of our own call reads "*** CONNECTED With Station",
 /// an inbound call "*** CONNECTED To Station". BPQ answers each 'd' we
-/// send with two of its own ("*** DISCONNECTED RETRYOUT With" at once,
-/// "*** DISCONNECTED From Station" when the link has gone); the link
-/// expects them and drops them, so they never reach a newer session.
+/// send with "*** DISCONNECTED RETRYOUT With" at once, on the 'd''s own
+/// port, and, if the 'd' matched a connection, "*** DISCONNECTED From
+/// Station" once the link has gone; Dire Wolf answers with the second
+/// alone. The link expects them for a while and drops them, so they
+/// never end a newer session. A call that fails reads "RETRYOUT With"
+/// too, on both hosts: a dial waiting under that exact key takes it.
 ///
 /// When the link ends, for whatever reason, every dial still waiting
 /// fails and every session in the table is marked closed by the far end
@@ -79,6 +82,16 @@ public sealed class AgwLink : IAsyncDisposable
     /// in every normal crossing our confirmation came within 5 s.
     /// </summary>
     public static readonly TimeSpan CrossedDialGiveUp = TimeSpan.FromSeconds(15);
+
+    /// <summary>How long after a 'd' of ours its "RETRYOUT With" answer
+    /// is expected. BPQ sends it as it reads our 'd'; Dire Wolf never does.</summary>
+    private static readonly TimeSpan RetryoutEchoWindow = TimeSpan.FromSeconds(10);
+
+    /// <summary>How long after a 'd' of ours its "From Station" answer is
+    /// expected: it comes once the link is down, which can take FRACK x
+    /// RETRIES on air, kept under 3 minutes (docs/tune.md). It does not
+    /// come at all if the 'd' matched nothing at the node.</summary>
+    private static readonly TimeSpan FromEchoWindow = TimeSpan.FromMinutes(3);
 
     /// <summary>The longest a dial's best-effort 'd' may take.</summary>
     private static readonly TimeSpan DisconnectWriteTimeout = TimeSpan.FromSeconds(2);
@@ -449,19 +462,29 @@ public sealed class AgwLink : IAsyncDisposable
 
     /// <summary>
     /// Takes a dial that is still waiting off the link and tells the node
-    /// to drop it ('d', best effort). One that has connected meanwhile is
-    /// closed as a session instead.
+    /// to drop it ('d', best effort), unless a session holds the pair: the
+    /// node would apply the 'd' to that one. One that has connected
+    /// meanwhile is closed as a session instead.
     /// </summary>
     private async Task CallOffAsync(PendingDial dial)
     {
         if (!Withdraw(dial) && !dial.GaveUp)
         {
-            if (dial.Outcome.Task.IsCompletedSuccessfully)
+            // Taken by the reader just now: confirmed, failed, or the link
+            // closing, and its outcome is being set. A confirmed call
+            // nobody is waiting for any more is closed here.
+            try
             {
-                var session = dial.Outcome.Task.Result;
+                var session = await dial.Outcome.Task;
                 session.Remove();
                 try { await session.Stream.DisposeAsync(); } catch { /* best effort */ }
             }
+            catch { /* failed: nothing to close */ }
+            return;
+        }
+        if (sessions.Keys.Any(k => k.SamePair(dial.Key)))
+        {
+            logger.LogDebug("AGW: not calling off the call to {0} with a 'd': a session holds that pair", dial.Remote);
             return;
         }
         try
@@ -601,6 +624,9 @@ public sealed class AgwLink : IAsyncDisposable
 
         lock (gate)
         {
+            // The node hands over an inbound call only once it holds no
+            // connection under this key, so an older link's answers have
+            // all come that ever will.
             echoes.Remove(session.Key);
             // The peer's call has reached us while ours is on its way:
             // the calls crossed, and the node did not refuse its call. Our
@@ -640,11 +666,10 @@ public sealed class AgwLink : IAsyncDisposable
             // the peer, CallTo us) or the other way round; then the only
             // dial for the pair.
             dial = FindDial(KeyForData(frame)) ?? FindDial(AgwSessionKey.For(frame.CallFrom, frame.CallTo, frame.Port));
-            if (dial is not null)
-            {
-                dials.Remove(dial.Key);
-                echoes.Remove(dial.Key);
-            }
+            // Answers still due to an older 'd' under this key stay
+            // expected: the old link's "From Station" can come after our
+            // new call has connected, and must not end it.
+            if (dial is not null) dials.Remove(dial.Key);
         }
 
         if (dial is null)
@@ -700,24 +725,27 @@ public sealed class AgwLink : IAsyncDisposable
         var portMismatch = false;
         lock (gate)
         {
-            // BPQ's answers to a 'd' of our own first: they are about a
+            DropStaleEchoes();
+            sessions.TryGetValue(exact, out var exactSession);
+            dials.TryGetValue(exact, out var exactDial);
+
+            // A call that failed reads "RETRYOUT With", the same as the
+            // node's answer to a 'd' of ours; a dial waiting under the
+            // exact key takes it. BPQ's answer comes as it reads our 'd',
+            // long before a redial under the key can go out, and Dire Wolf
+            // sends none. A link that went reads "From Station": with both
+            // a session and our call on the key, that is the session's.
+            if (exactDial is not null && text.Contains("RETRYOUT", StringComparison.Ordinal))
+            {
+                failedDial = exactDial;
+            }
+            // Then the answers to a 'd' of our own: they are about a
             // session already gone, and must not end a newer one.
-            if (TakeEcho(exact, text, exactOnly: true))
+            else if (TakeEcho(exact, text, exactOnly: true))
             {
                 logger.LogDebug("AGW inbound: 'd' for {0}<->{1} on port {2} is the node's answer to our own 'd'; ignored",
                     frame.CallFrom, frame.CallTo, frame.Port);
                 return;
-            }
-
-            sessions.TryGetValue(exact, out var exactSession);
-            dials.TryGetValue(exact, out var exactDial);
-            if (exactSession is not null && exactDial is not null)
-            {
-                // Both an inbound session and our call on one key: BPQ
-                // reports a call that failed as "RETRYOUT With", a link
-                // that went as "From Station".
-                if (text.Contains("RETRYOUT", StringComparison.Ordinal)) failedDial = exactDial;
-                else closing = exactSession;
             }
             else if (exactSession is not null)
             {
@@ -797,9 +825,11 @@ public sealed class AgwLink : IAsyncDisposable
 
     /// <summary>
     /// Counts one of the node's answers to a 'd' of ours off, if
-    /// <paramref name="text"/> is one still expected for the key (or,
-    /// unless <paramref name="exactOnly"/>, for the only key with answers
-    /// expected for that callsign pair). Under <see cref="gate"/>.
+    /// <paramref name="text"/> is one still expected for the key. "RETRYOUT
+    /// With" comes on the 'd''s own port, so only for the exact key;
+    /// "From Station" on whatever port we used last, so unless
+    /// <paramref name="exactOnly"/> also for the only key with one expected
+    /// for that callsign pair. Under <see cref="gate"/>.
     /// </summary>
     private bool TakeEcho(AgwSessionKey key, string text, bool exactOnly)
     {
@@ -809,20 +839,36 @@ public sealed class AgwLink : IAsyncDisposable
 
         if (!echoes.ContainsKey(key))
         {
-            if (exactOnly) return false;
-            var pair = echoes.Keys.Where(k => k.SamePair(key)).Take(2).ToList();
+            if (exactOnly || retryout) return false;
+            var pair = echoes.Where(kv => kv.Key.SamePair(key) && kv.Value.FromUntil is not null).Take(2).ToList();
             if (pair.Count != 1) return false;
-            key = pair[0];
+            key = pair[0].Key;
         }
 
         var expected = echoes[key];
-        if (retryout && expected.Retryout > 0) expected = expected with { Retryout = expected.Retryout - 1 };
-        else if (from && expected.From > 0) expected = expected with { From = expected.From - 1 };
+        if (retryout && expected.RetryoutUntil is not null) expected = expected with { RetryoutUntil = null };
+        else if (from && expected.FromUntil is not null) expected = expected with { FromUntil = null };
         else return false;
 
-        if (expected is { Retryout: 0, From: 0 }) echoes.Remove(key);
+        if (expected is { RetryoutUntil: null, FromUntil: null }) echoes.Remove(key);
         else echoes[key] = expected;
         return true;
+    }
+
+    /// <summary>Forgets answers that have not come in time: the host does
+    /// not send that one, or the 'd' matched nothing. Under <see cref="gate"/>.</summary>
+    private void DropStaleEchoes()
+    {
+        if (echoes.Count == 0) return;
+        var now = clock.GetUtcNow();
+        foreach (var (key, expected) in echoes.ToList())
+        {
+            var still = new DisconnectEchoes(
+                expected.RetryoutUntil > now ? expected.RetryoutUntil : null,
+                expected.FromUntil > now ? expected.FromUntil : null);
+            if (still is { RetryoutUntil: null, FromUntil: null }) echoes.Remove(key);
+            else echoes[key] = still;
+        }
     }
 
     /// <summary>Takes <paramref name="session"/> out of the table if it
@@ -845,12 +891,13 @@ public sealed class AgwLink : IAsyncDisposable
         return framing.WriteDataAsync(port, local, remote, data, stopping);
     }
 
-    /// <summary>Sends a 'd' for (port, local, remote), and expects the two
-    /// answers BPQ sends back for it.</summary>
+    /// <summary>Sends a 'd' for (port, local, remote), and expects for a
+    /// while the answers the node may send back for it (class doc).</summary>
     internal async Task SendDisconnectAsync(byte port, string local, string remote, CancellationToken ct)
     {
         var key = AgwSessionKey.For(local, remote, port);
-        lock (gate) echoes[key] = new DisconnectEchoes(Retryout: 1, From: 1);
+        var now = clock.GetUtcNow();
+        lock (gate) echoes[key] = new DisconnectEchoes(now + RetryoutEchoWindow, now + FromEchoWindow);
         await framing.WriteFrameAsync(new AgwFrame(port, 'd', 0, local, remote, []), ct);
     }
 
@@ -906,8 +953,9 @@ public sealed class AgwLink : IAsyncDisposable
     private static string Printable(byte[] payload) =>
         new([.. Encoding.Latin1.GetString(payload).Where(c => c is >= ' ' and <= '~')]);
 
-    /// <summary>How many of BPQ's answers to a 'd' of ours are still to come.</summary>
-    private readonly record struct DisconnectEchoes(int Retryout, int From);
+    /// <summary>Until when each answer to a 'd' of ours is still expected;
+    /// null once it has come, or is no longer expected.</summary>
+    private readonly record struct DisconnectEchoes(DateTimeOffset? RetryoutUntil, DateTimeOffset? FromUntil);
 
     private sealed class MonitorWatch(AgwLink link, Action<AgwFrame> watcher) : IDisposable
     {

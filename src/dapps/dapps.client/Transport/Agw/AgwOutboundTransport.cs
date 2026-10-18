@@ -27,8 +27,9 @@ public sealed class AgwOutboundTransport(IAgwLinkSource links, ILoggerFactory lo
     /// meanwhile do not extend it.</summary>
     public static readonly TimeSpan ConnectConfirmDeadline = TimeSpan.FromMinutes(3);
 
-    /// <summary>Longest a dial waits for the link while it is being
-    /// opened (at start-up, or just after a settings save).</summary>
+    /// <summary>Longest a dial waits for the link to open when it is not
+    /// open: at start-up, just after a settings save, or while it backs
+    /// off after a failure (the dial asks for it to be retried at once).</summary>
     public static readonly TimeSpan LinkOpenWait = TimeSpan.FromSeconds(5);
 
     public async Task<IDappsConnection> ConnectAsync(
@@ -43,13 +44,10 @@ public sealed class AgwOutboundTransport(IAgwLinkSource links, ILoggerFactory lo
         }
         var portByte = (byte)bearerPort;
 
-        var link = links.TryGetLink();
-        if (link is null)
-        {
-            var state = links.State;
-            if (state == AgwLinkState.Connecting) link = await links.GetLinkAsync(LinkOpenWait, stoppingToken);
-            if (link is null) throw new AgwLinkDownException(remoteCallsign, links.State);
-        }
+        // Not open: a node that is back should not wait out the rest of a
+        // backoff (up to 5 minutes) before our mail can go.
+        var link = links.TryGetLink() ?? await links.ReopenAsync(LinkOpenWait, stoppingToken);
+        if (link is null) throw new AgwLinkDownException(remoteCallsign, links.State);
 
         // The link registered the callsign in the settings when it opened;
         // after a change it reconnects under the new one shortly.
@@ -99,7 +97,7 @@ public sealed class AgwLinkDownException : IOException
     public AgwLinkDownException(string remoteCallsign, AgwLinkState state)
         : base(state switch
         {
-            AgwLinkState.Backoff => $"AGW: the connection to the node is down, waiting to reconnect; {remoteCallsign} was not called",
+            AgwLinkState.Backoff => $"AGW: the connection to the node is down and did not reopen when retried; {remoteCallsign} was not called",
             AgwLinkState.Connecting => $"AGW: the connection to the node did not open within {AgwOutboundTransport.LinkOpenWait.TotalSeconds:F0}s; {remoteCallsign} was not called",
             _ => $"AGW: there is no connection to the node (AGW is not the bearer, or no callsign is set); {remoteCallsign} was not called",
         })

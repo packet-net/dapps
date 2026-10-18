@@ -49,6 +49,8 @@ public sealed class StandaloneAgwLinkSource(
         }
     }
 
+    public Task<AgwLink?> ReopenAsync(TimeSpan wait, CancellationToken ct) => GetLinkAsync(wait, ct);
+
     private void Refuse(AgwLinkSession session)
     {
         logger.LogWarning("AGW: {0} called {1}, but nothing here takes calls; disconnecting it", session.Remote, session.Local);

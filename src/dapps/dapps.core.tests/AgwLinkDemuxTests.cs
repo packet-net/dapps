@@ -15,7 +15,8 @@ namespace dapps.core.tests;
 /// telling a confirmation from an inbound connect, routing each frame to
 /// the right one of several sessions with one peer, a crossed call, the
 /// give-up when the peer's call kills ours without a word, what the link
-/// ending does to both kinds, and BPQ's two answers to each of our 'd's.
+/// ending does to both kinds, and the node's answers to each of our 'd's
+/// (BPQ's and Dire Wolf's differ).
 /// A <see cref="FakeAgwSocket"/> plays the node, with BPQ's wording.
 /// </summary>
 public sealed class AgwLinkDemuxTests : IAsyncDisposable
@@ -224,6 +225,8 @@ public sealed class AgwLinkDemuxTests : IAsyncDisposable
         await first.DisposeAsync();
         (await node.ReadUntilAsync('d', ct)).CallTo.Should().Be(Remote);
         await node.WriteAsync(ct, Echo(Remote, Port));
+        // BPQ's answer comes as it reads our 'd', long before a redial.
+        await logs.WaitForAsync("the node's answer to our own 'd'", ct);
 
         var redial = link.DialAsync(Port, Local, Remote, Deadline, ct);
         await node.ReadUntilAsync('C', ct);
@@ -296,23 +299,256 @@ public sealed class AgwLinkDemuxTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task ADial_WhileTheLinkIsDown_FailsAtOnce_AndWhileItOpens_WaitsForIt()
+    public async Task OnDireWolf_ItsOneAnswerToOurDisconnect_LeavesTheNextFailedDialToFailAtOnce()
+    {
+        // Dire Wolf answers a 'd' with "From Station" alone, never BPQ's
+        // "RETRYOUT With"; a dial that then fails reads "RETRYOUT With",
+        // and must not be taken for the answer that never came.
+        var ct = TestContext.Current.CancellationToken;
+        var (link, node) = await OpenAsync(ct);
+
+        var first = await DialAndConfirmAsync(link, node, Remote, Port, ct);
+        await first.DisposeAsync();
+        await node.ReadUntilAsync('d', ct);
+        await node.WriteAsync(ct, FakeAgwSocket.Disconnect(Remote, Local, Port));
+        await logs.WaitForAsync("the node's answer to our own 'd'", ct);
+
+        var redial = link.DialAsync(Port, Local, Remote, Deadline, ct);
+        await node.ReadUntilAsync('C', ct);
+        await node.WriteAsync(ct, Echo(Remote, Port));
+        (await FluentActions.Awaiting(() => redial.WaitAsync(FakeAgwHost.FrameTimeout, ct))
+            .Should().ThrowAsync<IOException>()).Which.Message.Should().Contain("RETRYOUT");
+    }
+
+    [Fact]
+    public async Task WithThePeersSessionAndOurCallOnOneKey_ALinkThatWentEndsTheSession_AndAFailedCallEndsTheCall()
     {
         var ct = TestContext.Current.CancellationToken;
-        var source = new ScriptedLinkSource { State = AgwLinkState.Backoff };
+        var (link, node) = await OpenAsync(ct);
+
+        var onPort = link.DialAsync(Port, Local, Remote, Deadline, ct);
+        await node.ReadUntilAsync('C', ct);
+        var onOtherPort = link.DialAsync(OtherPort, Local, Remote, Deadline, ct);
+        await node.ReadUntilAsync('C', ct);
+        await node.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port), FakeAgwSocket.Connect(Remote, Local, OtherPort));
+        var theirsOnPort = await NextInboundAsync(ct);
+        var theirsOnOtherPort = await NextInboundAsync(ct);
+
+        await node.WriteAsync(ct, FakeAgwSocket.Disconnect(Remote, Local, Port));
+        await logs.WaitForAsync("session closed", ct);
+        theirsOnPort.Stream.RemoteClosed.IsCancellationRequested.Should().BeTrue("\"From Station\" is a link that went");
+        onPort.IsCompleted.Should().BeFalse();
+
+        await node.WriteAsync(ct, Echo(Remote, OtherPort));
+        await FluentActions.Awaiting(() => onOtherPort.WaitAsync(FakeAgwHost.FrameTimeout, ct)).Should().ThrowAsync<IOException>();
+        theirsOnOtherPort.Stream.RemoteClosed.IsCancellationRequested.Should().BeFalse("\"RETRYOUT With\" is a call that failed");
+    }
+
+    [Fact]
+    public async Task AnOlderLinksLateAnswer_DoesNotEndARedialConfirmedUnderTheSameKey()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (link, node) = await OpenAsync(ct);
+
+        var first = await DialAndConfirmAsync(link, node, Remote, Port, ct);
+        await first.DisposeAsync();
+        await node.ReadUntilAsync('d', ct);
+        await node.WriteAsync(ct, Echo(Remote, Port));
+        await logs.WaitForAsync("the node's answer to our own 'd'", ct);
+        await using var second = await DialAndConfirmAsync(link, node, Remote, Port, ct);
+
+        // The old link's "From Station" only now, after the redial connected.
+        await node.WriteAsync(ct, FakeAgwSocket.Disconnect(Remote, Local, port: 0));
+        await logs.WaitForCountAsync("the node's answer to our own 'd'", 2, ct);
+        second.RemoteDisconnected.Should().BeFalse();
+
+        await node.WriteAsync(ct, FakeAgwSocket.Disconnect(Remote, Local, port: 0));
+        await logs.WaitForAsync("session closed", ct);
+        second.RemoteDisconnected.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task AnAnswerThatNeverCame_IsNoLongerExpectedAfterThreeMinutes()
+    {
+        // A 'd' that matched nothing at the node gets no "From Station".
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        var (link, node) = await OpenAsync(ct, clock);
+
+        var first = await DialAndConfirmAsync(link, node, Remote, Port, ct);
+        await first.DisposeAsync();
+        await node.ReadUntilAsync('d', ct);
+        await node.WriteAsync(ct, Echo(Remote, Port));
+        await logs.WaitForAsync("the node's answer to our own 'd'", ct);
+        clock.Advance(TimeSpan.FromMinutes(3) + TimeSpan.FromSeconds(1));
+
+        await using var second = await DialAndConfirmAsync(link, node, Remote, Port, ct);
+        await node.WriteAsync(ct, FakeAgwSocket.Disconnect(Remote, Local, Port));
+        await logs.WaitForAsync("session closed", ct);
+        second.RemoteDisconnected.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ThePeersCall_ClearsAnswersStillExpectedUnderItsKey()
+    {
+        // The node hands over an inbound call only once it holds nothing
+        // under the key: no older answer is coming after it.
+        var ct = TestContext.Current.CancellationToken;
+        var (link, node) = await OpenAsync(ct);
+
+        var first = await DialAndConfirmAsync(link, node, Remote, Port, ct);
+        await first.DisposeAsync();
+        await node.ReadUntilAsync('d', ct);
+        await node.WriteAsync(ct, Echo(Remote, Port), FakeAgwSocket.Connect(Remote, Local, Port));
+        var theirs = await NextInboundAsync(ct);
+
+        await node.WriteAsync(ct, FakeAgwSocket.Disconnect(Remote, Local, Port));
+        await logs.WaitForAsync("session closed", ct);
+        theirs.Stream.RemoteClosed.IsCancellationRequested.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ADialTimedOut_IsCalledOffWithADisconnect()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        var (link, node) = await OpenAsync(ct, clock);
+
+        var dialling = link.DialAsync(Port, Local, Remote, Deadline, ct);
+        await node.ReadUntilAsync('C', ct);
+        await clock.WaitForTimerAsync(Deadline, ct);
+        clock.Advance(Deadline);
+
+        await FluentActions.Awaiting(() => dialling.WaitAsync(FakeAgwHost.FrameTimeout, ct)).Should().ThrowAsync<TimeoutException>();
+        var bye = await node.ReadUntilAsync('d', ct);
+        (bye.Port, bye.CallFrom, bye.CallTo).Should().Be((Port, Local, Remote));
+    }
+
+    [Fact]
+    public async Task ADialTimedOut_IsNotCalledOffOverThePeersLiveSession()
+    {
+        // The peer's call reached us under our call's key, and the node's
+        // failure 'd' for ours came stamped port 0, naming both: ignored.
+        // Our 'd' at the deadline would land on the peer's live session.
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        var (link, node) = await OpenAsync(ct, clock);
+
+        var dialling = link.DialAsync(Port, Local, Remote, Deadline, ct);
+        await node.ReadUntilAsync('C', ct);
+        await clock.WaitForTimerAsync(Deadline, ct);
+        await node.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port), Echo(Remote, port: 0));
+        var theirs = await NextInboundAsync(ct);
+        await logs.WaitForAsync("'d' for unknown session", ct);
+        clock.Advance(Deadline);
+
+        await FluentActions.Awaiting(() => dialling.WaitAsync(FakeAgwHost.FrameTimeout, ct)).Should().ThrowAsync<TimeoutException>();
+        (await node.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'd');
+        theirs.Stream.RemoteClosed.IsCancellationRequested.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task AConfirmationStampedWithAnotherPort_StillReachesTheOnlyDialForThePair()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (link, node) = await OpenAsync(ct);
+
+        var dialling = link.DialAsync(Port, Local, Remote, Deadline, ct);
+        await node.ReadUntilAsync('C', ct);
+        await node.WriteAsync(ct, Confirm(Remote, port: 0));
+        await using var ours = await dialling.WaitAsync(FakeAgwHost.FrameTimeout, ct);
+        ours.Stream.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task ADialWhileTheLinkBacksOff_HasItRetriedAtOnce()
+    {
+        // At the 5 minute end of the backoff ramp a node that came back
+        // would otherwise refuse our mail for up to 5 minutes more.
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        var bpq = await h.StartAsync(ct);
+        bpq.Close();
+        await clock.WaitForTimerAsync(ReconnectBackoffSchedule.DelayForAttempt(1), ct);
+        h.Service.State.Should().Be(AgwLinkState.Backoff);
+
+        var dialling = new AgwOutboundTransport(h.Service, h.Logs).ConnectAsync(Local, Remote, Port, ct);
+        using var again = await AcceptRegisteredAsync(h.Host, ct);
+        await again.ReadUntilAsync('C', ct);
+        await again.WriteAsync(ct, Confirm(Remote, Port));
+        await using var connected = await dialling.WaitAsync(FakeAgwHost.FrameTimeout, ct);
+    }
+
+    [Fact]
+    public async Task ADialJustAfterAnIdentitySave_DoesNotWaitOutThePause()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        using var bpq = await h.StartAsync(ct);
+        h.Options.Set(h.With(o => o.NodeHost = "localhost"));
+        await clock.WaitForTimerAsync(AgwInboundService.NonFailureRetryDelay, ct);
+        await h.Logs.WaitForAsync("connection withdrawn (Connecting)", ct);
+
+        var dialling = new AgwOutboundTransport(h.Service, h.Logs).ConnectAsync(Local, Remote, Port, ct);
+        using var again = await AcceptRegisteredAsync(h.Host, ct);
+        await again.ReadUntilAsync('C', ct);
+        await again.WriteAsync(ct, Confirm(Remote, Port));
+        await using var connected = await dialling.WaitAsync(FakeAgwHost.FrameTimeout, ct);
+    }
+
+    [Fact]
+    public async Task TheLinkWithdrawn_ReadsBackoffAfterAFailure_AndConnectingAfterASave()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        using var bpq = await h.StartAsync(ct);
+
+        h.Options.Set(h.With(o => o.NodeHost = "localhost"));
+        await h.Logs.WaitForAsync("connection withdrawn", ct);
+        h.Logs.Any("connection withdrawn (Connecting)").Should().BeTrue("a save is not a failure");
+
+        await clock.WaitForTimerAsync(AgwInboundService.NonFailureRetryDelay, ct);
+        clock.Advance(AgwInboundService.NonFailureRetryDelay);
+        using var again = await AcceptRegisteredAsync(h.Host, ct);
+        await h.Logs.WaitForCountAsync("'X' ack", 2, ct);
+        again.Close();
+        await h.Logs.WaitForAsync("connection withdrawn (Backoff)", ct);
+    }
+
+    [Fact]
+    public async Task ALinkDownDial_IsLoggedAsOneLine_WithNoStackTrace()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var backhaul = new dapps.client.Backhaul.Dappsv1SessionBackhaul(
+            new AgwOutboundTransport(new ScriptedLinkSource { State = AgwLinkState.Backoff }, logs), logs);
+        var message = new dapps.client.Backhaul.BackhaulMessage("abc1234", $"app@{Remote}", 1, null, "x"u8.ToArray(), null);
+
+        var result = await backhaul.SendAsync(message, new dapps.client.Backhaul.BackhaulRoute(Remote, BearerPort: Port), Local, ct);
+
+        result.Accepted.Should().BeFalse();
+        var line = logs.Entries.Should().ContainSingle(e => e.Message.Contains("Backhaul send failed")).Which;
+        line.Exception.Should().BeNull();
+        line.Level.Should().Be(LogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task ADial_WhileTheLinkIsNotOpen_AsksForItAndWaits_ThenFailsWithLinkDown()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var source = new ScriptedLinkSource();
         var transport = new AgwOutboundTransport(source, logs);
 
-        (await FluentActions.Awaiting(() => transport.ConnectAsync(Local, Remote, Port, ct))
-            .Should().ThrowAsync<AgwLinkDownException>()).Which.Should().BeAssignableTo<IOException>();
-        source.Waits.Should().Be(0, "a link backing off is not waited for");
-
-        source.State = AgwLinkState.Idle;
-        await FluentActions.Awaiting(() => transport.ConnectAsync(Local, Remote, Port, ct)).Should().ThrowAsync<AgwLinkDownException>();
-        source.Waits.Should().Be(0);
-
-        source.State = AgwLinkState.Connecting;
-        await FluentActions.Awaiting(() => transport.ConnectAsync(Local, Remote, Port, ct)).Should().ThrowAsync<AgwLinkDownException>();
-        source.Waited.Should().Be(AgwOutboundTransport.LinkOpenWait);
+        foreach (var state in new[] { AgwLinkState.Backoff, AgwLinkState.Connecting, AgwLinkState.Idle })
+        {
+            source.State = state;
+            (await FluentActions.Awaiting(() => transport.ConnectAsync(Local, Remote, Port, ct))
+                .Should().ThrowAsync<AgwLinkDownException>()).Which.Should().BeAssignableTo<IOException>();
+        }
+        source.Waited.Should().Equal([AgwOutboundTransport.LinkOpenWait, AgwOutboundTransport.LinkOpenWait, AgwOutboundTransport.LinkOpenWait],
+            "a dial asks for the link and waits for it whatever state it is in; the source decides");
 
         var (link, node) = await OpenAsync(ct);
         source.Link = link;
@@ -320,6 +556,7 @@ public sealed class AgwLinkDemuxTests : IAsyncDisposable
         await node.ReadUntilAsync('C', ct);
         await node.WriteAsync(ct, Confirm(Remote, Port));
         await using var connected = await dialling.WaitAsync(FakeAgwHost.FrameTimeout, ct);
+        source.Waited.Should().HaveCount(3, "an open link is used at once");
 
         await FluentActions.Awaiting(() => transport.ConnectAsync("G5ALF-4", Remote, Port, ct))
             .Should().ThrowAsync<AgwLinkDownException>("BPQ would send the call from the link's own callsign");
@@ -342,6 +579,17 @@ public sealed class AgwLinkDemuxTests : IAsyncDisposable
         await node.ReadUntilAsync('m', ct);
         link = await opening.WaitAsync(FakeAgwHost.FrameTimeout, ct);
         return (link, node);
+    }
+
+    /// <summary>Accepts the service's next connection and plays BPQ up to
+    /// its monitor 'm'.</summary>
+    private static async Task<FakeAgwSocket> AcceptRegisteredAsync(FakeAgwHost host, CancellationToken ct)
+    {
+        var socket = await host.AcceptAsync(ct);
+        await socket.ExpectRegisterAsync(ct);
+        await socket.WriteAsync(ct, FakeAgwSocket.RegisterReply(0x01));
+        await socket.ReadUntilAsync('m', ct);
+        return socket;
     }
 
     private static async Task<AgwDial> DialAndConfirmAsync(AgwLink link, FakeAgwSocket node, string remote, byte port, CancellationToken ct)
@@ -388,15 +636,15 @@ public sealed class AgwLinkDemuxTests : IAsyncDisposable
     {
         public AgwLinkState State { get; set; }
         public AgwLink? Link { get; set; }
-        public int Waits { get; private set; }
-        public TimeSpan Waited { get; private set; }
+        public List<TimeSpan> Waited { get; } = [];
 
         public AgwLink? TryGetLink() => Link;
 
-        public Task<AgwLink?> GetLinkAsync(TimeSpan wait, CancellationToken ct)
+        public Task<AgwLink?> GetLinkAsync(TimeSpan wait, CancellationToken ct) => throw new NotSupportedException();
+
+        public Task<AgwLink?> ReopenAsync(TimeSpan wait, CancellationToken ct)
         {
-            Waits++;
-            Waited = wait;
+            Waited.Add(wait);
             return Task.FromResult(Link);
         }
     }

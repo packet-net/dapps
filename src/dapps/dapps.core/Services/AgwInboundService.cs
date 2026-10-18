@@ -421,6 +421,34 @@ public sealed class AgwInboundService(
         }
     }
 
+    public async Task<AgwLink?> ReopenAsync(TimeSpan wait, CancellationToken ct)
+    {
+        Task<AgwLink?> opening;
+        lock (linkGate)
+        {
+            if (link is not null) return link;
+            if (linkState == AgwLinkState.Idle) return null;
+            // Taken before the retry, so the link it opens is not missed:
+            // a failed attempt releases it with null (Backoff).
+            opening = nextLink.Task;
+        }
+        // The existing retry-now: cuts short the wait the loop is in, a
+        // backoff or the pause after a save. The ramp is unchanged: a
+        // failed attempt counts as the next failure, as before.
+        if (TriggerManualRetry())
+        {
+            logger.LogInformation("AGW inbound: a call is waiting; reconnecting now");
+        }
+        try
+        {
+            return await opening.WaitAsync(wait, timeProvider, ct);
+        }
+        catch (TimeoutException)
+        {
+            return null;
+        }
+    }
+
     private void SetLinkState(AgwLinkState state)
     {
         TaskCompletionSource<AgwLink?>? giveUp;
@@ -467,6 +495,7 @@ public sealed class AgwInboundService(
             link = null;
             giveUp = ChangeState(failed ? AgwLinkState.Backoff : AgwLinkState.Connecting);
         }
+        logger.LogDebug("AGW inbound: connection withdrawn ({0})", failed ? AgwLinkState.Backoff : AgwLinkState.Connecting);
         giveUp?.TrySetResult(null);
     }
 }
