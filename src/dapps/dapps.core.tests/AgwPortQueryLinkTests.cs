@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Threading.Channels;
 using AwesomeAssertions;
@@ -190,6 +192,77 @@ public sealed class AgwPortQueryLinkTests : IAsyncDisposable
         (await bpq.DrainAsync(ct)).Should().BeEmpty("the link goes to another node");
     }
 
+    [Fact]
+    public async Task TwoCallersAtOnce_ShareOneG()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        var (link, node) = await OpenAsync(ct, clock);
+
+        var one = link.QueryPortsAsync(ct);
+        var two = link.QueryPortsAsync(ct);
+        (await node.ReadFrameAsync(ct)).Kind.Should().Be('G');
+        (await node.DrainAsync(ct)).Should().BeEmpty("the second caller shares the first one's 'G'");
+        await node.WriteAsync(ct, TwoPorts);
+
+        Text((await one.WaitAsync(FakeAgwHost.FrameTimeout, ct)).Payload).Should().StartWith("2;Port1 VHF");
+        Text((await two.WaitAsync(FakeAgwHost.FrameTimeout, ct)).Payload).Should().StartWith("2;Port1 VHF");
+    }
+
+    [Fact]
+    public async Task OneCallerGivingUp_DoesNotEndTheQueryItShares()
+    {
+        // One browser tab navigating away while another waits for the list.
+        var ct = TestContext.Current.CancellationToken;
+        await using var deaf = await DeafLinkAsync(ct);
+
+        using var leaving = new CancellationTokenSource();
+        var first = deaf.Link.QueryPortsAsync(leaving.Token);
+        var second = deaf.Link.QueryPortsAsync(ct);
+        await leaving.CancelAsync();
+        await FluentActions.Awaiting(() => first.WaitAsync(FakeAgwHost.FrameTimeout, ct)).Should().ThrowAsync<OperationCanceledException>();
+        second.IsCompleted.Should().BeFalse("the 'G' is the link's, not the first caller's");
+
+        // The node reads again, and answers the 'G'.
+        await deaf.Node.ReadUntilAsync('G', ct);
+        await deaf.Node.WriteAsync(ct, TwoPorts);
+        Text((await second.WaitAsync(FakeAgwHost.FrameTimeout, ct)).Payload).Should().StartWith("2;Port1 VHF");
+    }
+
+    [Fact]
+    public async Task AQueryWhileTheNodeIsNotReading_GivesUpAfterThreeSeconds_AndItsGNeverGoes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var deaf = await DeafLinkAsync(ct);
+
+        var asking = deaf.Link.QueryPortsAsync(ct);
+        await deaf.Clock.WaitForTimerAsync(AgwLink.PortQueryTimeout, ct);
+        await deaf.Clock.WaitForTimerAsync(AgwLink.PortQueryTimeout, ct);
+        deaf.Clock.Advance(AgwLink.PortQueryTimeout);
+        await FluentActions.Awaiting(() => asking.WaitAsync(FakeAgwHost.FrameTimeout, ct)).Should().ThrowAsync<TimeoutException>(
+            "the Topology page waits 3 s, not the 30 s a stalled write takes to end the link");
+
+        // The node reads again: the 'G' still waiting was taken back.
+        var after = new List<AgwFrame>();
+        while (await deaf.Node.DrainAsync(ct) is { Count: > 0 } more) after.AddRange(more);
+        after.Should().NotContain(f => f.Kind == 'G');
+        deaf.Link.Closed.IsCompleted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task TheLinkClosingMidQuery_FailsTheQueryAtOnce()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (link, node) = await OpenAsync(ct);
+
+        var asking = link.QueryPortsAsync(ct);
+        (await node.ReadFrameAsync(ct)).Kind.Should().Be('G');
+        node.Close();
+
+        await FluentActions.Awaiting(() => asking.WaitAsync(TimeSpan.FromSeconds(2), ct)).Should().ThrowAsync<IOException>(
+            "not a timeout 3 s later: the link has gone");
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (link is not null) await link.DisposeAsync();
@@ -207,6 +280,43 @@ public sealed class AgwPortQueryLinkTests : IAsyncDisposable
         await node.ReadUntilAsync('m', ct);
         link = await opening.WaitAsync(FakeAgwHost.FrameTimeout, ct);
         return (link, node);
+    }
+
+    /// <summary>A link whose node has stopped reading: beacons were sent
+    /// until the socket's buffers filled and one stuck. The link's clock
+    /// is fake; the writer's never moves, so the stall never ends the link.</summary>
+    private async Task<DeafLink> DeafLinkAsync(CancellationToken ct)
+    {
+        var clock = new ObservableTimeProvider();
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Server.ReceiveBufferSize = 4096;
+        listener.Start();
+        var opening = AgwLink.OpenCoreAsync(
+            "127.0.0.1", ((IPEndPoint)listener.LocalEndpoint).Port, Local, s => inbound.Writer.TryWrite(s), logs.CreateLogger("link"),
+            txGate: null, clock: clock, onRegisterSent: null, stopping: ct, ct: ct, listenOnly: false, writeClock: new ObservableTimeProvider());
+        var node = new FakeAgwSocket(await listener.AcceptTcpClientAsync(ct).AsTask().WaitAsync(FakeAgwHost.FrameTimeout, ct));
+        await node.ExpectRegisterAsync(ct);
+        await node.WriteAsync(ct, FakeAgwSocket.RegisterReply(0x01));
+        await node.ReadUntilAsync('m', ct);
+        var deafLink = await opening.WaitAsync(FakeAgwHost.FrameTimeout, ct);
+        for (var sent = 0; ; sent++)
+        {
+            sent.Should().BeLessThan(200_000, "the socket's buffers fill long before this");
+            var beacon = deafLink.SendUiAsync(1, "DAPPS", Enumerable.Repeat((byte)'b', 250).ToArray(), ct);
+            if (!beacon.IsCompleted && await Task.WhenAny(beacon, Task.Delay(500, ct)) != beacon) break;
+            await beacon;
+        }
+        return new DeafLink(deafLink, node, listener, clock);
+    }
+
+    private sealed record DeafLink(AgwLink Link, FakeAgwSocket Node, TcpListener Listener, ObservableTimeProvider Clock) : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            await Link.DisposeAsync();
+            Node.Dispose();
+            Listener.Stop();
+        }
     }
 
     private static AgwFrame PortsReply(string text) => new(0, 'G', 0, "", "", Encoding.ASCII.GetBytes(text));

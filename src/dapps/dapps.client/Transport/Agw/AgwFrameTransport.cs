@@ -109,15 +109,28 @@ public sealed class AgwFrameTransport
     public async Task WriteDataAsync(byte port, string callFrom, string callTo, ReadOnlyMemory<byte> data, CancellationToken ct)
     {
         var bytes = new List<byte>(data.Length + (data.Length / MaxDataFrameBytes + 1) * AgwFrame.HeaderLength);
+        AgwFrame? first = null;
         for (var offset = 0; offset < data.Length; offset += MaxDataFrameBytes)
         {
             var chunk = data.Slice(offset, Math.Min(MaxDataFrameBytes, data.Length - offset)).ToArray();
-            bytes.AddRange(Encode(new AgwFrame(port, 'D', 0xF0, callFrom, callTo, chunk)));
+            var frame = new AgwFrame(port, 'D', 0xF0, callFrom, callTo, chunk);
+            first ??= frame;
+            bytes.AddRange(Encode(frame));
         }
-        if (bytes.Count > 0) await SendAsync([.. bytes], ct);
+        if (first is not null) await SendAsync([.. bytes], first, ct, waitWhileGoing: true);
     }
 
-    public async Task WriteFrameAsync(AgwFrame frame, CancellationToken ct) => await SendAsync(Encode(frame), ct);
+    public async Task WriteFrameAsync(AgwFrame frame, CancellationToken ct) =>
+        await SendAsync(Encode(frame), frame, ct, waitWhileGoing: true);
+
+    /// <summary>
+    /// As <see cref="WriteFrameAsync"/>, but the caller stops waiting
+    /// when <paramref name="ct"/> is cancelled even once the writer has
+    /// started the write (which still goes whole): for a best-effort
+    /// frame, such as a 'd', whose caller has a short bound of its own.
+    /// </summary>
+    public async Task WriteFrameBestEffortAsync(AgwFrame frame, CancellationToken ct) =>
+        await SendAsync(Encode(frame), frame, ct, waitWhileGoing: false);
 
     /// <summary>The frame's bytes, once it has passed BPQ's limits and the
     /// TX gate; otherwise throws, and nothing is sent.</summary>
@@ -140,16 +153,20 @@ public sealed class AgwFrameTransport
                 $"AGW UNPROTO frame with {length} bytes: BPQ sends at most {MaxUnprotoBytes} and drops the rest without a word", nameof(frame));
         }
 
-        if (IsRfEmitting(frame.Kind) && !txGate.TxAllowed)
-        {
-            throw new TxStoppedException(
-                $"AGW frame kind '{frame.Kind}' (port {frame.Port}, {frame.CallFrom}->{frame.CallTo}): {txGate.BlockReason ?? "(no reason)"}");
-        }
+        if (IsRfEmitting(frame.Kind) && !txGate.TxAllowed) throw TxStopped(frame);
 
         return frame.ToBytes();
     }
 
-    private async Task SendAsync(byte[] bytes, CancellationToken ct)
+    private TxStoppedException TxStopped(AgwFrame frame) => new(
+        $"AGW frame kind '{frame.Kind}' (port {frame.Port}, {frame.CallFrom}->{frame.CallTo}): {txGate.BlockReason ?? "(no reason)"}");
+
+    /// <param name="first">The (first) frame <paramref name="bytes"/> holds:
+    /// its kind says whether the TX gate applies, and it names the write
+    /// if the gate stops it.</param>
+    /// <param name="waitWhileGoing">Once the writer has started the
+    /// write, wait for it whatever <paramref name="ct"/> says.</param>
+    private async Task SendAsync(byte[] bytes, AgwFrame first, CancellationToken ct, bool waitWhileGoing)
     {
         if (queue is null)
         {
@@ -166,7 +183,7 @@ public sealed class AgwFrameTransport
             return;
         }
 
-        var write = new QueuedWrite(bytes);
+        var write = new QueuedWrite(bytes, IsRfEmitting(first.Kind) ? first : null);
         try
         {
             await queue.Writer.WriteAsync(write, ct);
@@ -185,7 +202,7 @@ public sealed class AgwFrameTransport
             // cut short would leave the node reading the next frame's
             // header out of this one's data, on every session at once),
             // and the caller hears how that went.
-            if (write.TryCancel()) throw;
+            if (write.TryCancel() || !waitWhileGoing) throw;
             await write.Done.Task;
         }
     }
@@ -200,7 +217,14 @@ public sealed class AgwFrameTransport
     /// every write after it, and <see cref="WriteFailed"/> completes: one
     /// connection carries every session, call and beacon, and a node that
     /// has stopped reading would otherwise hold them all for good, with
-    /// nothing to say so.
+    /// nothing to say so. The limit is for one whole write: BPQ reads one
+    /// AGW frame per socket every 100 ms (about 2.5 KB/s in 'D' frames),
+    /// so only a message of several MB in one write could reach it; 300 KB
+    /// through real linbpq took 2 min 9 s, and went.
+    /// The TX gate is checked again just before each write that would go
+    /// on air, as <see cref="IDappsTxGate"/> asks: one queued before TX
+    /// was stopped fails whole with a <see cref="TxStoppedException"/>,
+    /// and nothing of it is sent. Node-control frames and 'd' still go.
     /// </summary>
     public void StartWriter(TimeProvider? clock = null)
     {
@@ -235,6 +259,11 @@ public sealed class AgwFrameTransport
             await foreach (var write in writes.Reader.ReadAllAsync(stop))
             {
                 if (!write.TryStart()) continue;
+                if (write.Rf is { } rf && !txGate.TxAllowed)
+                {
+                    write.Done.TrySetException(TxStopped(rf));
+                    continue;
+                }
                 try
                 {
                     var sending = WriteToStreamAsync(write.Bytes, stop);
@@ -292,12 +321,16 @@ public sealed class AgwFrameTransport
     private static IOException WriterClosed() => new("AGW: the connection to the node has closed");
 
     /// <summary>One write waiting for, or taken by, the writer.</summary>
-    private sealed class QueuedWrite(byte[] bytes)
+    private sealed class QueuedWrite(byte[] bytes, AgwFrame? rf)
     {
         private const int Waiting = 0, Started = 1, Cancelled = 2;
         private int state;
 
         public byte[] Bytes { get; } = bytes;
+
+        /// <summary>Its (first) frame, when it would go on air: the TX
+        /// gate applies.</summary>
+        public AgwFrame? Rf { get; } = rf;
         public TaskCompletionSource Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         /// <summary>The writer takes it; false if its caller took it back.</summary>

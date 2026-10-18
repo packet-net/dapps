@@ -95,6 +95,58 @@ public sealed class AgwWriterTests
     }
 
     [Fact]
+    public async Task AWriteQueuedBeforeTxStop_DoesNotGoOnAir_ButNodeControlStillGoes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var wire = new HeldStream();
+        var gate = new SwitchableGate { TxAllowed = true };
+        var framing = new AgwFrameTransport(wire, gate);
+        framing.StartWriter();
+        wire.Hold();
+
+        var keepalive = framing.WriteFrameAsync(G, ct);
+        await wire.WriteEnteredAsync(ct);
+        var message = framing.WriteDataAsync(1, Local, Remote, Bytes(600, 'a'), ct);
+        var beacon = framing.WriteFrameAsync(new AgwFrame(1, 'M', 0xF0, Local, "DAPPS", Bytes(40, 'b')), ct);
+        var disconnect = framing.WriteFrameAsync(new AgwFrame(1, 'd', 0, Local, Remote, []), ct);
+        var monitor = framing.WriteFrameAsync(new AgwFrame(0, 'm', 0, "", "", []), ct);
+        gate.TxAllowed = false;
+        wire.Release();
+
+        await keepalive.WaitAsync(FakeAgwHost.FrameTimeout, ct);
+        await FluentActions.Awaiting(() => message.WaitAsync(FakeAgwHost.FrameTimeout, ct)).Should().ThrowAsync<TxStoppedException>();
+        await FluentActions.Awaiting(() => beacon.WaitAsync(FakeAgwHost.FrameTimeout, ct)).Should().ThrowAsync<TxStoppedException>();
+        await disconnect.WaitAsync(FakeAgwHost.FrameTimeout, ct);
+        await monitor.WaitAsync(FakeAgwHost.FrameTimeout, ct);
+
+        (await wire.FramesAsync(ct)).Select(f => f.Kind).Should().Equal(['G', 'd', 'm'],
+            "nothing queued before TX STOP goes on air after it, and node control still flows");
+        await framing.StopWriterAsync();
+    }
+
+    [Fact]
+    public async Task ABestEffortWrite_StopsItsCallersWaitOnCancel_EvenOnceStarted_AndStillGoesWhole()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var wire = new HeldStream();
+        var framing = new AgwFrameTransport(wire);
+        framing.StartWriter();
+        wire.Hold();
+
+        using var bound = new CancellationTokenSource();
+        var disconnect = framing.WriteFrameBestEffortAsync(new AgwFrame(1, 'd', 0, Local, Remote, []), bound.Token);
+        await wire.WriteEnteredAsync(ct);
+        await bound.CancelAsync();
+        await FluentActions.Awaiting(() => disconnect.WaitAsync(TimeSpan.FromSeconds(2), ct))
+            .Should().ThrowAsync<OperationCanceledException>("a 'd''s 2 s bound holds even while the node is not reading");
+
+        wire.Release();
+        await framing.WriteFrameAsync(G, ct).WaitAsync(FakeAgwHost.FrameTimeout, ct);
+        (await wire.FramesAsync(ct)).Select(f => f.Kind).Should().Equal(['d', 'G'], "the 'd' still went, whole");
+        await framing.StopWriterAsync();
+    }
+
+    [Fact]
     public async Task ACallerCancellingWhileItsWriteWaits_TakesItBack_ButAWriteAlreadyGoingGoesWhole()
     {
         var ct = TestContext.Current.CancellationToken;

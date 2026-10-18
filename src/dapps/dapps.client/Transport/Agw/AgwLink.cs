@@ -771,12 +771,14 @@ public sealed class AgwLink : IAsyncDisposable
 
     /// <summary>
     /// The node's port list: <see cref="LatestPorts"/> if it came within
-    /// <see cref="PortListFreshFor"/>, else the answer to a 'G' sent now
-    /// (one at a time: callers asking meanwhile share it). Nothing else on
-    /// the link waits for it. Fails with a <see cref="TimeoutException"/>
-    /// when the node has not answered within <see cref="PortQueryTimeout"/>
-    /// (on the link's clock), and with an <see cref="IOException"/> when
-    /// the link closes first.
+    /// <see cref="PortListFreshFor"/>, else the answer to a 'G' sent now.
+    /// Callers asking meanwhile share that 'G', which belongs to the link,
+    /// not to any one of them: a caller's cancellation only ends its own
+    /// wait. Nothing else on the link waits for it. Fails with a
+    /// <see cref="TimeoutException"/> when no answer has come within
+    /// <see cref="PortQueryTimeout"/> of the call (on the link's clock),
+    /// the 'G' being taken back if it has not gone by then, and with an
+    /// <see cref="IOException"/> at once if the link closes first.
     /// </summary>
     public async Task<AgwPortList> QueryPortsAsync(CancellationToken ct)
     {
@@ -794,23 +796,7 @@ public sealed class AgwLink : IAsyncDisposable
             answer = portsWanted;
         }
 
-        if (ask)
-        {
-            try
-            {
-                await framing.WriteFrameAsync(new AgwFrame(0, 'G', 0, "", "", []), ct);
-            }
-            catch (Exception ex)
-            {
-                // Nobody else will ask: let the callers sharing it go.
-                lock (gate)
-                {
-                    if (ReferenceEquals(portsWanted, answer)) portsWanted = null;
-                }
-                answer.TrySetException(ex);
-                throw;
-            }
-        }
+        if (ask) _ = AskForPortsAsync(answer);
 
         try
         {
@@ -819,11 +805,36 @@ public sealed class AgwLink : IAsyncDisposable
         catch (TimeoutException)
         {
             // The next caller asks again.
-            lock (gate)
-            {
-                if (ReferenceEquals(portsWanted, answer)) portsWanted = null;
-            }
+            ForgetPortsWanted(answer);
             throw new TimeoutException($"AGW: the node did not answer a port query within {PortQueryTimeout.TotalSeconds:F0}s");
+        }
+    }
+
+    /// <summary>Sends the shared 'G' for <paramref name="answer"/>, taken
+    /// back if it has not gone within <see cref="PortQueryTimeout"/>.</summary>
+    private async Task AskForPortsAsync(TaskCompletionSource<AgwPortList> answer)
+    {
+        using var limit = new CancellationTokenSource(PortQueryTimeout, clock);
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(limit.Token, lifetime.Token);
+        try
+        {
+            await framing.WriteFrameAsync(new AgwFrame(0, 'G', 0, "", "", []), bounded.Token);
+        }
+        catch (Exception ex)
+        {
+            // Nobody else will ask: let the callers sharing it go.
+            ForgetPortsWanted(answer);
+            answer.TrySetException(ex is OperationCanceledException
+                ? new TimeoutException($"AGW: a port query could not go to the node within {PortQueryTimeout.TotalSeconds:F0}s")
+                : ex);
+        }
+    }
+
+    private void ForgetPortsWanted(TaskCompletionSource<AgwPortList> answer)
+    {
+        lock (gate)
+        {
+            if (ReferenceEquals(portsWanted, answer)) portsWanted = null;
         }
     }
 
@@ -1150,7 +1161,9 @@ public sealed class AgwLink : IAsyncDisposable
         var key = AgwSessionKey.For(local, remote, port);
         var now = clock.GetUtcNow();
         lock (gate) echoes[key] = new DisconnectEchoes(now + RetryoutEchoWindow, now + FromEchoWindow);
-        await framing.WriteFrameAsync(new AgwFrame(port, 'd', 0, local, remote, []), ct);
+        // Best effort, under the caller's short bound even once the writer
+        // has started it (it then still goes whole).
+        await framing.WriteFrameBestEffortAsync(new AgwFrame(port, 'd', 0, local, remote, []), ct);
     }
 
     /// <summary>
