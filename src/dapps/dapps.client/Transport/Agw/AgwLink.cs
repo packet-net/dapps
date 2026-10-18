@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.Sockets;
+using System.Text;
 using dapps.client.Tx;
 using Microsoft.Extensions.Logging;
 
@@ -7,17 +8,21 @@ namespace dapps.client.Transport.Agw;
 
 /// <summary>
 /// One AGW connection to the node: the TCP socket, our callsign's
-/// <c>'X'</c> registration, the keepalive, the one reader that takes
-/// every frame off the socket, and the table of connected sessions the
-/// reader hands their frames to. The owner opens it with
-/// <see cref="OpenAsync"/>, is told of each inbound connect through the
-/// callback it passed, and disposes it to close it; <see cref="Closed"/>
-/// completes when the link has ended either way.
+/// <c>'X'</c> registration, the monitor, the keepalive, the one reader
+/// that takes every frame off the socket, and the table of connected
+/// sessions the reader hands their frames to, inbound and outbound
+/// alike. The owner opens it with <see cref="OpenAsync"/>, is told of
+/// each inbound connect through the callback it passed, and disposes it
+/// to close it; <see cref="Closed"/> completes when the link has ended
+/// either way. Our own calls go out on it with <see cref="DialAsync"/>
+/// (#272: BPQ hands an inbound call to the first socket registered for
+/// the callsign, so there must only ever be one).
 ///
 /// Session identity. AGW frames carry no session id: a session is the
-/// (local, remote, port) triple, and BPQ reuses it the moment a peer
-/// redials. Everything below that touches the session table follows
-/// three rules that fall out of how BPQ's AGWAPI.c actually behaves:
+/// (local, remote, port) triple, the same for a call in either
+/// direction, and BPQ reuses it the moment a peer redials. Everything
+/// below that touches the session table follows three rules that fall
+/// out of how BPQ's AGWAPI.c actually behaves:
 ///   1. BPQ stamps its disconnect notification ('d') with the port of
 ///      the last frame it *received from us* on the socket, not the
 ///      session's port (SendDisMsgtoAppl copies sockptr-&gt;AGWRXHeader.Port).
@@ -27,19 +32,28 @@ namespace dapps.client.Transport.Agw;
 ///      one session.
 ///   2. BPQ refuses a second inbound connect for a pair it still holds
 ///      a session for (AGWConnected, "Callsign is already connected"),
-///      before any 'C' reaches us. So a 'C' for a key we still have an
-///      entry for means that entry is stale, never a live duplicate:
-///      retire it in place and accept the new session.
+///      before any 'C' reaches us. So an inbound 'C' for a key we still
+///      have an entry for means that entry is stale, never a live
+///      duplicate: retire it in place and accept the new session.
 ///   3. A retired or remotely-closed session must never emit a 'd' of
 ///      its own, because BPQ resolves an app-sent 'd' by callsign pair
 ///      too and would tear down whatever newer session holds it.
-///      <see cref="MultiplexedAgwSessionStream"/> enforces that; the
-///      table only ever removes an entry by (key, session) so a
+///      <see cref="MultiplexedAgwSessionStream"/> enforces that, and a
+///      session another one has replaced under its key sends nothing at
+///      all; the table only ever removes an entry by (key, session) so a
 ///      handler's teardown cannot evict its successor.
 ///
-/// When the link ends, for whatever reason, every session in the table
-/// is marked closed by the far end (its stream reads EOF, and it sends
-/// no 'd': the node has dropped it already).
+/// The two kinds of 'C' are told apart by their text alone: the
+/// confirmation of our own call reads "*** CONNECTED With Station",
+/// an inbound call "*** CONNECTED To Station". BPQ answers each 'd' we
+/// send with two of its own ("*** DISCONNECTED RETRYOUT With" at once,
+/// "*** DISCONNECTED From Station" when the link has gone); the link
+/// expects them and drops them, so they never reach a newer session.
+///
+/// When the link ends, for whatever reason, every dial still waiting
+/// fails and every session in the table is marked closed by the far end
+/// (its stream reads EOF, and it sends no 'd': the node has dropped it
+/// already).
 /// </summary>
 public sealed class AgwLink : IAsyncDisposable
 {
@@ -55,23 +69,45 @@ public sealed class AgwLink : IAsyncDisposable
     /// </summary>
     public static readonly TimeSpan KeepaliveInterval = TimeSpan.FromSeconds(15);
 
+    /// <summary>
+    /// How long a dial waits, once the peer's own SABM to us has shown on
+    /// the monitor, for either our confirmation or the peer's call to
+    /// reach us, before giving up. When our 'C' reaches BPQ in the last
+    /// few tens of ms before the peer's SABM, BPQ refuses the peer's call
+    /// as a duplicate of ours and both calls die without a word to us
+    /// (docs-internal/end-to-end-tests.md, "One AGW socket per node");
+    /// in every normal crossing our confirmation came within 5 s.
+    /// </summary>
+    public static readonly TimeSpan CrossedDialGiveUp = TimeSpan.FromSeconds(15);
+
+    /// <summary>The longest a dial's best-effort 'd' may take.</summary>
+    private static readonly TimeSpan DisconnectWriteTimeout = TimeSpan.FromSeconds(2);
+
     private readonly TcpClient tcp;
     private readonly AgwFrameTransport framing;
     private readonly ILogger logger;
     private readonly Action<AgwLinkSession> onInbound;
     private readonly CancellationToken stopping;
+    private readonly TimeProvider clock;
     private readonly CancellationTokenSource lifetime = new();
     private readonly PeriodicTimer keepalive;
     private readonly CancellationTokenSource keepaliveCts;
     private readonly Task keepaliveTask;
     private readonly ConcurrentDictionary<AgwSessionKey, AgwLinkSession> sessions = new();
     private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    // Guards the dials, the monitor watchers, the expected echoes of our
+    // own 'd's and `ended`.
+    private readonly Lock gate = new();
+    private readonly Dictionary<AgwSessionKey, PendingDial> dials = [];
+    private readonly List<Action<AgwFrame>> monitorWatchers = [];
+    private readonly Dictionary<AgwSessionKey, DisconnectEchoes> echoes = [];
+    private volatile bool ended;
     private Task readerTask = Task.CompletedTask;
     private int disposed;
 
     private AgwLink(
         TcpClient tcp, AgwFrameTransport framing, string callsign, ILogger logger,
-        Action<AgwLinkSession> onInbound, PeriodicTimer keepalive, CancellationToken stopping)
+        Action<AgwLinkSession> onInbound, PeriodicTimer keepalive, TimeProvider clock, CancellationToken stopping)
     {
         this.tcp = tcp;
         this.framing = framing;
@@ -79,6 +115,7 @@ public sealed class AgwLink : IAsyncDisposable
         this.onInbound = onInbound;
         this.stopping = stopping;
         this.keepalive = keepalive;
+        this.clock = clock;
         Callsign = callsign;
 
         // Keepalive: send 'G' (port count query) every KeepaliveInterval
@@ -116,7 +153,8 @@ public sealed class AgwLink : IAsyncDisposable
 
     /// <summary>Completes (never faults) once the link has ended: the
     /// socket dropped or failed, or the link was disposed. By then every
-    /// session has been told the far end has gone.</summary>
+    /// dial still waiting has failed and every session has been told the
+    /// far end has gone.</summary>
     public Task Closed => closed.Task;
 
     /// <summary>Why the link ended, once <see cref="Closed"/> has
@@ -131,20 +169,22 @@ public sealed class AgwLink : IAsyncDisposable
     /// and waits for the node's reply, at most
     /// <see cref="AgwFrameTransport.RegisterReplyTimeout"/>. Anything but
     /// 0x01 fails the open with an <see cref="IOException"/> saying the
-    /// callsign was refused. Once open, the link reads frames until it
-    /// is disposed or the socket ends.
+    /// callsign was refused. Then turns the node's monitor on (one plain
+    /// 'm'; BPQ's 'm' flips a per-socket flag that starts off). Once
+    /// open, the link reads frames until it is disposed or the socket
+    /// ends.
     /// </summary>
     /// <param name="onInbound">Called on the reader for each inbound
     /// connect, once its session is in the table. It must not block; if
     /// it throws, the reader logs that and carries on, and the session
     /// stays in the table unless the callback removed it.</param>
     /// <param name="logger">The owner's logger: the link logs as it does.</param>
-    /// <param name="clock">Drives the keepalive.</param>
+    /// <param name="clock">Drives the keepalive and the dials' deadlines.</param>
     /// <param name="onRegisterSent">Called once the 'X' has gone out,
     /// before its reply.</param>
     /// <param name="stopping">Cancels session writes in flight: the
     /// owner shutting down. The link ending does not cancel them; they
-    /// fail on the closed socket instead.</param>
+    /// fail with an <see cref="IOException"/> instead.</param>
     /// <param name="ct">Cancels the open, and only the open.</param>
     public static async Task<AgwLink> OpenAsync(
         string host,
@@ -177,7 +217,10 @@ public sealed class AgwLink : IAsyncDisposable
             // also have the callsign on an APPLICATION line in bpq32.cfg
             // (apps-interface.md). Without that, the X register is a no-op
             // for inbound and we'll sit here happily forever, never being
-            // dispatched to.
+            // dispatched to. It is also what our own calls go out from:
+            // BPQ sends them from the socket's first registered callsign
+            // whatever the 'C' says, so it is registered once and never
+            // again on this connection.
             try
             {
                 await framing.WriteFrameAsync(new AgwFrame(0, 'X', 0, callsign, "", []), ct);
@@ -189,7 +232,7 @@ public sealed class AgwLink : IAsyncDisposable
             }
             onRegisterSent?.Invoke();
 
-            link = new AgwLink(tcp, framing, callsign, logger, onInbound, keepalive, stopping);
+            link = new AgwLink(tcp, framing, callsign, logger, onInbound, keepalive, clock ?? TimeProvider.System, stopping);
 
             // The reply to the 'X', under a timeout: a host that takes the
             // TCP connection and never answers (the AGW port setting
@@ -207,6 +250,10 @@ public sealed class AgwLink : IAsyncDisposable
                     $"AGW inbound: the node refused callsign {callsign} (callsign refused, register reply [{string.Join(',', registered.Payload)}]); " +
                     "is it already registered on another AGW connection?");
             }
+
+            // The monitor, for our dials to spot the peer calling us as
+            // we call it. One plain 'm' per connection: BPQ's 'm' toggles.
+            await framing.WriteFrameAsync(new AgwFrame(0, 'm', 0, "", "", []), ct);
 
             link.readerTask = Task.Run(link.ReadLoopAsync);
             return link;
@@ -251,6 +298,10 @@ public sealed class AgwLink : IAsyncDisposable
             {
                 await TearDownAsync();
             }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "AGW inbound: closing the link's sessions failed part-way");
+            }
             finally
             {
                 CloseReason = reason;
@@ -261,16 +312,40 @@ public sealed class AgwLink : IAsyncDisposable
 
     private async Task TearDownAsync()
     {
+        // No dial may join once this is set, and no session write goes
+        // out; the dials waiting fail below.
+        lock (gate) ended = true;
+
         // Stop the keepalive before tearing down sessions to avoid
         // a doomed write racing the socket close.
         keepaliveCts.Cancel();
         try { await keepaliveTask; } catch { /* swallow - already logged */ }
         keepalive.Dispose();
 
-        // Tear down any in-flight sessions cleanly so handlers exit.
-        foreach (var s in sessions.Values) s.Stream.SignalRemoteDisconnect();
+        List<PendingDial> waiting;
+        lock (gate)
+        {
+            waiting = [.. dials.Values];
+            dials.Clear();
+            monitorWatchers.Clear();
+        }
+        foreach (var dial in waiting)
+        {
+            dial.Outcome.TrySetException(new IOException(
+                $"AGW: the connection to the node closed while the connect to {dial.Remote} was waiting"));
+        }
+
+        // Tear down any in-flight sessions cleanly so handlers exit. Every
+        // session gets its notice even if one of them throws.
+        List<Exception>? failures = null;
+        foreach (var s in sessions.Values)
+        {
+            try { s.Stream.SignalRemoteDisconnect(); }
+            catch (Exception ex) { (failures ??= []).Add(ex); }
+        }
         sessions.Clear();
         tcp.Dispose();
+        if (failures is not null) throw new AggregateException(failures);
     }
 
     /// <summary>Closes the link, if it is not closed already, and waits
@@ -278,7 +353,159 @@ public sealed class AgwLink : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref disposed, 1) == 0) await lifetime.CancelAsync();
-        try { await readerTask; } catch { /* the reader records its own end */ }
+        try { await readerTask; } catch { /* the reader records and logs its own end */ }
+    }
+
+    /// <summary>
+    /// Calls <paramref name="remote"/> from <paramref name="local"/> on
+    /// <paramref name="port"/>, and returns once the node confirms it
+    /// ("*** CONNECTED With Station"). The call is in the session table,
+    /// as the inbound ones are, before the next frame is read. Fails with
+    /// an <see cref="IOException"/> when the node reports the call failed,
+    /// when the link closes, or when the peer's own call to us shows on
+    /// the monitor and neither call connects within
+    /// <see cref="CrossedDialGiveUp"/>; with a <see cref="TimeoutException"/>
+    /// when the node has not answered within <paramref name="deadline"/>
+    /// (on the link's clock, and not extended by frames that arrive
+    /// meanwhile). After a timeout, a give-up or a cancellation it sends
+    /// the node a best-effort 'd'.
+    /// </summary>
+    /// <param name="local">Must be the callsign this link registered: BPQ
+    /// sends every call from that one, and keys what comes back on the
+    /// one in the 'C'.</param>
+    /// <param name="dialLogger">Where the dial's own lines go.</param>
+    public async Task<AgwDial> DialAsync(
+        byte port, string local, string remote, TimeSpan deadline, CancellationToken ct, ILogger? dialLogger = null)
+    {
+        if (!string.Equals(local, Callsign, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                $"AGW: this link is registered as {Callsign}, so it cannot call from {local}", nameof(local));
+        }
+        var log = dialLogger ?? logger;
+        var dial = new PendingDial(this, port, local, remote, log);
+
+        // The dial and its monitor watcher are in place before the 'C'
+        // goes out, so nothing the node says about it can be missed.
+        lock (gate)
+        {
+            if (ended) throw new IOException($"AGW: the connection to the node has closed; {remote} was not called");
+            if (!dials.TryAdd(dial.Key, dial))
+            {
+                throw new InvalidOperationException($"AGW: a call to {remote} on port {port} is already on its way");
+            }
+            monitorWatchers.Add(dial.OnMonitor);
+        }
+
+        try
+        {
+            log.LogInformation("AGW: requesting {local}->{remote} on port {p}", local, remote, port);
+            try
+            {
+                await framing.WriteFrameAsync(new AgwFrame(port, 'C', 0xF0, local, remote, []), ct);
+            }
+            catch
+            {
+                // Nothing went to the node: nothing to call off.
+                Withdraw(dial);
+                throw;
+            }
+            dial.CallSent = true;
+
+            // One overall deadline for the answer (#278): monitored frames
+            // and anything else that arrives meanwhile do not extend it.
+            using var timeout = new CancellationTokenSource(deadline, clock);
+            using var waiting = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+            AgwLinkSession session;
+            try
+            {
+                session = await dial.Outcome.Task.WaitAsync(waiting.Token);
+            }
+            catch (OperationCanceledException) when (waiting.IsCancellationRequested)
+            {
+                await CallOffAsync(dial);
+                if (timeout.IsCancellationRequested && !ct.IsCancellationRequested)
+                {
+                    throw new TimeoutException(
+                        $"AGW: the node did not answer the connect to {remote} within {deadline.TotalMinutes:F0} minutes");
+                }
+                throw;
+            }
+            catch (IOException) when (dial.GaveUp)
+            {
+                await CallOffAsync(dial);
+                throw;
+            }
+
+            log.LogInformation("AGW: connect confirmed ({0})", dial.ConfirmText);
+            return new AgwDial(session, dial, log);
+        }
+        catch
+        {
+            dial.StopWatching();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Takes a dial that is still waiting off the link and tells the node
+    /// to drop it ('d', best effort). One that has connected meanwhile is
+    /// closed as a session instead.
+    /// </summary>
+    private async Task CallOffAsync(PendingDial dial)
+    {
+        if (!Withdraw(dial) && !dial.GaveUp)
+        {
+            if (dial.Outcome.Task.IsCompletedSuccessfully)
+            {
+                var session = dial.Outcome.Task.Result;
+                session.Remove();
+                try { await session.Stream.DisposeAsync(); } catch { /* best effort */ }
+            }
+            return;
+        }
+        try
+        {
+            using var cts = new CancellationTokenSource(DisconnectWriteTimeout);
+            await SendDisconnectAsync(dial.Port, dial.Local, dial.Remote, cts.Token);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "AGW: best-effort 'd' for the call to {0} failed", dial.Remote);
+        }
+    }
+
+    /// <summary>Takes <paramref name="dial"/> off the link if it is still
+    /// waiting. False if it has connected, failed or gone already.</summary>
+    private bool Withdraw(PendingDial dial)
+    {
+        lock (gate)
+        {
+            if (!dials.TryGetValue(dial.Key, out var held) || !ReferenceEquals(held, dial)) return false;
+            dials.Remove(dial.Key);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Has <paramref name="watcher"/> called, on the reader, with every
+    /// monitored frame the node sends ('U', 'S', 'I' and 'T'), until the
+    /// returned handle is disposed. It must not block; if it throws, the
+    /// reader logs that and carries on. A monitored frame's CallTo is
+    /// whatever BPQ last put there: read the frame's text, not its header.
+    /// </summary>
+    public IDisposable WatchMonitor(Action<AgwFrame> watcher)
+    {
+        lock (gate)
+        {
+            if (!ended) monitorWatchers.Add(watcher);
+        }
+        return new MonitorWatch(this, watcher);
+    }
+
+    private void StopWatching(Action<AgwFrame> watcher)
+    {
+        lock (gate) monitorWatchers.Remove(watcher);
     }
 
     private void Dispatch(AgwFrame frame)
@@ -290,7 +517,8 @@ public sealed class AgwLink : IAsyncDisposable
                 break;
 
             case 'C':
-                OnConnect(frame);
+                if (IsOurConfirmation(frame)) OnConfirm(frame);
+                else OnConnect(frame);
                 break;
 
             case 'D':
@@ -318,26 +546,22 @@ public sealed class AgwLink : IAsyncDisposable
                 break;
 
             case 'd':
-                if (TryResolve(frame, out var closing, out var closePortMismatch))
+                OnDisconnect(frame);
+                break;
+
+            case 'U' or 'S' or 'I' or 'T':
+                Action<AgwFrame>[] watchers;
+                lock (gate) watchers = [.. monitorWatchers];
+                foreach (var watcher in watchers)
                 {
-                    // Remove by (key, session), never by key alone: the
-                    // handler's own teardown uses the same rule, and a
-                    // newer session may already sit under this key.
-                    Remove(closing);
-                    closing.Stream.SignalRemoteDisconnect();
-                    logger.LogInformation("AGW inbound: session closed {0}<->{1}", frame.CallFrom, frame.CallTo);
-                    if (closePortMismatch)
+                    try
                     {
-                        logger.LogDebug(
-                            "AGW inbound: that 'd' carried port {0} but the session was on port {1} - BPQ stamps " +
-                            "disconnect notifications with the port of the last frame it received from us",
-                            frame.Port, closing.Key.Port);
+                        watcher(frame);
                     }
-                }
-                else
-                {
-                    logger.LogDebug("AGW inbound: 'd' for unknown session {0}<->{1} on port {2}; ignored",
-                        frame.CallFrom, frame.CallTo, frame.Port);
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "AGW inbound: a monitor watcher failed on a '{0}' frame; carrying on", frame.Kind);
+                    }
                 }
                 break;
 
@@ -346,6 +570,12 @@ public sealed class AgwLink : IAsyncDisposable
                 break;
         }
     }
+
+    /// <summary>BPQ confirms our own call with "*** CONNECTED With
+    /// Station", and announces an inbound one with "*** CONNECTED To
+    /// Station"; on one socket the text is all that tells them apart.</summary>
+    private static bool IsOurConfirmation(AgwFrame frame) =>
+        Encoding.Latin1.GetString(frame.Payload).Contains("CONNECTED With", StringComparison.Ordinal);
 
     private void OnConnect(AgwFrame frame)
     {
@@ -356,11 +586,31 @@ public sealed class AgwLink : IAsyncDisposable
         var port = frame.Port;
         logger.LogInformation("AGW inbound: 'C' from {0} to {1} on port {2}", remote, local, port);
 
-        // Some AGW emulators emit a "*** CONNECTED..." status string in
-        // the 'C' payload; that's noise from dapps's POV and we just
-        // discard it.
+        var text = Encoding.Latin1.GetString(frame.Payload);
+        if (frame.Payload.Length > 0 && !text.Contains("CONNECTED To", StringComparison.Ordinal))
+        {
+            // Not BPQ's wording for either kind. A host that confirms our
+            // own calls some other way would have them taken for inbound
+            // calls here, and its dials would never connect: say so.
+            logger.LogWarning(
+                "AGW inbound: a 'C' from {0} reads \"{1}\", neither an inbound call (\"CONNECTED To\") nor the confirmation of ours (\"CONNECTED With\"); taking it as an inbound call",
+                remote, Printable(frame.Payload));
+        }
 
-        var session = new AgwLinkSession(this, port, local, remote);
+        var session = new AgwLinkSession(this, port, local, remote, outbound: false);
+
+        lock (gate)
+        {
+            echoes.Remove(session.Key);
+            // The peer's call has reached us while ours is on its way:
+            // the calls crossed, and the node did not refuse its call. Our
+            // call may yet connect over the same link.
+            if (FindDial(session.Key) is { } crossing)
+            {
+                crossing.PeersCallArrived = true;
+                crossing.Log.LogInformation("AGW: {0}'s call reached us while ours to it was on its way", remote);
+            }
+        }
 
         // Rule 2 (class doc): BPQ never dispatches a live duplicate, so
         // an entry still under this key is stale - its 'd' was lost, or
@@ -381,18 +631,231 @@ public sealed class AgwLink : IAsyncDisposable
         onInbound(session);
     }
 
+    private void OnConfirm(AgwFrame frame)
+    {
+        PendingDial? dial;
+        lock (gate)
+        {
+            // Exact key first, the frame read as BPQ writes it (CallFrom
+            // the peer, CallTo us) or the other way round; then the only
+            // dial for the pair.
+            dial = FindDial(KeyForData(frame)) ?? FindDial(AgwSessionKey.For(frame.CallFrom, frame.CallTo, frame.Port));
+            if (dial is not null)
+            {
+                dials.Remove(dial.Key);
+                echoes.Remove(dial.Key);
+            }
+        }
+
+        if (dial is null)
+        {
+            // A confirmation nothing is waiting for: a dial given up just
+            // before the node answered. Call it off, unless a session holds
+            // the pair: BPQ would apply the 'd' to that one.
+            var key = KeyForData(frame);
+            var held = sessions.Keys.Any(k => k.SamePair(key));
+            logger.LogWarning(
+                "AGW: the node confirmed a call {0}->{1} on port {2} that no dial is waiting for{3}",
+                frame.CallTo, frame.CallFrom, frame.Port, held ? "; a session holds that pair, so no 'd'" : "; disconnecting it");
+            if (!held)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        using var cts = new CancellationTokenSource(DisconnectWriteTimeout);
+                        await SendDisconnectAsync(frame.Port, frame.CallTo, frame.CallFrom, cts.Token);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogDebug(ex, "AGW: best-effort 'd' for an unexpected confirmation failed");
+                    }
+                });
+            }
+            return;
+        }
+
+        // In the table before the next frame is read, so the peer's first
+        // data is routed to it. An inbound session from the same peer
+        // under the same key is replaced: the link is our call's now. It
+        // is not told so here; the peer registry retires it when the dial
+        // reports in (and it sends nothing more from now on, rule 3).
+        var session = new AgwLinkSession(this, dial.Port, dial.Local, dial.Remote, outbound: true);
+        if (sessions.ContainsKey(session.Key))
+        {
+            dial.Log.LogInformation("AGW: our call to {0} connected over the session it had opened with us", dial.Remote);
+        }
+        sessions[session.Key] = session;
+        dial.ConfirmText = Printable(frame.Payload);
+        dial.Outcome.TrySetResult(session);
+    }
+
+    private void OnDisconnect(AgwFrame frame)
+    {
+        var text = Encoding.Latin1.GetString(frame.Payload);
+        var exact = KeyForData(frame);
+
+        PendingDial? failedDial = null;
+        AgwLinkSession? closing = null;
+        var portMismatch = false;
+        lock (gate)
+        {
+            // BPQ's answers to a 'd' of our own first: they are about a
+            // session already gone, and must not end a newer one.
+            if (TakeEcho(exact, text, exactOnly: true))
+            {
+                logger.LogDebug("AGW inbound: 'd' for {0}<->{1} on port {2} is the node's answer to our own 'd'; ignored",
+                    frame.CallFrom, frame.CallTo, frame.Port);
+                return;
+            }
+
+            sessions.TryGetValue(exact, out var exactSession);
+            dials.TryGetValue(exact, out var exactDial);
+            if (exactSession is not null && exactDial is not null)
+            {
+                // Both an inbound session and our call on one key: BPQ
+                // reports a call that failed as "RETRYOUT With", a link
+                // that went as "From Station".
+                if (text.Contains("RETRYOUT", StringComparison.Ordinal)) failedDial = exactDial;
+                else closing = exactSession;
+            }
+            else if (exactSession is not null)
+            {
+                closing = exactSession;
+            }
+            else if (exactDial is not null)
+            {
+                failedDial = exactDial;
+            }
+            else if (TakeEcho(exact, text, exactOnly: false))
+            {
+                logger.LogDebug("AGW inbound: 'd' for {0}<->{1} on port {2} is the node's answer to our own 'd'; ignored",
+                    frame.CallFrom, frame.CallTo, frame.Port);
+                return;
+            }
+            else
+            {
+                // Rule 1: the pair alone, when it names exactly one
+                // session or dial between the two tables.
+                var pairSessions = sessions.Where(kv => kv.Key.SamePair(exact)).Select(kv => kv.Value).Take(2).ToList();
+                var pairDials = dials.Values.Where(d => d.Key.SamePair(exact)).Take(2).ToList();
+                if (pairSessions.Count + pairDials.Count == 1)
+                {
+                    closing = pairSessions.FirstOrDefault();
+                    failedDial = pairDials.FirstOrDefault();
+                    portMismatch = true;
+                }
+            }
+
+            if (failedDial is not null) dials.Remove(failedDial.Key);
+        }
+
+        if (failedDial is not null)
+        {
+            var msg = text.TrimEnd('\0', '\r', '\n');
+            failedDial.Outcome.TrySetException(new IOException($"AGW connect to {failedDial.Remote} failed: {msg}"));
+            return;
+        }
+
+        if (closing is not null)
+        {
+            // Remove by (key, session), never by key alone: the
+            // handler's own teardown uses the same rule, and a
+            // newer session may already sit under this key.
+            Remove(closing);
+            closing.Stream.SignalRemoteDisconnect();
+            logger.LogInformation("AGW inbound: session closed {0}<->{1}", frame.CallFrom, frame.CallTo);
+            if (portMismatch)
+            {
+                logger.LogDebug(
+                    "AGW inbound: that 'd' carried port {0} but the session was on port {1} - BPQ stamps " +
+                    "disconnect notifications with the port of the last frame it received from us",
+                    frame.Port, closing.Key.Port);
+            }
+            return;
+        }
+
+        // Unknown, or the pair names more than one: leave them all alone.
+        logger.LogDebug("AGW inbound: 'd' for unknown session {0}<->{1} on port {2}; ignored",
+            frame.CallFrom, frame.CallTo, frame.Port);
+    }
+
+    /// <summary>The dial waiting under <paramref name="key"/>, else the only
+    /// one for its callsign pair. Under <see cref="gate"/>.</summary>
+    private PendingDial? FindDial(AgwSessionKey key)
+    {
+        if (dials.TryGetValue(key, out var exact)) return exact;
+        PendingDial? only = null;
+        foreach (var dial in dials.Values)
+        {
+            if (!dial.Key.SamePair(key)) continue;
+            if (only is not null) return null;
+            only = dial;
+        }
+        return only;
+    }
+
+    /// <summary>
+    /// Counts one of the node's answers to a 'd' of ours off, if
+    /// <paramref name="text"/> is one still expected for the key (or,
+    /// unless <paramref name="exactOnly"/>, for the only key with answers
+    /// expected for that callsign pair). Under <see cref="gate"/>.
+    /// </summary>
+    private bool TakeEcho(AgwSessionKey key, string text, bool exactOnly)
+    {
+        var retryout = text.Contains("RETRYOUT", StringComparison.Ordinal);
+        var from = text.Contains("DISCONNECTED From", StringComparison.Ordinal);
+        if (!retryout && !from) return false;
+
+        if (!echoes.ContainsKey(key))
+        {
+            if (exactOnly) return false;
+            var pair = echoes.Keys.Where(k => k.SamePair(key)).Take(2).ToList();
+            if (pair.Count != 1) return false;
+            key = pair[0];
+        }
+
+        var expected = echoes[key];
+        if (retryout && expected.Retryout > 0) expected = expected with { Retryout = expected.Retryout - 1 };
+        else if (from && expected.From > 0) expected = expected with { From = expected.From - 1 };
+        else return false;
+
+        if (expected is { Retryout: 0, From: 0 }) echoes.Remove(key);
+        else echoes[key] = expected;
+        return true;
+    }
+
     /// <summary>Takes <paramref name="session"/> out of the table if it
     /// is still there; a newer session under the same key stays.</summary>
     internal void Remove(AgwLinkSession session) =>
         sessions.TryRemove(new KeyValuePair<AgwSessionKey, AgwLinkSession>(session.Key, session));
 
-    internal Task WriteDataAsync(byte port, string local, string remote, byte[] data) =>
-        framing.WriteDataAsync(port, local, remote, data, stopping);
+    /// <summary>False once another session has taken
+    /// <paramref name="session"/>'s key: anything it sent would land in
+    /// that one (rule 3).</summary>
+    internal bool MaySend(AgwLinkSession session) =>
+        !sessions.TryGetValue(session.Key, out var holder) || ReferenceEquals(holder, session);
 
-    internal Task WriteFrameAsync(AgwFrame frame, CancellationToken ct) => framing.WriteFrameAsync(frame, ct);
+    internal Task WriteDataAsync(byte port, string local, string remote, byte[] data)
+    {
+        if (ended)
+        {
+            throw new IOException("AGW: the connection to the node has closed");
+        }
+        return framing.WriteDataAsync(port, local, remote, data, stopping);
+    }
+
+    /// <summary>Sends a 'd' for (port, local, remote), and expects the two
+    /// answers BPQ sends back for it.</summary>
+    internal async Task SendDisconnectAsync(byte port, string local, string remote, CancellationToken ct)
+    {
+        var key = AgwSessionKey.For(local, remote, port);
+        lock (gate) echoes[key] = new DisconnectEchoes(Retryout: 1, From: 1);
+        await framing.WriteFrameAsync(new AgwFrame(port, 'd', 0, local, remote, []), ct);
+    }
 
     /// <summary>
-    /// Finds the session a 'D' / 'd' frame refers to. Exact
+    /// Finds the session a 'D' frame refers to. Exact
     /// (local, remote, port) first; failing that, the callsign pair
     /// alone when it identifies exactly one session (rule 1 in the
     /// class doc). Two sessions for the same pair on different ports
@@ -438,13 +901,160 @@ public sealed class AgwLink : IAsyncDisposable
     /// frames it forwards to us for that session.</summary>
     private static AgwSessionKey KeyForData(AgwFrame frame) =>
         AgwSessionKey.For(frame.CallTo, frame.CallFrom, frame.Port);
+
+    /// <summary>Frame text as it can go in a log: printable ASCII only.</summary>
+    private static string Printable(byte[] payload) =>
+        new([.. Encoding.Latin1.GetString(payload).Where(c => c is >= ' ' and <= '~')]);
+
+    /// <summary>How many of BPQ's answers to a 'd' of ours are still to come.</summary>
+    private readonly record struct DisconnectEchoes(int Retryout, int From);
+
+    private sealed class MonitorWatch(AgwLink link, Action<AgwFrame> watcher) : IDisposable
+    {
+        public void Dispose() => link.StopWatching(watcher);
+    }
+
+    /// <summary>One of our calls, from the 'C' until the node answers it
+    /// and for as long as its monitor watcher runs.</summary>
+    internal sealed class PendingDial
+    {
+        private readonly AgwLink link;
+        private readonly TaskCompletionSource crossed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private ITimer? giveUp;
+        private int stopped;
+
+        public PendingDial(AgwLink link, byte port, string local, string remote, ILogger log)
+        {
+            this.link = link;
+            Port = port;
+            Local = local;
+            Remote = remote;
+            Log = log;
+            Key = AgwSessionKey.For(local, remote, port);
+        }
+
+        public AgwSessionKey Key { get; }
+        public byte Port { get; }
+        public string Local { get; }
+        public string Remote { get; }
+        public ILogger Log { get; }
+        public TaskCompletionSource<AgwLinkSession> Outcome { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task CrossedCall => crossed.Task;
+        public string ConfirmText { get; set; } = "";
+
+        // Set by the dialler once the 'C' is written, read by the reader.
+        public volatile bool CallSent;
+        // Under the link's gate.
+        public bool PeersCallArrived;
+        public volatile bool GaveUp;
+
+        /// <summary>
+        /// A monitored frame, on the reader. The peer's SABM to us means it
+        /// is calling us as we call it: the calls crossed, and no prompt is
+        /// coming. While our call is still waiting, that also starts the
+        /// <see cref="CrossedDialGiveUp"/> clock.
+        /// </summary>
+        public void OnMonitor(AgwFrame monitored)
+        {
+            if (!AgwOutboundTransport.IsPeerCallingUs(monitored, Port, Local, Remote)) return;
+            if (crossed.TrySetResult())
+            {
+                Log.LogInformation("AGW: {0} is calling us as we call it: the calls crossed", Remote);
+            }
+            if (!CallSent || Outcome.Task.IsCompleted || giveUp is not null) return;
+            lock (link.gate)
+            {
+                if (PeersCallArrived || !link.dials.TryGetValue(Key, out var held) || !ReferenceEquals(held, this)) return;
+            }
+            giveUp = link.clock.CreateTimer(_ => GiveUp(), null, CrossedDialGiveUp, Timeout.InfiniteTimeSpan);
+        }
+
+        private void GiveUp()
+        {
+            lock (link.gate)
+            {
+                if (PeersCallArrived || !link.dials.TryGetValue(Key, out var held) || !ReferenceEquals(held, this)) return;
+                link.dials.Remove(Key);
+                GaveUp = true;
+            }
+            Log.LogInformation(
+                "AGW: {0}'s call crossed ours and neither has connected within {1:F0}s; giving up our call",
+                Remote, CrossedDialGiveUp.TotalSeconds);
+            Outcome.TrySetException(new IOException(
+                $"AGW connect to {Remote} failed: its call crossed ours and neither connected within {CrossedDialGiveUp.TotalSeconds:F0}s"));
+        }
+
+        /// <summary>Stops watching the monitor. Idempotent.</summary>
+        public void StopWatching()
+        {
+            if (Interlocked.Exchange(ref stopped, 1) == 1) return;
+            link.StopWatching(OnMonitor);
+            giveUp?.Dispose();
+        }
+    }
 }
 
 /// <summary>
-/// One connected session in an <see cref="AgwLink"/>'s table. Its
-/// <see cref="Stream"/> reads what the reader routes to it and writes
-/// 'D' frames on the link; disposing the stream sends the 'd', unless
-/// the far end closed it or <see cref="Retire"/> did.
+/// One of our calls, connected: its session on the link, whether the
+/// peer's call crossed it, and how to close it.
+/// </summary>
+public sealed class AgwDial : IAsyncDisposable
+{
+    private readonly AgwLinkSession session;
+    private readonly AgwLink.PendingDial dial;
+    private readonly ILogger logger;
+
+    internal AgwDial(AgwLinkSession session, AgwLink.PendingDial dial, ILogger logger)
+    {
+        this.session = session;
+        this.dial = dial;
+        this.logger = logger;
+    }
+
+    public MultiplexedAgwSessionStream Stream => session.Stream;
+
+    /// <summary>Completes if the peer's own SABM to us showed on the
+    /// monitor, before or after our call connected.</summary>
+    public Task CrossedCall => dial.CrossedCall;
+
+    /// <summary>The node has told us the link is gone (a 'd' came, or
+    /// the connection to the node closed).</summary>
+    public bool RemoteDisconnected => session.Stream.RemoteClosed.IsCancellationRequested;
+
+    /// <summary>Close without a 'd': the link is a newer session's now.</summary>
+    public async ValueTask AbandonAsync()
+    {
+        dial.StopWatching();
+        session.Retire();
+        await session.Stream.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Out of the table, and a 'd' so BPQ tears down the AX.25 link at
+    /// once rather than at its idle timeout; without it a follow-up
+    /// connect from the same callsign pair within a few minutes collides
+    /// with the stale half-up link. Not once the node has told us the
+    /// link is gone, though: BPQ applies a 'd' to whichever session it
+    /// has for the callsign pair, and a newer one could only be the
+    /// peer's next call.
+    /// </summary>
+    public async ValueTask DisposeAsync()
+    {
+        dial.StopWatching();
+        if (RemoteDisconnected)
+        {
+            logger.LogDebug("AGW: the link to {0} has already gone; no 'd' to send", dial.Remote);
+        }
+        session.Remove();
+        await session.Stream.DisposeAsync();
+    }
+}
+
+/// <summary>
+/// One connected session in an <see cref="AgwLink"/>'s table, ours or
+/// the peer's call. Its <see cref="Stream"/> reads what the reader routes
+/// to it and writes 'D' frames on the link; disposing the stream sends
+/// the 'd', unless the far end closed it or <see cref="Retire"/> did.
 /// </summary>
 public sealed class AgwLinkSession
 {
@@ -456,27 +1066,30 @@ public sealed class AgwLinkSession
     // already seen its token cancelled and started tearing down.
     private CancellationToken silenced;
 
-    internal AgwLinkSession(AgwLink link, byte port, string local, string remote)
+    internal AgwLinkSession(AgwLink link, byte port, string local, string remote, bool outbound)
     {
         this.link = link;
         Port = port;
         Local = local;
         Remote = remote;
+        Outbound = outbound;
         Key = AgwSessionKey.For(local, remote, port);
         // A write that got past the check goes out whole, though, not cut
         // off by the handler's token part way through its frames: half a
         // message would leave the peer's new session reading our next
-        // bytes as payload or commands.
+        // bytes as payload or commands. Nor does one go out once another
+        // session has taken this one's key on the link (rule 3), and none
+        // at all once the link has closed.
         Stream = new MultiplexedAgwSessionStream(
             writeOutgoing: async (data, _) =>
             {
-                if (silenced.IsCancellationRequested) return;
+                if (silenced.IsCancellationRequested || !link.MaySend(this)) return;
                 await link.WriteDataAsync(port, local, remote, data);
             },
             sendRemoteDisconnect: async c =>
             {
-                if (silenced.IsCancellationRequested) return;
-                await link.WriteFrameAsync(new AgwFrame(port, 'd', 0, local, remote, []), c);
+                if (silenced.IsCancellationRequested || !link.MaySend(this)) return;
+                await link.SendDisconnectAsync(port, local, remote, c);
             });
     }
 
@@ -487,6 +1100,9 @@ public sealed class AgwLinkSession
 
     /// <summary>The peer's callsign, as the node gave it on the connect.</summary>
     public string Remote { get; }
+
+    /// <summary>True for our own call, false for the peer's.</summary>
+    public bool Outbound { get; }
 
     public MultiplexedAgwSessionStream Stream { get; }
 

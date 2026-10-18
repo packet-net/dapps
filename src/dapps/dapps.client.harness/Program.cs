@@ -22,7 +22,8 @@ try
     const int bearerPort = 0;          // 0-indexed AGW port byte (BPQ user-facing port 1)
     const string destination = "testqueue@gb7rdg";
 
-    var transport = new AgwOutboundTransport(nodeHost, agwPort, loggerFactory);
+    await using var links = new StandaloneAgwLinkSource(nodeHost, agwPort, localCallsign, loggerFactory);
+    var transport = new AgwOutboundTransport(links, loggerFactory);
 
     logger.LogInformation("Connecting {local}->{remote} on AGW port {p}", localCallsign, remoteCallsign, bearerPort);
     await using var connection = await transport.ConnectAsync(localCallsign, remoteCallsign, bearerPort, CancellationToken.None);

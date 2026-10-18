@@ -25,7 +25,8 @@ public sealed class EventsController(
     Database database,
     IOptionsMonitor<SystemOptions> options,
     OperationalMetrics metrics,
-    UpdateChecker updateChecker) : ControllerBase
+    UpdateChecker updateChecker,
+    IOptions<JsonOptions> json) : ControllerBase
 {
     /// <summary>
     /// Live operational counters + per-neighbour state + recent-event
@@ -223,9 +224,9 @@ public sealed class EventsController(
         {
             await foreach (var ev in reader.ReadAllAsync(ct))
             {
-                // The controllers' settings: the page reads camelCase names.
-                var json = JsonSerializer.Serialize(ev, UtcDateTimeJsonConverter.WebOptions);
-                await Response.WriteAsync($"event: inbound\ndata: {json}\n\n", ct);
+                // The controllers' own settings: the page reads camelCase names.
+                var data = JsonSerializer.Serialize(ev, json.Value.JsonSerializerOptions);
+                await Response.WriteAsync($"event: inbound\ndata: {data}\n\n", ct);
                 await Response.Body.FlushAsync(ct);
             }
         }

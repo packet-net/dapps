@@ -16,8 +16,8 @@ namespace dapps.core.Services;
 ///
 /// The class is deliberately stateless (per-call Connect → Read prompt
 /// → Disconnect) so the same instance can serve concurrent probes; the
-/// underlying <see cref="IDappsOutboundTransport"/> opens a fresh TCP
-/// socket per probe, just as the forwarder does.
+/// underlying <see cref="IDappsOutboundTransport"/> makes a fresh call
+/// per probe, just as the forwarder does.
 /// </summary>
 public sealed class NodeProber(
     IDappsOutboundTransport transport,

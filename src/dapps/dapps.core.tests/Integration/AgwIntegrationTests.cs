@@ -55,7 +55,8 @@ public class AgwIntegrationTests(LinbpqIntegrationFixture fixture)
         // BPQ's AX.25 retry exhaust is ~38s; give the test some headroom.
         using var ctSource = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
-        var transport = new AgwOutboundTransport(fixture.Host, fixture.AgwPort, NullLoggerFactory.Instance);
+        await using var links = new StandaloneAgwLinkSource(fixture.Host, fixture.AgwPort, fixture.LocalCallsign, NullLoggerFactory.Instance);
+        var transport = new AgwOutboundTransport(links, NullLoggerFactory.Instance);
 
         var act = async () => await transport.ConnectAsync(
             localCallsign: fixture.LocalCallsign,

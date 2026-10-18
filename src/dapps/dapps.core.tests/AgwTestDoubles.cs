@@ -149,7 +149,7 @@ internal sealed class AgwInboundServiceHarness : IAsyncDisposable
             AgwPort = Host.Port,
         });
         Logs = new CapturingLoggerFactory();
-        Metrics = new OperationalMetrics(clock ?? TimeProvider.System);
+        Metrics = new OperationalMetrics(clock ?? TimeProvider.System, new Logger<OperationalMetrics>(Logs));
         Service = new AgwInboundService(
             Options,
             new Database(NullLogger<Database>.Instance, Options),
@@ -190,13 +190,15 @@ internal sealed class AgwInboundServiceHarness : IAsyncDisposable
     }
 
     /// <summary>Starts the service, accepts its connection, consumes the
-    /// 'X' registration and answers it the way BPQ does (0x01).</summary>
+    /// 'X' registration, answers it the way BPQ does (0x01), and consumes
+    /// the 'm' that turns the monitor on.</summary>
     public async Task<FakeAgwSocket> StartAsync(CancellationToken ct)
     {
         await Service.StartAsync(ct);
         var socket = await Host.AcceptAsync(ct);
         await socket.ExpectRegisterAsync(ct);
         await socket.WriteAsync(ct, FakeAgwSocket.RegisterReply(0x01));
+        await socket.ReadUntilAsync('m', ct);
         return socket;
     }
 

@@ -115,7 +115,8 @@ public sealed class SameBaseCallsignTests : IAsyncLifetime
         var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
         var controller = new EventsController(
             new InboundEventBus(), database, options, new OperationalMetrics(clock),
-            new UpdateChecker(new NoopHttpClientFactory(), options, TimeProvider.System, NullLogger<UpdateChecker>.Instance));
+            new UpdateChecker(new NoopHttpClientFactory(), options, TimeProvider.System, NullLogger<UpdateChecker>.Instance),
+            ControllerJson.Options());
         var outId = await database.SubmitOutboundMessage("chat", Sibling, "out"u8.ToArray());
         var inId = await database.SubmitOutboundMessage("chat", Us, "in"u8.ToArray());
 

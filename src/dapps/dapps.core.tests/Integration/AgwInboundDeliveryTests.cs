@@ -112,7 +112,8 @@ public sealed class AgwInboundDeliveryTests(TwoInstanceLinbpqFixture fixture) : 
             Payload: payload,
             Headers: null);
 
-        var transport = new AgwOutboundTransport(fixture.Host, fixture.AgwPortA, NullLoggerFactory.Instance);
+        await using var links = new StandaloneAgwLinkSource(fixture.Host, fixture.AgwPortA, fixture.ApplCallA, NullLoggerFactory.Instance);
+        var transport = new AgwOutboundTransport(links, NullLoggerFactory.Instance);
         var bearer = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
         var route = new BackhaulRoute(
             Callsign: fixture.ApplCallB,

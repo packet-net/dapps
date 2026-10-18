@@ -5,9 +5,10 @@ namespace dapps.client.Transport.Agw;
 
 /// <summary>
 /// Stream view of one AGW connected session when many sessions share a
-/// single AGW socket (the inbound case - the AGW frame stream is read
-/// by a single dispatcher loop, which routes 'D' / 'd' frames to the
-/// matching session by callfrom/callto).
+/// single AGW socket (the AGW frame stream is read by a single
+/// dispatcher loop, <see cref="AgwLink"/>, which routes 'D' / 'd' frames
+/// to the matching session by callfrom/callto, for our calls and the
+/// peers' alike).
 ///
 /// Reads pull bytes from an internal pipe fed by the dispatcher via
 /// <see cref="TryPush"/>, which never waits: the dispatcher reads every
@@ -19,11 +20,6 @@ namespace dapps.client.Transport.Agw;
 /// shared <see cref="AgwFrameTransport"/> stays the only place frames
 /// hit the wire. <see cref="SignalRemoteDisconnect"/> closes the pipe
 /// from the writer side; subsequent reads return 0 (EOF).
-///
-/// Contrast <see cref="AgwSessionStream"/>, which assumes one session
-/// per AGW socket and pulls frames directly. That's correct for the
-/// outbound code path; this class is for the inbound code path where
-/// many sessions multiplex.
 /// </summary>
 public sealed class MultiplexedAgwSessionStream : Stream
 {

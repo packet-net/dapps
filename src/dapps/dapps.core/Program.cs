@@ -48,7 +48,7 @@ var builder = WebApplication.CreateBuilder(args);
 // sqlite-net returns stored times with no kind; write them all as UTC
 // with a Z so the dashboard doesn't read them as local time (#238, #362).
 builder.Services.AddControllers().AddJsonOptions(o =>
-    o.JsonSerializerOptions.Converters.Add(new dapps.core.Controllers.UtcDateTimeJsonConverter()));
+    dapps.core.Controllers.UtcDateTimeJsonConverter.Configure(o.JsonSerializerOptions));
 builder.Services.AddRazorPages();
 // OpenAPI document for the REST surface, served at /openapi/v1.json, with
 // Scalar as the viewer at /scalar. Both sit behind AdminAuthMiddleware

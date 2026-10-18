@@ -124,7 +124,8 @@ public class TtlForwardingIntegrationTests(TwoInstanceLinbpqFixture fixture) : I
         }
 
         // ── 3. Run the forwarder ───────────────────────────────────────────
-        var transport = new AgwOutboundTransport(fixture.Host, fixture.AgwPortA, NullLoggerFactory.Instance);
+        await using var links = new StandaloneAgwLinkSource(fixture.Host, fixture.AgwPortA, fixture.ApplCallA, NullLoggerFactory.Instance);
+        var transport = new AgwOutboundTransport(links, NullLoggerFactory.Instance);
         var backhaul = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
         var optionsMonitor = new TestOptionsMonitor<SystemOptions>(new SystemOptions
         {

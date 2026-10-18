@@ -131,6 +131,6 @@ For more general DAPPS troubleshooting, see the main [Troubleshooting](../troubl
 
 ## Why not AGW on XRouter?
 
-Short version: XRouter's AGW emulator scopes the callsign claim per-TCP-connection. DAPPS opens a fresh TCP connection per outbound forward; the second connection's `X` register for the DAPPS callsign collides with the standing inbound registration owned by another connection, and XRouter silently drops the subsequent `C` frame. Symptoms: outbound forwards from a DAPPS-on-XR node never connect.
+Short version: XRouter's AGW emulator scopes the callsign claim per-TCP-connection. Older DAPPS releases opened a fresh TCP connection per outbound forward; the second connection's `X` register for the DAPPS callsign collided with the standing inbound registration owned by another connection, and XRouter silently dropped the subsequent `C` frame, so outbound forwards never connected.
 
-There's no AGW-only fix that doesn't involve a substantial refactor of DAPPS's outbound transport (multiplexing onto a shared inbound socket). RHPv2 doesn't have the per-connection claim - it uses handle-based addressing - so the same multiplexing is what RHPv2 ships natively. That's why DAPPS-on-XRouter goes via RHPv2.
+DAPPS now makes its own calls over the one AGW connection it listens on, so that collision is gone, but DAPPS over XRouter's AGW emulator hasn't been tested since. RHPv2 doesn't have the per-connection claim - it uses handle-based addressing - and it is what DAPPS-on-XRouter is tested with, so use RHPv2.

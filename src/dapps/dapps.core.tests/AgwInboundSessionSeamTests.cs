@@ -395,11 +395,15 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var ours = await bpq.ReadUntilAsync('d', ct);
         ours.Port.Should().Be(Port, "dapps closed this one, so it tells BPQ");
 
-        // BPQ answers an application's 'd' with a 'd' of its own
-        // ("*** DISCONNECTED RETRYOUT With"), stamped with the port we
-        // just used. The entry is already gone; nothing to do.
-        await bpq.WriteAsync(ct, FakeAgwSocket.Disconnect(Remote, Local, Port));
-        await h.Logs.WaitForAsync("'d' for unknown session", ct);
+        // BPQ answers an application's 'd' with two of its own: "***
+        // DISCONNECTED RETRYOUT With" at once, stamped with the port we
+        // just used, and "*** DISCONNECTED From Station" once the link
+        // has gone, stamped with whatever port we used last. The entry is
+        // already gone; nothing to do.
+        await bpq.WriteAsync(ct,
+            new AgwFrame(Port, 'd', 0, Remote, Local, Encoding.ASCII.GetBytes($"*** DISCONNECTED RETRYOUT With {Remote}\r\0")),
+            FakeAgwSocket.Disconnect(Remote, Local, port: 0));
+        await h.Logs.WaitForCountAsync("the node's answer to our own 'd'", 2, ct);
 
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
         (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
@@ -686,6 +690,30 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var bye = await bpq.ReadUntilAsync('d', ct);
         bye.CallTo.Should().Be(Remote, "the peer is let go at once rather than left waiting for a prompt");
         bye.Port.Should().Be(Port);
+        await peers.WaitUntilIdleAsync(Remote, ct).WaitAsync(FakeAgwHost.FrameTimeout, ct);
+
+        h.Logs.ThrowWhen = null;
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
+        h.Logs.Any("while a session was still registered").Should().BeFalse("the failed session left nothing behind in the table");
+    }
+
+    [Fact]
+    public async Task AConnectWhoseCountFails_IsCleanedUpToo()
+    {
+        // Counting the connect is part of its setup: a failure there must
+        // not leave the session in the table with nothing to end it.
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
+        var bpq = await h.StartAsync(ct);
+
+        h.Logs.ThrowWhen = e => e.Message.Contains("inbound.connect", StringComparison.Ordinal);
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        await h.Logs.WaitForAsync("carrying on with the connection", ct);
+
+        var bye = await bpq.ReadUntilAsync('d', ct);
+        bye.CallTo.Should().Be(Remote, "the peer is let go at once rather than left waiting for a prompt");
         await peers.WaitUntilIdleAsync(Remote, ct).WaitAsync(FakeAgwHost.FrameTimeout, ct);
 
         h.Logs.ThrowWhen = null;

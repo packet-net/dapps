@@ -31,7 +31,8 @@ public sealed class BearerSwitchingOutboundTransport(
     TimeSpan? linkSettleDelay = null,
     PeerSessionRegistry? peerSessions = null,
     TimeSpan? linkSettleSpread = null,
-    TimeSpan? peersCallWait = null) : IDappsOutboundTransport
+    TimeSpan? peersCallWait = null,
+    IAgwLinkSource? agwLinks = null) : IDappsOutboundTransport
 {
     /// <summary>
     /// How long to wait, after the node refuses a dial because something
@@ -131,7 +132,9 @@ public sealed class BearerSwitchingOutboundTransport(
             }
             else
             {
-                var agw = new AgwOutboundTransport(opts.NodeHost, opts.AgwPort, loggerFactory, txGate, timeProvider);
+                // Over the daemon's one AGW connection, the listener's (#272).
+                if (agwLinks is null) throw new AgwLinkDownException(remoteCallsign, AgwLinkState.Idle);
+                var agw = new AgwOutboundTransport(agwLinks, loggerFactory);
                 inner = await agw.ConnectAsync(localCallsign, remoteCallsign, bearerPort, stoppingToken);
             }
         }

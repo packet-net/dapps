@@ -43,8 +43,10 @@ public sealed class AgwLinkTests
 
         link.Callsign.Should().Be(Local);
         link.Closed.IsCompleted.Should().BeFalse();
-        (await node.DrainAsync(ct)).Should().BeEmpty("one 'X' and nothing else: no second registration, no monitor toggle");
-        node.Received.Should().ContainSingle();
+        await node.DrainAsync(ct);
+        node.Received.Select(f => f.Kind).Should().Equal(['X', 'm'],
+            "one 'X', then one plain 'm' to turn the monitor on, and nothing else: no second registration");
+        node.Received[1].Payload.Should().BeEmpty("a 12-byte 'm' means something else to BPQ");
     }
 
     [Fact]
@@ -211,6 +213,28 @@ public sealed class AgwLinkTests
     }
 
     [Fact]
+    public async Task ASessionWhoseCloseThrows_DoesNotKeepTheLinkFromClosing_OrTheOthersFromHearing()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var host = new FakeAgwHost();
+        var (link, node) = await OpenAsync(host, ct);
+        await using var _ = link;
+
+        await node.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port), FakeAgwSocket.Connect(Other, Local, Port));
+        // Both fault, so whichever the link reaches first, the other one
+        // still has to hear the link has gone.
+        var sessions = new[] { await NextInboundAsync(ct), await NextInboundAsync(ct) };
+        foreach (var s in sessions) s.Stream.RemoteClosed.Register(() => throw new InvalidOperationException("consumer fault on close"));
+
+        node.Close();
+        await link.Closed.WaitAsync(FakeAgwHost.FrameTimeout, ct);
+
+        link.CloseReason.Should().Match<Exception>(e => e is EndOfStreamException || e is IOException, "the socket's end, not the fault");
+        sessions.Should().AllSatisfy(s => s.Stream.RemoteClosed.IsCancellationRequested.Should().BeTrue());
+        logs.Any("closing the link's sessions failed part-way").Should().BeTrue("a teardown fault is logged, not swallowed");
+    }
+
+    [Fact]
     public async Task DisposingTheLink_ClosesItAndItsSessions()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -245,6 +269,7 @@ public sealed class AgwLinkTests
         var node = await host.AcceptAsync(ct);
         await node.ExpectRegisterAsync(ct);
         await node.WriteAsync(ct, FakeAgwSocket.RegisterReply(0x01));
+        await node.ReadUntilAsync('m', ct);
         return (await opening.WaitAsync(FakeAgwHost.FrameTimeout, ct), node);
     }
 

@@ -27,8 +27,11 @@ namespace dapps.core.Services;
 ///
 /// The connection itself, its registration, keepalive, reader and
 /// session table, is an <see cref="AgwLink"/>; this service opens it,
-/// publishes it (<see cref="IAgwLinkSource"/>), runs a handler for each
-/// inbound session it reports, and reopens it when it ends.
+/// publishes it (<see cref="IAgwLinkSource"/>) for our own calls to go
+/// out on (#272), runs a handler for each inbound session it reports,
+/// and reopens it when it ends. A save that changes the node's identity
+/// (callsign, node host, AGW port or bearer) reopens it too, which ends
+/// every session on it, outbound ones included.
 ///
 /// Reconnect policy: on any AGW socket error, back off along
 /// <see cref="reconnect"/>'s sliding scale (10s x3, 30s x3, 1min x3, then
@@ -160,6 +163,9 @@ public sealed class AgwInboundService(
                 // back off from, but still pause briefly before the next
                 // attempt (same as the idle-gate case) rather than
                 // reconnecting in a tight loop if options keep changing.
+                // Not a failure even if the socket failed in the same
+                // moment: dials wait for the next link rather than fail.
+                SetLinkState(AgwLinkState.Connecting);
                 reconnect.RecordSuccess();
                 PublishBackoffState();
                 await reconnect.WaitAsync(NonFailureRetryDelay, outerCt);

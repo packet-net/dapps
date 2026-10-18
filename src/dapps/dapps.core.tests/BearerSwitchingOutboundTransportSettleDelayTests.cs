@@ -27,12 +27,15 @@ namespace dapps.core.tests;
 /// is already connected", visible only in that node's log). Here the
 /// forward just times out for no apparent reason.
 ///
-/// A <see cref="FakeAgwSocket"/> plays the local node for one connect:
-/// 'X' register reply, echo the 'C' back to confirm, then read the 'd'
-/// on dispose. No real BPQ needed, and no real waiting either.
+/// A <see cref="FakeAgwSocket"/> plays the local node: the 'X' register
+/// reply when the link opens, then for each connect the confirmation and
+/// the 'd' on dispose. No real BPQ needed, and no real waiting either.
 /// </summary>
-public sealed class BearerSwitchingOutboundTransportSettleDelayTests
+public sealed class BearerSwitchingOutboundTransportSettleDelayTests : IAsyncDisposable
 {
+    private StandaloneAgwLinkSource? links;
+    private FakeAgwSocket? node;
+
     private const string Local = "G0LOCAL-1";
     private const string RemoteA = "G0REMA-1";
     private const string RemoteB = "G0REMB-1";
@@ -54,7 +57,7 @@ public sealed class BearerSwitchingOutboundTransportSettleDelayTests
         var connect2 = transport.ConnectAsync(Local, RemoteA, 0, ct);
         await clock.WaitForTimerAsync(SettleDelay, ct);
         connect2.IsCompleted.Should().BeFalse("the redial is parked behind the settle delay");
-        host.Pending().Should().BeFalse("nothing has been dialled yet");
+        (await node!.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'C', "nothing has been dialled yet");
 
         var node2 = PlayNodeForOneConnectAsync(host, ct);
         clock.Advance(SettleDelay);
@@ -141,13 +144,13 @@ public sealed class BearerSwitchingOutboundTransportSettleDelayTests
         using var host = new FakeAgwHost();
         var transport = MakeTransport(host, new ObservableTimeProvider(), TimeSpan.Zero, peers);
 
-        var node = PlayNodeForOneConnectAsync(host, ct);
+        var played = PlayNodeForOneConnectAsync(host, ct);
         var conn = await transport.ConnectAsync(Local, RemoteA, 0, ct);
         peers.IsActive(RemoteA, out var direction).Should().BeTrue();
         direction.Should().Be("outbound");
 
         await conn.DisposeAsync();
-        await node;
+        await played;
         peers.IsActive(RemoteA, out _).Should().BeFalse("our 'd' has gone out, so the peer is free to dial again");
     }
 
@@ -187,15 +190,21 @@ public sealed class BearerSwitchingOutboundTransportSettleDelayTests
         using var host = new FakeAgwHost();
         var transport = MakeTransport(host, new ObservableTimeProvider(), TimeSpan.Zero, peers);
 
-        var node = PlayNodeForOneConnectAsync(host, ct, refuse: true);
+        var played = PlayNodeForOneConnectAsync(host, ct, refuse: true);
         await transport.Invoking(t => t.ConnectAsync(Local, RemoteA, 0, ct))
             .Should().ThrowAsync<IOException>();
-        await node;
+        await played;
 
         peers.IsActive(RemoteA, out _).Should().BeFalse("no link came up, so there is nothing to protect");
     }
 
-    private static BearerSwitchingOutboundTransport MakeTransport(
+    public async ValueTask DisposeAsync()
+    {
+        if (links is not null) await links.DisposeAsync();
+        node?.Dispose();
+    }
+
+    private BearerSwitchingOutboundTransport MakeTransport(
         FakeAgwHost host, TimeProvider clock, TimeSpan settleDelay, PeerSessionRegistry? peers = null)
     {
         var options = new StaticOptionsMonitor<SystemOptions>(new SystemOptions
@@ -204,30 +213,37 @@ public sealed class BearerSwitchingOutboundTransportSettleDelayTests
             NodeHost = "127.0.0.1",
             AgwPort = host.Port,
         });
+        links = new StandaloneAgwLinkSource("127.0.0.1", host.Port, Local, NullLoggerFactory.Instance, clock: clock);
         return new BearerSwitchingOutboundTransport(
-            options, NullLoggerFactory.Instance, AlwaysOpenTxGate.Instance, clock, settleDelay, peers, linkSettleSpread: TimeSpan.Zero);
+            options, NullLoggerFactory.Instance, AlwaysOpenTxGate.Instance, clock, settleDelay, peers, linkSettleSpread: TimeSpan.Zero,
+            agwLinks: links);
     }
 
-    /// <summary>Plays the local node for one outbound connect: ack the
-    /// 'X' registration, then either echo the 'C' request back as its
-    /// confirmation and read the 'd' sent on dispose, or refuse it with
-    /// a 'd' the way BPQ reports a failed link.</summary>
-    private static async Task PlayNodeForOneConnectAsync(FakeAgwHost host, CancellationToken ct, bool refuse = false)
+    /// <summary>Plays the local node for one outbound connect: the first
+    /// time, accept the link and ack its 'X' registration; then either
+    /// confirm the 'C' request and read the 'd' sent on dispose, or refuse
+    /// it with a 'd' the way BPQ reports a failed link.</summary>
+    private async Task PlayNodeForOneConnectAsync(FakeAgwHost host, CancellationToken ct, bool refuse = false)
     {
-        using var socket = await host.AcceptAsync(ct);
-        await socket.ExpectRegisterAsync(ct);
-        await socket.WriteAsync(ct, new AgwFrame(0, 'X', 0, "", "", [1]));
+        if (node is null)
+        {
+            node = await host.AcceptAsync(ct);
+            await node.ExpectRegisterAsync(ct);
+            await node.WriteAsync(ct, new AgwFrame(0, 'X', 0, "", "", [1]));
+        }
 
-        var connect = await socket.ReadUntilAsync('C', ct);
+        var connect = await node.ReadUntilAsync('C', ct);
         if (refuse)
         {
-            await socket.WriteAsync(ct, new AgwFrame(
+            await node.WriteAsync(ct, new AgwFrame(
                 connect.Port, 'd', 0, connect.CallTo, connect.CallFrom,
                 Encoding.ASCII.GetBytes($"*** DISCONNECTED RETRYOUT With {connect.CallTo}\r\0")));
             return;
         }
 
-        await socket.WriteAsync(ct, connect); // echo back as confirmation
-        await socket.ReadUntilAsync('d', ct); // the 'd' on dispose
+        await node.WriteAsync(ct, new AgwFrame(
+            connect.Port, 'C', 0, connect.CallTo, connect.CallFrom,
+            Encoding.ASCII.GetBytes($"*** CONNECTED With Station {connect.CallTo}\r\0")));
+        await node.ReadUntilAsync('d', ct); // the 'd' on dispose
     }
 }

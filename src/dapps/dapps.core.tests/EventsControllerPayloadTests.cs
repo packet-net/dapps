@@ -49,7 +49,8 @@ public sealed class EventsControllerPayloadTests : IAsyncLifetime
             database,
             options,
             new OperationalMetrics(clock),
-            CreateUpdateChecker());
+            CreateUpdateChecker(),
+            ControllerJson.Options());
         return ValueTask.CompletedTask;
     }
 
@@ -156,7 +157,7 @@ public sealed class EventsControllerPayloadTests : IAsyncLifetime
         var noFragDb = new Database(NullLogger<Database>.Instance, noFragOptions, clock);
         var noFragController = new EventsController(
             new InboundEventBus(), noFragDb, noFragOptions,
-            new OperationalMetrics(clock), CreateUpdateChecker());
+            new OperationalMetrics(clock), CreateUpdateChecker(), ControllerJson.Options());
 
         var bytes = Encoding.ASCII.GetBytes(new string('A', 5 * 1024));
         var id = await noFragDb.SubmitOutboundMessage("blob", "N0DEST", bytes, ttlSeconds: 60);
@@ -188,5 +189,16 @@ public sealed class EventsControllerPayloadTests : IAsyncLifetime
         public T CurrentValue { get; } = value;
         public T Get(string? name) => CurrentValue;
         public IDisposable? OnChange(Action<T, string?> listener) => null;
+    }
+}
+
+/// <summary>The controllers' JSON settings, configured as Program.cs does.</summary>
+internal static class ControllerJson
+{
+    public static Microsoft.Extensions.Options.IOptions<Microsoft.AspNetCore.Mvc.JsonOptions> Options()
+    {
+        var json = new Microsoft.AspNetCore.Mvc.JsonOptions();
+        dapps.core.Controllers.UtcDateTimeJsonConverter.Configure(json.JsonSerializerOptions);
+        return Microsoft.Extensions.Options.Options.Create(json);
     }
 }

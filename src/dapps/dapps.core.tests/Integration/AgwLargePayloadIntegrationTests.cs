@@ -85,8 +85,9 @@ public sealed class AgwLargePayloadIntegrationTests(TwoInstanceLinbpqFixture fix
         }).ToArray();
 
         var ourInbox = new RecordingInbox();
+        await using var links = new StandaloneAgwLinkSource(fixture.Host, fixture.AgwPortA, fixture.ApplCallA, NullLoggerFactory.Instance);
         var bearer = new Dappsv1SessionBackhaul(
-            new AgwOutboundTransport(fixture.Host, fixture.AgwPortA, NullLoggerFactory.Instance),
+            new AgwOutboundTransport(links, NullLoggerFactory.Instance),
             NullLoggerFactory.Instance, inbox: ourInbox);
         var batch = new ListBatch(messages);
 
