@@ -85,14 +85,6 @@ public sealed class MultiplexedAgwSessionStream : Stream
         }
     }
 
-    /// <summary>Async form of <see cref="TryPush"/>, kept for callers
-    /// that await it; it completes at once.</summary>
-    public ValueTask PushIncoming(ReadOnlyMemory<byte> data, CancellationToken ct)
-    {
-        TryPush(data.Span);
-        return ValueTask.CompletedTask;
-    }
-
     /// <summary>Mark the stream as EOF on the read side. Idempotent.
     /// Called by the dispatcher when a 'd' frame for this session
     /// arrives, or when the AGW socket itself drops.</summary>

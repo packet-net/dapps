@@ -14,11 +14,11 @@ namespace dapps.core.tests.Integration;
 /// DAPPS_BPQ_EXPERIMENTS is set. The findings are in
 /// docs-internal/end-to-end-tests.md.
 ///
-/// Each node has what a DAPPS daemon has: a listener socket registered for
-/// its application callsign (where inbound connects arrive), and a fresh
-/// socket per outbound call. The OneSocket cases instead give each node one
-/// socket for everything, as a daemon will have once #272 is done, and
-/// repeat each case to count the outcomes.
+/// Each node has what a DAPPS daemon had before #272: a listener socket
+/// registered for its application callsign (where inbound connects
+/// arrive), and a fresh socket per outbound call. The OneSocket cases
+/// instead give each node one socket for everything, as a daemon has
+/// now, and repeat each case to count the outcomes.
 /// </summary>
 public abstract class BpqCrossedCallExperiments(NetSimTwoBpqFixture fixture) : IAsyncLifetime
 {

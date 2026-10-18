@@ -431,9 +431,10 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         clock.Advance(AgwInboundService.KeepaliveInterval);
         (await bpq.ReadFrameAsync(ct)).Kind.Should().Be('G');
 
-        // BPQ's reply to a 'G' is noise to the read loop.
+        // BPQ's reply to a 'G' is kept as the port list, and is nothing
+        // to worry about.
         await bpq.WriteAsync(ct, new AgwFrame(0, 'G', 0, "", "", "2;Port1 Telnet;Port2 AXIP;"u8.ToArray()));
-        await h.Logs.WaitForAsync("ignoring frame kind 'G'", ct);
+        await h.Logs.WaitForAsync("port list ('G') received", ct);
         h.Logs.Warnings.Should().BeEmpty();
     }
 

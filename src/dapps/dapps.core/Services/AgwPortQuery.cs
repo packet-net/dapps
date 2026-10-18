@@ -5,11 +5,11 @@ using dapps.client.Transport.Agw;
 namespace dapps.core.Services;
 
 /// <summary>
-/// One-shot AGW <c>'G'</c> query that asks the configured BPQ host for
-/// the list of radio ports it has configured. Used by the dashboard so
-/// operators can pick a labelled port ("Port 1 - VHF FM 144.950 1200
-/// baud") instead of typing a 0-indexed integer when adding a
-/// neighbour or a discovery channel.
+/// Asks the configured BPQ host, with an AGW <c>'G'</c>, for the list of
+/// radio ports it has configured. Used by the dashboard so operators can
+/// pick a labelled port ("Port 1 - VHF FM 144.950 1200 baud") instead of
+/// typing a 0-indexed integer when adding a neighbour or a discovery
+/// channel.
 ///
 /// <para>
 /// BPQ replies to a single <c>'G'</c> frame with one <c>'G'</c> frame
@@ -19,16 +19,21 @@ namespace dapps.core.Services;
 /// </para>
 ///
 /// <para>
-/// Fresh TCP connection per query - cheaper than tapping into the
-/// long-lived <see cref="AgwInboundService"/> socket and weaving the
-/// reply through its dispatch loop, and bounded in time by a short
-/// per-call timeout. The connection is closed on the way out so it
-/// doesn't accumulate sockets on a busy node.
+/// While the daemon's one AGW connection to that host and port is open
+/// it asks there (<see cref="AgwLink.QueryPortsAsync"/>): the keepalive's
+/// last answer if it is fresh, else a <c>'G'</c> of its own, which
+/// nothing else on the connection waits for. When it is not open (the
+/// setup wizard trying a node before the daemon is set up, the node just
+/// restarted, or the settings just changed to another host) it opens a
+/// short-lived connection of its own instead, which sends the <c>'G'</c>
+/// and nothing else: no <c>'X'</c>, so it never registers a callsign
+/// and never takes a call meant for the daemon (#272). Either way the
+/// wait is bounded by the same 3 s.
 /// </para>
 /// </summary>
-public class AgwPortQuery(ILogger<AgwPortQuery> logger)
+public class AgwPortQuery(IAgwLinkSource links, ILogger<AgwPortQuery> logger)
 {
-    private static readonly TimeSpan QueryTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan QueryTimeout = AgwLink.PortQueryTimeout;
 
     // Virtual so unit tests can substitute a fake; not sealed for the
     // same reason. Callers receive it as a concrete type via DI.
@@ -40,6 +45,27 @@ public class AgwPortQuery(ILogger<AgwPortQuery> logger)
         if (agwPort <= 0 || agwPort > 65535)
             throw new ArgumentException($"AGW TCP port out of range: {agwPort}", nameof(agwPort));
 
+        if (links.TryGetLink() is { } link
+            && string.Equals(link.Host, host, StringComparison.OrdinalIgnoreCase)
+            && link.TcpPort == agwPort)
+        {
+            try
+            {
+                return Parse((await link.QueryPortsAsync(ct)).Payload);
+            }
+            catch (TimeoutException)
+            {
+                throw TimedOut(host, agwPort);
+            }
+        }
+
+        return await QueryOnItsOwnAsync(host, agwPort, ct);
+    }
+
+    /// <summary>The port query on a connection of its own, closed on the
+    /// way out. Never sends an <c>'X'</c>.</summary>
+    private async Task<IReadOnlyList<AgwPortInfo>> QueryOnItsOwnAsync(string host, int agwPort, CancellationToken ct)
+    {
         using var tcp = new TcpClient();
         using var queryCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         queryCts.CancelAfter(QueryTimeout);
@@ -68,11 +94,16 @@ public class AgwPortQuery(ILogger<AgwPortQuery> logger)
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            logger.LogDebug("AGW port query timed out after {0}s on {1}:{2}",
-                QueryTimeout.TotalSeconds, host, agwPort);
-            throw new TimeoutException(
-                $"AGW port query timed out after {QueryTimeout.TotalSeconds}s on {host}:{agwPort}");
+            throw TimedOut(host, agwPort);
         }
+    }
+
+    private TimeoutException TimedOut(string host, int agwPort)
+    {
+        logger.LogDebug("AGW port query timed out after {0}s on {1}:{2}",
+            QueryTimeout.TotalSeconds, host, agwPort);
+        return new TimeoutException(
+            $"AGW port query timed out after {QueryTimeout.TotalSeconds}s on {host}:{agwPort}");
     }
 
     /// <summary>Parse BPQ's <c>'G'</c> reply payload. The wire format is

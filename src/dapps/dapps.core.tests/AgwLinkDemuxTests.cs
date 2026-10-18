@@ -215,9 +215,10 @@ public sealed class AgwLinkDemuxTests : IAsyncDisposable
     [Fact]
     public async Task BpqsTwoAnswersToOurDisconnect_DoNotEndTheNextCall()
     {
-        // BPQ answers each 'd' with "RETRYOUT With" at once and "From
-        // Station" when the link has gone, which on air can be after our
-        // redial has gone out under the same key.
+        // BPQ answers each 'd' with "RETRYOUT With" at once and, if the 'd'
+        // matched a connection, "From Station" within two ticks of its
+        // 10 Hz timer, which can still be after our redial has gone out
+        // under the same key.
         var ct = TestContext.Current.CancellationToken;
         var (link, node) = await OpenAsync(ct);
 

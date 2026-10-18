@@ -19,8 +19,8 @@ public class MultiplexedAgwSessionStreamTests
             writeOutgoing: (data, _) => { sent.Add(data); return Task.CompletedTask; },
             sendRemoteDisconnect: _ => Task.CompletedTask);
 
-        await stream.PushIncoming("hello "u8.ToArray(), TestContext.Current.CancellationToken);
-        await stream.PushIncoming("world\n"u8.ToArray(), TestContext.Current.CancellationToken);
+        stream.TryPush("hello "u8).Should().Be(PushResult.Accepted);
+        stream.TryPush("world\n"u8).Should().Be(PushResult.Accepted);
 
         var buf = new byte[64];
         var n = await stream.ReadAsync(buf.AsMemory(), TestContext.Current.CancellationToken);
@@ -39,7 +39,7 @@ public class MultiplexedAgwSessionStreamTests
         var read = stream.ReadAsync(buf.AsMemory(), ct).AsTask();
         read.IsCompleted.Should().BeFalse("no bytes pushed yet");
 
-        await stream.PushIncoming("abc"u8.ToArray(), ct);
+        stream.TryPush("abc"u8).Should().Be(PushResult.Accepted);
         var n = await read.WaitAsync(TimeSpan.FromSeconds(1), ct);
         Encoding.UTF8.GetString(buf, 0, n).Should().Be("abc");
     }
@@ -52,7 +52,7 @@ public class MultiplexedAgwSessionStreamTests
             sendRemoteDisconnect: _ => Task.CompletedTask);
 
         var ct = TestContext.Current.CancellationToken;
-        await stream.PushIncoming("trailing"u8.ToArray(), ct);
+        stream.TryPush("trailing"u8).Should().Be(PushResult.Accepted);
         stream.SignalRemoteDisconnect();
 
         var buf = new byte[16];
@@ -226,7 +226,7 @@ public class MultiplexedAgwSessionStreamTests
         var stream = NewStream();
         stream.SignalRemoteDisconnect();
 
-        await stream.PushIncoming("late"u8.ToArray(), ct);
+        stream.TryPush("late"u8).Should().Be(PushResult.NotOpen);
         stream.TryPush("later"u8).Should().Be(PushResult.NotOpen);
 
         (await stream.ReadAsync(new byte[16].AsMemory(), ct)).Should().Be(0, "nothing pushed after the close is readable");
@@ -235,26 +235,26 @@ public class MultiplexedAgwSessionStreamTests
     [Fact]
     public async Task PushAfterDispose_IsANoOp()
     {
-        var ct = TestContext.Current.CancellationToken;
         var stream = NewStream();
         await stream.DisposeAsync();
 
-        await stream.PushIncoming("late"u8.ToArray(), ct);
+        stream.TryPush("late"u8).Should().Be(PushResult.NotOpen);
         stream.TryPush("later"u8).Should().Be(PushResult.NotOpen);
     }
 
     [Fact]
     public async Task OverlappingPushes_PastThePipesOldPauseThreshold_KeepOrderAndLoseNothing()
     {
-        // What the RHP paths do: push and move on without awaiting. A
-        // push used to park once 64 KB sat unread, and the next one then
-        // overlapped it and corrupted the pipe.
+        // What the RHP and AGW readers do: push and move on. A push used
+        // to park once 64 KB sat unread, and the next one then overlapped
+        // it and corrupted the pipe.
         var ct = TestContext.Current.CancellationToken;
         var stream = NewStream();
         var big = Enumerable.Range(0, 70_000).Select(i => (byte)i).ToArray();
         var small = "0123456789"u8.ToArray();
 
-        var pushes = new[] { stream.PushIncoming(big, ct).AsTask(), stream.PushIncoming(small, ct).AsTask() };
+        stream.TryPush(big).Should().Be(PushResult.Accepted);
+        stream.TryPush(small).Should().Be(PushResult.Accepted);
 
         var got = new MemoryStream();
         var buf = new byte[4096];
@@ -264,7 +264,6 @@ public class MultiplexedAgwSessionStreamTests
             n.Should().BePositive();
             got.Write(buf, 0, n);
         }
-        await Task.WhenAll(pushes).WaitAsync(TimeSpan.FromSeconds(5), ct);
         got.ToArray().Should().Equal([.. big, .. small]);
     }
 

@@ -48,8 +48,8 @@ namespace dapps.client.Transport.Agw;
 /// an inbound call "*** CONNECTED To Station". BPQ answers each 'd' we
 /// send with "*** DISCONNECTED RETRYOUT With" at once, on the 'd''s own
 /// port, and, if the 'd' matched a connection, "*** DISCONNECTED From
-/// Station" once the link has gone; Dire Wolf answers with the second
-/// alone. The link expects them for a while and drops them, so they
+/// Station" a moment later; Dire Wolf answers with the second alone,
+/// once the link has gone. The link expects them for a while and drops them, so they
 /// never end a newer session. A call that fails reads "RETRYOUT With"
 /// too, on both hosts: a dial waiting under that exact key takes it.
 ///
@@ -57,6 +57,17 @@ namespace dapps.client.Transport.Agw;
 /// fails and every session in the table is marked closed by the far end
 /// (its stream reads EOF, and it sends no 'd': the node has dropped it
 /// already).
+///
+/// Every frame we send goes through one writer
+/// (<see cref="AgwFrameTransport.StartWriter"/>), in order and each one
+/// whole. A write the node has not taken within
+/// <see cref="AgwFrameTransport.WriteStallLimit"/> ends the link, as the
+/// socket dropping would: every session, call and beacon shares it.
+///
+/// The node's port list (its answer to a 'G', which the keepalive asks
+/// for every <see cref="KeepaliveInterval"/>) is kept as
+/// <see cref="LatestPorts"/>, and <see cref="QueryPortsAsync"/> asks for
+/// it afresh when that is old.
 ///
 /// A link opened listen-only (<see cref="ListenOnly"/>) sends no 'X':
 /// it is for discovery's UI frames when AGW is not the bearer. BPQ sends
@@ -107,6 +118,14 @@ public sealed class AgwLink : IAsyncDisposable
     /// <summary>The longest a dial's best-effort 'd' may take.</summary>
     private static readonly TimeSpan DisconnectWriteTimeout = TimeSpan.FromSeconds(2);
 
+    /// <summary>How old <see cref="LatestPorts"/> may be for
+    /// <see cref="QueryPortsAsync"/> to answer with it: two keepalives.</summary>
+    public static readonly TimeSpan PortListFreshFor = TimeSpan.FromSeconds(30);
+
+    /// <summary>How long <see cref="QueryPortsAsync"/> waits for the
+    /// node to answer its 'G'.</summary>
+    public static readonly TimeSpan PortQueryTimeout = TimeSpan.FromSeconds(3);
+
     private readonly TcpClient tcp;
     private readonly AgwFrameTransport framing;
     private readonly ILogger logger;
@@ -120,20 +139,25 @@ public sealed class AgwLink : IAsyncDisposable
     private readonly ConcurrentDictionary<AgwSessionKey, AgwLinkSession> sessions = new();
     private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     // Guards the dials, the monitor watchers, the expected echoes of our
-    // own 'd's and `ended`.
+    // own 'd's, the port list and its waiter, `ended` and `writeFault`.
     private readonly Lock gate = new();
     private readonly Dictionary<AgwSessionKey, PendingDial> dials = [];
     private readonly List<Action<AgwFrame>> monitorWatchers = [];
     private readonly Dictionary<AgwSessionKey, DisconnectEchoes> echoes = [];
     private volatile bool ended;
+    private Exception? writeFault;
+    private AgwPortList? latestPorts;
+    private TaskCompletionSource<AgwPortList>? portsWanted;
     private Task readerTask = Task.CompletedTask;
     private int disposed;
 
     private AgwLink(
-        TcpClient tcp, AgwFrameTransport framing, string callsign, bool listenOnly, ILogger logger,
+        TcpClient tcp, AgwFrameTransport framing, string host, int tcpPort, string callsign, bool listenOnly, ILogger logger,
         Action<AgwLinkSession> onInbound, PeriodicTimer keepalive, TimeProvider clock, CancellationToken stopping)
     {
         this.tcp = tcp;
+        Host = host;
+        TcpPort = tcpPort;
         this.framing = framing;
         this.logger = logger;
         this.onInbound = onInbound;
@@ -143,11 +167,14 @@ public sealed class AgwLink : IAsyncDisposable
         Callsign = callsign;
         ListenOnly = listenOnly;
 
+        // A write the node will not take ends the link (class doc).
+        _ = framing.WriteFailed.ContinueWith(t => OnWriteFailed(t.Result), CancellationToken.None,
+            TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
+
         // Keepalive: send 'G' (port count query) every KeepaliveInterval
         // so BPQ doesn't drop the idle socket. The reply lands in the
-        // reader and is ignored as a default-case frame. AgwFrameTransport
-        // serialises the shared write side - session 'D' frames go out
-        // from other threads too, and AGW is a single-stream protocol.
+        // reader and becomes LatestPorts. The writer keeps it in turn
+        // with every session's frames: AGW is a single-stream protocol.
         keepaliveCts = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
         var keepaliveToken = keepaliveCts.Token;
         keepaliveTask = Task.Run(async () =>
@@ -176,6 +203,19 @@ public sealed class AgwLink : IAsyncDisposable
     /// <summary>The callsign this connection registered with its 'X', or,
     /// on a listen-only link, sends its UI frames from.</summary>
     public string Callsign { get; }
+
+    /// <summary>The node host this link connected to.</summary>
+    public string Host { get; }
+
+    /// <summary>The node's AGW TCP port this link connected to.</summary>
+    public int TcpPort { get; }
+
+    /// <summary>The node's last answer to a 'G' on this link, and when it
+    /// came; null until one has.</summary>
+    public AgwPortList? LatestPorts
+    {
+        get { lock (gate) return latestPorts; }
+    }
 
     /// <summary>True for a link opened to listen only: it registered no
     /// callsign, takes no calls and makes none (class doc).</summary>
@@ -219,7 +259,7 @@ public sealed class AgwLink : IAsyncDisposable
     /// <param name="listenOnly">Send no 'X' (class doc): the link only
     /// sends and hears UI frames. <paramref name="onInbound"/> is then
     /// never called.</param>
-    public static async Task<AgwLink> OpenAsync(
+    public static Task<AgwLink> OpenAsync(
         string host,
         int port,
         string callsign,
@@ -230,15 +270,36 @@ public sealed class AgwLink : IAsyncDisposable
         Action? onRegisterSent = null,
         CancellationToken stopping = default,
         CancellationToken ct = default,
-        bool listenOnly = false)
+        bool listenOnly = false) =>
+        OpenCoreAsync(host, port, callsign, onInbound, logger, txGate, clock, onRegisterSent, stopping, ct, listenOnly, writeClock: null);
+
+    /// <summary><see cref="OpenAsync"/>, with the clock the writer times
+    /// a stalled write on (<paramref name="writeClock"/>; the system clock
+    /// if null). Real time otherwise, as the waits for the node's replies:
+    /// it bounds a wait on the network. For tests.</summary>
+    internal static async Task<AgwLink> OpenCoreAsync(
+        string host,
+        int port,
+        string callsign,
+        Action<AgwLinkSession> onInbound,
+        ILogger logger,
+        IDappsTxGate? txGate,
+        TimeProvider? clock,
+        Action? onRegisterSent,
+        CancellationToken stopping,
+        CancellationToken ct,
+        bool listenOnly,
+        TimeProvider? writeClock)
     {
         var tcp = new TcpClient();
         AgwLink? link = null;
+        AgwFrameTransport? framing = null;
         try
         {
             logger.LogInformation("AGW inbound: connecting {0}:{1}", host, port);
             await tcp.ConnectAsync(host, port, ct);
-            var framing = new AgwFrameTransport(tcp.GetStream(), txGate, logger);
+            framing = new AgwFrameTransport(tcp.GetStream(), txGate, logger);
+            framing.StartWriter(writeClock);
 
             // Keepalive cadence starts before the 'X' goes out so that, once
             // BPQ (or a test double) has seen our registration, the timer is
@@ -248,7 +309,7 @@ public sealed class AgwLink : IAsyncDisposable
 
             if (listenOnly)
             {
-                link = new AgwLink(tcp, framing, callsign, listenOnly: true, logger, onInbound, keepalive, clock ?? TimeProvider.System, stopping);
+                link = new AgwLink(tcp, framing, host, port, callsign, listenOnly: true, logger, onInbound, keepalive, clock ?? TimeProvider.System, stopping);
                 await framing.WriteFrameAsync(new AgwFrame(0, 'm', 0, "", "", []), ct);
 
                 // With no 'X' to answer, a port query ('G') stands in as
@@ -257,7 +318,8 @@ public sealed class AgwLink : IAsyncDisposable
                 // open and backs off like a refused registration. Real
                 // time, as the 'X' reply below.
                 await framing.WriteFrameAsync(new AgwFrame(0, 'G', 0, "", "", []), ct);
-                await framing.ReadReplyAsync('G', "a port query", TimeProvider.System, ct);
+                var ports = await framing.ReadReplyAsync('G', "a port query", TimeProvider.System, ct);
+                link.latestPorts = new AgwPortList(ports.Payload, link.clock.GetUtcNow());
 
                 link.readerTask = Task.Run(link.ReadLoopAsync);
                 return link;
@@ -283,7 +345,7 @@ public sealed class AgwLink : IAsyncDisposable
             }
             onRegisterSent?.Invoke();
 
-            link = new AgwLink(tcp, framing, callsign, listenOnly: false, logger, onInbound, keepalive, clock ?? TimeProvider.System, stopping);
+            link = new AgwLink(tcp, framing, host, port, callsign, listenOnly: false, logger, onInbound, keepalive, clock ?? TimeProvider.System, stopping);
 
             // The reply to the 'X', under a timeout: a host that takes the
             // TCP connection and never answers (the AGW port setting
@@ -313,6 +375,7 @@ public sealed class AgwLink : IAsyncDisposable
         {
             if (link is not null) await link.TearDownAsync();
             tcp.Dispose();
+            if (framing is not null) await framing.StopWriterAsync();
             throw;
         }
     }
@@ -355,17 +418,37 @@ public sealed class AgwLink : IAsyncDisposable
             }
             finally
             {
-                CloseReason = reason;
+                lock (gate) CloseReason = writeFault ?? reason;
                 closed.TrySetResult();
             }
         }
+    }
+
+    /// <summary>The writer has failed or stalled: the link ends, and says
+    /// why. Not once it is ending anyway (closing the socket fails the
+    /// write in hand).</summary>
+    private void OnWriteFailed(Exception reason)
+    {
+        lock (gate)
+        {
+            if (ended) return;
+            writeFault = reason;
+        }
+        lifetime.Cancel();
     }
 
     private async Task TearDownAsync()
     {
         // No dial may join once this is set, and no session write goes
         // out; the dials waiting fail below.
-        lock (gate) ended = true;
+        TaskCompletionSource<AgwPortList>? portsWaiting;
+        lock (gate)
+        {
+            ended = true;
+            portsWaiting = portsWanted;
+            portsWanted = null;
+        }
+        portsWaiting?.TrySetException(new IOException("AGW: the connection to the node closed while asking it for its ports"));
 
         // Stop the keepalive before tearing down sessions to avoid
         // a doomed write racing the socket close.
@@ -396,6 +479,7 @@ public sealed class AgwLink : IAsyncDisposable
         }
         sessions.Clear();
         tcp.Dispose();
+        await framing.StopWriterAsync();
         if (failures is not null) throw new AggregateException(failures);
     }
 
@@ -658,9 +742,88 @@ public sealed class AgwLink : IAsyncDisposable
                 }
                 break;
 
+            case 'G':
+                OnPortList(frame);
+                break;
+
             default:
                 logger.LogDebug("AGW inbound: ignoring frame kind '{0}'", frame.Kind);
                 break;
+        }
+    }
+
+    /// <summary>The node's port list, in answer to a 'G' from the
+    /// keepalive or from <see cref="QueryPortsAsync"/>: the node does not
+    /// say which, and either will do.</summary>
+    private void OnPortList(AgwFrame frame)
+    {
+        var ports = new AgwPortList(frame.Payload, clock.GetUtcNow());
+        TaskCompletionSource<AgwPortList>? waiting;
+        lock (gate)
+        {
+            latestPorts = ports;
+            waiting = portsWanted;
+            portsWanted = null;
+        }
+        waiting?.TrySetResult(ports);
+        logger.LogDebug("AGW inbound: port list ('G') received");
+    }
+
+    /// <summary>
+    /// The node's port list: <see cref="LatestPorts"/> if it came within
+    /// <see cref="PortListFreshFor"/>, else the answer to a 'G' sent now
+    /// (one at a time: callers asking meanwhile share it). Nothing else on
+    /// the link waits for it. Fails with a <see cref="TimeoutException"/>
+    /// when the node has not answered within <see cref="PortQueryTimeout"/>
+    /// (on the link's clock), and with an <see cref="IOException"/> when
+    /// the link closes first.
+    /// </summary>
+    public async Task<AgwPortList> QueryPortsAsync(CancellationToken ct)
+    {
+        TaskCompletionSource<AgwPortList> answer;
+        var ask = false;
+        lock (gate)
+        {
+            if (ended) throw new IOException("AGW: the connection to the node has closed");
+            if (latestPorts is { } known && clock.GetUtcNow() - known.ReceivedAt < PortListFreshFor) return known;
+            if (portsWanted is null)
+            {
+                portsWanted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                ask = true;
+            }
+            answer = portsWanted;
+        }
+
+        if (ask)
+        {
+            try
+            {
+                await framing.WriteFrameAsync(new AgwFrame(0, 'G', 0, "", "", []), ct);
+            }
+            catch (Exception ex)
+            {
+                // Nobody else will ask: let the callers sharing it go.
+                lock (gate)
+                {
+                    if (ReferenceEquals(portsWanted, answer)) portsWanted = null;
+                }
+                answer.TrySetException(ex);
+                throw;
+            }
+        }
+
+        try
+        {
+            return await answer.Task.WaitAsync(PortQueryTimeout, clock, ct);
+        }
+        catch (TimeoutException)
+        {
+            // The next caller asks again.
+            lock (gate)
+            {
+                if (ReferenceEquals(portsWanted, answer)) portsWanted = null;
+            }
+            throw new TimeoutException($"AGW: the node did not answer a port query within {PortQueryTimeout.TotalSeconds:F0}s");
         }
     }
 
@@ -1276,3 +1439,7 @@ internal readonly record struct AgwSessionKey(string Local, string Remote, byte 
         string.Equals(Local, other.Local, StringComparison.Ordinal)
         && string.Equals(Remote, other.Remote, StringComparison.Ordinal);
 }
+
+/// <summary>The node's answer to a 'G' (its port count and names, as it
+/// sent them) and when it came, on the link's clock.</summary>
+public sealed record AgwPortList(byte[] Payload, DateTimeOffset ReceivedAt);
