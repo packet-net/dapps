@@ -173,6 +173,7 @@ public sealed class TwoInstanceLinbpqFixture : IDappsNodePair, IAsyncLifetime
          CONFIG
          UDP {axipInsidePort}
          BROADCAST NODES
+         BROADCAST DAPPS
          MAP {peerCall} 127.0.0.1 UDP {peerAxipInsidePort} B
          MAP {peerApplCall} 127.0.0.1 UDP {peerAxipInsidePort} B
         ENDPORT

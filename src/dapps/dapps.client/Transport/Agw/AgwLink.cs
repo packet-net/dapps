@@ -57,6 +57,13 @@ namespace dapps.client.Transport.Agw;
 /// fails and every session in the table is marked closed by the far end
 /// (its stream reads EOF, and it sends no 'd': the node has dropped it
 /// already).
+///
+/// A link opened listen-only (<see cref="ListenOnly"/>) sends no 'X':
+/// it is for discovery's UI frames when AGW is not the bearer. BPQ sends
+/// an 'M' from the header's CallFrom whether or not the socket registered
+/// it, and hands inbound calls only to a socket that did, so beacons go
+/// and come as usual. It never calls out, and an inbound call that
+/// reaches it all the same is disconnected.
 /// </summary>
 public sealed class AgwLink : IAsyncDisposable
 {
@@ -88,9 +95,13 @@ public sealed class AgwLink : IAsyncDisposable
     private static readonly TimeSpan RetryoutEchoWindow = TimeSpan.FromSeconds(10);
 
     /// <summary>How long after a 'd' of ours its "From Station" answer is
-    /// expected: it comes once the link is down, which can take FRACK x
-    /// RETRIES on air, kept under 3 minutes (docs/tune.md). It does not
-    /// come at all if the 'd' matched nothing at the node.</summary>
+    /// expected: Dire Wolf sends it once the link is down, which can take
+    /// FRACK x RETRIES on air, kept under 3 minutes (docs/tune.md). BPQ
+    /// sends it within two ticks of its 10 Hz timer if the 'd' matched a
+    /// connection (TNCTimerProc drops the host session, and the AGW poll
+    /// reports it), and not at all otherwise, so once BPQ's "RETRYOUT
+    /// With" has come the "From Station" is expected for
+    /// <see cref="RetryoutEchoWindow"/> more at most.</summary>
     private static readonly TimeSpan FromEchoWindow = TimeSpan.FromMinutes(3);
 
     /// <summary>The longest a dial's best-effort 'd' may take.</summary>
@@ -119,7 +130,7 @@ public sealed class AgwLink : IAsyncDisposable
     private int disposed;
 
     private AgwLink(
-        TcpClient tcp, AgwFrameTransport framing, string callsign, ILogger logger,
+        TcpClient tcp, AgwFrameTransport framing, string callsign, bool listenOnly, ILogger logger,
         Action<AgwLinkSession> onInbound, PeriodicTimer keepalive, TimeProvider clock, CancellationToken stopping)
     {
         this.tcp = tcp;
@@ -130,6 +141,7 @@ public sealed class AgwLink : IAsyncDisposable
         this.keepalive = keepalive;
         this.clock = clock;
         Callsign = callsign;
+        ListenOnly = listenOnly;
 
         // Keepalive: send 'G' (port count query) every KeepaliveInterval
         // so BPQ doesn't drop the idle socket. The reply lands in the
@@ -161,8 +173,13 @@ public sealed class AgwLink : IAsyncDisposable
         }, keepaliveToken);
     }
 
-    /// <summary>The callsign this connection registered with its 'X'.</summary>
+    /// <summary>The callsign this connection registered with its 'X', or,
+    /// on a listen-only link, sends its UI frames from.</summary>
     public string Callsign { get; }
+
+    /// <summary>True for a link opened to listen only: it registered no
+    /// callsign, takes no calls and makes none (class doc).</summary>
+    public bool ListenOnly { get; }
 
     /// <summary>Completes (never faults) once the link has ended: the
     /// socket dropped or failed, or the link was disposed. By then every
@@ -199,6 +216,9 @@ public sealed class AgwLink : IAsyncDisposable
     /// owner shutting down. The link ending does not cancel them; they
     /// fail with an <see cref="IOException"/> instead.</param>
     /// <param name="ct">Cancels the open, and only the open.</param>
+    /// <param name="listenOnly">Send no 'X' (class doc): the link only
+    /// sends and hears UI frames. <paramref name="onInbound"/> is then
+    /// never called.</param>
     public static async Task<AgwLink> OpenAsync(
         string host,
         int port,
@@ -209,7 +229,8 @@ public sealed class AgwLink : IAsyncDisposable
         TimeProvider? clock = null,
         Action? onRegisterSent = null,
         CancellationToken stopping = default,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool listenOnly = false)
     {
         var tcp = new TcpClient();
         AgwLink? link = null;
@@ -224,6 +245,14 @@ public sealed class AgwLink : IAsyncDisposable
             // guaranteed to exist - a fake clock advanced past
             // KeepaliveInterval then deterministically produces a 'G'.
             var keepalive = new PeriodicTimer(KeepaliveInterval, clock ?? TimeProvider.System);
+
+            if (listenOnly)
+            {
+                link = new AgwLink(tcp, framing, callsign, listenOnly: true, logger, onInbound, keepalive, clock ?? TimeProvider.System, stopping);
+                await framing.WriteFrameAsync(new AgwFrame(0, 'm', 0, "", "", []), ct);
+                link.readerTask = Task.Run(link.ReadLoopAsync);
+                return link;
+            }
 
             // 'X' register so BPQ knows where to dispatch inbound 'C' frames.
             // Note this is necessary but *not sufficient*: the operator must
@@ -245,7 +274,7 @@ public sealed class AgwLink : IAsyncDisposable
             }
             onRegisterSent?.Invoke();
 
-            link = new AgwLink(tcp, framing, callsign, logger, onInbound, keepalive, clock ?? TimeProvider.System, stopping);
+            link = new AgwLink(tcp, framing, callsign, listenOnly: false, logger, onInbound, keepalive, clock ?? TimeProvider.System, stopping);
 
             // The reply to the 'X', under a timeout: a host that takes the
             // TCP connection and never answers (the AGW port setting
@@ -390,6 +419,11 @@ public sealed class AgwLink : IAsyncDisposable
     public async Task<AgwDial> DialAsync(
         byte port, string local, string remote, TimeSpan deadline, CancellationToken ct, ILogger? dialLogger = null)
     {
+        if (ListenOnly)
+        {
+            throw new InvalidOperationException(
+                $"AGW: this connection only listens for discovery beacons, so it cannot call {remote}");
+        }
         if (!string.Equals(local, Callsign, StringComparison.OrdinalIgnoreCase))
         {
             throw new ArgumentException(
@@ -531,6 +565,33 @@ public sealed class AgwLink : IAsyncDisposable
         lock (gate) monitorWatchers.Remove(watcher);
     }
 
+    /// <summary>
+    /// Has <paramref name="onUi"/> called, on the reader, with every UI
+    /// frame ('U') the monitor shows, until the returned handle is disposed
+    /// or the link ends. As <see cref="WatchMonitor"/>: it must not block,
+    /// and the frame's CallTo is not to be trusted.
+    /// </summary>
+    public IDisposable SubscribeUi(Action<AgwFrame> onUi) =>
+        WatchMonitor(frame =>
+        {
+            if (frame.Kind == 'U') onUi(frame);
+        });
+
+    /// <summary>
+    /// Sends <paramref name="payload"/> as a UI frame ('M', PID 0xF0) from
+    /// <see cref="Callsign"/> to <paramref name="to"/> on
+    /// <paramref name="port"/>. Fails with an <see cref="IOException"/> once
+    /// the link has closed; nothing is held back for a later link.
+    /// </summary>
+    public Task SendUiAsync(byte port, string to, byte[] payload, CancellationToken ct)
+    {
+        if (ended)
+        {
+            throw new IOException("AGW: the connection to the node has closed");
+        }
+        return framing.WriteFrameAsync(new AgwFrame(port, 'M', 0xF0, Callsign, to, payload), ct);
+    }
+
     private void Dispatch(AgwFrame frame)
     {
         switch (frame.Kind)
@@ -608,6 +669,19 @@ public sealed class AgwLink : IAsyncDisposable
         var local = frame.CallTo;
         var port = frame.Port;
         logger.LogInformation("AGW inbound: 'C' from {0} to {1} on port {2}", remote, local, port);
+
+        if (ListenOnly)
+        {
+            // BPQ hands calls only to a socket that registered the
+            // callsign, so this is not expected; let the caller go rather
+            // than leave it waiting for a prompt that never comes.
+            logger.LogWarning(
+                "AGW inbound: {0} called {1} on port {2}, but this connection only listens for discovery beacons; disconnecting it",
+                remote, local, port);
+            var refused = new AgwLinkSession(this, port, local, remote, outbound: false);
+            _ = refused.Stream.DisposeAsync().AsTask();
+            return;
+        }
 
         var text = Encoding.Latin1.GetString(frame.Payload);
         if (frame.Payload.Length > 0 && !text.Contains("CONNECTED To", StringComparison.Ordinal))
@@ -846,7 +920,13 @@ public sealed class AgwLink : IAsyncDisposable
         }
 
         var expected = echoes[key];
-        if (retryout && expected.RetryoutUntil is not null) expected = expected with { RetryoutUntil = null };
+        if (retryout && expected.RetryoutUntil is not null)
+        {
+            // BPQ, then: its "From Station" comes at once or not at all
+            // (FromEchoWindow), so it is not expected for long.
+            var soon = clock.GetUtcNow() + RetryoutEchoWindow;
+            expected = new DisconnectEchoes(null, expected.FromUntil > soon ? soon : expected.FromUntil);
+        }
         else if (from && expected.FromUntil is not null) expected = expected with { FromUntil = null };
         else return false;
 

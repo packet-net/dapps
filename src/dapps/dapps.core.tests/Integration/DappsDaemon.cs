@@ -25,6 +25,7 @@ internal sealed class DappsDaemon : IAsyncDisposable
     private readonly StringBuilder output = new();
     private readonly string directory;
     private readonly NodeAttachment node;
+    private bool waitForNode = true;
 
     public string Name { get; }
     public string Callsign { get; }
@@ -60,11 +61,14 @@ internal sealed class DappsDaemon : IAsyncDisposable
         IEnumerable<RouteHint>? routeHints = null) =>
         StartAsync(name, callsign, NodeAttachment.Agw(agwHost, agwPort, bearerPort), neighbours, settings, ct, routeHints);
 
-    /// <summary>Start a daemon on its node, over AGW or RHPv2 as <paramref name="node"/> says.</summary>
+    /// <summary>Start a daemon on its node, over AGW or RHPv2 as <paramref name="node"/> says.
+    /// <paramref name="discoveryChannels"/> are seeded as the dashboard would add them. With
+    /// <paramref name="waitForNode"/> false it returns once the daemon answers, connected to its node or not.</summary>
     public static async Task<DappsDaemon> StartAsync(
         string name, string callsign, NodeAttachment node,
         IEnumerable<Neighbour> neighbours, IReadOnlyDictionary<string, string>? settings, CancellationToken ct,
-        IEnumerable<RouteHint>? routeHints = null)
+        IEnumerable<RouteHint>? routeHints = null, IEnumerable<DbDiscoveryChannel>? discoveryChannels = null,
+        bool waitForNode = true)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"dapps-e2e-{name}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(Path.Combine(directory, "data"));
@@ -79,6 +83,11 @@ internal sealed class DappsDaemon : IAsyncDisposable
                     CompressionEnabled = n.CompressionEnabled, SessionTailSeconds = n.SessionTailSeconds,
                     ConnectScriptJson = n.Script?.ToJson(), ConnectVia = n.ConnectVia,
                 });
+            }
+            if (discoveryChannels is not null)
+            {
+                db.CreateTable<DbDiscoveryChannel>();
+                foreach (var c in discoveryChannels) db.Insert(c);
             }
             if (routeHints is not null)
             {
@@ -137,6 +146,7 @@ internal sealed class DappsDaemon : IAsyncDisposable
         var daemon = new DappsDaemon(name, callsign, directory, node, new Process { StartInfo = start, EnableRaisingEvents = true }, http)
         {
             MqttPort = mqttPort,
+            waitForNode = waitForNode,
         };
         try
         {
@@ -291,6 +301,7 @@ internal sealed class DappsDaemon : IAsyncDisposable
             try
             {
                 var snapshot = await Http.GetFromJsonAsync<JsonElement>("Operational", ct);
+                if (!waitForNode) return;
                 if (snapshot.TryGetProperty("nodeReachable", out var reachable) && reachable.GetBoolean())
                 {
                     if (node.IsRhp)

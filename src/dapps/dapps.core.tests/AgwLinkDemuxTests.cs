@@ -562,6 +562,106 @@ public sealed class AgwLinkDemuxTests : IAsyncDisposable
             .Should().ThrowAsync<AgwLinkDownException>("BPQ would send the call from the link's own callsign");
     }
 
+    [Fact]
+    public async Task OnceBpqHasAnsweredOurDisconnect_ItsFromStationIsNotExpectedForLong()
+    {
+        // BPQ answers a 'd' with "RETRYOUT With" at once and, if the 'd'
+        // matched a connection, "From Station" within a tick or two of its
+        // 10 Hz timer. When it matched nothing the second never comes, and
+        // the expected answer used to linger for 3 minutes, swallowing the
+        // real "From Station" of a redial the peer hung up meanwhile.
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        var (link, node) = await OpenAsync(ct, clock);
+
+        var first = await DialAndConfirmAsync(link, node, Remote, Port, ct);
+        await first.DisposeAsync();
+        await node.ReadUntilAsync('d', ct);
+        await node.WriteAsync(ct, Echo(Remote, Port));
+        await logs.WaitForAsync("the node's answer to our own 'd'", ct);
+        clock.Advance(TimeSpan.FromSeconds(11));
+
+        await using var second = await DialAndConfirmAsync(link, node, Remote, Port, ct);
+        await node.WriteAsync(ct, FakeAgwSocket.Disconnect(Remote, Local, Port));
+        await logs.WaitForAsync("session closed", ct);
+        second.RemoteDisconnected.Should().BeTrue("the peer hung up the redial");
+    }
+
+    [Fact]
+    public async Task OnDireWolf_ItsLateAnswerToOurDisconnect_IsStillExpected()
+    {
+        // Dire Wolf's one answer comes once the link is down, which on air
+        // can take FRACK x RETRIES: it must not end a redial meanwhile.
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        var (link, node) = await OpenAsync(ct, clock);
+
+        var first = await DialAndConfirmAsync(link, node, Remote, Port, ct);
+        await first.DisposeAsync();
+        await node.ReadUntilAsync('d', ct);
+        clock.Advance(TimeSpan.FromSeconds(11));
+
+        await using var second = await DialAndConfirmAsync(link, node, Remote, Port, ct);
+        await node.WriteAsync(ct, FakeAgwSocket.Disconnect(Remote, Local, Port));
+        await logs.WaitForAsync("the node's answer to our own 'd'", ct);
+        second.RemoteDisconnected.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task WhileTheLinkBacksOff_DialsReconnectItAtMostOnceEveryThirtySeconds()
+    {
+        // With the node down, every dial used to cut the backoff short:
+        // a connect attempt and three log lines each.
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        var bpq = await h.StartAsync(ct);
+        var transport = new AgwOutboundTransport(h.Service, h.Logs);
+        bpq.Close();
+        await clock.WaitForTimerAsync(ReconnectBackoffSchedule.DelayForAttempt(1), ct);
+
+        var first = transport.ConnectAsync(Local, Remote, Port, ct);
+        (await h.Host.AcceptAsync(ct)).Close();
+        await FluentActions.Awaiting(() => first.WaitAsync(FakeAgwHost.FrameTimeout, ct)).Should().ThrowAsync<AgwLinkDownException>();
+        await clock.WaitForTimerAsync(ReconnectBackoffSchedule.DelayForAttempt(2), ct);
+
+        await FluentActions.Awaiting(() => transport.ConnectAsync(Local, Remote, Port, ct)).Should().ThrowAsync<AgwLinkDownException>();
+        // A reconnect that does not happen cannot be awaited: a short settle.
+        await Task.Delay(TimeSpan.FromMilliseconds(300), ct);
+        h.Host.Pending().Should().BeFalse("the last dial-triggered reconnect was less than 30 s ago");
+
+        // The backoff's own attempts go on meanwhile (10 s each here).
+        for (var attempt = 2; attempt <= 3; attempt++)
+        {
+            clock.Advance(ReconnectBackoffSchedule.DelayForAttempt(attempt));
+            (await h.Host.AcceptAsync(ct)).Close();
+            await clock.WaitForTimerAsync(ReconnectBackoffSchedule.DelayForAttempt(attempt + 1), ct);
+        }
+        clock.Advance(AgwInboundService.DialReopenInterval
+            - ReconnectBackoffSchedule.DelayForAttempt(2) - ReconnectBackoffSchedule.DelayForAttempt(3));
+
+        var third = transport.ConnectAsync(Local, Remote, Port, ct);
+        using var again = await AcceptRegisteredAsync(h.Host, ct);
+        await again.ReadUntilAsync('C', ct);
+        await again.WriteAsync(ct, Confirm(Remote, Port));
+        await using var connected = await third.WaitAsync(FakeAgwHost.FrameTimeout, ct);
+    }
+
+    [Fact]
+    public async Task ANodeThatRefusesTheConnection_IsLoggedAsOneLine_WithNoStackTrace()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new ObservableTimeProvider();
+        await using var h = new AgwInboundServiceHarness(Local, clock);
+        h.Host.Dispose();
+        await h.Service.StartAsync(ct);
+
+        var line = await h.Logs.WaitForAsync("AGW inbound loop ended", ct);
+        line.Exception.Should().BeNull();
+        line.Level.Should().Be(LogLevel.Warning);
+        line.Message.Should().Contain("refused");
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (link is not null) await link.DisposeAsync();
@@ -641,6 +741,8 @@ public sealed class AgwLinkDemuxTests : IAsyncDisposable
         public AgwLink? TryGetLink() => Link;
 
         public Task<AgwLink?> GetLinkAsync(TimeSpan wait, CancellationToken ct) => throw new NotSupportedException();
+
+        public IDisposable SubscribeUi(Action<AgwFrame> onUi) => throw new NotSupportedException();
 
         public Task<AgwLink?> ReopenAsync(TimeSpan wait, CancellationToken ct)
         {

@@ -49,6 +49,14 @@ public sealed class AgwOutboundTransport(IAgwLinkSource links, ILoggerFactory lo
         var link = links.TryGetLink() ?? await links.ReopenAsync(LinkOpenWait, stoppingToken);
         if (link is null) throw new AgwLinkDownException(remoteCallsign, links.State);
 
+        // Opened for discovery alone, AGW not being the bearer: it
+        // registered no callsign, so BPQ would have none to call from.
+        if (link.ListenOnly)
+        {
+            throw new AgwLinkDownException(
+                $"AGW: the connection to the node only listens for discovery beacons (AGW is not the bearer); {remoteCallsign} was not called");
+        }
+
         // The link registered the callsign in the settings when it opened;
         // after a change it reconnects under the new one shortly.
         if (!string.Equals(link.Callsign, localCallsign, StringComparison.OrdinalIgnoreCase))

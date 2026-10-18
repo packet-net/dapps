@@ -109,7 +109,7 @@ A fresh DAPPS install has **no discovery channels configured by default** - disc
 Check, in order:
 
 - Channel is **enabled** (the Enabled column; **enable** on the row turns it back on).
-- The packet node is up. If it isn't, the log says `bearer 'agw' failed to start ... retrying in`, and discovery starts on its own once the node answers.
+- The packet node is up. AGW discovery uses DAPPS's one AGW connection to the node; while that is down nothing is sent, the log shows `AGW inbound loop ended ... reconnecting in`, and discovery beacons again as soon as it is back.
 - Beacon cadence isn't unreasonably long (the Beacon column; one beacon every 2 hours, the HF default, means you hear nothing for 2 hours after start).
 - Other DAPPS nodes are actually transmitting on the same channel-key (same bearer port). A node beaconing on port 1 won't be heard by a node listening on port 0.
 - Airtime budget isn't exhausted. The Discovery airtime panel on the dashboard's Overview shows trailing-hour consumption; if it's at 100 % of the global cap or more, beacons will defer. Either raise the cap or wait.

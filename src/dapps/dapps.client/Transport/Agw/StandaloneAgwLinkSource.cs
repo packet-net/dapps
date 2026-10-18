@@ -21,6 +21,7 @@ public sealed class StandaloneAgwLinkSource(
     private readonly ILogger logger = loggerFactory.CreateLogger<StandaloneAgwLinkSource>();
     private readonly SemaphoreSlim opening = new(1, 1);
     private AgwLink? link;
+    private readonly AgwUiSubscribers ui = new(loggerFactory.CreateLogger<StandaloneAgwLinkSource>());
 
     public AgwLinkState State => TryGetLink() is null ? AgwLinkState.Connecting : AgwLinkState.Open;
 
@@ -40,6 +41,7 @@ public sealed class StandaloneAgwLinkSource(
             if (TryGetLink() is { } open) return open;
             if (link is { } old) await old.DisposeAsync();
             var opened = await AgwLink.OpenAsync(host, port, callsign, Refuse, logger, txGate, clock, ct: ct);
+            ui.Attach(opened);
             Volatile.Write(ref link, opened);
             return opened;
         }
@@ -50,6 +52,11 @@ public sealed class StandaloneAgwLinkSource(
     }
 
     public Task<AgwLink?> ReopenAsync(TimeSpan wait, CancellationToken ct) => GetLinkAsync(wait, ct);
+
+    /// <summary>Hears the UI frames of each link this source opens; it
+    /// opens one only when a caller asks for it, though, so a subscription
+    /// alone hears nothing.</summary>
+    public IDisposable SubscribeUi(Action<AgwFrame> onUi) => ui.Add(onUi);
 
     private void Refuse(AgwLinkSession session)
     {

@@ -80,4 +80,14 @@ public interface IDiscoveryBearer : IAsyncDisposable
     /// on. Today: beacons and solicits; future: anything bearer-level
     /// the service should react to.</summary>
     IAsyncEnumerable<ReceivedDiscoveryFrame> ListenAsync(CancellationToken ct);
+
+    /// <summary>
+    /// What the bearer sends over, for one that sends over a connection
+    /// it does not own: null while that is down and nothing can go, and a
+    /// new value each time it is reopened. The discovery service sends
+    /// nothing while it is null, and announces on each channel at once
+    /// when it changes, as it does when a bearer starts. A bearer that
+    /// owns its sockets keeps the default: itself, always.
+    /// </summary>
+    object? Connection => this;
 }

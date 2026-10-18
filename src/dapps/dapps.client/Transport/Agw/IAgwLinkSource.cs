@@ -3,11 +3,13 @@ namespace dapps.client.Transport.Agw;
 /// <summary>Where the daemon's one <see cref="AgwLink"/> stands.</summary>
 public enum AgwLinkState
 {
-    /// <summary>Not running: AGW is not the bearer, or no callsign is set.</summary>
+    /// <summary>Not running: AGW is not the bearer and no AGW discovery
+    /// channel needs the connection, or no callsign is set.</summary>
     Idle,
     /// <summary>Opening, or about to open, a connection.</summary>
     Connecting,
-    /// <summary>Connected and registered.</summary>
+    /// <summary>Connected: registered, or listening only
+    /// (<see cref="AgwLink.ListenOnly"/>).</summary>
     Open,
     /// <summary>Waiting out a reconnect backoff after a failure.</summary>
     Backoff,
@@ -38,4 +40,14 @@ public interface IAgwLinkSource
     /// open by then, or the attempt failed.
     /// </summary>
     Task<AgwLink?> ReopenAsync(TimeSpan wait, CancellationToken ct);
+
+    /// <summary>
+    /// Has <paramref name="onUi"/> called, on the link's reader, with every
+    /// UI frame ('U') the node's monitor shows, on whichever link is open,
+    /// until the returned handle is disposed. The subscription is the
+    /// source's, not one link's: it hears every link opened after it. It
+    /// must not block. A monitored frame's CallTo is whatever BPQ last put
+    /// there; filter by its port and CallFrom, never its CallTo.
+    /// </summary>
+    IDisposable SubscribeUi(Action<AgwFrame> onUi);
 }

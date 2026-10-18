@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using System.Runtime.ExceptionServices;
 using dapps.client.Backhaul;
 using dapps.client.Transport.Agw;
@@ -33,6 +34,13 @@ namespace dapps.core.Services;
 /// (callsign, node host, AGW port or bearer) reopens it too, which ends
 /// every session on it, outbound ones included.
 ///
+/// When AGW is not the bearer but an AGW discovery channel is running
+/// (a <see cref="SubscribeUi"/> subscription is held), the link is opened
+/// listen-only (<see cref="AgwLink.ListenOnly"/>): no 'X', no inbound
+/// calls, no dials, just the beacons. It closes once the last
+/// subscription goes. A bearer switch is a save in the restart set, so
+/// it reopens the link in the other mode.
+///
 /// Reconnect policy: on any AGW socket error, back off along
 /// <see cref="reconnect"/>'s sliding scale (10s x3, 30s x3, 1min x3, then
 /// 5min steady-state) and retry; an operator can jump the queue via the
@@ -64,6 +72,10 @@ public sealed class AgwInboundService(
     internal static readonly TimeSpan NonFailureRetryDelay = TimeSpan.FromSeconds(5);
     /// <summary>See <see cref="AgwLink.KeepaliveInterval"/>.</summary>
     internal static readonly TimeSpan KeepaliveInterval = AgwLink.KeepaliveInterval;
+    /// <summary>Least time between two reconnects a dial asks for while
+    /// the link backs off: with the node down, every dial would otherwise
+    /// cost a connect attempt and its log lines.</summary>
+    internal static readonly TimeSpan DialReopenInterval = TimeSpan.FromSeconds(30);
 
     private readonly CancellationTokenSource stoppingTokenSource = new();
     private readonly OperationalMetrics metrics = metrics ?? new OperationalMetrics();
@@ -79,6 +91,8 @@ public sealed class AgwInboundService(
     private AgwLink? link;
     private AgwLinkState linkState = AgwLinkState.Idle;
     private TaskCompletionSource<AgwLink?> nextLink = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private DateTimeOffset? lastDialReopen;
+    private readonly AgwUiSubscribers ui = new(logger);
 
     /// <summary>Operator-triggered "retry now" - see
     /// <see cref="InboundReconnectController.TriggerRetry"/>. Publishes
@@ -182,9 +196,19 @@ public sealed class AgwInboundService(
                 // cancel by then.
                 var waitTask = reconnect.WaitAsync(delay, outerCt);
                 PublishBackoffState();
-                logger.LogWarning(ex,
-                    "AGW inbound loop ended; reconnecting in {0}s (attempt {1}, next at {2:O})",
-                    delay.TotalSeconds, reconnect.FailureStreak, reconnect.NextRetryAtUtc);
+                if (ex is SocketException { SocketErrorCode: SocketError.ConnectionRefused })
+                {
+                    // The node is not up: the stack trace says nothing more.
+                    logger.LogWarning(
+                        "AGW inbound loop ended ({3}); reconnecting in {0}s (attempt {1}, next at {2:O})",
+                        delay.TotalSeconds, reconnect.FailureStreak, reconnect.NextRetryAtUtc, ex.Message);
+                }
+                else
+                {
+                    logger.LogWarning(ex,
+                        "AGW inbound loop ended; reconnecting in {0}s (attempt {1}, next at {2:O})",
+                        delay.TotalSeconds, reconnect.FailureStreak, reconnect.NextRetryAtUtc);
+                }
                 await waitTask;
             }
         }
@@ -208,8 +232,11 @@ public sealed class AgwInboundService(
         // Bearer-active gate: only run when AGW is the configured bearer.
         // The Rhpv2InboundService runs alongside us and gates the same way
         // on "rhpv2"; OnChange fires when /Config flips the value, which
-        // cancels our cycle (or theirs) so the loop re-evaluates.
-        if (!string.Equals(opts.NodeBearer, "agw", StringComparison.OrdinalIgnoreCase))
+        // cancels our cycle (or theirs) so the loop re-evaluates. With
+        // another bearer, AGW discovery may still want the node's UI
+        // frames: then listen only (class doc).
+        var listenOnly = !string.Equals(opts.NodeBearer, "agw", StringComparison.OrdinalIgnoreCase);
+        if (listenOnly && !ui.Any)
         {
             SetLinkState(AgwLinkState.Idle);
             await Task.Delay(IdleBackoff, timeProvider, ct);
@@ -227,9 +254,16 @@ public sealed class AgwInboundService(
         }
 
         SetLinkState(AgwLinkState.Connecting);
+        if (listenOnly)
+        {
+            logger.LogInformation(
+                "AGW inbound: the bearer is {0}, so the AGW connection only sends and hears discovery beacons: no callsign registration, no calls",
+                opts.NodeBearer);
+        }
         await using var opened = await AgwLink.OpenAsync(
             opts.NodeHost, opts.AgwPort, localCall, OnInbound, logger, txGate, timeProvider,
-            onRegisterSent: metrics.RecordAgwReconnect, stopping: stoppingTokenSource.Token, ct: ct);
+            onRegisterSent: listenOnly ? null : metrics.RecordAgwReconnect, stopping: stoppingTokenSource.Token, ct: ct,
+            listenOnly: listenOnly);
 
         // Reset the backoff only now, not on the raw connect and write:
         // a host that accepts the TCP socket and closes it straight
@@ -241,17 +275,41 @@ public sealed class AgwInboundService(
         PublishBackoffState();
         logger.LogDebug("AGW inbound: 'X' ack");
 
+        // Before it is published, so a subscriber hears it from the start.
+        using var uiFrames = ui.Attach(opened);
         Publish(opened);
+        var unwanted = false;
         try
         {
-            await opened.Closed.WaitAsync(ct);
+            if (listenOnly)
+            {
+                // Open only for discovery: closed once nothing wants it.
+                await Task.WhenAny(opened.Closed, ui.WhenEmptyAsync()).WaitAsync(ct);
+                unwanted = !opened.Closed.IsCompleted;
+                if (unwanted)
+                {
+                    logger.LogInformation("AGW inbound: no AGW discovery channel is running any more; closing the listen-only connection");
+                    return;
+                }
+            }
+            else
+            {
+                await opened.Closed.WaitAsync(ct);
+            }
             if (opened.CloseReason is { } reason) ExceptionDispatchInfo.Throw(reason);
         }
         finally
         {
-            Unpublish(opened);
+            Unpublish(opened, unwanted);
         }
     }
+
+    /// <summary>
+    /// UI frames from whichever link is open, for AGW discovery (see
+    /// <see cref="IAgwLinkSource.SubscribeUi"/>). While one is held and AGW
+    /// is not the bearer, the link runs listen-only.
+    /// </summary>
+    public IDisposable SubscribeUi(Action<AgwFrame> onUi) => ui.Add(onUi);
 
     /// <summary>
     /// An inbound connect, already in the link's session table: hold the
@@ -428,6 +486,14 @@ public sealed class AgwInboundService(
         {
             if (link is not null) return link;
             if (linkState == AgwLinkState.Idle) return null;
+            if (linkState == AgwLinkState.Backoff)
+            {
+                // At most one reconnect per DialReopenInterval on a dial's
+                // account; in between, the dial fails at once, as before.
+                var now = timeProvider.GetUtcNow();
+                if (now - lastDialReopen < DialReopenInterval) return null;
+                lastDialReopen = now;
+            }
             // Taken before the retry, so the link it opens is not missed:
             // a failed attempt releases it with null (Backoff).
             opening = nextLink.Task;
@@ -482,20 +548,22 @@ public sealed class AgwInboundService(
         waiters.TrySetResult(opened);
     }
 
-    /// <summary>Withdraws <paramref name="closed"/>: Backoff if it
+    /// <summary>Withdraws <paramref name="closed"/>: Idle if nothing
+    /// wants it any more (<paramref name="unwanted"/>), Backoff if it
     /// failed, otherwise Connecting (a cycle cancelled by a save, which
     /// reconnects shortly; on shutdown the loop then says Idle).</summary>
-    private void Unpublish(AgwLink closed)
+    private void Unpublish(AgwLink closed, bool unwanted = false)
     {
         var failed = closed.CloseReason is { } reason && reason is not OperationCanceledException;
+        var state = unwanted ? AgwLinkState.Idle : failed ? AgwLinkState.Backoff : AgwLinkState.Connecting;
         TaskCompletionSource<AgwLink?>? giveUp;
         lock (linkGate)
         {
             if (!ReferenceEquals(link, closed)) return;
             link = null;
-            giveUp = ChangeState(failed ? AgwLinkState.Backoff : AgwLinkState.Connecting);
+            giveUp = ChangeState(state);
         }
-        logger.LogDebug("AGW inbound: connection withdrawn ({0})", failed ? AgwLinkState.Backoff : AgwLinkState.Connecting);
+        logger.LogDebug("AGW inbound: connection withdrawn ({0})", state);
         giveUp?.TrySetResult(null);
     }
 }

@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using dapps.client.Discovery;
-using dapps.client.Tx;
+using dapps.client.Transport.Agw;
 using dapps.core.Models;
 using Microsoft.Extensions.Options;
 
@@ -34,7 +34,7 @@ public sealed class DiscoveryService(
     AirtimeAccountant? airtime = null,
     OperationalMetrics? metrics = null,
     TransmissionAuditService? transmissionAudit = null,
-    IDappsTxGate? txGate = null) : BackgroundService
+    IAgwLinkSource? agwLinks = null) : BackgroundService
 {
     private static readonly TimeSpan SweepInterval = TimeSpan.FromMinutes(1);
 
@@ -45,23 +45,12 @@ public sealed class DiscoveryService(
     public TimeSpan ChannelReloadInterval { get; init; } = TimeSpan.FromSeconds(10);
 
     /// <summary>A bearer the service has started: the bearer, its listen
-    /// loop, the channel keys it was started with, and the node settings
-    /// it was built from (<see cref="NodeSettingsFor"/>). The listen loop
-    /// ending other than on shutdown means the bearer has died (the AGW
-    /// bearer ends its loop when the node connection drops).</summary>
-    private sealed record RunningBearer(IDiscoveryBearer Bearer, Task Listen, HashSet<string> Keys, object? NodeSettings);
-
-    /// <summary>The SystemOptions fields a bearer is built from, copied
-    /// when it starts: a save that changes them restarts the bearer, so
-    /// it does not go on beaconing as the old callsign or talking to the
-    /// old node (#274). Null for a bearer built from none of them.</summary>
-    internal sealed record AgwNodeSettings(string Callsign, string NodeHost, int AgwPort);
-
-    private static object? NodeSettingsFor(string bearerName, SystemOptions opts) => bearerName switch
-    {
-        "agw" => new AgwNodeSettings(opts.Callsign, opts.NodeHost, opts.AgwPort),
-        _ => null,
-    };
+    /// loop and the channel keys it was started with. The listen loop
+    /// ending other than on shutdown means the bearer has died. The AGW
+    /// bearer's never does: it is on the daemon's one AGW connection,
+    /// which reconnects by itself, under a new callsign or to a new node
+    /// after a save (#274).</summary>
+    private sealed record RunningBearer(IDiscoveryBearer Bearer, Task Listen, HashSet<string> Keys);
 
     /// <summary>Delay before the next attempt to start a bearer that
     /// failed or died: the node is usually just not up yet, so quick
@@ -150,8 +139,7 @@ public sealed class DiscoveryService(
                 ? w.Select(c => c.ChannelKey).ToHashSet(StringComparer.Ordinal)
                 : new HashSet<string>(StringComparer.Ordinal);
             var died = running.Listen.IsCompleted && !stoppingToken.IsCancellationRequested;
-            var nodeChanged = !Equals(running.NodeSettings, NodeSettingsFor(name, options.CurrentValue));
-            if (!died && !nodeChanged && keys.SetEquals(running.Keys)) continue;
+            if (!died && keys.SetEquals(running.Keys)) continue;
 
             if (died)
             {
@@ -165,10 +153,6 @@ public sealed class DiscoveryService(
             else if (keys.Count == 0)
             {
                 logger.LogInformation("DiscoveryService: no enabled channels left on bearer '{0}'; stopping it", name);
-            }
-            else if (nodeChanged)
-            {
-                logger.LogInformation("DiscoveryService: callsign or node settings changed; restarting bearer '{0}'", name);
             }
             else
             {
@@ -216,7 +200,7 @@ public sealed class DiscoveryService(
             attempts.Remove(name);
             retryAt.Remove(name);
             var listen = Task.Run(() => ListenLoopAsync(bearer, channelsByBearer, stoppingToken), stoppingToken);
-            bearers[name] = new RunningBearer(bearer, listen, info.Select(c => c.ChannelKey).ToHashSet(StringComparer.Ordinal), NodeSettingsFor(name, opts));
+            bearers[name] = new RunningBearer(bearer, listen, info.Select(c => c.ChannelKey).ToHashSet(StringComparer.Ordinal));
             lock (_activeBearers) _activeBearers[name] = bearer;
             foreach (var ch in info) added.Add((name, ch));
             logger.LogInformation(
@@ -251,7 +235,7 @@ public sealed class DiscoveryService(
     {
         return bearerName switch
         {
-            "agw" => new AgwUiDiscoveryBearer(opts.NodeHost, opts.AgwPort, opts.Callsign, loggerFactory, txGate: txGate ?? AlwaysOpenTxGate.Instance),
+            "agw" when agwLinks is not null => new AgwUiDiscoveryBearer(agwLinks, loggerFactory),
             "udp" => new UdpMulticastDiscoveryBearer(opts.Callsign, loggerFactory),
             _ => null,
         };
@@ -281,6 +265,9 @@ public sealed class DiscoveryService(
         // initial beacon.
         var nextSolicit = new Dictionary<(string Bearer, string ChannelKey), DateTime>();
         var nextSweep = timeProvider.GetUtcNow().UtcDateTime + SweepInterval;
+        // What each bearer last sent over (IDiscoveryBearer.Connection):
+        // a new one means it has just reconnected.
+        var connections = new Dictionary<string, object>(StringComparer.Ordinal);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -327,10 +314,32 @@ public sealed class DiscoveryService(
                 nextReload = now + ChannelReloadInterval;
             }
 
+            // Bearers whose connection is down: their overdue sends must
+            // not make the loop spin.
+            var down = new HashSet<string>(StringComparer.Ordinal);
             foreach (var kv in channelsByBearer)
             {
                 if (!bearers.TryGetValue(kv.Key, out var running)) continue;
                 var bearer = running.Bearer;
+
+                // Down: nothing can go, and nothing is held back either;
+                // what is due waits for the connection, one per channel.
+                if (bearer.Connection is not { } connection)
+                {
+                    down.Add(kv.Key);
+                    continue;
+                }
+                if (!connections.TryGetValue(kv.Key, out var last) || !ReferenceEquals(last, connection))
+                {
+                    // Just (re)connected, maybe under a new callsign or to
+                    // another node: announce now, as on a bearer's start.
+                    connections[kv.Key] = connection;
+                    foreach (var ch in kv.Value)
+                    {
+                        var key = (kv.Key, ch.ChannelKey);
+                        if (nextEmit.ContainsKey(key)) nextEmit[key] = now.AddMilliseconds(Random.Shared.Next(50, 250));
+                    }
+                }
                 foreach (var ch in kv.Value)
                 {
                     var key = (kv.Key, ch.ChannelKey);
@@ -369,6 +378,13 @@ public sealed class DiscoveryService(
                     {
                         await bearer.AnnounceAsync(beacon, ch.ChannelKey, stoppingToken);
                         beaconOk = true;
+                    }
+                    catch (AgwLinkDownException ex)
+                    {
+                        // The node is not connected: one line, and no
+                        // beacon held back for when it is.
+                        logger.LogWarning("DiscoveryService: announce on {0}/{1} failed: {2}", kv.Key, ch.ChannelKey, ex.Message);
+                        beaconErr = ex.GetType().Name;
                     }
                     catch (Exception ex)
                     {
@@ -429,6 +445,11 @@ public sealed class DiscoveryService(
                             "DiscoveryService: scheduled solicit on {0}/{1}",
                             kv.Key, ch.ChannelKey);
                     }
+                    catch (AgwLinkDownException ex)
+                    {
+                        logger.LogWarning("DiscoveryService: scheduled solicit on {0}/{1} failed: {2}", kv.Key, ch.ChannelKey, ex.Message);
+                        solErr = ex.GetType().Name;
+                    }
                     catch (Exception ex)
                     {
                         logger.LogWarning(ex,
@@ -479,11 +500,9 @@ public sealed class DiscoveryService(
             // Sleep until the nearest of: next emit, next solicit,
             // next sweep, next channel reload, or 1s.
             var soonest = nextReload;
-            if (nextEmit.Count > 0 && nextEmit.Values.Min() < soonest) soonest = nextEmit.Values.Min();
-            if (nextSolicit.Count > 0)
+            foreach (var (key, due) in nextEmit.Concat(nextSolicit))
             {
-                var soonestSolicit = nextSolicit.Values.Min();
-                if (soonestSolicit < soonest) soonest = soonestSolicit;
+                if (due < soonest && !down.Contains(key.Bearer)) soonest = due;
             }
             if (nextSweep < soonest) soonest = nextSweep;
             var sleep = soonest - timeProvider.GetUtcNow().UtcDateTime;
@@ -629,6 +648,10 @@ public sealed class DiscoveryService(
             }
         }
         catch (OperationCanceledException) { /* shutdown */ }
+        catch (AgwLinkDownException ex)
+        {
+            logger.LogWarning("DiscoveryService: failed to reply to solicit on {0}/{1}: {2}", bearer.Name, rs.ChannelKey, ex.Message);
+        }
         catch (Exception ex)
         {
             logger.LogWarning(ex,

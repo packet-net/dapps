@@ -177,6 +177,7 @@ internal sealed class AgwInboundServiceHarness : IAsyncDisposable
         Callsign = Options.CurrentValue.Callsign,
         NodeHost = Options.CurrentValue.NodeHost,
         AgwPort = Options.CurrentValue.AgwPort,
+        NodeBearer = Options.CurrentValue.NodeBearer,
     };
 
     /// <summary>A fresh copy of the current options with
