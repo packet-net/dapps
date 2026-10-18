@@ -117,7 +117,8 @@ public sealed class SettingsTests(LoggedInWebAppFixture app, PlaywrightFixture p
 
     /// <summary>
     /// Bearer-conditional fields: switching between AGW and RHPv2 in
-    /// the Node bearer dropdown hides the unselected bearer's settings
+    /// the Node bearer dropdown hides the unselected bearer's settings,
+    /// except the AGW port, which AGW discovery channels use with either
     /// (their other-bearer counterpart is irrelevant, and showing both
     /// at once led operators to "fix" inactive ports without realising
     /// they did nothing). The values themselves stay in the form so
@@ -137,9 +138,12 @@ public sealed class SettingsTests(LoggedInWebAppFixture app, PlaywrightFixture p
         (await page.Locator("input[name='RhpUser']").IsVisibleAsync()).Should().BeFalse();
         (await page.Locator("input[name='RhpPass']").IsVisibleAsync()).Should().BeFalse();
 
-        // Flip to RHPv2: AGW-specific fields hide; RHPv2 fields surface.
+        // Flip to RHPv2: the RHPv2 fields surface. The AGW port stays:
+        // the listen-only AGW connection for discovery channels uses it.
         await page.SelectOptionAsync("select[name='NodeBearer']", "rhpv2");
-        (await page.Locator("input[name='AgwPort']").IsVisibleAsync()).Should().BeFalse();
+        (await page.Locator("input[name='AgwPort']").IsVisibleAsync()).Should().BeTrue(
+            "with RHPv2 the AGW port is still what AGW discovery channels hear on");
+        (await page.Locator(".field:has(input[name='AgwPort']) .hint").InnerTextAsync()).Should().Contain("AGW discovery channels");
         (await page.Locator("input[name='RhpPort']").IsVisibleAsync()).Should().BeTrue();
         (await page.Locator("input[name='RhpUser']").IsVisibleAsync()).Should().BeTrue();
         (await page.Locator("input[name='RhpPass']").IsVisibleAsync()).Should().BeTrue();

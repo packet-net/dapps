@@ -29,7 +29,7 @@ Walks the persisted `systemoptions` table and prints `DAPPS_SCREAMING_SNAKE=valu
 | Callsign         | `DAPPS_CALLSIGN` | `N0CALL`    | DAPPS's own callsign with SSID, e.g. `M0LTE-7`, not your node's. On the placeholder the daemon starts but won't bind or transmit until you set one. |
 | Node host        | `DAPPS_NODE_HOST`| `localhost` | TCP host of your packet node (BPQ, XRouter, etc.).                        |
 | Node bearer      | `DAPPS_NODE_BEARER` | `agw`    | Which host protocol DAPPS speaks to the packet node: `agw` (BPQ, Direwolf, AGWPE, ...) or `rhpv2` (XRouter, pdn, future RHPv2-capable BPQ). See [Connect a node](connect/index.md). |
-| AGW port         | `DAPPS_AGW_PORT` | `8000`      | TCP port the packet node's AGW interface listens on. Used when `Node bearer = agw`. |
+| AGW port         | `DAPPS_AGW_PORT` | `8000`      | TCP port the packet node's AGW interface listens on. Used when `Node bearer = agw`, and with `rhpv2` to hear AGW discovery channels (their beacons then go out through the RHPv2 host, even if another program serves AGW there; see [Discovery channels](discovery-and-routing.md#discovery-channels)). |
 | RHPv2 port       | `DAPPS_RHP_PORT` | `9000`      | TCP port the packet node's RHPv2 listener is on. Used when `Node bearer = rhpv2`. |
 | RHPv2 user       | `DAPPS_RHP_USER` | _empty_     | Username for RHPv2 authentication. Leave empty if your packet node accepts unauthenticated RHPv2. |
 | RHPv2 password   | `DAPPS_RHP_PASS` | _empty_     | Password matching the RHPv2 user.                                         |

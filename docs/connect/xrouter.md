@@ -106,13 +106,17 @@ Send a test message with the **Quick send** form on the dashboard's Overview. Th
 
 ## Discovery beacons
 
-An AGW discovery channel works with RHPv2 as the bearer (see [Discovery channels](../discovery-and-routing.md#discovery-channels)). DAPPS hears other nodes' beacons on XRouter's AGW monitor, so `AGWPORT=` must be set and DAPPS's AGW port setting must match it. The Settings page shows that field only while AGW is the bearer: set it there before switching the bearer to RHPv2, or with `DAPPS_AGW_PORT` before the first start, or `POST /Config`. That AGW connection registers no callsign and never takes a call, so calls to DAPPS's callsign always reach its RHPv2 listener. DAPPS sends its own beacons and solicits through the RHPv2 port instead, as UI frames from its callsign: XRouter's AGW sends nothing from a connection that has registered no callsign.
+An AGW discovery channel works with RHPv2 as the bearer (see [Discovery channels](../discovery-and-routing.md#discovery-channels)). DAPPS hears other nodes' beacons on XRouter's AGW monitor, so `AGWPORT=` must be set and DAPPS's **AGW TCP port** setting must match it. That AGW connection registers no callsign and never takes a call, so calls to DAPPS's callsign always reach its RHPv2 listener. DAPPS sends its own beacons and solicits through the RHPv2 port instead, as UI frames from its callsign: XRouter's AGW sends nothing from a connection that has registered no callsign.
+
+AGW and RHPv2 number XRouter's ports differently: AGW counts them from 0 in order of their `PORT=` numbers, RHPv2 uses the `PORT=` number itself. So before each beacon DAPPS asks XRouter which `PORT=` numbers exist (this sends nothing on air) and sends on the one at the channel's position: with `PORT=1`, `PORT=3` and `PORT=4`, a channel on AGW port 2 beacons on `PORT=4`. If the AGW connection isn't XRouter's own, or the two port lists don't match, DAPPS sends nothing and logs one line per beacon saying why, and the beacon is not charged against the airtime budget.
 
 ## Multi-port setups
 
 If your XRouter has multiple radio ports (`PORT=1`, `PORT=2`, etc.), every neighbour record can specify which port to use. The dashboard's add-neighbour form has the field; the discovery system records the port a peer was heard on automatically.
 
 The byte numbering in DAPPS is 0-indexed against the order ports appear in `XROUTER.CFG`. `PORT=1` -> byte 0, `PORT=2` -> byte 1, and so on. DAPPS handles the +1 conversion to RHPv2's port-name shape internally, so the same `BearerPort` value works for both AGW (BPQ) and RHPv2 (XRouter) neighbours.
+
+For calls to neighbours that +1 is all DAPPS does, so number your ports `PORT=1`, `PORT=2`, `PORT=3` in order with no gaps: with `PORT=1` and `PORT=3`, a neighbour on radio port 1 would be called on `PORT=2`, which doesn't exist. Discovery beacons don't depend on this (see [Discovery beacons](#discovery-beacons)).
 
 ## Sharing a callsign between XRouter and DAPPS
 

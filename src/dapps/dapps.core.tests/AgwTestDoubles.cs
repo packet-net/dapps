@@ -344,6 +344,13 @@ internal sealed class ObservableTimeProvider : TimeProvider
         return timer;
     }
 
+    /// <summary>Forgets the timers created so far, so the next
+    /// <see cref="WaitForTimerAsync"/> sees only those created after this.</summary>
+    public void ForgetCreatedTimers()
+    {
+        while (created.Reader.TryRead(out _)) { }
+    }
+
     /// <summary>Completes once a timer with exactly this due time has been
     /// created since the last call, i.e. the code under test has started
     /// the wait the caller is about to satisfy with <see cref="Advance"/>.</summary>

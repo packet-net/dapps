@@ -108,7 +108,7 @@ public sealed class AgwUiDiscoveryBearer : IDiscoveryBearer
         {
             var sender = _listenOnlySender
                 ?? throw new InvalidOperationException($"AGW: the connection only listens and nothing else sends UI frames; nothing sent on port {portByte}");
-            await sender.SendUiAsync(portByte, link.Callsign, _broadcastCall, payload, ct);
+            await sender.SendUiAsync(portByte, link.Callsign, _broadcastCall, payload, link.LatestPorts, ct);
             return;
         }
         await link.SendUiAsync(portByte, _broadcastCall, payload, ct);

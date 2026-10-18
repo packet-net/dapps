@@ -49,8 +49,8 @@
                 </select>
                 <span class="hint">AGW for BPQ; RHPv2 for XRouter or pdn</span>
             </div>
-            <div class="field" data-bearer="agw"><label>AGW TCP port</label><input name="AgwPort" type="number" min="1" max="65535" value="@Model.Options.AgwPort" required />
-                <span class="hint">BPQ's AGW listener (default <code>8000</code>)</span></div>
+            <div class="field"><label>AGW TCP port</label><input name="AgwPort" type="number" min="1" max="65535" value="@Model.Options.AgwPort" required />
+                <span class="hint">BPQ's AGW listener (default <code>8000</code>); with RHPv2, used only to hear AGW discovery channels</span></div>
             <div class="field" data-bearer="rhpv2"><label>RHPv2 TCP port</label><input name="RhpPort" type="number" min="1" max="65535" value="@Model.Options.RhpPort" required />
                 <span class="hint">XRouter's RHPv2 listener (default <code>9000</code>)</span></div>
             <div class="field" data-bearer="rhpv2"><label>RHPv2 user</label>
@@ -360,7 +360,8 @@ async function dappsRotatePassword(ev) {
 // AGW vs RHPv2 are mutually exclusive at runtime; showing all four
 // fields at once is noisy and invites the operator to "fix" the
 // inactive bearer's port without realising it does nothing. Hide the
-// inactive bearer's fields while keeping their values intact - the
+// inactive bearer's fields (the RHPv2 ones; the AGW port stays, since
+// AGW discovery channels use it with either bearer) while keeping their values intact - the
 // form still serialises both, so flipping back later doesn't lose the
 // previous bearer's settings.
 (function () {
