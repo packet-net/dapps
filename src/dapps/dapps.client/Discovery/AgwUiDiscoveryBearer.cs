@@ -22,6 +22,12 @@ namespace dapps.client.Discovery;
 /// UI frames go out from the link's own callsign, so a callsign change
 /// takes effect when the link reconnects under it.
 ///
+/// A listen-only link (AGW is not the bearer) registers no callsign, and
+/// XRouter's AGW sends no 'M' from such a socket, so while the link only
+/// listens the frames go out through the <see cref="IUiFrameSender"/>
+/// (the node's RHPv2 port) instead, from the same callsign. Hearing stays
+/// on the link's monitor.
+///
 /// Channels for this bearer have <c>ChannelKey</c> = the bearer port
 /// byte stringified ("0", "1", ...). The bearer rejects any other key
 /// shape on start.
@@ -33,6 +39,7 @@ public sealed class AgwUiDiscoveryBearer : IDiscoveryBearer
     public const string DefaultBroadcastCall = "DAPPS";
 
     private readonly IAgwLinkSource _links;
+    private readonly IUiFrameSender? _listenOnlySender;
     private readonly string _broadcastCall;
     private readonly ILogger _logger;
 
@@ -49,9 +56,11 @@ public sealed class AgwUiDiscoveryBearer : IDiscoveryBearer
     public AgwUiDiscoveryBearer(
         IAgwLinkSource links,
         ILoggerFactory loggerFactory,
+        IUiFrameSender? listenOnlySender = null,
         string broadcastCall = DefaultBroadcastCall)
     {
         _links = links;
+        _listenOnlySender = listenOnlySender;
         _broadcastCall = broadcastCall;
         _logger = loggerFactory.CreateLogger<AgwUiDiscoveryBearer>();
     }
@@ -95,6 +104,13 @@ public sealed class AgwUiDiscoveryBearer : IDiscoveryBearer
         var portByte = ParsePortByte(channelKey);
         var link = _links.TryGetLink()
             ?? throw new AgwLinkDownException($"AGW: the connection to the node is not open; nothing sent on port {portByte}");
+        if (link.ListenOnly)
+        {
+            var sender = _listenOnlySender
+                ?? throw new InvalidOperationException($"AGW: the connection only listens and nothing else sends UI frames; nothing sent on port {portByte}");
+            await sender.SendUiAsync(portByte, link.Callsign, _broadcastCall, payload, ct);
+            return;
+        }
         await link.SendUiAsync(portByte, _broadcastCall, payload, ct);
     }
 

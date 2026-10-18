@@ -36,13 +36,15 @@ public sealed class AgwDiscoveryIntegrationTests(TwoInstanceLinbpqFixture fixtur
     }
 
     [Fact]
-    public async Task WithRhpv2AsTheBearer_TheAgwLinkOnlyListens_AndBeaconsStillGoBothWays()
+    public async Task WithRhpv2AsTheBearer_TheAgwLinkOnlyListens_AndStillHearsBeacons()
     {
         // Tom's decision for #272: AGW discovery with another bearer runs
-        // the AGW connection unregistered. BPQ sends an 'M' from the
-        // header's CallFrom and shows the monitor to any socket, so the
-        // beacons work without the 'X'. A's RHPv2 port here leads nowhere:
-        // only its AGW connection matters.
+        // the AGW connection unregistered. BPQ shows the monitor to any
+        // socket, so A hears B's beacons. A sends its own over RHPv2
+        // (XRouter's AGW drops an 'M' from an unregistered socket), and
+        // BPQ has no RHPv2 listener, so here they cannot go: A's RHPv2 port
+        // leads nowhere. XrouterAgwDiscoveryIntegrationTests covers both
+        // directions on a node with both.
         var ct = TestContext.Current.CancellationToken;
         var settings = new Dictionary<string, string>
         {
@@ -53,9 +55,10 @@ public sealed class AgwDiscoveryIntegrationTests(TwoInstanceLinbpqFixture fixtur
         await using var b = await StartAsync("disc-b", fixture.ApplCallB, fixture.NodeB, ct);
 
         var key = fixture.AxipPortIndex.ToString();
-        await WaitForLogAsync(a, "only sends and hears discovery beacons", b, ct);
-        await WaitForLogAsync(b, $"heard {fixture.ApplCallA} via agw/{key}", a, ct);
+        await WaitForLogAsync(a, "so the AGW connection only hears them", b, ct);
         await WaitForLogAsync(a, $"heard {fixture.ApplCallB} via agw/{key}", b, ct);
+        await WaitForLogAsync(a, $"announce on agw/{key} failed", b, ct);
+        b.Log.Should().NotContain($"heard {fixture.ApplCallA} via agw/{key}", "A sent no 'M' on its AGW connection");
     }
 
     private static Task<DappsDaemon> StartAsync(

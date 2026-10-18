@@ -37,7 +37,8 @@ namespace dapps.core.Services;
 /// When AGW is not the bearer but an AGW discovery channel is running
 /// (a <see cref="SubscribeUi"/> subscription is held), the link is opened
 /// listen-only (<see cref="AgwLink.ListenOnly"/>): no 'X', no inbound
-/// calls, no dials, just the beacons. It closes once the last
+/// calls, no dials, it only hears the beacons (discovery sends its own
+/// over the bearer, <see cref="Rhpv2UiFrameSender"/>). It closes once the last
 /// subscription goes. A bearer switch is a save in the restart set, so
 /// it reopens the link in the other mode.
 ///
@@ -261,7 +262,7 @@ public sealed class AgwInboundService(
         if (listenOnly)
         {
             logger.LogInformation(
-                "AGW inbound: the bearer is {0}, so the AGW connection only sends and hears discovery beacons: no callsign registration, no calls",
+                "AGW inbound: the bearer is {0}, which sends the discovery beacons, so the AGW connection only hears them: no callsign registration, no calls",
                 opts.NodeBearer);
         }
         await using var opened = await AgwLink.OpenAsync(

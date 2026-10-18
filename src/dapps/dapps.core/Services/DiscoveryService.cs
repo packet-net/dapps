@@ -34,7 +34,8 @@ public sealed class DiscoveryService(
     AirtimeAccountant? airtime = null,
     OperationalMetrics? metrics = null,
     TransmissionAuditService? transmissionAudit = null,
-    IAgwLinkSource? agwLinks = null) : BackgroundService
+    IAgwLinkSource? agwLinks = null,
+    IUiFrameSender? listenOnlyUiSender = null) : BackgroundService
 {
     private static readonly TimeSpan SweepInterval = TimeSpan.FromMinutes(1);
 
@@ -241,7 +242,7 @@ public sealed class DiscoveryService(
     {
         return bearerName switch
         {
-            "agw" when agwLinks is not null => new AgwUiDiscoveryBearer(agwLinks, loggerFactory),
+            "agw" when agwLinks is not null => new AgwUiDiscoveryBearer(agwLinks, loggerFactory, listenOnlyUiSender),
             "udp" => new UdpMulticastDiscoveryBearer(opts.Callsign, loggerFactory),
             _ => null,
         };

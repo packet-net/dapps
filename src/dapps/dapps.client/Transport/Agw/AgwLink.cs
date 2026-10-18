@@ -70,11 +70,12 @@ namespace dapps.client.Transport.Agw;
 /// it afresh when that is old.
 ///
 /// A link opened listen-only (<see cref="ListenOnly"/>) sends no 'X':
-/// it is for discovery's UI frames when AGW is not the bearer. BPQ sends
-/// an 'M' from the header's CallFrom whether or not the socket registered
-/// it, and hands inbound calls only to a socket that did, so beacons go
-/// and come as usual. It never calls out, and an inbound call that
-/// reaches it all the same is disconnected.
+/// it is for hearing discovery's UI frames when AGW is not the bearer.
+/// BPQ and XRouter show the monitor to any socket, and hand inbound calls
+/// only to a socket that registered the callsign. It sends no UI frames:
+/// XRouter drops an 'M' from a socket that registered no callsign, so
+/// discovery sends those through the bearer instead. It never calls out,
+/// and an inbound call that reaches it all the same is disconnected.
 /// </summary>
 public sealed class AgwLink : IAsyncDisposable
 {
@@ -678,6 +679,11 @@ public sealed class AgwLink : IAsyncDisposable
     /// </summary>
     public Task SendUiAsync(byte port, string to, byte[] payload, CancellationToken ct)
     {
+        if (ListenOnly)
+        {
+            // XRouter would drop it without a word (class doc).
+            throw new InvalidOperationException("AGW: a listen-only connection sends no UI frames");
+        }
         if (ended)
         {
             throw new IOException("AGW: the connection to the node has closed");

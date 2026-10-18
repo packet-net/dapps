@@ -2,7 +2,7 @@
 
 This page is the full XRouter recipe for getting DAPPS on-air. If you're already running XRouter as your packet node, here's what you need to do to add DAPPS.
 
-DAPPS connects to XRouter over **RHPv2** (Remote Host Protocol v2). RHPv2 is required for DAPPS-on-XRouter; XRouter's AGW emulator is not usable as a DAPPS bearer because XRouter scopes the AGW callsign claim per-TCP-connection - DAPPS's per-outbound-fresh-connection pattern collides with its own standing inbound registration. RHPv2 has no equivalent constraint, multiplexes inbound and outbound over a single TCP connection, and is what XRouter ships natively. See [RHPv2](rhp.md) for the protocol-level overview.
+DAPPS connects to XRouter over **RHPv2** (Remote Host Protocol v2). Use RHPv2 as the bearer on XRouter: it is what DAPPS-on-XRouter is tested with, it multiplexes inbound and outbound over a single TCP connection by handle, and XRouter ships it natively. XRouter's AGW emulator is not tested as a DAPPS bearer; see [Why not AGW on XRouter?](#why-not-agw-on-xrouter). See [RHPv2](rhp.md) for the protocol-level overview.
 
 ## What we're wiring up
 
@@ -24,7 +24,7 @@ RHPPORT=9000
 
 Pick any free TCP port; 9000 is the convention. Restart XRouter.
 
-If you also have `AGWPORT=` set, you can leave it in place - it doesn't conflict, it just isn't used by DAPPS.
+If you also have `AGWPORT=` set, you can leave it in place - it doesn't conflict. DAPPS uses it only if you add an AGW discovery channel (see [Discovery beacons](#discovery-beacons)).
 
 ## Step 2: pick a callsign for DAPPS
 
@@ -104,6 +104,10 @@ Add a manual neighbour on the dashboard's **Topology > Neighbours** tab:
 
 Send a test message with the **Quick send** form on the dashboard's Overview. The forwarder service picks it up within a few seconds, asks XRouter to dial the remote callsign, and you'll see the session in XRouter's stats / monitor view.
 
+## Discovery beacons
+
+An AGW discovery channel works with RHPv2 as the bearer (see [Discovery channels](../discovery-and-routing.md#discovery-channels)). DAPPS hears other nodes' beacons on XRouter's AGW monitor, so `AGWPORT=` must be set and DAPPS's AGW port setting must match it. The Settings page shows that field only while AGW is the bearer: set it there before switching the bearer to RHPv2, or with `DAPPS_AGW_PORT` before the first start, or `POST /Config`. That AGW connection registers no callsign and never takes a call, so calls to DAPPS's callsign always reach its RHPv2 listener. DAPPS sends its own beacons and solicits through the RHPv2 port instead, as UI frames from its callsign: XRouter's AGW sends nothing from a connection that has registered no callsign.
+
 ## Multi-port setups
 
 If your XRouter has multiple radio ports (`PORT=1`, `PORT=2`, etc.), every neighbour record can specify which port to use. The dashboard's add-neighbour form has the field; the discovery system records the port a peer was heard on automatically.
@@ -131,6 +135,13 @@ For more general DAPPS troubleshooting, see the main [Troubleshooting](../troubl
 
 ## Why not AGW on XRouter?
 
-Short version: XRouter's AGW emulator scopes the callsign claim per-TCP-connection. Older DAPPS releases opened a fresh TCP connection per outbound forward; the second connection's `X` register for the DAPPS callsign collided with the standing inbound registration owned by another connection, and XRouter silently dropped the subsequent `C` frame, so outbound forwards never connected.
+Short version: XRouter's AGW emulator lets one TCP connection at a time claim a callsign. Older DAPPS releases opened a fresh TCP connection per outbound forward; the second connection's `X` register for the DAPPS callsign collided with the standing inbound registration owned by another connection, and XRouter silently dropped the subsequent `C` frame, so outbound forwards never connected.
 
-DAPPS now makes its own calls over the one AGW connection it listens on, so that collision is gone, but DAPPS over XRouter's AGW emulator hasn't been tested since. RHPv2 doesn't have the per-connection claim - it uses handle-based addressing - and it is what DAPPS-on-XRouter is tested with, so use RHPv2.
+DAPPS now registers its callsign once and makes its own calls over the one AGW connection it listens on, so that collision is gone. What is known about XRouter's AGW since, from probes against XRouter 505p:
+
+- It answers our `C` with `*** CONNECTED With Station ...` and announces an inbound call with `*** CONNECTED To Station ...`, the same wording as BPQ, which is how DAPPS tells the two apart on one connection.
+- It answers our `d` with a single `*** DISCONNECTED From Station ...`, as Dire Wolf does.
+- It refuses an `X` (answer 0) for a callsign another connection already holds, over AGW or RHPv2. Whichever claims a callsign first gets the calls to it.
+- It sends a UI frame (`M`) only from the callsign the connection registered, and drops any other without a word.
+
+DAPPS's AGW bearer as a whole still hasn't been run end to end on XRouter. RHPv2 has no per-connection claim - it uses handle-based addressing - and it is what DAPPS-on-XRouter is tested with, so use RHPv2.

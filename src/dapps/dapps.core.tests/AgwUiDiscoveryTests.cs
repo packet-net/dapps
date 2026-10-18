@@ -117,7 +117,8 @@ public sealed class AgwUiDiscoveryTests
         var ct = TestContext.Current.CancellationToken;
         await using var h = new AgwInboundServiceHarness(Local);
         h.Options.Set(h.With(o => o.NodeBearer = "rhpv2"));
-        await using var bearer = new AgwUiDiscoveryBearer(h.Service, h.Logs);
+        var rhp = new RecordingUiSender();
+        await using var bearer = new AgwUiDiscoveryBearer(h.Service, h.Logs, rhp);
         await bearer.StartAsync([Channel(1, 1)], ct);
         await using var heard = bearer.ListenAsync(ct).GetAsyncEnumerator(ct);
 
@@ -127,9 +128,14 @@ public sealed class AgwUiDiscoveryTests
         link!.ListenOnly.Should().BeTrue();
         h.Service.State.Should().Be(AgwLinkState.Open);
 
-        // BPQ sends an 'M' from the header's CallFrom, registered or not.
+        // XRouter drops an 'M' from a socket that registered no callsign:
+        // the beacon goes through the bearer, from our callsign, and the
+        // link sends none.
         await bearer.AnnounceAsync(new BeaconFrame(Local, 0, 600, new AgwBearerHint(1)), "1", ct);
-        (await bpq.ReadUntilAsync('M', ct)).CallFrom.Should().Be(Local);
+        var sent = rhp.Sent.Should().ContainSingle().Subject;
+        (sent.Port, sent.From, sent.To).Should().Be(((byte)1, Local, "DAPPS"));
+        Encoding.ASCII.GetString(sent.Payload).Should().StartWith($"DAPPS v1 callsign={Local}");
+        await FluentActions.Awaiting(() => link.SendUiAsync(1, "DAPPS", [1], ct)).Should().ThrowAsync<InvalidOperationException>();
         await bpq.WriteAsync(ct, Ui(1, "G7XYZ-9", "DAPPS v1 callsign=G7XYZ-9 hops=0 ttl=600"));
         ((ReceivedBeacon)await NextAsync(heard, ct)).Beacon.Callsign.Should().Be("G7XYZ-9");
 
@@ -144,8 +150,8 @@ public sealed class AgwUiDiscoveryTests
         await FluentActions.Awaiting(() => link.DialAsync(1, Local, Remote, TimeSpan.FromMinutes(3), ct))
             .Should().ThrowAsync<InvalidOperationException>();
 
-        (await bpq.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'C' || f.Kind == 'D' || f.Kind == 'X');
-        bpq.Received.Should().NotContain(f => f.Kind == 'X' || f.Kind == 'D');
+        (await bpq.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'C' || f.Kind == 'D' || f.Kind == 'X' || f.Kind == 'M');
+        bpq.Received.Should().NotContain(f => f.Kind == 'X' || f.Kind == 'D' || f.Kind == 'M');
         h.Metrics.Take().AgwReconnects.Should().Be(0, "nothing was registered");
     }
 
@@ -155,7 +161,8 @@ public sealed class AgwUiDiscoveryTests
         var ct = TestContext.Current.CancellationToken;
         var clock = new ObservableTimeProvider();
         await using var h = new AgwInboundServiceHarness(Local, clock);
-        await using var bearer = new AgwUiDiscoveryBearer(h.Service, h.Logs);
+        var rhp = new RecordingUiSender();
+        await using var bearer = new AgwUiDiscoveryBearer(h.Service, h.Logs, rhp);
         await bearer.StartAsync([Channel(1, 1)], ct);
         using var full = await h.StartAsync(ct);
 
@@ -165,13 +172,19 @@ public sealed class AgwUiDiscoveryTests
         using var listening = await AcceptListenOnlyAsync(h.Host, ct);
         (await h.Service.GetLinkAsync(FakeAgwHost.FrameTimeout, ct))!.ListenOnly.Should().BeTrue();
         await bearer.AnnounceAsync(new BeaconFrame(Local, 0, 600, new AgwBearerHint(1)), "1", ct);
-        (await listening.ReadUntilAsync('M', ct)).CallFrom.Should().Be(Local);
+        rhp.Sent.Should().ContainSingle().Which.From.Should().Be(Local);
+        (await listening.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'M');
 
         h.Options.Set(h.With(o => o.NodeBearer = "agw"));
         await clock.WaitForTimerAsync(AgwInboundService.NonFailureRetryDelay, ct);
         clock.Advance(AgwInboundService.NonFailureRetryDelay);
         using var registered = await AcceptRegisteredAsync(h.Host, ct);
         (await h.Service.GetLinkAsync(FakeAgwHost.FrameTimeout, ct))!.ListenOnly.Should().BeFalse();
+
+        // Registered again: the beacon goes on the link as an 'M'.
+        await bearer.AnnounceAsync(new BeaconFrame(Local, 0, 600, new AgwBearerHint(1)), "1", ct);
+        (await registered.ReadUntilAsync('M', ct)).CallFrom.Should().Be(Local);
+        rhp.Sent.Should().HaveCount(1);
     }
 
     [Fact]
@@ -502,6 +515,18 @@ public sealed class AgwUiDiscoveryTests
         private sealed class NoSubscription : IDisposable
         {
             public void Dispose() { }
+        }
+    }
+
+    /// <summary>Stands in for the RHPv2 sender: records each UI frame.</summary>
+    private sealed class RecordingUiSender : IUiFrameSender
+    {
+        public List<(byte Port, string From, string To, byte[] Payload)> Sent { get; } = [];
+
+        public Task SendUiAsync(byte bearerPort, string from, string to, byte[] payload, CancellationToken ct)
+        {
+            lock (Sent) Sent.Add((bearerPort, from, to, payload));
+            return Task.CompletedTask;
         }
     }
 }

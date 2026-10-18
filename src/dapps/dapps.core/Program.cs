@@ -344,6 +344,9 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<PollSchedulerServi
 // Registered as a singleton so the /DiscoveryChannels controller can
 // inject it for B6.2 on-demand solicits. AddHostedService binds the
 // same instance to the host lifecycle.
+// While RHPv2 is the bearer, AGW discovery's beacons go out over it: the
+// AGW connection then only listens (Rhpv2UiFrameSender).
+builder.Services.AddSingleton<IUiFrameSender, Rhpv2UiFrameSender>();
 builder.Services.AddSingleton<DiscoveryService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DiscoveryService>());
 builder.Services.AddLogging(logging =>

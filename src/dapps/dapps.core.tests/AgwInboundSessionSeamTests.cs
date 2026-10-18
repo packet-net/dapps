@@ -210,8 +210,9 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
     }
 
     // One session per peer: our dial to a peer that has just called us
-    // makes BPQ move the link to our dial's socket. The inbound session is
-    // then retired: out of the table, no 'd' from it (BPQ would apply that
+    // goes out on the one connection the peer's call came in on, and BPQ
+    // confirms it over the link that is already up. The inbound session
+    // is then retired: out of the table, no 'd' from it (BPQ would apply that
     // to the link, now the newer session's), and its handler ended. Until
     // our dial has connected it says nothing at all (#205): the peer's BPQ
     // keeps its call up and shares the link with ours only if nothing has

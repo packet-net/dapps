@@ -2,7 +2,7 @@
 
 **Status: implemented.** RHPv2 (Remote Host Protocol v2) is a more modern host-to-node protocol than AGW. DAPPS speaks it via the [`RhpV2.Client` NuGet package](https://www.nuget.org/packages/RhpV2.Client) and selects between AGW and RHPv2 with a single setting.
 
-[XRouter](xrouter.md) supports RHPv2 natively, and **RHPv2 is required for DAPPS-on-XRouter** - XRouter's AGW emulator is not usable as a DAPPS bearer because XRouter scopes the AGW callsign claim per-TCP-connection, which collides with DAPPS's per-outbound-fresh-connection pattern. The XRouter operator guide is at [Connect via XRouter (RHPv2)](xrouter.md).
+[XRouter](xrouter.md) supports RHPv2 natively, and **RHPv2 is the bearer to use with XRouter**: it is what DAPPS-on-XRouter is tested with. XRouter's AGW emulator lets one connection at a time claim a callsign; DAPPS now carries all its AGW traffic over one connection, but has not been tested on XRouter's AGW as its bearer (see [Why not AGW on XRouter?](xrouter.md#why-not-agw-on-xrouter)). The XRouter operator guide is at [Connect via XRouter (RHPv2)](xrouter.md).
 
 [pdn](pdn.md), the packet.net node, serves RHPv2 too, and DAPPS runs on it as an app.
 
