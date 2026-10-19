@@ -28,7 +28,7 @@ const client = mqtt.connect("ws://<host>:5000/mqtt", {
 
 paho-mqtt with `transport='websockets'` works the same way.
 
-While app tokens are off, `/mqtt` only accepts a browser page served from the node's own address; a page from anywhere else (another site, or a file opened from disk) gets `403`, so a website you happen to visit can't use your node. Turn app tokens on to use a browser app from anywhere: the token is then what keeps strangers out. Clients outside a browser aren't affected.
+While app tokens are off, `/mqtt` only accepts a browser page served from the node's own address; a page from anywhere else (another site, or a file opened from disk) gets `403`, so a website you happen to visit can't use your node. Behind a proxy that doesn't pass the original host on (the pdn app gateway, for one), even the node's own pages are refused. Turn app tokens on to use a browser app from anywhere: the token is then what keeps strangers out. Clients outside a browser aren't affected.
 
 A worked browser example is in [`examples/file-transfer/`](https://github.com/packet-net/dapps/tree/master/examples/file-transfer) on the repo.
 
