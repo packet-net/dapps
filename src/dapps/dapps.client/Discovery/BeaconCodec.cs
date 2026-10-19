@@ -14,6 +14,10 @@ namespace dapps.client.Discovery;
 ///   DAPPS v1 callsign=M0LTE-9 hops=0 ttl=300 end=1
 /// </code>
 ///
+/// A node that listens for UDP datagrams adds <c>udpport=N</c> before
+/// <c>end=1</c> on beacons it sends over UDP. Older nodes ignore the
+/// unknown key, so they keep working.
+///
 /// One line, no trailing newline. ASCII-only on the wire - callsigns
 /// are ASCII anyway and the KV values are integers. The closing
 /// <c>end=1</c> takes whatever a node appends after the data (see
@@ -38,7 +42,9 @@ public static class BeaconCodec
 
     public static byte[] Encode(BeaconFrame beacon)
     {
-        var line = $"{Magic} callsign={beacon.Callsign} hops={beacon.Hops} ttl={beacon.Ttl} {DiscoveryFields.End}";
+        var line = $"{Magic} callsign={beacon.Callsign} hops={beacon.Hops} ttl={beacon.Ttl}"
+            + (beacon.UdpPort is > 0 and <= 65535 ? $" udpport={beacon.UdpPort}" : "")
+            + $" {DiscoveryFields.End}";
         return Encoding.ASCII.GetBytes(line);
     }
 
@@ -54,6 +60,7 @@ public static class BeaconCodec
         string? callsign = null;
         int? hops = null;
         int? ttl = null;
+        int? udpPort = null;
 
         for (var i = 0; i < fields.Count; i++)
         {
@@ -73,6 +80,11 @@ public static class BeaconCodec
                     if (!DiscoveryFields.TryInt(value, tolerant, MaxTolerantTtlSeconds, out var t) || t <= 0) return false;
                     ttl = t;
                     break;
+                case "udpport":
+                    // Optional. A bad value is not worth losing the beacon
+                    // over; the peer just has no UDP route.
+                    if (DiscoveryFields.TryInt(value, tolerant, 65535, out var up) && up is > 0 and <= 65535) udpPort = up;
+                    break;
                 // Unknown keys ignored - forward-compat with future fields.
             }
         }
@@ -80,7 +92,7 @@ public static class BeaconCodec
         if (callsign is null || hops is null || ttl is null) return false;
         if (callsign.Length == 0) return false;
 
-        beacon = new BeaconFrame(callsign, hops.Value, ttl.Value, bearer);
+        beacon = new BeaconFrame(callsign, hops.Value, ttl.Value, bearer, udpPort);
         return true;
     }
 }

@@ -116,7 +116,7 @@ public sealed class UdpMulticastDiscoveryTests
 
         await Task.Delay(150, cts.Token);
 
-        var beacon = new BeaconFrame("M0SEND", Hops: 0, Ttl: 600, Bearer: new AgwBearerHint(0));
+        var beacon = new BeaconFrame("M0SEND", Hops: 0, Ttl: 600, Bearer: new AgwBearerHint(0), UdpPort: 4321);
         await sender.AnnounceAsync(beacon, group, cts.Token);
 
         var got = await heard.Task.WaitAsync(TimeSpan.FromSeconds(5), cts.Token);
@@ -124,6 +124,10 @@ public sealed class UdpMulticastDiscoveryTests
         got.Beacon.Hops.Should().Be(0);
         got.Beacon.Ttl.Should().Be(600);
         got.Beacon.Bearer.Should().BeOfType<UdpBearerHint>();
+        // #299: the endpoint is the sender's address with the port it says it listens on,
+        // not the ephemeral source port of its beacon socket.
+        var endpoint = ((UdpBearerHint)got.Beacon.Bearer).Endpoint;
+        endpoint.Should().EndWith(":4321");
         got.ChannelKey.Should().Be(group, "the bearer must stamp the channel a beacon arrived on");
     }
 
@@ -192,8 +196,8 @@ public sealed class UdpMulticastDiscoveryTests
         }, cts.Token);
 
         await Task.Delay(150, cts.Token);
-        await sender.AnnounceAsync(new BeaconFrame("M0SEND", 0, 600, new UdpBearerHint("a")), groupA, cts.Token);
-        await sender.AnnounceAsync(new BeaconFrame("M0SEND", 0, 600, new UdpBearerHint("b")), groupB, cts.Token);
+        await sender.AnnounceAsync(new BeaconFrame("M0SEND", 0, 600, new UdpBearerHint("a"), 4321), groupA, cts.Token);
+        await sender.AnnounceAsync(new BeaconFrame("M0SEND", 0, 600, new UdpBearerHint("b"), 4321), groupB, cts.Token);
 
         var deadline = DateTime.UtcNow.AddSeconds(3);
         while (DateTime.UtcNow < deadline)
@@ -246,8 +250,8 @@ public sealed class UdpMulticastDiscoveryTests
         await Task.Delay(150, cts.Token);
         // Send distinct beacons on each group so cross-leakage shows up
         // as the wrong (callsign, channel) pairing on the receiver.
-        await sender.AnnounceAsync(new BeaconFrame("M0AAAA", 0, 600, new UdpBearerHint("a")), groupA, cts.Token);
-        await sender.AnnounceAsync(new BeaconFrame("M0BBBB", 0, 600, new UdpBearerHint("b")), groupB, cts.Token);
+        await sender.AnnounceAsync(new BeaconFrame("M0AAAA", 0, 600, new UdpBearerHint("a"), 4321), groupA, cts.Token);
+        await sender.AnnounceAsync(new BeaconFrame("M0BBBB", 0, 600, new UdpBearerHint("b"), 4321), groupB, cts.Token);
 
         // Wait until both expected beacons land (or the deadline passes
         // - if leakage is happening, additional duplicate-mismatch rows
@@ -304,5 +308,43 @@ public sealed class UdpMulticastDiscoveryTests
             new BeaconFrame("M0SELF", 0, 60, new AgwBearerHint(0)),
             badGroup, cts.Token);
         await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task Loopback_BeaconWithoutUdpPort_IsNotSurfaced()
+    {
+        // #299: an older node's beacon says nothing about where it listens, and its
+        // source port is ephemeral, so there is no route to record. A later beacon
+        // that does carry a port still arrives.
+        var port = 43880 + Random.Shared.Next(1000);
+        var group = $"239.42.42.42:{port}";
+        var channel = new DiscoveryChannelInfo(
+            Id: 1, Bearer: "udp", ChannelKey: group, LinkClass: LinkClass.LanMulticast,
+            BeaconIntervalSeconds: 60, AdvertisedTtlSeconds: 180, CostHint: 1);
+
+        await using var sender = new UdpMulticastDiscoveryBearer("M0SEND", NullLoggerFactory.Instance);
+        await using var receiver = new UdpMulticastDiscoveryBearer("M0RECV", NullLoggerFactory.Instance);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await sender.StartAsync([channel], cts.Token);
+        await receiver.StartAsync([channel], cts.Token);
+
+        var heard = new TaskCompletionSource<ReceivedBeacon>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listenTask = Task.Run(async () =>
+        {
+            await foreach (var frame in receiver.ListenAsync(cts.Token).WithCancellation(cts.Token))
+            {
+                if (frame is not ReceivedBeacon rb) continue;
+                heard.TrySetResult(rb);
+                break;
+            }
+        }, cts.Token);
+
+        await Task.Delay(150, cts.Token);
+        await sender.AnnounceAsync(new BeaconFrame("M0OLD", 0, 600, new UdpBearerHint("x")), group, cts.Token);
+        await sender.AnnounceAsync(new BeaconFrame("M0NEW", 0, 600, new UdpBearerHint("x"), 4321), group, cts.Token);
+
+        var got = await heard.Task.WaitAsync(TimeSpan.FromSeconds(5), cts.Token);
+        got.Beacon.Callsign.Should().Be("M0NEW");
     }
 }

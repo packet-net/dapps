@@ -15,8 +15,8 @@ namespace dapps.core.Services;
 /// <see cref="BackhaulMessageCodec"/>, hands the result to
 /// <see cref="IBackhaulInbox"/>.
 ///
-/// The bearer is fire-and-forget - we don't ack the sender, and we
-/// don't currently advertise our endpoint. Discovery over UDP and
+/// The bearer is fire-and-forget - we don't ack the sender. We
+/// advertise our port only in UDP discovery beacons (udpport). Discovery over UDP and
 /// reliable delivery are higher-layer concerns (Phase B).
 /// </summary>
 public sealed class UdpDatagramListener(

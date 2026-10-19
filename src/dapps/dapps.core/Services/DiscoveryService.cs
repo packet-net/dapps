@@ -242,6 +242,13 @@ public sealed class DiscoveryService(
         try { await Task.WhenAny(running.Listen, Task.Delay(StopGrace, timeProvider)); } catch { /* best effort */ }
     }
 
+    /// <summary>The port to put in a beacon sent over <paramref name="bearerName"/>:
+    /// our UDP listener's, on the UDP bearer only, and only when we listen (#299).</summary>
+    private int? UdpPortToAdvertise(string bearerName)
+        => bearerName == "udp" && options.CurrentValue.UdpListenPort > 0
+            ? options.CurrentValue.UdpListenPort
+            : null;
+
     private IDiscoveryBearer? TryConstructBearer(string bearerName, SystemOptions opts)
     {
         return bearerName switch
@@ -394,7 +401,8 @@ public sealed class DiscoveryService(
                         // the receiver overrides with its own observation.
                         Bearer: kv.Key == "udp"
                             ? new UdpBearerHint(ch.ChannelKey)
-                            : new AgwBearerHint(0));
+                            : new AgwBearerHint(0),
+                        UdpPort: UdpPortToAdvertise(kv.Key));
                     var beaconSw = System.Diagnostics.Stopwatch.StartNew();
                     var beaconOk = false;
                     string beaconErr = "";
@@ -641,7 +649,8 @@ public sealed class DiscoveryService(
                 Ttl: ch.AdvertisedTtlSeconds,
                 Bearer: bearer.Name == "udp"
                     ? new UdpBearerHint(ch.ChannelKey)
-                    : new AgwBearerHint(0));
+                    : new AgwBearerHint(0),
+                UdpPort: UdpPortToAdvertise(bearer.Name));
             var rsw = System.Diagnostics.Stopwatch.StartNew();
             var rok = false;
             string rerr = "";

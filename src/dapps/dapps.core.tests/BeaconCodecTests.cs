@@ -135,4 +135,31 @@ public class BeaconCodecTests
     {
         BeaconCodec.TryParse(Encoding.ASCII.GetBytes(raw), new AgwBearerHint(0), out _).Should().BeFalse();
     }
+
+    [Fact]
+    public void Encode_WithUdpPort_AddsItBeforeEnd()
+    {
+        var bytes = BeaconCodec.Encode(new BeaconFrame("M0LTE-9", 0, 300, new UdpBearerHint("x"), 1880));
+        Encoding.ASCII.GetString(bytes).Should().Be("DAPPS v1 callsign=M0LTE-9 hops=0 ttl=300 udpport=1880 end=1");
+    }
+
+    [Fact]
+    public void Decode_UdpPort_RoundTrips_AndIsAbsentOnOlderLines()
+    {
+        var withPort = Encoding.ASCII.GetBytes("DAPPS v1 callsign=M0LTE-9 hops=0 ttl=300 udpport=1880 end=1");
+        BeaconCodec.TryParse(withPort, new UdpBearerHint("x"), out var a).Should().BeTrue();
+        a!.UdpPort.Should().Be(1880);
+
+        var old = Encoding.ASCII.GetBytes("DAPPS v1 callsign=M0LTE-9 hops=0 ttl=300 end=1");
+        BeaconCodec.TryParse(old, new UdpBearerHint("x"), out var b).Should().BeTrue();
+        b!.UdpPort.Should().BeNull();
+    }
+
+    [Fact]
+    public void Decode_BadUdpPort_KeepsTheBeaconWithoutIt()
+    {
+        var raw = Encoding.ASCII.GetBytes("DAPPS v1 callsign=M0LTE-9 hops=0 ttl=300 udpport=99999 end=1");
+        BeaconCodec.TryParse(raw, new UdpBearerHint("x"), out var b).Should().BeTrue();
+        b!.UdpPort.Should().BeNull();
+    }
 }

@@ -500,6 +500,7 @@ DAPPS v1 callsign=M0LTE-9 hops=0 ttl=300 end=1
 - `callsign=<call>` is the originator. Required, non-empty.
 - `hops=<int>` is the number of intermediate hops the beacon has been forwarded over. 0 = direct. Required, ≥ 0.
 - `ttl=<int>` is how long (seconds) a receiver should treat this peer as fresh. Required, > 0.
+- `udpport=<int>` is optional, sent on UDP beacons only: the port this node's UDP datagram listener is bound to (1 to 65535). A UDP beacon comes from an ephemeral socket, so its source port is no use for replies. A receiver sends datagrams to the beacon's source address on this port. A beacon without it (an older node, or one that does not listen) is not recorded as a UDP peer.
 - `end=1` closes the line. Send it last. A receiver ignores everything from the `end` field on, in the same token or after it.
 
 No trailing newline. ASCII-only. Unknown KVs are ignored - forward-compat.

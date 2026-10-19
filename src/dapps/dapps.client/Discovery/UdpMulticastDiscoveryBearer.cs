@@ -155,9 +155,25 @@ public sealed class UdpMulticastDiscoveryBearer : IDiscoveryBearer
                     continue;
                 }
 
-                var hint = new UdpBearerHint($"{dgram.RemoteEndPoint.Address}:{dgram.RemoteEndPoint.Port}");
-                if (!BeaconCodec.TryParse(dgram.Buffer, hint, out var beacon) || beacon is null)
+                // The beacon came from an ephemeral socket, so its source
+                // port is useless for replies (#299). Where the sender
+                // listens is in the beacon (udpport); the address is the
+                // one the datagram came from.
+                var provisional = new UdpBearerHint($"{dgram.RemoteEndPoint.Address}:{dgram.RemoteEndPoint.Port}");
+                if (!BeaconCodec.TryParse(dgram.Buffer, provisional, out var beacon) || beacon is null)
                     continue;
+
+                if (beacon.UdpPort is not { } listenPort)
+                {
+                    // An older node, or one with no UDP listener: there is
+                    // nowhere we could send its mail, so don't record a route.
+                    if (!string.Equals(beacon.Callsign, _ourCallsign, StringComparison.OrdinalIgnoreCase))
+                        _logger.LogDebug(
+                            "UDP discovery: beacon from {0} ({1}) has no udpport; not reachable over UDP, ignoring",
+                            beacon.Callsign, dgram.RemoteEndPoint.Address);
+                    continue;
+                }
+                beacon = beacon with { Bearer = new UdpBearerHint($"{dgram.RemoteEndPoint.Address}:{listenPort}") };
 
                 if (string.Equals(beacon.Callsign, _ourCallsign, StringComparison.OrdinalIgnoreCase))
                     continue; // self-echo via MulticastLoopback
