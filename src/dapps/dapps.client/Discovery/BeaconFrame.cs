@@ -9,13 +9,13 @@ namespace dapps.client.Discovery;
 /// <see cref="BearerHint"/> records the channel the beacon was heard on
 /// so a peer table can record more than just "we saw G7XYZ-9 somewhere"
 /// - it knows whether to talk back over bearer port 1 or UDP 10.0.0.5:1880.
-/// </summary>
 ///
 /// <see cref="UdpPort"/> is the port the sender's UDP datagram listener
 /// is bound to. A UDP beacon comes from an ephemeral socket, so the
 /// source port says nothing about where mail should be sent (#299); the
 /// sender says it in the beacon, as the optional <c>udpport</c> field.
 /// Senders that do not listen on UDP, and older senders, leave it out.
+/// </summary>
 public sealed record BeaconFrame(
     string Callsign,
     int Hops,
