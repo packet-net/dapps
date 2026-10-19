@@ -587,6 +587,31 @@ public sealed class DatabaseAndMqttInbox(
         // receiver. Salt is the FIRST fragment's salt for traceability.
         var firstSeen = fragments.Min(f => f.FirstSeenAt);
         var assembledTtl = message.Ttl;
+
+        // Opt-in ordering (#283): the sender stamps the stream trio on
+        // every fragment, so the one that completed the set carries it.
+        // The assembled message goes through the ordered path like any
+        // other sn= arrival: delivered, parked or dropped as stale
+        // against the cursor, which moves on past it.
+        if (message.StreamSeq.HasValue && !string.IsNullOrEmpty(message.StreamId))
+        {
+            var assembledMessage = message with
+            {
+                Id = masterId,
+                Payload = assembled,
+                Salt = null,
+                MasterId = null,
+                FragmentIndex = null,
+                FragmentTotal = null,
+            };
+            await DeliverOrderedAsync(assembledMessage, sourceCallsign, originator, headersJson, ct);
+            await database.DeleteFragmentsForMaster(masterId);
+            logger.LogInformation(
+                "Reassembled master {0} ({1} fragments, {2} bytes) on stream {3} sn={4}",
+                masterId, fragTotal, totalLen, message.StreamId, message.StreamSeq.Value);
+            return;
+        }
+
         await database.SaveMessage(
             id: masterId,
             buffer: assembled,

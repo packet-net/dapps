@@ -54,6 +54,7 @@ public sealed class StreamOrderingTests : IAsyncLifetime
             c.CreateTable<DbStreamRecvState>();
             c.CreateTable<DbNeighbour>();
             c.CreateTable<DbRouteHint>();
+            c.CreateTable<DbFragment>();
         }
 
         clock = new FakeTimeProvider(new DateTimeOffset(2026, 5, 5, 12, 0, 0, TimeSpan.Zero));
@@ -371,6 +372,160 @@ public sealed class StreamOrderingTests : IAsyncLifetime
         (await database.GetDroppedMessage("stale002"))!.Reason.Should().Be("stream-stale");
     }
 
+    // -- Fragmented message on an ordered stream (#283) ----------------
+
+    [Fact]
+    public async Task Inbox_FragmentedOrderedMessage_DeliveredInOrderAndCursorAdvances()
+    {
+        // sn=1 arrives as two fragments, then sn=2 arrives whole. The
+        // assembled sn=1 must reach the app with its stream seq, the
+        // cursor must move past it, and sn=2 must follow, not park.
+        var ct = TestContext.Current.CancellationToken;
+        var client = await ConnectClient();
+        var received = new List<(string Id, string Body, uint? Sn)>();
+        var both = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.ApplicationMessageReceivedAsync += e =>
+        {
+            lock (received)
+            {
+                received.Add(Describe(e));
+                if (received.Count == 2) both.TrySetResult();
+            }
+            return Task.CompletedTask;
+        };
+        await client.SubscribeAsync("dapps/in/chat",
+            MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, ct);
+
+        await inbox.DeliverAsync(MakeFragment("frg0001", "mas0001", 1, 2, "G0FROM", "c1", 1, 0, "big-"), "G0HOP", ct);
+        await inbox.DeliverAsync(MakeFragment("frg0002", "mas0001", 2, 2, "G0FROM", "c1", 1, 0, "one"), "G0HOP", ct);
+        await inbox.DeliverAsync(MakeStreamMessage("ord0002", "G0FROM", "c1", 2, 0, "msg-two"), "G0HOP", ct);
+
+        await both.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+
+        received.Select(r => r.Id).Should().Equal("mas0001", "ord0002");
+        received.Select(r => r.Body).Should().Equal("big-one", "msg-two");
+        received.Select(r => r.Sn).Should().Equal(1u, 2u);
+
+        var state = await database.GetStreamRecvStateAsync("N0SELF", "G0FROM", "c1");
+        state!.NextExpectedSeq.Should().Be(3u);
+
+        var assembled = await database.GetMessage("mas0001");
+        assembled!.StreamId.Should().Be("c1");
+        assembled.StreamSeq.Should().Be(1u);
+        assembled.PendingInOrder.Should().BeFalse();
+        (await database.GetMessage("ord0002"))!.PendingInOrder.Should().BeFalse();
+
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
+    [Fact]
+    public async Task Inbox_FragmentedOrderedMessage_ArrivingAfterSuccessor_DrainsBoth()
+    {
+        // sn=2 arrives first and parks; the fragments of sn=1 then
+        // complete. Assembling sn=1 must release sn=2 behind it.
+        var ct = TestContext.Current.CancellationToken;
+        var client = await ConnectClient();
+        var received = new List<(string Id, string Body, uint? Sn)>();
+        var both = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.ApplicationMessageReceivedAsync += e =>
+        {
+            lock (received)
+            {
+                received.Add(Describe(e));
+                if (received.Count == 2) both.TrySetResult();
+            }
+            return Task.CompletedTask;
+        };
+        await client.SubscribeAsync("dapps/in/chat",
+            MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, ct);
+
+        await inbox.DeliverAsync(MakeStreamMessage("ord0002", "G0FROM", "c1", 2, 0, "msg-two"), "G0HOP", ct);
+        await inbox.DeliverAsync(MakeFragment("frg0002", "mas0001", 2, 2, "G0FROM", "c1", 1, 0, "one"), "G0HOP", ct);
+        await Task.Delay(150, ct);
+        received.Should().BeEmpty("sn=2 waits for sn=1, which is still one fragment short");
+
+        await inbox.DeliverAsync(MakeFragment("frg0001", "mas0001", 1, 2, "G0FROM", "c1", 1, 0, "big-"), "G0HOP", ct);
+        await both.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+
+        received.Select(r => r.Body).Should().Equal("big-one", "msg-two");
+        received.Select(r => r.Sn).Should().Equal(1u, 2u);
+        (await database.GetStreamRecvStateAsync("N0SELF", "G0FROM", "c1"))!.NextExpectedSeq.Should().Be(3u);
+
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
+    [Fact]
+    public async Task Inbox_FragmentedOrderedMessage_AheadOfCursor_Parks()
+    {
+        // A fragmented sn=2 completes before sn=1 exists: it must park,
+        // not jump the queue, and then follow sn=1 out.
+        var ct = TestContext.Current.CancellationToken;
+        var client = await ConnectClient();
+        var received = new List<(string Id, string Body, uint? Sn)>();
+        var both = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.ApplicationMessageReceivedAsync += e =>
+        {
+            lock (received)
+            {
+                received.Add(Describe(e));
+                if (received.Count == 2) both.TrySetResult();
+            }
+            return Task.CompletedTask;
+        };
+        await client.SubscribeAsync("dapps/in/chat",
+            MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, ct);
+
+        await inbox.DeliverAsync(MakeFragment("frg0001", "mas0002", 1, 2, "G0FROM", "c1", 2, 0, "big-"), "G0HOP", ct);
+        await inbox.DeliverAsync(MakeFragment("frg0002", "mas0002", 2, 2, "G0FROM", "c1", 2, 0, "two"), "G0HOP", ct);
+        await Task.Delay(150, ct);
+        received.Should().BeEmpty("the assembled sn=2 parks until sn=1 arrives");
+        (await database.GetMessage("mas0002"))!.PendingInOrder.Should().BeTrue();
+
+        await inbox.DeliverAsync(MakeStreamMessage("ord0001", "G0FROM", "c1", 1, 0, "msg-one"), "G0HOP", ct);
+        await both.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+
+        received.Select(r => r.Body).Should().Equal("msg-one", "big-two");
+        received.Select(r => r.Sn).Should().Equal(1u, 2u);
+
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
+    // -- Concurrent submissions on one stream (#282) -------------------
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Sender_ConcurrentSubmissions_GetDistinctConsecutiveSeqs(bool seedFirst)
+    {
+        // REST and MQTT serve apps concurrently. Every submission on one
+        // stream must get its own seq; a duplicate sn is dropped as
+        // stale at the far end. Unseeded, the first submissions also
+        // race to create the counter row.
+        const int burst = 20;
+        var expected = seedFirst ? burst + 1 : burst;
+        if (seedFirst)
+        {
+            await database.SubmitOutboundMessage("chat", "G0DEST", "seed"u8.ToArray(), streamId: "c1");
+        }
+
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var tasks = Enumerable.Range(0, burst).Select(i => Task.Run(async () =>
+        {
+            await start.Task;
+            await database.SubmitOutboundMessage("chat", "G0DEST",
+                System.Text.Encoding.UTF8.GetBytes($"msg-{i}"), streamId: "c1");
+        })).ToList();
+        start.SetResult();
+        await Task.WhenAll(tasks);
+
+        var rows = await database.GetRecentMessages(100);
+        rows.Should().HaveCount(expected);
+        rows.Select(r => r.StreamSeq!.Value).OrderBy(s => s)
+            .Should().Equal(Enumerable.Range(1, expected).Select(n => (uint)n));
+        var state = (await database.GetStreamSendStatesAsync()).Single();
+        state.NextSeq.Should().Be((uint)expected + 1);
+    }
+
     // ── Sender-side counter persistence ────────────────────────────
 
     [Fact]
@@ -433,6 +588,25 @@ public sealed class StreamOrderingTests : IAsyncLifetime
             StreamId: sid,
             StreamSeq: sn,
             StreamGapTimeoutSeconds: gt);
+
+    private static BackhaulMessage MakeFragment(
+        string id, string masterId, int index, int total,
+        string originator, string sid, uint sn, uint gt, string body)
+        => MakeStreamMessage(id, originator, sid, sn, gt, body) with
+        {
+            MasterId = masterId,
+            FragmentIndex = index,
+            FragmentTotal = total,
+        };
+
+    private static (string Id, string Body, uint? Sn) Describe(MqttApplicationMessageReceivedEventArgs e)
+    {
+        var props = e.ApplicationMessage.UserProperties!;
+        var snProp = props.FirstOrDefault(p => p.Name == "dapps-stream-seq");
+        uint? sn = snProp is not null && uint.TryParse(snProp.Value, out var s) ? s : null;
+        return (props.Single(p => p.Name == "dapps-id").Value,
+            System.Text.Encoding.UTF8.GetString(e.ApplicationMessage.PayloadSegment.ToArray()), sn);
+    }
 
     private async Task<IMqttClient> ConnectClient()
     {

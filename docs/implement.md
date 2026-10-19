@@ -278,6 +278,8 @@ ihave e3f8a1b len=42 fmt=p s=1714982401500 src=G0ORIG sid=chat sn=2 gt=600 dst=c
 
 All three travel together or all three are absent. The originator stamps them; intermediate hops re-emit verbatim; the destination's reorder buffer holds messages with `sn > expected` until the gap fills (or, in timeout mode, until the deadline elapses).
 
+A message big enough to be fragmented takes one `sn`, and every fragment carries the same trio. The destination reassembles first, then orders the whole message like any other.
+
 Why opt-in: ordering trades latency for predictability. One missing message stalls the whole stream until it arrives or the timeout fires; on lossy radio links that's real cost. Most apps don't need it. The ones that do, get to choose `gt=0` (would rather wait than skip) or `gt=N` (would rather skip than block forever).
 
 Receivers that don't understand `sid`/`sn`/`gt` ignore the keys and deliver each message immediately - the stream survives the per-pair conversation between aware nodes.

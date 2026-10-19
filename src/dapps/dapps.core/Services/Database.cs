@@ -127,21 +127,12 @@ public class Database(
         var ourCall = options.CurrentValue.Callsign;
         var threshold = options.CurrentValue.FragmentThresholdBytes;
 
-        // Opt-in ordering: if a stream id is supplied, mint the next seq
-        // from DbStreamSendState. The counter and the message persist in
-        // the same call site; a crash between the two leaves the counter
-        // coherent with the on-disk message (the message commit happens
-        // after the counter bump). Gap timeout 0 (= strict) is the
-        // default when streamId is set without an explicit value.
+        // Opt-in ordering: gap timeout 0 (= strict) is the default when
+        // streamId is set without an explicit value.
         var hasStream = !string.IsNullOrEmpty(streamId);
         if (hasStream && (streamGapTimeoutSeconds is null))
         {
             streamGapTimeoutSeconds = 0;
-        }
-        uint? streamSeq = null;
-        if (hasStream)
-        {
-            streamSeq = await AllocateStreamSeqAsync(ourCall, destCallsign, streamId!);
         }
 
         // F2 multi-part: split payloads above the threshold into N
@@ -150,14 +141,11 @@ public class Database(
         // picks them up individually; the destination's inbox
         // reassembles. Threshold = 0 disables fragmentation.
         //
-        // Opt-in ordering note: stream metadata is stamped on the
-        // master id of a fragmented submission (and on the sole row
-        // of a non-fragmented one). Each fragment carries the full
-        // stream trio so a fragment-aware-but-stream-naive forwarder
-        // doesn't accidentally strip ordering. The receiver only
-        // applies ordering once reassembly produces the assembled
-        // payload (fragments arriving out of frag-index order are
-        // independent of the stream cursor).
+        // Opt-in ordering: every fragment carries the full stream trio
+        // (one seq for the whole submission). The receiver orders the
+        // reassembled message, not the fragments.
+        var rows = new List<(string Id, byte[] Body, long Salt, string? MasterId, int? Index, int? Total)>();
+        string returnedId;
         if (threshold > 0 && payload.Length > threshold)
         {
             var masterSalt = (long)(timeProvider.GetUtcNow().UtcDateTime - DateTime.UnixEpoch).TotalMilliseconds;
@@ -174,27 +162,66 @@ public class Database(
                 // while staying related (same time-base).
                 var fragSalt = masterSalt + i;
                 var fragId = DappsMessage.ComputeHash(chunk, fragSalt)[..7];
-                await SaveMessage(
-                    fragId, chunk, fragSalt, destination,
-                    sourceCallsign: ourCall, "{}", ttl: ttlSeconds,
-                    originatorCallsign: ourCall,
-                    masterId: masterId, fragmentIndex: i + 1, fragmentTotal: total,
-                    streamId: streamId, streamSeq: streamSeq,
-                    streamGapTimeoutSeconds: streamGapTimeoutSeconds);
+                rows.Add((fragId, chunk, fragSalt, masterId, i + 1, total));
             }
-            return masterId;
+            returnedId = masterId;
+        }
+        else
+        {
+            var salt = (long)(timeProvider.GetUtcNow().UtcDateTime - DateTime.UnixEpoch).TotalMilliseconds;
+            var id = DappsMessage.ComputeHash(payload, salt)[..7];
+            rows.Add((id, payload, salt, null, null, null));
+            returnedId = id;
         }
 
-        var salt = (long)(timeProvider.GetUtcNow().UtcDateTime - DateTime.UnixEpoch).TotalMilliseconds;
-        var id = DappsMessage.ComputeHash(payload, salt)[..7];
+        if (hasStream)
+        {
+            // Mint the seq and store the rows in one transaction (#282).
+            // Concurrent submissions on one stream (REST requests, two
+            // MQTT clients) each get their own seq, and a failure while
+            // storing can't burn a seq the receiver would wait for.
+            await DbInfo.GetAsyncConnection().RunInTransactionAsync(conn =>
+            {
+                var seq = AllocateStreamSeq(conn, ourCall, destCallsign, streamId!);
+                foreach (var row in rows)
+                {
+                    conn.InsertOrReplace(OutboundRow(row.Id, row.Body, row.Salt, row.MasterId, row.Index, row.Total, seq));
+                }
+            });
+            forwarderWakeup?.Wake();
+        }
+        else
+        {
+            foreach (var row in rows)
+            {
+                await SaveMessage(row.Id, row.Body, row.Salt, destination, sourceCallsign: ourCall, "{}", ttl: ttlSeconds,
+                    originatorCallsign: ourCall,
+                    masterId: row.MasterId, fragmentIndex: row.Index, fragmentTotal: row.Total);
+            }
+        }
+        return returnedId;
+
         // Local submission: we are both the link-source AND the
         // originator. Recorded explicitly so re-forwards downstream
         // surface us in the receiver's dapps-origin user property.
-        await SaveMessage(id, payload, salt, destination, sourceCallsign: ourCall, "{}", ttl: ttlSeconds,
-            originatorCallsign: ourCall,
-            streamId: streamId, streamSeq: streamSeq,
-            streamGapTimeoutSeconds: streamGapTimeoutSeconds);
-        return id;
+        DbMessage OutboundRow(string id, byte[] body, long salt, string? masterId, int? index, int? total, uint seq) => new()
+        {
+            Id = id,
+            Salt = salt,
+            Payload = body,
+            Destination = destination,
+            SourceCallsign = ourCall,
+            OriginatorCallsign = ourCall,
+            AdditionalProperties = "{}",
+            Ttl = ttlSeconds,
+            CreatedAt = timeProvider.GetUtcNow().UtcDateTime,
+            MasterId = masterId,
+            FragmentIndex = index,
+            FragmentTotal = total,
+            StreamId = streamId,
+            StreamSeq = seq,
+            StreamGapTimeoutSeconds = streamGapTimeoutSeconds,
+        };
     }
 
     internal async Task SaveMessage(string id, byte[] buffer, long? salt, string destination, string sourceCallsign, string additionalProperties, int? ttl, string originatorCallsign = "", byte? floodHopsRemaining = null, string? sourceRouteCsv = null, string? traversedHopsCsv = null, string? masterId = null, int? fragmentIndex = null, int? fragmentTotal = null, string? streamId = null, uint? streamSeq = null, uint? streamGapTimeoutSeconds = null, bool pendingInOrder = false)
@@ -1002,34 +1029,22 @@ public class Database(
 
     /// <summary>
     /// Mint the next sender-side seq for (LocalCallsign, RemoteCallsign,
-    /// StreamId) and persist the bumped counter. Idempotent only across
-    /// transactions: each call returns a fresh seq and advances the row.
-    /// New rows start at 1; existing rows return NextSeq and increment.
+    /// StreamId) and persist the bumped counter, in one statement so
+    /// concurrent callers can't read the same value (#282). New rows
+    /// start at 1; existing rows return NextSeq and increment.
     /// </summary>
-    internal async Task<uint> AllocateStreamSeqAsync(string localCallsign, string remoteCallsign, string streamId)
+    private uint AllocateStreamSeq(SQLiteConnection conn, string localCallsign, string remoteCallsign, string streamId)
     {
-        var connection = DbInfo.GetAsyncConnection();
         var key = DbStreamSendState.MakeKey(localCallsign, remoteCallsign, streamId);
-        var row = await connection.FindAsync<DbStreamSendState>(key);
-        var now = timeProvider.GetUtcNow().UtcDateTime;
-        if (row is null)
-        {
-            await connection.InsertAsync(new DbStreamSendState
-            {
-                Key = key,
-                LocalCallsign = localCallsign,
-                RemoteCallsign = remoteCallsign,
-                StreamId = streamId,
-                NextSeq = 2,
-                UpdatedAt = now,
-            });
-            return 1;
-        }
-        var seq = row.NextSeq;
-        row.NextSeq = seq + 1;
-        row.UpdatedAt = now;
-        await connection.UpdateAsync(row);
-        return seq;
+        // UpdatedAt is stored as ticks, sqlite-net's default for DateTime.
+        var now = timeProvider.GetUtcNow().UtcDateTime.Ticks;
+        var seq = conn.ExecuteScalar<long>(
+            "insert into streamsendstate (Key, LocalCallsign, RemoteCallsign, StreamId, NextSeq, UpdatedAt) " +
+            "values (?, ?, ?, ?, 2, ?) " +
+            "on conflict(Key) do update set NextSeq = NextSeq + 1, UpdatedAt = excluded.UpdatedAt " +
+            "returning NextSeq - 1",
+            key, localCallsign, remoteCallsign, streamId, now);
+        return (uint)seq;
     }
 
     /// <summary>All sender-side stream counters - dashboard listing.</summary>
