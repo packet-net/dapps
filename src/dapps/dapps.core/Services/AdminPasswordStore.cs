@@ -11,13 +11,18 @@ namespace dapps.core.Services;
 /// scheme as <see cref="AppTokenStore"/> - same threat model (a
 /// hostile peer on the LAN), same cost ceiling.
 ///
-/// Bootstrap path: <c>DAPPS_ADMIN_PASSWORD</c> env var on first start
-/// (handled by <see cref="DbStartup"/>). After that the hash row in
-/// <c>systemoptions</c> is authoritative; rotating happens via
-/// <see cref="SetAsync"/> from <c>/Config</c>.
+/// The password is first set on the <c>/Setup</c> page and changed
+/// from Settings via <c>/Config/admin-password</c>, which needs the
+/// current one. There is no passwordless dashboard (#316): nothing
+/// clears the password, and every new one needs at least
+/// <see cref="MinLength"/> characters. Passwords stored by older
+/// versions, which had no server-side minimum, still verify.
 /// </summary>
 public sealed class AdminPasswordStore(ILogger<AdminPasswordStore> logger)
 {
+    /// <summary>Shortest new password accepted.</summary>
+    public const int MinLength = 8;
+
     private const string HashOption = "AdminPasswordHash";
     private const string SaltOption = "AdminPasswordSalt";
 
@@ -49,22 +54,23 @@ public sealed class AdminPasswordStore(ILogger<AdminPasswordStore> logger)
         return CryptographicOperations.FixedTimeEquals(stored, attempt);
     }
 
-    /// <summary>Set or rotate. Empty/null plaintext clears the password
-    /// (auth then off until set again).</summary>
+    /// <summary>Why <paramref name="plaintext"/> can't be a new admin
+    /// password, or null when it can.</summary>
+    public static string? NewPasswordError(string? plaintext) =>
+        string.IsNullOrEmpty(plaintext) || plaintext.Length < MinLength
+            ? $"Password must be at least {MinLength} characters."
+            : null;
+
+    /// <summary>Set or change the password. Throws
+    /// <see cref="ArgumentException"/> for an empty or short one, so no
+    /// caller can turn the login off.</summary>
     public async Task SetAsync(string? plaintext)
     {
-        var connection = DbInfo.GetAsyncConnection();
-        if (string.IsNullOrEmpty(plaintext))
-        {
-            await connection.ExecuteAsync(
-                "delete from systemoptions where option in (?, ?)",
-                HashOption, SaltOption);
-            logger.LogWarning("Admin password cleared - dashboard now unauthenticated");
-            return;
-        }
+        if (NewPasswordError(plaintext) is { } error) throw new ArgumentException(error, nameof(plaintext));
 
+        var connection = DbInfo.GetAsyncConnection();
         var salt = RandomNumberGenerator.GetBytes(SaltBytes);
-        var hash = Pbkdf2(plaintext, salt);
+        var hash = Pbkdf2(plaintext!, salt);
         await Upsert(connection, HashOption, Convert.ToHexString(hash));
         await Upsert(connection, SaltOption, Convert.ToHexString(salt));
         logger.LogInformation("Admin password updated");

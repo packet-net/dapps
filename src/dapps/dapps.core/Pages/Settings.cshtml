@@ -200,11 +200,17 @@
 </form>
 
 <div class="panel">
-    <h3>Rotate admin password</h3>
-    <p class="panel-sub">Existing sessions stay valid until logout or 90-day expiry. Only future logins use the new password.</p>
+    <h3>Change admin password</h3>
+    <p class="panel-sub">At least 8 characters. The dashboard always needs a password, so it can be changed but not removed. Existing sessions stay signed in until logout or 90-day expiry.</p>
     <form class="row-form" onsubmit="dappsRotatePassword(event)">
-        <div class="field" style="grid-column: 1 / -1;"><label>New password</label>
+        <div class="field" style="grid-column: 1 / -1;"><label>Current password</label>
+            <input name="currentPassword" type="password" required autocomplete="current-password" />
+        </div>
+        <div class="field"><label>New password</label>
             <input name="password" type="password" required minlength="8" autocomplete="new-password" />
+        </div>
+        <div class="field"><label>Confirm new password</label>
+            <input name="confirm" type="password" required minlength="8" autocomplete="new-password" />
         </div>
         <button class="btn" type="submit">Set password</button>
     </form>
@@ -288,8 +294,12 @@ async function dappsSaveConfig(ev) {
 }
 async function dappsRotatePassword(ev) {
     ev.preventDefault();
-    const pwd = ev.target.password.value;
-    if (await dappsPostJson('@Url.Content("~/Config/admin-password")', { password: pwd })) {
+    const f = ev.target;
+    if (f.password.value !== f.confirm.value) {
+        alert("The new passwords don't match.");
+        return;
+    }
+    if (await dappsPostJson('@Url.Content("~/Config/admin-password")', { password: f.password.value, currentPassword: f.currentPassword.value })) {
         ev.target.reset();
         alert('Password updated.');
     }

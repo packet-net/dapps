@@ -142,10 +142,10 @@ public sealed class SetupModel(
             return LocalRedirect("~/Setup");
         }
 
-        if (string.IsNullOrEmpty(Password) || Password.Length < 8)
+        if (AdminPasswordStore.NewPasswordError(Password) is { } passwordError)
         {
             Step = SetupStep.Password;
-            Error = "Password must be at least 8 characters.";
+            Error = passwordError;
             return Page();
         }
         if (Password != Confirm)

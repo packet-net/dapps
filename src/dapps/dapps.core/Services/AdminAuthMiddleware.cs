@@ -49,9 +49,11 @@ public sealed class AdminAuthMiddleware(RequestDelegate next)
             return;
         }
 
-        // No password configured? First-use flow. Send the operator to
-        // /Setup. Until they complete it, every other path bounces
-        // here.
+        // No password configured? First-use flow (a fresh install, or
+        // one whose password rows were deleted to recover a forgotten
+        // password). Send the operator to /Setup to set one. Until they
+        // complete it, every other path bounces here. Once set, the
+        // password can be changed but never cleared (#316).
         if (!await store.IsConfiguredAsync())
         {
             ctx.Response.Redirect($"{ctx.Request.PathBase}/Setup");

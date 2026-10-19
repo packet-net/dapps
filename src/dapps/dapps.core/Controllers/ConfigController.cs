@@ -208,25 +208,33 @@ public class ConfigController(SystemOptionsStore options, AdminPasswordStore adm
     }
 
     /// <summary>
-    /// Set or rotate the dashboard admin password. Empty/null
-    /// <c>password</c> clears it (auth then off).
+    /// Change the dashboard admin password. Needs the current password
+    /// as well as the new one, and the new one must be at least
+    /// <see cref="AdminPasswordStore.MinLength"/> characters. There is
+    /// no way to clear it (#316).
     ///
-    /// First-use bootstrap: when no password is set, the admin auth
-    /// middleware lets requests through, so this endpoint is reachable
-    /// without auth on a fresh node - same chicken-and-egg model as
-    /// the existing app-token and bearer-auth bootstraps. Once a
-    /// password is set, every subsequent call (including future
-    /// rotations) goes through the cookie-authed path.
+    /// Behind the admin cookie like the rest of <c>/Config</c>. A fresh
+    /// node with no password yet sets its first one on <c>/Setup</c>,
+    /// since the auth middleware sends every other request there; the
+    /// current-password check is skipped only in that no-password case.
     /// </summary>
     [HttpPost("admin-password")]
     public async Task<IActionResult> SetAdminPassword([FromBody] AdminPasswordRequest req)
     {
+        if (await adminPassword.IsConfiguredAsync() && !await adminPassword.VerifyAsync(req.CurrentPassword))
+        {
+            return BadRequest("The current password is wrong.");
+        }
+        if (AdminPasswordStore.NewPasswordError(req.Password) is { } error)
+        {
+            return BadRequest(error);
+        }
         await adminPassword.SetAsync(req.Password);
         return NoContent();
     }
 }
 
-public sealed record AdminPasswordRequest(string? Password);
+public sealed record AdminPasswordRequest(string? Password, string? CurrentPassword = null);
 
 /// <summary>
 /// Result of <see cref="ConfigController.DetectBearer"/>. <c>Suggested</c>

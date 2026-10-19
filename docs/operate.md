@@ -57,7 +57,9 @@ Send and receive state for apps that use opt-in message ordering.
 
 ### Settings
 
-The operator-tunable knobs (see [Configure](configure.md)), plus admin password rotation. Restart-required fields are flagged in each section's blurb.
+The operator-tunable knobs (see [Configure](configure.md)), plus changing the admin password. Changing it needs the current password, and the new one must be at least 8 characters. The dashboard always has a password; there's no way to turn the login off. Restart-required fields are flagged in each section's blurb.
+
+Forgotten the password? Stop dapps, run `sqlite3 /var/lib/dapps/dapps.db "delete from systemoptions where option like 'AdminPassword%';"` (the database path on an apt or systemd install), and start it again. Your next visit lands on `/Setup` to set a new one; finish that straight away, because until you do the dashboard is as open as on a fresh install.
 
 ## /Health - for watchdogs
 
