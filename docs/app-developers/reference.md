@@ -6,6 +6,8 @@ If you're new, read [Concepts](concepts.md) first and walk through the [tutorial
 
 The on-air protocol DAPPS speaks **between nodes** is summarised in the section on [DAPPSv1 wire format](#dappsv1-wire-format-summary) at the bottom; most apps never need it.
 
+MQTT and REST are two ways into the same queue, and they name things differently: the MQTT topics are `dapps/in`, `dapps/out` and `dapps/ack`, while the REST paths are `/AppApi/inbound`, `/AppApi/outbound` and `/AppApi/inbound/{app}/{id}/ack`. The [summary table](#topic-endpoint-summary) lines them up side by side.
+
 The daemon also serves a generated OpenAPI description of its REST surface at `/openapi/v1.json`, with an interactive explorer at `/scalar`. Both sit behind the admin login like the rest of the dashboard; the `/AppApi` endpoints they describe take the app token as documented below.
 
 ## MQTT
@@ -146,7 +148,7 @@ curl -X POST http://localhost:5000/AppApi/outbound \
 
 List currently unacknowledged messages for `{app}`.
 
-**Response**: `200 OK` with a JSON array. Each entry:
+**Response**: `200 OK` with a JSON array. If nothing is waiting, the array is empty (`[]`). DAPPS keeps no list of apps, so an app name it has never seen also gets `[]` rather than `404`. Each entry:
 
 ```json
 {
