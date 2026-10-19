@@ -595,7 +595,7 @@ public static class DbStartup
     /// false in the standalone default mode, where a set env var only
     /// seeds first-start values and the dashboard stays in charge.</summary>
     public static bool IsEnvManaged(string key) =>
-        IsEnvManagedMode && !string.IsNullOrEmpty(ReadEnvironmentFor(key));
+        IsEnvManagedMode && !string.IsNullOrWhiteSpace(ReadEnvironmentFor(key));
 
     /// <summary>The env var <c>DAPPS_DEFAULT_PORT</c> replaced up to 0.52,
     /// which counted the node's ports from 0. Still read, as counting
@@ -659,10 +659,13 @@ public static class DbStartup
             // An environment variable, the host node or a version before
             // 0.52 can store a callsign /Config and /Setup would refuse
             // (#359). Every local message goes out from it and is dropped.
+            // Control characters are written out, as a raw CR would make
+            // journalctl hide the whole line as blob data.
+            var shown = string.Concat(callsign.Select(c => char.IsControl(c) ? $"\\x{(int)c:X2}" : c.ToString()));
             logger?.LogError(
                 "Callsign '{Callsign}' is not valid: {Error} Every message sent from this node will be dropped " +
                 "until it is fixed in Settings or wherever it is set (DAPPS_CALLSIGN, PDN_APP_CALLSIGN or PDN_NODE_CALLSIGN).",
-                callsign, error);
+                shown, error);
         }
     }
 

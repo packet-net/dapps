@@ -369,7 +369,7 @@ public sealed class Rhpv2InboundService(
         var walkEligible =
             pending is not null
             && string.Equals(pending, callsign, StringComparison.OrdinalIgnoreCase)
-            && string.IsNullOrEmpty(DbStartup.ReadEnvironment(DbStartup.EnvVarFor("Callsign")))
+            && string.IsNullOrWhiteSpace(DbStartup.ReadEnvironment(DbStartup.EnvVarFor("Callsign")))
             // Node-owned-callsign contract: a host-assigned PDN_APP_CALLSIGN
             // is bound verbatim - never probe-walk off it.
             && DbStartup.ReadNodeAssignedCallsign() is null;

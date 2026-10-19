@@ -478,6 +478,25 @@ public sealed class DbStartupTests : IAsyncLifetime
     }
 
     [Fact]
+    public void EnsureSchemaAndSeed_InvalidCallsignWithCr_LogsItVisibly()
+    {
+        // Stored before the env value was trimmed; nothing trims it now.
+        DbStartup.EnsureSchemaAndSeed();
+        using (var c = DbInfo.GetConnection())
+        {
+            var row = c.Find<DbSystemOption>("Callsign")!;
+            row.Value = "G0TST\r";
+            c.Update(row);
+        }
+        var logs = new CapturingLoggerFactory();
+
+        DbStartup.EnsureSchemaAndSeed(logs.CreateLogger("DbStartup"));
+
+        logs.Entries.Should().Contain(e => e.Level == LogLevel.Error && e.Message.Contains(@"'G0TST\x0D' is not valid"));
+        logs.Entries.Should().NotContain(e => e.Message.Contains('\r'));
+    }
+
+    [Fact]
     public void EnsureSchemaAndSeed_ValidCallsign_LogsNoError()
     {
         SetEnv("DAPPS_CALLSIGN", "G0TST-7");

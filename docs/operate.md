@@ -70,6 +70,7 @@ The operator-tunable knobs (see [Configure](configure.md)), plus admin password 
   "version": "0.47.0",
   "uptimeSeconds": 86400,
   "callsignConfigured": true,
+  "callsignProblem": null,      // or why the callsign is not valid
   "nodeReachable": true,
   "mqttBrokerUp": true,
   "lastForwardSuccessAt": "2026-05-03T07:58:08Z",
@@ -77,7 +78,7 @@ The operator-tunable knobs (see [Configure](configure.md)), plus admin password 
 }
 ```
 
-HTTP 200 when healthy, 503 when the callsign isn't set, the packet node is unreachable or the MQTT broker is down. **Open access** - no admin cookie required, since watchdog units don't carry one.
+HTTP 200 when healthy, 503 when the callsign isn't set or isn't valid, the packet node is unreachable or the MQTT broker is down. **Open access** - no admin cookie required, since watchdog units don't carry one.
 
 ## /Operational - for monitoring
 

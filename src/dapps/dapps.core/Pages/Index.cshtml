@@ -282,7 +282,7 @@
             }
             if (s.callsignProblem) {
                 out.push({ tone: 'err', title: 'Callsign is not valid',
-                          body: 'Every message sent from this node is dropped until the callsign is fixed in Settings. ' + s.callsignProblem });
+                          body: 'Every message sent from this node is dropped until the callsign is fixed, in Settings or wherever it is set (DAPPS_CALLSIGN, PDN_APP_CALLSIGN). ' + s.callsignProblem });
             }
             if (s.neighbourCount === 0 && s.discoveredPeerCount === 0) {
                 out.push({ tone: 'warn', title: 'No neighbours and no discovered peers',
