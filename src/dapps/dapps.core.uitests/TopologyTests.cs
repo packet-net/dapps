@@ -182,9 +182,8 @@ public sealed class TopologyTests(LoggedInWebAppFixture app, PlaywrightFixture p
             var id = await page.EvaluateAsync<int>(@"() => {
                 for (const tr of document.querySelectorAll('#chan-body tr')) {
                     if (tr.textContent.includes('" + channelKey + @"')) {
-                        const btn = tr.querySelector('button.link-btn.danger');
-                        const m = btn?.getAttribute('onclick')?.match(/dappsDeleteChannel\((\d+)\)/);
-                        if (m) return parseInt(m[1], 10);
+                        const id = tr.querySelector('button[data-act=""delete-channel""]')?.dataset.id;
+                        if (id) return parseInt(id, 10);
                     }
                 }
                 return -1;
