@@ -28,7 +28,8 @@ In another terminal, send "world" to yourself with mosquitto_pub:
         -t 'dapps/out/hello/<your-callsign>' -m 'world'
 
 Replace <your-callsign> with whatever Callsign your DAPPS is configured
-with - the reply will loop back to you too, and the script leaves it alone.
+with, and export it as DAPPS_CALLSIGN too. The reply loops back to you,
+and the script leaves messages from your own callsign alone.
 """
 
 import os
@@ -44,6 +45,8 @@ APP = "hello"
 # The app token from the dashboard's App tokens page. Leave unset if
 # your node has app tokens turned off.
 TOKEN = os.environ.get("DAPPS_TOKEN")
+# Your node's callsign (with SSID), so we can spot our own messages.
+MY_CALLSIGN = os.environ.get("DAPPS_CALLSIGN", "").upper()
 INBOX = f"dapps/in/{APP}"
 ACK = f"dapps/ack/{APP}"
 
@@ -86,10 +89,11 @@ def on_message(client, userdata, msg):
 
     print(f"<- {msg_id} from {sender}: {payload!r}")
 
-    if payload.startswith("hello, "):
-        # One of our own greetings. When you send to yourself it comes
-        # straight back, and greeting it would go on forever.
-        print("   (a greeting, not replying)")
+    if MY_CALLSIGN and sender.upper() == MY_CALLSIGN:
+        # From ourselves: our own greeting come back (DAPPS delivers a
+        # message to your own callsign just like any other). Greeting
+        # it would go on forever, so just ack it.
+        print("   (from us, not replying)")
         client.publish(ACK, msg_id.encode("utf-8"), qos=1)
         seen.add(msg_id)
         return

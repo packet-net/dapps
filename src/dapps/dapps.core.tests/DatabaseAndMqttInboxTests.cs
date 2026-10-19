@@ -449,14 +449,12 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
     [Fact]
     public async Task SubmitOutbound_ToAnAppOnThisNode_BigPayload_IsOneMessage_NotFragments()
     {
-        var ct = TestContext.Current.CancellationToken;
         var payload = new byte[5000];
         new Random(1).NextBytes(payload);
         var id = await database.SubmitOutboundMessage("hello", "N0CALL", payload, ttlSeconds: 600);
 
         var rows = await database.GetUnacknowledgedLocalMessagesForApp("hello");
         rows.Should().ContainSingle(m => m.Id == id).Which.Payload.Should().Equal(payload);
-        ct.IsCancellationRequested.Should().BeFalse();
     }
 
     [Fact]
@@ -478,6 +476,37 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
 
         for (var i = 0; i < 50 && got.Count < 2; i++) await Task.Delay(100, ct);
         got.Should().Equal("one", "two");
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
+    [Fact]
+    public async Task SubmitOutbound_ToAnAppOnThisNode_20InParallelOnOneStream_AllArriveInOrder()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var client = await ConnectClient();
+        var got = new List<string>();
+        client.ApplicationMessageReceivedAsync += e =>
+        {
+            lock (got) got.Add(Encoding.UTF8.GetString(e.ApplicationMessage.PayloadSegment));
+            return Task.CompletedTask;
+        };
+        await client.SubscribeAsync("dapps/in/hello",
+            MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, ct);
+
+        // Strict stream (no gap timeout): a lost or reordered message
+        // would stall the rest, so 20 in order means no clobbered cursor.
+        var ids = await Task.WhenAll(Enumerable.Range(0, 20).Select(i =>
+            Task.Run(() => database.SubmitOutboundMessage("hello", "N0CALL", Encoding.UTF8.GetBytes($"m{i}"), 600, streamId: "par"), ct)));
+
+        for (var i = 0; i < 100 && got.Count < 20; i++) await Task.Delay(100, ct);
+        ids.Distinct().Should().HaveCount(20);
+        got.Should().HaveCount(20);
+        // Delivery order is the order seqs were minted, which is the
+        // rows' stream order.
+        using var c = DbInfo.GetConnection();
+        var expected = c.Table<DbMessage>().OrderBy(m => m.StreamSeq).ToList()
+            .Select(m => Encoding.UTF8.GetString(m.Payload)).ToList();
+        got.Should().Equal(expected);
         await client.DisconnectAsync(cancellationToken: ct);
     }
 

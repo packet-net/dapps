@@ -186,6 +186,11 @@ public class Database(
             returnedId = id;
         }
 
+        if (isLocal && LocalSubmissionHandler is null)
+        {
+            logger.LogWarning("No inbox is attached, so {0} for {1} is stored but not published to the app", returnedId, destination);
+        }
+
         // A local, unordered message is stored by the inbox when it takes
         // it (below), so it isn't saved twice.
         var inboxStores = isLocal && !hasStream && LocalSubmissionHandler is not null;

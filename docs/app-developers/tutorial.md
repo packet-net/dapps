@@ -20,6 +20,12 @@ If you haven't yet, read [Concepts](concepts.md) first.
     export DAPPS_TOKEN='<token from the App tokens page>'
     ```
 
+- Your node's callsign (the one DAPPS is configured with, SSID included), also in your shell. The script uses it to tell your own messages from other people's:
+
+    ```bash
+    export DAPPS_CALLSIGN='<your-callsign>'
+    ```
+
     If your node has app tokens turned off, skip this; everything below works without it.
 
 We'll use MQTT in this tutorial. The same flow works against the REST endpoints - there's a `curl`-only version at the end.
@@ -109,6 +115,18 @@ if msg_id in seen:
 
 For this tutorial an in-memory set is fine - restart the script and it'll happily reply to old messages again, but that's exactly the bug the persistent store fixes when you're ready for a real app.
 
+## Step 4b: don't answer yourself
+
+A message you send to your own callsign is delivered back to you like any other. If the app replied to everything, it would greet its own greeting for ever. So check who it's from first, and just ack your own:
+
+```python
+my_callsign = os.environ.get("DAPPS_CALLSIGN", "").upper()
+
+if sender.upper() == my_callsign:
+    client.publish("dapps/ack/hello", msg_id.encode("utf-8"), qos=1)
+    return
+```
+
 ## Step 5: reply
 
 Replying is symmetric to receiving - publish to `dapps/out/<app>/<destination-callsign>`. The destination is whoever sent us the message; that's the `dapps-source` user property we just read.
@@ -165,11 +183,11 @@ You should see, in the script's terminal:
 -> reply sent to <your-callsign>
 ```
 
-The script published a reply, and because the destination was your own callsign, your DAPPS delivered it straight back into `dapps/in/hello`, just as if it had come from another node. The script spots its own greeting and just acks it, so you'll also see:
+The script published a reply, and because the destination was your own callsign, your DAPPS delivered it straight back into `dapps/in/hello`, just as if it had come from another node. The script sees the greeting is from your own callsign and just acks it, so you'll also see:
 
 ```
 <- def5678 from <your-callsign>: 'hello, world!'
-   (a greeting, not replying)
+   (from us, not replying)
 ```
 
 To watch the messages go by without running the script, subscribe with `mosquitto_sub` in a separate terminal:

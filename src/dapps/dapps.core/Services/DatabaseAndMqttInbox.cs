@@ -359,6 +359,25 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
     /// </summary>
     private async Task DeliverOrderedAsync(BackhaulMessage message, string sourceCallsign, string originator, string headersJson, CancellationToken ct)
     {
+        // One at a time per (sender, stream): the cursor is read, then
+        // written, so two at once would overwrite each other's advance.
+        var lockKey = (!string.IsNullOrEmpty(message.Originator) ? message.Originator : sourceCallsign) + "|" + message.StreamId;
+        var gate = streamLocks.GetOrAdd(lockKey, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            await DeliverOrderedLockedAsync(message, sourceCallsign, originator, headersJson, ct);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> streamLocks = new(StringComparer.Ordinal);
+
+    private async Task DeliverOrderedLockedAsync(BackhaulMessage message, string sourceCallsign, string originator, string headersJson, CancellationToken ct)
+    {
         var localCall = options.CurrentValue.Callsign;
         var streamId = message.StreamId!;
         var sn = message.StreamSeq!.Value;
@@ -537,6 +556,22 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
     /// </summary>
     internal async Task SkipGapAsync(DbStreamRecvState recv, CancellationToken ct)
     {
+        var gate = streamLocks.GetOrAdd(recv.SenderCallsign + "|" + recv.StreamId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            await SkipGapLockedAsync(recv, ct);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task SkipGapLockedAsync(DbStreamRecvState recv, CancellationToken ct)
+    {
+        // The caller's copy may be stale by the time we hold the lock.
+        recv = await database.GetStreamRecvStateAsync(recv.LocalCallsign, recv.SenderCallsign, recv.StreamId) ?? recv;
         var pending = await database.GetPendingInOrderAsync(recv.SenderCallsign, recv.StreamId);
         var firstAbove = pending.FirstOrDefault(p => p.StreamSeq is { } s && s >= recv.NextExpectedSeq);
         if (firstAbove?.StreamSeq is null)
