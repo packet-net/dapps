@@ -449,7 +449,7 @@ else
         if (await dappsPostJson('@Url.Content("~/Probes/run")', null)) await window.dappsRefreshSnap?.();
     };
     window.dappsProbeOne = async (callsign) => {
-        const res = await fetch('@Url.Content("~/Probes/run/")' + callsign, { method: 'POST' });
+        const res = await fetch('@Url.Content("~/Probes/run/")' + encodeURIComponent(callsign), { method: 'POST' });
         if (!res.ok && res.status !== 200 && res.status !== 204) {
             alert(`Probe failed (${res.status}): ${await res.text()}`);
             return;
@@ -461,18 +461,18 @@ else
         await window.dappsRefreshSnap?.();
     };
     window.dappsSetOptOut = async (callsign, optOut) => {
-        await dappsPostJson('@Url.Content("~/Probes/")' + callsign + '/optout', { OptOut: optOut });
+        await dappsPostJson('@Url.Content("~/Probes/")' + encodeURIComponent(callsign) + '/optout', { OptOut: optOut });
     };
     window.dappsForgetProbe = async (callsign) => {
-        if (!confirm(`Forget probe row for ${decodeURIComponent(callsign)}?`)) return;
-        if (await dappsPostJson('@Url.Content("~/Probes/")' + callsign, null, 'DELETE')) await window.dappsRefreshSnap?.();
+        if (!confirm(`Forget probe row for ${callsign}?`)) return;
+        if (await dappsPostJson('@Url.Content("~/Probes/")' + encodeURIComponent(callsign), null, 'DELETE')) await window.dappsRefreshSnap?.();
     };
     window.dappsRunPollSweep = async () => {
         if (!confirm('Poll every neighbour for queued mail now?')) return;
         if (await dappsPostJson('@Url.Content("~/Polls/run")', null)) await window.dappsRefreshSnap?.();
     };
     window.dappsPollOne = async (callsign) => {
-        const res = await fetch('@Url.Content("~/Polls/run/")' + callsign, { method: 'POST' });
+        const res = await fetch('@Url.Content("~/Polls/run/")' + encodeURIComponent(callsign), { method: 'POST' });
         if (!res.ok && res.status !== 200 && res.status !== 204) {
             alert(`Poll failed (${res.status}): ${await res.text()}`);
             return;
@@ -480,11 +480,11 @@ else
         await window.dappsRefreshSnap?.();
     };
     window.dappsSetPollOptOut = async (callsign, optOut) => {
-        await dappsPostJson('@Url.Content("~/Polls/")' + callsign + '/optout', { OptOut: optOut });
+        await dappsPostJson('@Url.Content("~/Polls/")' + encodeURIComponent(callsign) + '/optout', { OptOut: optOut });
     };
     window.dappsForgetPoll = async (callsign) => {
-        if (!confirm(`Forget poll row for ${decodeURIComponent(callsign)}?`)) return;
-        if (await dappsPostJson('@Url.Content("~/Polls/")' + callsign, null, 'DELETE')) await window.dappsRefreshSnap?.();
+        if (!confirm(`Forget poll row for ${callsign}?`)) return;
+        if (await dappsPostJson('@Url.Content("~/Polls/")' + encodeURIComponent(callsign), null, 'DELETE')) await window.dappsRefreshSnap?.();
     };
 
     // -- Port-picker bootstraps for the per-tab forms --
@@ -626,9 +626,9 @@ else
                           + '<pre class="connect-script" style="margin: 0; font-size: 0.8rem; white-space: pre;">' + escape(connectScriptLines(n.connectScriptJson)) + '</pre>'
                         : '<span class="muted">-</span>'}</td>
                     <td><div class="actions">
-                        ${n.portPending ? '' : `<button class="link-btn" onclick="dappsEditNeighbour('${escape(n.callsign)}')">edit</button>`}
-                        <button class="link-btn" onclick="dappsProbeOne('${escape(n.callsign)}')">probe</button>
-                        <button class="link-btn danger" onclick="dappsDeleteNeighbour('${escape(n.callsign)}')">remove</button>
+                        ${n.portPending ? '' : `<button class="link-btn" data-act="edit-neighbour" data-callsign="${escape(n.callsign)}">edit</button>`}
+                        <button class="link-btn" data-act="probe" data-callsign="${escape(n.callsign)}">probe</button>
+                        <button class="link-btn danger" data-act="delete-neighbour" data-callsign="${escape(n.callsign)}">remove</button>
                     </div></td>
                 </tr>`).join('');
             }
@@ -665,10 +665,10 @@ else
                     <td class="numeric">${c.solicitIntervalSeconds > 0 ? c.solicitIntervalSeconds + 's' : '<span class="muted">-</span>'}</td>
                     <td>${c.enabled ? '<span class="pill ok">yes</span>' : '<span class="pill warn">no</span>'}</td>
                     <td><div class="actions">
-                        ${c.portPending ? '' : `<button class="link-btn" onclick="dappsEditChannel(${c.id})">edit</button>
-                        <button class="link-btn" onclick="dappsSetChannelEnabled(${c.id}, ${c.enabled ? 'false' : 'true'})">${c.enabled ? 'disable' : 'enable'}</button>`}
-                        <button class="link-btn" onclick="dappsSolicitChannel(${c.id})" title="Send a one-shot 'who's there?'">solicit</button>
-                        <button class="link-btn danger" onclick="dappsDeleteChannel(${c.id})">remove</button>
+                        ${c.portPending ? '' : `<button class="link-btn" data-act="edit-channel" data-id="${escape(c.id)}">edit</button>
+                        <button class="link-btn" data-act="toggle-channel" data-id="${escape(c.id)}" data-enable="${c.enabled ? 'false' : 'true'}">${c.enabled ? 'disable' : 'enable'}</button>`}
+                        <button class="link-btn" data-act="solicit-channel" data-id="${escape(c.id)}" title="Send a one-shot 'who's there?'">solicit</button>
+                        <button class="link-btn danger" data-act="delete-channel" data-id="${escape(c.id)}">remove</button>
                     </div></td>
                 </tr>`).join('');
             }
@@ -705,10 +705,10 @@ else
                     <td>${p.lastSuccessAt ? fmtAgo(p.lastSuccessAt) : '<span class="muted">never</span>'}</td>
                     <td class="numeric">${p.consecutiveFailures}</td>
                     <td><span class="muted">${escape(p.lastError || '-')}</span></td>
-                    <td><label style="display:inline-flex; align-items:center; gap:0.3rem;"><input type="checkbox" ${p.optOut ? 'checked' : ''} onchange="dappsSetOptOut('${escape(p.callsign)}', this.checked)" /> opt-out</label></td>
+                    <td><label style="display:inline-flex; align-items:center; gap:0.3rem;"><input type="checkbox" ${p.optOut ? 'checked' : ''} data-act="probe-optout" data-callsign="${escape(p.callsign)}" /> opt-out</label></td>
                     <td><div class="actions">
-                        <button class="link-btn" onclick="dappsProbeOne('${escape(p.callsign)}')">probe now</button>
-                        <button class="link-btn danger" onclick="dappsForgetProbe('${escape(p.callsign)}')">forget</button>
+                        <button class="link-btn" data-act="probe" data-callsign="${escape(p.callsign)}">probe now</button>
+                        <button class="link-btn danger" data-act="forget-probe" data-callsign="${escape(p.callsign)}">forget</button>
                     </div></td>
                 </tr>`).join('');
             }
@@ -727,15 +727,45 @@ else
                     <td class="numeric">${p.consecutiveFailures}</td>
                     <td class="numeric">${p.messagesDrained}</td>
                     <td><span class="muted">${escape(p.lastError || '-')}</span></td>
-                    <td><label style="display:inline-flex; align-items:center; gap:0.3rem;"><input type="checkbox" ${p.optOut ? 'checked' : ''} onchange="dappsSetPollOptOut('${escape(p.callsign)}', this.checked)" /> opt-out</label></td>
+                    <td><label style="display:inline-flex; align-items:center; gap:0.3rem;"><input type="checkbox" ${p.optOut ? 'checked' : ''} data-act="poll-optout" data-callsign="${escape(p.callsign)}" /> opt-out</label></td>
                     <td><div class="actions">
-                        <button class="link-btn" onclick="dappsPollOne('${escape(p.callsign)}')">poll now</button>
-                        <button class="link-btn danger" onclick="dappsForgetPoll('${escape(p.callsign)}')">forget</button>
+                        <button class="link-btn" data-act="poll" data-callsign="${escape(p.callsign)}">poll now</button>
+                        <button class="link-btn danger" data-act="forget-poll" data-callsign="${escape(p.callsign)}">forget</button>
                     </div></td>
                 </tr>`).join('');
             }
         }
     }
+
+    // Row actions. Callsigns and other strings in the tables come from
+    // remote nodes, so they only ever travel in data- attributes (HTML
+    // escaped) and are read back here; no inline handler is built from them.
+    const rowActions = {
+        'edit-neighbour': (d) => window.dappsEditNeighbour(d.callsign),
+        'probe': (d) => window.dappsProbeOne(d.callsign),
+        'delete-neighbour': (d) => window.dappsDeleteNeighbour(d.callsign),
+        'edit-channel': (d) => window.dappsEditChannel(Number(d.id)),
+        'toggle-channel': (d) => window.dappsSetChannelEnabled(Number(d.id), d.enable === 'true'),
+        'solicit-channel': (d) => window.dappsSolicitChannel(Number(d.id)),
+        'delete-channel': (d) => window.dappsDeleteChannel(Number(d.id)),
+        'forget-probe': (d) => window.dappsForgetProbe(d.callsign),
+        'poll': (d) => window.dappsPollOne(d.callsign),
+        'forget-poll': (d) => window.dappsForgetPoll(d.callsign),
+    };
+    const rowChecks = {
+        'probe-optout': (d, el) => window.dappsSetOptOut(d.callsign, el.checked),
+        'poll-optout': (d, el) => window.dappsSetPollOptOut(d.callsign, el.checked),
+    };
+    document.addEventListener('click', (ev) => {
+        const el = ev.target.closest?.('button[data-act]');
+        const fn = el && rowActions[el.dataset.act];
+        if (fn) fn(el.dataset, el);
+    });
+    document.addEventListener('change', (ev) => {
+        const el = ev.target;
+        const fn = el?.dataset && rowChecks[el.dataset.act];
+        if (fn) fn(el.dataset, el);
+    });
 
     if (window.__dappsSnap) apply(window.__dappsSnap);
     if (window.dappsOnSnap) window.dappsOnSnap(apply);
