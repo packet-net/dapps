@@ -47,6 +47,8 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
             c.CreateTable<DbDroppedMessage>();
             c.CreateTable<DbNeighbour>();
             c.CreateTable<DbRouteHint>();
+            c.CreateTable<DbStreamSendState>();
+            c.CreateTable<DbStreamRecvState>();
         }
 
         var optionsMonitor = new TestOptionsMonitor<SystemOptions>(new SystemOptions
@@ -412,6 +414,71 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
             Payload: "from a sibling"u8.ToArray(), Originator: "N0CALL-2"), sourceCallsign: "N0CALL-2", ct);
 
         (await database.GetPendingOutboundMessages()).Select(m => m.Id).Should().Contain("sib0001");
+    }
+
+    [Fact]
+    public async Task SubmitOutbound_ToAnAppOnThisNode_IsPublishedLive_LikeAnArrival()
+    {
+        // #288: app@OWNCALL was stored but never published to the app's
+        // MQTT topic. It must arrive as a message from another node does.
+        var ct = TestContext.Current.CancellationToken;
+        var client = await ConnectClient();
+        var received = new TaskCompletionSource<MqttApplicationMessage>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        client.ApplicationMessageReceivedAsync += e =>
+        {
+            received.TrySetResult(e.ApplicationMessage);
+            return Task.CompletedTask;
+        };
+        await client.SubscribeAsync("dapps/in/hello",
+            MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, ct);
+
+        var payload = "to myself"u8.ToArray();
+        var id = await database.SubmitOutboundMessage("hello", "N0CALL", payload, ttlSeconds: 600);
+
+        var msg = await received.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        msg.PayloadSegment.ToArray().Should().Equal(payload);
+        msg.UserProperties.Single(p => p.Name == "dapps-id").Value.Should().Be(id);
+        msg.UserProperties.Single(p => p.Name == "dapps-source").Value.Should().Be("N0CALL");
+
+        (await database.GetUnacknowledgedLocalMessagesForApp("hello")).Select(m => m.Id).Should().Contain(id);
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
+    [Fact]
+    public async Task SubmitOutbound_ToAnAppOnThisNode_BigPayload_IsOneMessage_NotFragments()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var payload = new byte[5000];
+        new Random(1).NextBytes(payload);
+        var id = await database.SubmitOutboundMessage("hello", "N0CALL", payload, ttlSeconds: 600);
+
+        var rows = await database.GetUnacknowledgedLocalMessagesForApp("hello");
+        rows.Should().ContainSingle(m => m.Id == id).Which.Payload.Should().Equal(payload);
+        ct.IsCancellationRequested.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SubmitOutbound_ToAnAppOnThisNode_WithStream_GoesThroughOrdering()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var client = await ConnectClient();
+        var got = new List<string>();
+        client.ApplicationMessageReceivedAsync += e =>
+        {
+            lock (got) got.Add(Encoding.UTF8.GetString(e.ApplicationMessage.PayloadSegment));
+            return Task.CompletedTask;
+        };
+        await client.SubscribeAsync("dapps/in/hello",
+            MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, ct);
+
+        await database.SubmitOutboundMessage("hello", "N0CALL", "one"u8.ToArray(), 600, streamId: "s1");
+        await database.SubmitOutboundMessage("hello", "N0CALL", "two"u8.ToArray(), 600, streamId: "s1");
+
+        for (var i = 0; i < 50 && got.Count < 2; i++) await Task.Delay(100, ct);
+        got.Should().Equal("one", "two");
+        await client.DisconnectAsync(cancellationToken: ct);
     }
 
     private static int PickFreeTcpPort()

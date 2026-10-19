@@ -16,16 +16,48 @@ namespace dapps.core.Services;
 /// over a DAPPSv1 session or a MeshCore datagram. The bearer-specific
 /// receive layer is the one that called <see cref="DeliverAsync"/>.
 /// </summary>
-public sealed class DatabaseAndMqttInbox(
-    Database database,
-    MqttBrokerService mqtt,
-    InboundEventBus events,
-    IOptionsMonitor<SystemOptions> options,
-    IRoutingAlgorithm routingAlgorithm,
-    IRoutingContext routingContext,
-    TimeProvider timeProvider,
-    ILogger<DatabaseAndMqttInbox> logger) : IBackhaulInbox
+public sealed class DatabaseAndMqttInbox : IBackhaulInbox
 {
+    private readonly Database database;
+    private readonly MqttBrokerService mqtt;
+    private readonly InboundEventBus events;
+    private readonly IOptionsMonitor<SystemOptions> options;
+    private readonly IRoutingAlgorithm routingAlgorithm;
+    private readonly IRoutingContext routingContext;
+    private readonly TimeProvider timeProvider;
+    private readonly ILogger<DatabaseAndMqttInbox> logger;
+
+    public DatabaseAndMqttInbox(
+        Database database,
+        MqttBrokerService mqtt,
+        InboundEventBus events,
+        IOptionsMonitor<SystemOptions> options,
+        IRoutingAlgorithm routingAlgorithm,
+        IRoutingContext routingContext,
+        TimeProvider timeProvider,
+        ILogger<DatabaseAndMqttInbox> logger)
+    {
+        this.database = database;
+        this.mqtt = mqtt;
+        this.events = events;
+        this.options = options;
+        this.routingAlgorithm = routingAlgorithm;
+        this.routingContext = routingContext;
+        this.timeProvider = timeProvider;
+        this.logger = logger;
+
+        // Messages an app here sends to an app on this node come through
+        // the same storing and publishing as an arrival (#288). There is
+        // one inbox per node.
+        database.LocalSubmissionHandler = message =>
+            AcceptAsync(ToBackhaul(message), message.SourceCallsign, CancellationToken.None);
+    }
+
+    private static BackhaulMessage ToBackhaul(DbMessage m) => new(
+        Id: m.Id, Destination: m.Destination, Salt: m.Salt, Ttl: m.Ttl, Payload: m.Payload,
+        Originator: m.OriginatorCallsign,
+        StreamId: m.StreamId, StreamSeq: m.StreamSeq, StreamGapTimeoutSeconds: m.StreamGapTimeoutSeconds);
+
     /// <summary>Only a stored message counts, and never one without a
     /// salt: those aren't remembered.</summary>
     public async Task<bool> HasAsync(string id, long? salt, int length, CancellationToken ct) =>

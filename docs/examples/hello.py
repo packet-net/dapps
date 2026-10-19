@@ -28,7 +28,7 @@ In another terminal, send "world" to yourself with mosquitto_pub:
         -t 'dapps/out/hello/<your-callsign>' -m 'world'
 
 Replace <your-callsign> with whatever Callsign your DAPPS is configured
-with - the reply will loop back to you.
+with - the reply will loop back to you too, and the script leaves it alone.
 """
 
 import os
@@ -85,6 +85,15 @@ def on_message(client, userdata, msg):
         return
 
     print(f"<- {msg_id} from {sender}: {payload!r}")
+
+    if payload.startswith("hello, "):
+        # One of our own greetings. When you send to yourself it comes
+        # straight back, and greeting it would go on forever.
+        print("   (a greeting, not replying)")
+        client.publish(ACK, msg_id.encode("utf-8"), qos=1)
+        seen.add(msg_id)
+        return
+
     reply = f"hello, {payload}!".encode("utf-8")
 
     # Send the reply.  Optional dapps-ttl user property gives the

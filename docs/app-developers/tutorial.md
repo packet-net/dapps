@@ -165,7 +165,14 @@ You should see, in the script's terminal:
 -> reply sent to <your-callsign>
 ```
 
-The script published a reply, and because the destination was your own callsign, your DAPPS forwarded it straight back into `dapps/in/hello`. To watch it round-trip without re-triggering your handler, subscribe with `mosquitto_sub` in a separate terminal:
+The script published a reply, and because the destination was your own callsign, your DAPPS delivered it straight back into `dapps/in/hello`, just as if it had come from another node. The script spots its own greeting and just acks it, so you'll also see:
+
+```
+<- def5678 from <your-callsign>: 'hello, world!'
+   (a greeting, not replying)
+```
+
+To watch the messages go by without running the script, subscribe with `mosquitto_sub` in a separate terminal:
 
 ```bash
 mosquitto_sub -h 127.0.0.1 -V mqttv5 -u hello -P "$DAPPS_TOKEN" -t 'dapps/in/hello' -F '%P\n%p'

@@ -105,6 +105,14 @@ public class Database(
     }
 
     /// <summary>
+    /// Set by the inbox: takes a message an app here addressed to an app
+    /// on this same node, stores it and publishes it exactly as if it had
+    /// arrived from another node (#288). Null in a bare Database, where
+    /// such a message is just stored.
+    /// </summary>
+    internal Func<DbMessage, Task>? LocalSubmissionHandler { get; set; }
+
+    /// <summary>
     /// Persist a fresh outbound message submitted by a local app via the MQTT
     /// or REST app interface. Computes the message id from the payload + a
     /// salt; returns the id for the caller to log/echo back to the app.
@@ -144,9 +152,13 @@ public class Database(
         // Opt-in ordering: every fragment carries the full stream trio
         // (one seq for the whole submission). The receiver orders the
         // reassembled message, not the fragments.
+        //
+        // A message for an app on this node never goes anywhere, so it
+        // is never split: the app gets it whole (#288).
+        var isLocal = DestinationParser.IsLocal(destination, ourCall);
         var rows = new List<(string Id, byte[] Body, long Salt, string? MasterId, int? Index, int? Total)>();
         string returnedId;
-        if (threshold > 0 && payload.Length > threshold)
+        if (threshold > 0 && payload.Length > threshold && !isLocal)
         {
             var masterSalt = (long)(timeProvider.GetUtcNow().UtcDateTime - DateTime.UnixEpoch).TotalMilliseconds;
             var masterId = DappsMessage.ComputeHash(payload, masterSalt)[..7];
@@ -174,6 +186,10 @@ public class Database(
             returnedId = id;
         }
 
+        // A local, unordered message is stored by the inbox when it takes
+        // it (below), so it isn't saved twice.
+        var inboxStores = isLocal && !hasStream && LocalSubmissionHandler is not null;
+        uint? seq = null;
         if (hasStream)
         {
             // Mint the seq and store the rows in one transaction (#282).
@@ -182,21 +198,51 @@ public class Database(
             // storing can't burn a seq the receiver would wait for.
             await DbInfo.GetAsyncConnection().RunInTransactionAsync(conn =>
             {
-                var seq = AllocateStreamSeq(conn, ourCall, destCallsign, streamId!);
+                seq = AllocateStreamSeq(conn, ourCall, destCallsign, streamId!);
                 foreach (var row in rows)
                 {
-                    conn.InsertOrReplace(OutboundRow(row.Id, row.Body, row.Salt, row.MasterId, row.Index, row.Total, seq));
+                    conn.InsertOrReplace(OutboundRow(row.Id, row.Body, row.Salt, row.MasterId, row.Index, row.Total, seq.Value));
                 }
             });
             forwarderWakeup?.Wake();
         }
-        else
+        else if (!inboxStores)
         {
             foreach (var row in rows)
             {
                 await SaveMessage(row.Id, row.Body, row.Salt, destination, sourceCallsign: ourCall, "{}", ttl: ttlSeconds,
                     originatorCallsign: ourCall,
                     masterId: row.MasterId, fragmentIndex: row.Index, fragmentTotal: row.Total);
+            }
+        }
+
+        if (isLocal && LocalSubmissionHandler is { } deliverLocally)
+        {
+            // Published to the app exactly as a message from another node
+            // would be (stream ordering included). Once the row is stored
+            // the submit has succeeded: if publishing fails the message is
+            // still listed for the app, so don't report a failure.
+            var first = rows[0];
+            try
+            {
+                await deliverLocally(new DbMessage
+                {
+                    Id = first.Id, Payload = first.Body, Salt = first.Salt, Destination = destination,
+                    SourceCallsign = ourCall, OriginatorCallsign = ourCall,
+                    AdditionalProperties = "{}", Ttl = ttlSeconds,
+                    StreamId = streamId, StreamSeq = seq,
+                    StreamGapTimeoutSeconds = streamGapTimeoutSeconds,
+                });
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Message {0} for {1} is stored but couldn't be published to the app; it will be listed for it", first.Id, destination);
+                if (inboxStores)
+                {
+                    // The inbox may not have got as far as storing it.
+                    await SaveMessage(first.Id, first.Body, first.Salt, destination, sourceCallsign: ourCall, "{}", ttl: ttlSeconds,
+                        originatorCallsign: ourCall);
+                }
             }
         }
         return returnedId;
@@ -232,7 +278,12 @@ public class Database(
 
         if (message != null)
         {
-            logger.LogWarning("Message {0} already exists, overwriting", id);
+            // The same message stored again (a local submission, stored on
+            // submit and again as the inbox takes it) is not worth a warning.
+            if (message.Salt == salt && message.Destination == destination)
+                logger.LogDebug("Message {0} already exists, overwriting", id);
+            else
+                logger.LogWarning("Message {0} already exists, overwriting", id);
             await connection.DeleteAsync<DbMessage>(id);
         }
 
