@@ -24,7 +24,7 @@ public sealed class AgwDiscoveryIntegrationTests(TwoInstanceLinbpqFixture fixtur
         await using var a = await StartAsync("disc-a", fixture.ApplCallA, fixture.NodeA, ct);
         await using var b = await StartAsync("disc-b", fixture.ApplCallB, fixture.NodeB, ct);
 
-        var key = fixture.AxipPortIndex.ToString();
+        var key = (fixture.AxipPortIndex + 1).ToString(); // BPQ's PORTNUM, the AGW byte plus one (#233)
         await WaitForLogAsync(a, $"heard {fixture.ApplCallB} via agw/{key}", b, ct);
         await WaitForLogAsync(b, $"heard {fixture.ApplCallA} via agw/{key}", a, ct);
 
@@ -54,7 +54,7 @@ public sealed class AgwDiscoveryIntegrationTests(TwoInstanceLinbpqFixture fixtur
         await using var a = await StartAsync("listen-a", fixture.ApplCallA, fixture.NodeA, ct, settings);
         await using var b = await StartAsync("disc-b", fixture.ApplCallB, fixture.NodeB, ct);
 
-        var key = fixture.AxipPortIndex.ToString();
+        var key = (fixture.AxipPortIndex + 1).ToString(); // BPQ's PORTNUM, the AGW byte plus one (#233)
         await WaitForLogAsync(a, "so the AGW connection only hears them", b, ct);
         await WaitForLogAsync(a, $"heard {fixture.ApplCallB} via agw/{key}", b, ct);
         await WaitForLogAsync(a, $"announce on agw/{key} failed", b, ct);
@@ -67,7 +67,7 @@ public sealed class AgwDiscoveryIntegrationTests(TwoInstanceLinbpqFixture fixtur
         [
             new DbDiscoveryChannel
             {
-                Bearer = "agw", ChannelKey = node.BearerPort.ToString(), LinkClass = LinkClass.VhfUhfFm,
+                Bearer = "agw", ChannelKey = (node.BearerPort + 1).ToString(), LinkClass = LinkClass.VhfUhfFm,
                 BeaconIntervalSeconds = 10, AdvertisedTtlSeconds = 600, CostHint = 1,
             },
         ]);

@@ -102,7 +102,7 @@ A remote node can `c <your-callsign>` and lands at the XRouter node prompt, but 
 A fresh DAPPS install has **no discovery channels configured by default** - discovery is opt-in. Without a channel and an enabled beacon, you don't hear other nodes and they don't hear you. Two ways forward:
 
 - **Manual neighbour**: dashboard > Topology > Neighbours, add a row for the peer you want to talk to. This is the fastest path to "first message" - no discovery needed.
-- **Discovery channel**: dashboard > Topology > Discovery channels, add a channel for the bearer port DAPPS should beacon on. The link class sets the cadence (every 30 minutes on VHF/UHF FM) unless you set **Beacon every**; set a per-channel airtime budget if you're on a shared band.
+- **Discovery channel**: dashboard > Topology > Discovery channels, add a channel for the radio port DAPPS should beacon on. The link class sets the cadence (every 30 minutes on VHF/UHF FM) unless you set **Beacon every**; set a per-channel airtime budget if you're on a shared band.
 
 ### "I added a discovery channel but I'm not hearing anyone"
 
@@ -111,14 +111,14 @@ Check, in order:
 - Channel is **enabled** (the Enabled column; **enable** on the row turns it back on).
 - The packet node is up. AGW discovery uses DAPPS's one AGW connection to the node; while that is down nothing is sent, the log shows `AGW inbound loop ended ... reconnecting in`, and discovery beacons again as soon as it is back.
 - Beacon cadence isn't unreasonably long (the Beacon column; one beacon every 2 hours, the HF default, means you hear nothing for 2 hours after start).
-- Other DAPPS nodes are actually transmitting on the same channel-key (same bearer port). A node beaconing on port 1 won't be heard by a node listening on port 0.
+- Other DAPPS nodes are actually transmitting on the same channel-key (the same radio). A node beaconing on its port 2 won't be heard by a node listening on a port tuned elsewhere.
 - Airtime budget isn't exhausted. The Discovery airtime panel on the dashboard's Overview shows trailing-hour consumption; if it's at 100 % of the global cap or more, beacons will defer. Either raise the cap or wait.
 
 ### "Probes failing"
 
 The probed-nodes table shows the recent failure reason. Common ones:
 
-- **`RETRYOUT`**: the bearer retried the connect to the remote callsign but never got a response. Three common causes: the remote isn't reachable on the link; the bearer port for that peer is wrong (per-neighbour `BearerPort` or `DAPPS_DEFAULT_BEARER_PORT`); or the remote BPQ doesn't declare the DAPPS callsign in an `APPLICATION` line's APPLCALL field - in that case BPQ silently ignores connects to the callsign even though the remote DAPPS registered it over AGW.
+- **`RETRYOUT`**: the bearer retried the connect to the remote callsign but never got a response. Three common causes: the remote isn't reachable on the link; the radio port for that peer is wrong (the neighbour's **Radio port**, or `DAPPS_DEFAULT_PORT`; it's the node's own port number, as its `PORTS` command or `XROUTER.CFG` shows it); or the remote BPQ doesn't declare the DAPPS callsign in an `APPLICATION` line's APPLCALL field - in that case BPQ silently ignores connects to the callsign even though the remote DAPPS registered it over AGW.
 - **Connect accepted (UA) but then silence, ending in `timeout: ... no data from peer`**: the classic signature of probing the remote's **node call** instead of its DAPPS callsign. The node accepts the L2 connect and then sits at its (silent) command prompt waiting for input, while the probe waits for a `DAPPSv1>` banner that will never come. Check the neighbour row's callsign is the remote *DAPPS* callsign (e.g. `M0XYZ-7`), not the NODECALL.
 - **Connect timeout**: the connect went out but the protocol parser never saw the `DAPPSv1>` prompt. The peer either isn't running DAPPS, or you're connecting to the wrong application (their `APPLICATION` line might use a different command name).
 - **TIMEOUT after `DAPPSv1>`**: probe got the prompt but the session hung. Network is dropping packets mid-session, or one side has a serious clock skew.

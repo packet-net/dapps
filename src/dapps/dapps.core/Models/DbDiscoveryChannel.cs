@@ -32,8 +32,8 @@ public sealed class DbDiscoveryChannel
     [Indexed]
     public string Bearer { get; set; } = "";
 
-    /// <summary>Bearer-specific identifier. For "agw" this is the bearer
-    /// port stringified ("0", "1", …). For "udp" this is a multicast
+    /// <summary>Bearer-specific identifier. For "agw" this is the node's
+    /// port number as the node shows it, stringified ("1", "7", ...; #233). For "udp" this is a multicast
     /// endpoint ("239.42.42.42:1881"). For "meshcore" it would be a
     /// radio + channel-name composite. The bearer parses.</summary>
     public string ChannelKey { get; set; } = "";
@@ -87,6 +87,15 @@ public sealed class DbDiscoveryChannel
     /// bound the resulting on-air rate.
     /// </summary>
     public int SolicitIntervalSeconds { get; set; } = 0;
+
+    /// <summary>
+    /// True while the channel key was saved by an older DAPPS, which
+    /// counted the node's AGW ports from 0, and has not yet been turned
+    /// into the node's own number (#233, #370). That needs the node's AGW
+    /// port list, so it happens when the AGW connection first answers
+    /// after the upgrade; until then nothing is sent on this port.
+    /// </summary>
+    public bool? PortPending { get; set; }
 
     /// <summary>Apply <see cref="LinkClassDefaults"/> to any field still
     /// at its zero value. Lets controllers write a row with just

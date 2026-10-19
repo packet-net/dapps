@@ -43,6 +43,11 @@ public class PollsController(
             return BadRequest(
                 $"No AGW route to {normalized} - add a /Neighbours row first.");
         }
+        if (port < 1)
+        {
+            return Conflict(
+                $"{normalized}'s radio port was saved by an older DAPPS and is waiting for the node's AGW connection to answer, to be converted to the node's own port number; nothing is sent on it until then.");
+        }
 
         var row = await scheduler.PollAndRecordAsync(
             options.CurrentValue.Callsign, normalized, port, ct,
@@ -76,9 +81,10 @@ public class PollsController(
         var neighbour = await database.GetNeighbour(callsign);
         if (neighbour is not null && neighbour.UdpEndpoint is null)
         {
-            return (neighbour.BearerPort ?? options.CurrentValue.DefaultBearerPort, true);
+            // 0 while the port is held (saved by an older DAPPS, #233).
+            return (Routing.RouteBuilder.PortOf(neighbour, options.CurrentValue.DefaultPort) ?? 0, true);
         }
-        return (options.CurrentValue.DefaultBearerPort, false);
+        return (options.CurrentValue.DefaultPort, false);
     }
 
     private static PolledNodeModel ToModel(DbPolledNode r) => new(

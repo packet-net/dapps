@@ -26,8 +26,6 @@ Terms used throughout this manual.
 
 **BPQ** - A long-running packet-radio multi-protocol stack, the most common AGW host in service. DAPPS supports BPQ as the production backhaul. Not a hard dependency - anything with an AGW interface should work.
 
-**bearer port** - A 0-indexed identifier for which port on the bearer DAPPS should use for outbound (= which physical radio in `bpq32.cfg`'s `PORTNUM` layout for AGW, or which `PORT=N` block for RHPv2 / XRouter, with DAPPS handling the +1 conversion internally). Per-neighbour or default (`DAPPS_DEFAULT_BEARER_PORT`).
-
 **callsign** - Your radio licence callsign, optionally with an SSID (`-1`, `-7`, etc). DAPPS treats the full call+SSID as a unique identifier for routing; the base callsign without SSID is used for some discovery features.
 
 **channel** (discovery channel) - A `(bearer, channel-key)` tuple DAPPS will beacon on / listen on / run scheduled solicits over. Operators add channels explicitly; nothing is on by default.
@@ -79,6 +77,8 @@ Terms used throughout this manual.
 **probe** - A connected-mode session opened to a peer to confirm reachability. Three flavours: direct, transitive (via the peer's `peers` response), and node-prompt-discovered (via the BPQ node prompt for peers that aren't directly DAPPS).
 
 **`exchange`** - The DAPPSv1 line with which each end of a session between DAPPS nodes says what it takes from the other. Once both have been sent, either side sends its traffic whenever it has some, so every session carries messages both ways.
+
+**radio port** - Which of the node's radio ports DAPPS uses for a neighbour or discovery channel, by the node's own number for it: BPQ's `PORTNUM`, XRouter's `PORT=`, pdn's port as its `PORTS` command lists it, Dire Wolf's `PortN` in its AGW port list. DAPPS works out the AGW port byte from it. Per-neighbour or default (`DAPPS_DEFAULT_PORT`). Up to 0.53 DAPPS called this the bearer port and counted from 0.
 
 **REST** - DAPPS's HTTP-based app interface, alongside MQTT. Same submit shape; different protocol.
 

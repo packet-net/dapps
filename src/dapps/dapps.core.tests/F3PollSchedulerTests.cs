@@ -35,7 +35,7 @@ public sealed class F3PollSchedulerTests : IAsyncLifetime
             c.CreateTable<DbReceived>();
         }
         database = new Database(NullLogger<Database>.Instance,
-            new TestOptionsMonitor<SystemOptions>(new SystemOptions { Callsign = "N0US", DefaultBearerPort = 0 }));
+            new TestOptionsMonitor<SystemOptions>(new SystemOptions { Callsign = "N0US", DefaultPort = 1 }));
         return ValueTask.CompletedTask;
     }
 
@@ -51,6 +51,21 @@ public sealed class F3PollSchedulerTests : IAsyncLifetime
     {
         var sched = MakeScheduler(new RecordingPollTransport(), new RecordingInbox());
         (await sched.EnumerateTargetsAsync()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task EnumerateTargets_APortSavedByAnOlderDappsAndNotConverted_IsNotPolled()
+    {
+        // #233: still counting from 0 until the node's AGW connection answers.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0HELD-9", BearerPort = 0, PortPending = true });
+            c.Insert(new DbNeighbour { Callsign = "N0OWN-9", BearerPort = 2 });
+        }
+        var sched = MakeScheduler(new RecordingPollTransport(), new RecordingInbox());
+
+        (await sched.EnumerateTargetsAsync()).Should().ContainSingle()
+            .Which.Should().BeEquivalentTo(new PollSchedulerService.PollTarget("N0OWN-9", 2));
     }
 
     [Fact]
@@ -175,7 +190,7 @@ public sealed class F3PollSchedulerTests : IAsyncLifetime
         var poller = new NodePoller(transport, inbox, TimeProvider.System,
             NullLoggerFactory.Instance, NullLogger<NodePoller>.Instance);
         var opts = new TestOptionsMonitor<SystemOptions>(
-            new SystemOptions { Callsign = "N0US", DefaultBearerPort = 0, ScheduledPollEnabled = true });
+            new SystemOptions { Callsign = "N0US", DefaultPort = 1, ScheduledPollEnabled = true });
         return new PollSchedulerService(poller, database, opts, TimeProvider.System,
             NullLogger<PollSchedulerService>.Instance)
         {

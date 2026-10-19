@@ -23,10 +23,20 @@ public sealed class DbProbedNode
     [PrimaryKey]
     public string Callsign { get; set; } = "";
 
-    /// <summary>bearer port (0-indexed) used on the most recent
-    /// probe attempt. Null if we've never attempted, or if the row
-    /// was operator-created opt-out without a probe.</summary>
+    /// <summary>The radio port, numbered as the node shows it (#233),
+    /// used on the most recent probe attempt. Null if we've never
+    /// attempted, or if the row was operator-created opt-out without a
+    /// probe.</summary>
     public int? LastBearerPort { get; set; }
+
+    /// <summary>
+    /// True while the port above was saved by an older DAPPS, which
+    /// counted the node's AGW ports from 0, and has not yet been turned
+    /// into the node's own number (#233, #370). That needs the node's AGW
+    /// port list, so it happens when the AGW connection first answers
+    /// after the upgrade; until then nothing is sent on this port.
+    /// </summary>
+    public bool? PortPending { get; set; }
 
     /// <summary>UTC timestamp of the most recent probe attempt, success
     /// or otherwise. Null = never attempted.</summary>

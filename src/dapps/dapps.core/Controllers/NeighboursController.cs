@@ -32,7 +32,8 @@ public class NeighboursController(Database database) : ControllerBase
                 ConnectScriptStepCount: script?.Steps.Count ?? 0,
                 CompressionEnabled: n.CompressionEnabled,
                 SessionTailSeconds: n.SessionTailSeconds,
-                ConnectVia: n.ConnectVia);
+                ConnectVia: n.ConnectVia,
+                PortPending: n.PortPending == true);
         });
     }
 
@@ -44,6 +45,19 @@ public class NeighboursController(Database database) : ControllerBase
             return BadRequest("Callsign is required");
         }
         var callsign = neighbour.Callsign.Trim().ToUpperInvariant();
+        // Port is the node's own number for the radio port (#233). An older
+        // caller's BearerPort counted from 0, and is still taken that way
+        // when Port is not sent. Deprecated.
+        var port = neighbour.Port;
+        if (port is null && neighbour.BearerPort is { } counted)
+        {
+            if (counted < 0) return BadRequest("BearerPort counts the node's ports from 0; it can't be negative. Send Port, the node's own port number, instead.");
+            port = counted + 1;
+        }
+        if (port is < 1)
+        {
+            return BadRequest("Port: the node's own number for the radio port (XRouter's PORT=, BPQ's PORTNUM, pdn's PORTS list); ports count from 1.");
+        }
         var connectVia = string.IsNullOrWhiteSpace(neighbour.ConnectVia) ? null : neighbour.ConnectVia.Trim().ToUpperInvariant();
         string? scriptJson = null;
         if (!string.IsNullOrWhiteSpace(neighbour.ConnectScript))
@@ -75,7 +89,7 @@ public class NeighboursController(Database database) : ControllerBase
         }
         await database.UpsertNeighbour(
             callsign,
-            neighbour.BearerPort,
+            port,
             string.IsNullOrWhiteSpace(neighbour.UdpEndpoint) ? null : neighbour.UdpEndpoint.Trim(),
             connectScriptJson: scriptJson,
             compressionEnabled: neighbour.CompressionEnabled,
@@ -96,8 +110,14 @@ public class NeighboursController(Database database) : ControllerBase
 /// Wire shape for /Neighbours. <see cref="UdpEndpoint"/> ("host:port") is
 /// set when this neighbour is reachable over the UDP datagram backhaul;
 /// null routes via the configured node bearer (AGW or RHPv2).
-/// <see cref="BearerPort"/> is the 0-indexed bearer port; null falls back
-/// to DefaultBearerPort.
+/// <see cref="Port"/> is the radio port the neighbour is called on, the
+/// node's own number for it (#233): XRouter's <c>PORT=</c>, BPQ's
+/// <c>PORTNUM</c>, pdn's port as its <c>PORTS</c> command lists it; null
+/// falls back to the default port. <see cref="BearerPort"/> is the name it
+/// had up to 0.53, when it counted from 0: still taken on a POST without
+/// <see cref="Port"/>, never sent. Deprecated. <see cref="PortPending"/>
+/// (read-only) is true while a port saved by an older DAPPS waits to be
+/// converted; the neighbour isn't called until then.
 ///
 /// <para>
 /// <see cref="ConnectScript"/> is the optional human-readable
@@ -136,10 +156,13 @@ public class NeighboursController(Database database) : ControllerBase
 /// </summary>
 public sealed record NeighbourModel(
     string Callsign,
-    int? BearerPort,
+    int? Port,
     string? UdpEndpoint = null,
     string? ConnectScript = null,
     int ConnectScriptStepCount = 0,
     bool? CompressionEnabled = null,
     int? SessionTailSeconds = null,
-    string? ConnectVia = null);
+    string? ConnectVia = null,
+    bool PortPending = false,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    int? BearerPort = null);

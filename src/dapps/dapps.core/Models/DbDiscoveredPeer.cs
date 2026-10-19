@@ -32,8 +32,8 @@ public sealed class DbDiscoveredPeer
     /// and <see cref="DbDiscoveryChannel.Bearer"/>.</summary>
     public string Bearer { get; set; } = "";
 
-    /// <summary>Bearer-specific channel id (bearer port stringified
-    /// for AGW, multicast endpoint for UDP).</summary>
+    /// <summary>Bearer-specific channel id (the node's port number
+    /// stringified for AGW, multicast endpoint for UDP).</summary>
     public string ChannelKey { get; set; } = "";
 
     /// <summary>FK to <see cref="DbDiscoveryChannel.Id"/>. 0 if the
@@ -52,8 +52,18 @@ public sealed class DbDiscoveredPeer
     /// <c>now - LastSeen &gt; TtlSeconds</c>.</summary>
     public int TtlSeconds { get; set; }
 
-    /// <summary>bearer port the beacon arrived on (AGW only).</summary>
+    /// <summary>The radio port the beacon arrived on, numbered as the
+    /// node shows it (AGW only; #370).</summary>
     public int? BearerPort { get; set; }
+
+    /// <summary>
+    /// True while the port above was saved by an older DAPPS, which
+    /// counted the node's AGW ports from 0, and has not yet been turned
+    /// into the node's own number (#233, #370). That needs the node's AGW
+    /// port list, so it happens when the AGW connection first answers
+    /// after the upgrade; until then nothing is sent on this port.
+    /// </summary>
+    public bool? PortPending { get; set; }
 
     /// <summary>UDP host:port the beacon datagram was sourced from
     /// (UDP only).</summary>

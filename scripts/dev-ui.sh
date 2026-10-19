@@ -103,24 +103,26 @@ insert or replace into systemoptions(option, value) values
     ('AdminPasswordSalt',  '$SALT_HEX'),
     ('NodeHost',           'localhost'),
     ('NodeBearer',         'agw'),
-    ('AgwPort',            '8000');
+    ('AgwPort',            '8000'),
+    ('DefaultPort',        '1'),
+    ('PortNumbering',      'node');
 
 insert or ignore into neighbours(Callsign, BearerPort, UdpEndpoint) values
-    ('M0LTE-1', 0, NULL),
-    ('GB7RDG',  0, NULL),
-    ('G7VVK-9', 1, NULL);
+    ('M0LTE-1', 1, NULL),
+    ('GB7RDG',  1, NULL),
+    ('G7VVK-9', 2, NULL);
 
 insert or ignore into discoverychannels
     (Bearer, ChannelKey, LinkClass, BeaconIntervalSeconds, AdvertisedTtlSeconds, CostHint, Enabled, Notes, AirtimeBudgetSecondsPerHour, SolicitIntervalSeconds)
     values
-    ('agw', '0',                   1, 600, 3600,  10, 1, 'VHF 144.800 (sample)',     0, 0),
+    ('agw', '1',                   1, 600, 3600,  10, 1, 'VHF 144.800 (sample)',     0, 0),
     ('udp', '239.42.42.42:1881',   4, 300, 1800, 100, 1, 'LAN multicast (sample)',   0, 0);
 
 insert or ignore into discoveredpeers
     (PeerKey, Callsign, Bearer, ChannelKey, ChannelId, LinkClass, CostHint, Hops, TtlSeconds, BearerPort, UdpEndpoint, LastSeen)
     values
-    ('M0LTE|agw|0',                  'M0LTE',   'agw', '0',                 1, 1,  10, 1, 3600, 0,    NULL,                $((NOW_TICKS - FIVE_MIN))),
-    ('G7VVK-9|agw|0',                'G7VVK-9', 'agw', '0',                 1, 1,  10, 2, 3600, 0,    NULL,                $((NOW_TICKS - THIRTY_MIN))),
+    ('M0LTE|agw|1',                  'M0LTE',   'agw', '1',                 1, 1,  10, 1, 3600, 1,    NULL,                $((NOW_TICKS - FIVE_MIN))),
+    ('G7VVK-9|agw|1',                'G7VVK-9', 'agw', '1',                 1, 1,  10, 2, 3600, 1,    NULL,                $((NOW_TICKS - THIRTY_MIN))),
     ('GB7RDG|udp|239.42.42.42:1881', 'GB7RDG',  'udp', '239.42.42.42:1881', 2, 4, 100, 1, 1800, NULL, '239.42.42.42:1881', $((NOW_TICKS - TWO_MIN)));
 commit;
 SQL

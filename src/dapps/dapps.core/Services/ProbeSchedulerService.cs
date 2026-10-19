@@ -450,14 +450,15 @@ public sealed class ProbeSchedulerService(
     /// stored port (the port to the neighbour that told us of it).
     /// (port, false) when the callsign isn't known anywhere, so the
     /// caller refuses rather than probing a stranger on the default
-    /// port.</summary>
+    /// port. Port 0 when the port is held: saved by an older DAPPS and not
+    /// yet converted to the node's own number (#233).</summary>
     public async Task<(int Port, bool HasRoute)> ResolveProbePortAsync(string callsign)
     {
-        var defaultPort = options.CurrentValue.DefaultBearerPort;
+        var defaultPort = options.CurrentValue.DefaultPort;
         var neighbour = await database.GetNeighbour(callsign);
         if (neighbour is not null && neighbour.UdpEndpoint is null)
         {
-            return (neighbour.BearerPort ?? defaultPort, true);
+            return (Usable(neighbour.BearerPort, neighbour.PortPending, defaultPort), true);
         }
 
         var peer = (await database.GetDiscoveredPeers()).FirstOrDefault(p =>
@@ -465,17 +466,21 @@ public sealed class ProbeSchedulerService(
             && string.Equals(p.Callsign, callsign, StringComparison.OrdinalIgnoreCase));
         if (peer is not null)
         {
-            return (peer.BearerPort ?? defaultPort, true);
+            return (Usable(peer.BearerPort, peer.PortPending, defaultPort), true);
         }
 
         var candidate = await database.GetProbedNode(callsign);
         if (candidate is not null && candidate.Source.StartsWith("via:", StringComparison.OrdinalIgnoreCase))
         {
-            return (candidate.LastBearerPort ?? defaultPort, true);
+            return (Usable(candidate.LastBearerPort, candidate.PortPending, defaultPort), true);
         }
 
-        return (defaultPort, false);
+        return (Usable(null, null, defaultPort), false);
     }
+
+    /// <summary>A stored port, or the default, or 0 when it is held.</summary>
+    private static int Usable(int? port, bool? pending, int defaultPort) =>
+        pending == true ? 0 : port ?? Math.Max(defaultPort, 0);
 
     /// <summary>
     /// Build the eligible target list for a sweep. Sources:
@@ -489,7 +494,7 @@ public sealed class ProbeSchedulerService(
     /// <see cref="DbProbedNode.OptOut"/> are honoured. Port preference
     /// (highest precedence first): neighbour's <c>BearerPort</c>, peer's
     /// observed <c>BearerPort</c>, candidate's stored <c>LastBearerPort</c>,
-    /// <see cref="SystemOptions.DefaultBearerPort"/>.
+    /// <see cref="SystemOptions.DefaultPort"/>.
     /// </summary>
     public async Task<IReadOnlyList<ProbeTarget>> EnumerateTargets(SystemOptions opts)
     {
@@ -503,13 +508,22 @@ public sealed class ProbeSchedulerService(
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var targets = new Dictionary<string, ProbeTarget>(StringComparer.OrdinalIgnoreCase);
+        // Callsigns whose port is held (saved by an older DAPPS, not yet
+        // converted): not probed, and not on another row's port either.
+        var held = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void Add(string callsign, int? port, bool? pending)
+        {
+            var usable = Usable(port, pending, opts.DefaultPort);
+            if (usable < 1) held.Add(callsign);
+            else targets[callsign] = new ProbeTarget(callsign, usable);
+        }
 
         foreach (var n in neighbours)
         {
             if (string.IsNullOrWhiteSpace(n.Callsign)) continue;
             if (n.UdpEndpoint is not null) continue;   // UDP path - no AGW probe possible
             if (optOut.Contains(n.Callsign)) continue;
-            targets[n.Callsign] = new ProbeTarget(n.Callsign, n.BearerPort ?? opts.DefaultBearerPort);
+            Add(n.Callsign, n.BearerPort, n.PortPending);
         }
 
         foreach (var p in peers)
@@ -518,8 +532,8 @@ public sealed class ProbeSchedulerService(
             if (string.IsNullOrWhiteSpace(p.Callsign)) continue;
             if (optOut.Contains(p.Callsign)) continue;
             // Don't overwrite a manual neighbour's port with a guessed one.
-            if (targets.ContainsKey(p.Callsign)) continue;
-            targets[p.Callsign] = new ProbeTarget(p.Callsign, p.BearerPort ?? opts.DefaultBearerPort);
+            if (targets.ContainsKey(p.Callsign) || held.Contains(p.Callsign)) continue;
+            Add(p.Callsign, p.BearerPort, p.PortPending);
         }
 
         // Phase 2 transitive candidates - DbProbedNode rows whose Source
@@ -531,13 +545,13 @@ public sealed class ProbeSchedulerService(
             if (c.OptOut) continue;
             if (string.IsNullOrWhiteSpace(c.Callsign)) continue;
             if (!c.Source.StartsWith("via:", StringComparison.OrdinalIgnoreCase)) continue;
-            if (targets.ContainsKey(c.Callsign)) continue;
+            if (targets.ContainsKey(c.Callsign) || held.Contains(c.Callsign)) continue;
             // Never answered after a few tries: most likely two hops away,
             // reached through the neighbour that told us of it, and each
             // try is connect attempts on air for nothing (#249). A probe by
             // hand that gets an answer brings it back.
             if (c.LastSuccessAt is null && c.ConsecutiveFailures >= UnansweredCandidateTries) continue;
-            targets[c.Callsign] = new ProbeTarget(c.Callsign, c.LastBearerPort ?? opts.DefaultBearerPort);
+            Add(c.Callsign, c.LastBearerPort, c.PortPending);
         }
 
         return targets.Values

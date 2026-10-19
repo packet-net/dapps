@@ -55,6 +55,11 @@ public class ProbesController(
             return BadRequest(
                 $"No AGW route to {normalized} - add a /Neighbours row, wait for a beacon, or probe a neighbour that knows it.");
         }
+        if (port < 1)
+        {
+            return Conflict(
+                $"{normalized}'s radio port was saved by an older DAPPS and is waiting for the node's AGW connection to answer, to be converted to the node's own port number; nothing is sent on it until then.");
+        }
 
         var (row, result) = await scheduler.ProbeAndRecordVerboseAsync(
             options.CurrentValue.Callsign, normalized, port, ct,
@@ -83,7 +88,8 @@ public class ProbesController(
 
     private static ProbedNodeModel ToModel(DbProbedNode r) => new(
         Callsign: r.Callsign,
-        LastBearerPort: r.LastBearerPort,
+        LastPort: r.LastBearerPort,
+        PortPending: r.PortPending == true,
         LastProbedAt: r.LastProbedAt,
         LastSuccessAt: r.LastSuccessAt,
         LastError: r.LastError,
@@ -100,7 +106,8 @@ public class ProbesController(
 /// already open, and so didn't dial.</summary>
 public sealed record ProbedNodeModel(
     string Callsign,
-    int? LastBearerPort,
+    int? LastPort,
+    bool PortPending,
     DateTime? LastProbedAt,
     DateTime? LastSuccessAt,
     string LastError,

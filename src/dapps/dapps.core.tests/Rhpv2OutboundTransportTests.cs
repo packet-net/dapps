@@ -38,7 +38,7 @@ public sealed class Rhpv2OutboundTransportTests
         await using var conn = await transport.ConnectAsync(
             localCallsign: "G0DPA-1",
             remoteCallsign: "G0DPB-1",
-            bearerPort: 0,
+            bearerPort: 1,
             ct);
 
         var open = WaitForFrame<OpenMessage>(server, TimeSpan.FromSeconds(2));
@@ -49,11 +49,11 @@ public sealed class Rhpv2OutboundTransportTests
         ((OpenFlags)open.Flags & OpenFlags.Active).Should().Be(OpenFlags.Active,
             "outbound forwards must be active opens; passive would just listen");
         open.Port.Should().Be("1",
-            "DAPPS's 0-indexed AGW port byte maps to RHPv2's 1-indexed port name (XRouter PORT=1)");
+            "the port is the node's own number for it, XRouter's PORT=1 (#233)");
     }
 
     [Fact]
-    public async Task ConnectAsync_HigherPortByteShifts_To2()
+    public async Task ConnectAsync_APortNumber_GoesAsItIs_GapsAndAll()
     {
         await using var server = new MockRhpServer();
         server.Start();
@@ -66,12 +66,27 @@ public sealed class Rhpv2OutboundTransportTests
         await using var conn = await transport.ConnectAsync(
             localCallsign: "G0DPA-1",
             remoteCallsign: "G0DPB-1",
-            bearerPort: 1,
+            bearerPort: 19,
             ct);
 
         var open = WaitForFrame<OpenMessage>(server, TimeSpan.FromSeconds(2));
-        open.Port.Should().Be("2",
-            "AGW port byte 1 -> RHP port name 2");
+        open.Port.Should().Be("19",
+            "XRouter's PORT=19 by its own number: adding 1 called the wrong port on a node with gaps (#370)");
+    }
+
+    [Fact]
+    public async Task ConnectAsync_PortZero_IsRefused_WithoutReachingTheNode()
+    {
+        await using var server = new MockRhpServer();
+        server.Start();
+        var transport = new Rhpv2OutboundTransport(
+            server.Endpoint.Address.ToString(), server.Endpoint.Port,
+            NullLogger<Rhpv2OutboundTransport>.Instance);
+
+        await FluentActions.Awaiting(() => transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, TestContext.Current.CancellationToken))
+            .Should().ThrowAsync<ArgumentOutOfRangeException>();
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        server.ReceivedFrames.Should().BeEmpty();
     }
 
     [Fact]
@@ -93,7 +108,7 @@ public sealed class Rhpv2OutboundTransportTests
         await using var conn = await transport.ConnectAsync(
             localCallsign: "G0DPA-1",
             remoteCallsign: "G0DPB-1",
-            bearerPort: 0,
+            bearerPort: 1,
             ct);
 
         var ordered = WaitForFrames(server, count: 2, TimeSpan.FromSeconds(2));
@@ -119,7 +134,7 @@ public sealed class Rhpv2OutboundTransportTests
         var ct = TestContext.Current.CancellationToken;
         await using var conn = await transport.ConnectAsync(
             localCallsign: "G0DPA-1", remoteCallsign: "G0DPB-1",
-            bearerPort: 0, ct);
+            bearerPort: 1, ct);
 
         WaitForFrame<OpenMessage>(server, TimeSpan.FromSeconds(2));
         server.ReceivedFrames.Should().NotContain(f => f is AuthMessage,
@@ -138,7 +153,7 @@ public sealed class Rhpv2OutboundTransportTests
 
         var ct = TestContext.Current.CancellationToken;
         await using var conn = await transport.ConnectAsync(
-            "G0DPA-1", "G0DPB-1", 0, ct);
+            "G0DPA-1", "G0DPB-1", 1, ct);
 
         var openReply = WaitForFrame<OpenMessage>(server, TimeSpan.FromSeconds(2));
         // After ConnectAsync, drain the OpenMessage so the next Send
@@ -167,7 +182,7 @@ public sealed class Rhpv2OutboundTransportTests
 
         var ct = TestContext.Current.CancellationToken;
         await using var conn = await transport.ConnectAsync(
-            "G0DPA-1", "G0DPB-1", 0, ct);
+            "G0DPA-1", "G0DPB-1", 1, ct);
 
         var open = WaitForFrame<OpenMessage>(server, TimeSpan.FromSeconds(2));
         // The MockRhpServer assigns handles starting at 101; we don't
@@ -209,7 +224,7 @@ public sealed class Rhpv2OutboundTransportTests
     {
         var ct = TestContext.Current.CancellationToken;
         await using var node = ScriptedNode.Start(open => [Prompt, Reply(open)], ct);
-        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct);
+        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 1, ct);
 
         (await ReadTextAsync(conn.Stream, ct)).Should().Be("DAPPSv1>\n");
     }
@@ -219,7 +234,7 @@ public sealed class Rhpv2OutboundTransportTests
     {
         var ct = TestContext.Current.CancellationToken;
         await using var node = ScriptedNode.Start(open => [Reply(open), Prompt], ct);
-        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct);
+        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 1, ct);
 
         (await ReadTextAsync(conn.Stream, ct)).Should().Be("DAPPSv1>\n");
     }
@@ -233,7 +248,7 @@ public sealed class Rhpv2OutboundTransportTests
         var closed = new CloseMessage { Handle = OpenedHandle };
         await using var node = ScriptedNode.Start(
             open => beforeTheReply ? [Prompt, closed, Reply(open)] : [Reply(open), Prompt, closed], ct);
-        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct);
+        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 1, ct);
 
         (await ReadTextAsync(conn.Stream, ct)).Should().Be("DAPPSv1>\n");
         (await ReadTextAsync(conn.Stream, ct)).Should().BeEmpty("the node closed the handle, so the stream ends");
@@ -249,7 +264,7 @@ public sealed class Rhpv2OutboundTransportTests
     {
         var ct = TestContext.Current.CancellationToken;
         await using var node = ScriptedNode.Start(open => [Reply(open, crossed: true)], ct);
-        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct);
+        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 1, ct);
 
         conn.CrossedCall.IsCompleted.Should().BeTrue();
     }
@@ -259,7 +274,7 @@ public sealed class Rhpv2OutboundTransportTests
     {
         var ct = TestContext.Current.CancellationToken;
         await using var node = ScriptedNode.Start(open => [Reply(open), Prompt], ct);
-        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct);
+        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 1, ct);
 
         (await ReadTextAsync(conn.Stream, ct)).Should().Be("DAPPSv1>\n");
         conn.CrossedCall.IsCompleted.Should().BeFalse("the node didn't say, so a prompt may be coming");
@@ -278,7 +293,7 @@ public sealed class Rhpv2OutboundTransportTests
         await using var node = ScriptedNode.Start(open => [Reply(open)], ct,
             onStatus: q => [StatusReply(q), Status(StatusFlags.None)]);
 
-        var connecting = node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct);
+        var connecting = node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 1, ct);
         await Task.Delay(300, ct);
         connecting.IsCompleted.Should().BeFalse("the node hasn't said the link is up");
 
@@ -294,7 +309,7 @@ public sealed class Rhpv2OutboundTransportTests
         await using var node = ScriptedNode.Start(open => [Reply(open)], ct,
             onStatus: q => [StatusReply(q), Status(StatusFlags.None)]);
 
-        var connecting = node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct);
+        var connecting = node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 1, ct);
         await Task.Delay(300, ct);
         await node.PushAsync([Status(StatusFlags.None), new CloseMessage { Handle = OpenedHandle }], ct);
 
@@ -309,7 +324,7 @@ public sealed class Rhpv2OutboundTransportTests
         await using var node = ScriptedNode.Start(open => [Reply(open)], ct,
             onStatus: q => [StatusReply(q), Status(StatusFlags.None)], linkUpWait: TimeSpan.FromMilliseconds(500));
 
-        var act = () => node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct).WaitAsync(TimeSpan.FromSeconds(5), ct);
+        var act = () => node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 1, ct).WaitAsync(TimeSpan.FromSeconds(5), ct);
         await act.Should().ThrowAsync<RhpLinkFailedException>();
         node.Closes.Should().Be(1, "the half-open handle is closed, not left with the node");
     }
@@ -321,7 +336,7 @@ public sealed class Rhpv2OutboundTransportTests
         await using var node = ScriptedNode.Start(open => [Reply(open)], ct,
             onStatus: q => [StatusReply(q), Status(StatusFlags.ConOk | StatusFlags.Connected)]);
 
-        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 0, ct).WaitAsync(TimeSpan.FromSeconds(2), ct);
+        await using var conn = await node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 1, ct).WaitAsync(TimeSpan.FromSeconds(2), ct);
     }
 
     private static StatusReplyMessage StatusReply(StatusMessage q) => new() { Id = q.Id, Handle = q.Handle, ErrText = "Ok" };
@@ -343,7 +358,7 @@ public sealed class Rhpv2OutboundTransportTests
         var act = () => node.Transport.ConnectAsync("G0DPA-1", "G0DPB-1", 1, ct);
 
         (await act.Should().ThrowAsync<PeerLinkClosingException>())
-            .Which.Message.Should().Contain("G0DPA-1->G0DPB-1 on port 2").And.Contain(text);
+            .Which.Message.Should().Contain("G0DPA-1->G0DPB-1 on port 1").And.Contain(text);
     }
 
     // pdn (0.65.0 on) refuses an open with its own error 18, "Already
@@ -483,7 +498,7 @@ public sealed class Rhpv2OutboundTransportTests
 
         var ct = TestContext.Current.CancellationToken;
         await using var conn = await transport.ConnectAsync(
-            "G0DPA-1", "G0DPB-1", 0, ct);
+            "G0DPA-1", "G0DPB-1", 1, ct);
 
         WaitForFrame<OpenMessage>(server, TimeSpan.FromSeconds(2));
         await conn.Stream.WriteAsync(new byte[] { 0x01 }, ct);
@@ -525,7 +540,7 @@ public sealed class Rhpv2OutboundTransportTests
 
         var ct = TestContext.Current.CancellationToken;
         var conn = await transport.ConnectAsync(
-            "G0DPA-1", "G0DPB-1", 0, ct);
+            "G0DPA-1", "G0DPB-1", 1, ct);
 
         WaitForFrame<OpenMessage>(server, TimeSpan.FromSeconds(2));
         await conn.Stream.WriteAsync(new byte[] { 0x01 }, ct);

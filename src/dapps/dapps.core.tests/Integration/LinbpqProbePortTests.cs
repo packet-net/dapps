@@ -115,7 +115,7 @@ public sealed class LinbpqProbePortTests : IAsyncLifetime
         sweep.EnsureSuccessStatusCode();
         var probedC = (await ProbesAsync(a, ct)).Single(p => p.Callsign == CallC);
         probedC.LastProbedAt.Should().NotBeNull();
-        probedC.LastBearerPort.Should().Be(1, $"C is reached through B, on A's port to B, not B's port to C: {probedC.LastError}\n{a.Tail()}");
+        probedC.LastPort.Should().Be(2, $"C is reached through B, on A's port to B, not B's port to C: {probedC.LastError}\n{a.Tail()}");
         probedC.LastSuccessAt.Should().NotBeNull($"C should answer A's probe: {probedC.LastError}\n{a.Tail()}\n{c.Tail()}");
 
         // Times read back from SQLite go out as UTC with a Z, or the

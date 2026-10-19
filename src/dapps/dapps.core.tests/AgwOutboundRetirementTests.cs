@@ -50,7 +50,7 @@ public sealed class AgwOutboundRetirementTests : IAsyncDisposable
         using var host = new FakeAgwHost();
         var transport = MakeTransport(host);
 
-        var connecting = transport.ConnectAsync(Local, Remote, 0, ct);
+        var connecting = transport.ConnectAsync(Local, Remote, 1, ct);
         using var node = await AcceptCallAsync(host, ct);
         node.Received.Should().Contain(f => f.Kind == 'm', "the link turns the monitor on, for the dial to watch for the peer's call");
         await node.WriteAsync(ct, Monitored(" 1:Fm N0BBB-3 To N0AAA-3 <C C P>[12:00:00]\r"));
@@ -71,9 +71,9 @@ public sealed class AgwOutboundRetirementTests : IAsyncDisposable
         using var host = new FakeAgwHost();
         var transport = MakeTransport(host, peers);
 
-        var connecting = transport.ConnectAsync(Local, Remote, 0, ct);
+        var connecting = transport.ConnectAsync(Local, Remote, 1, ct);
         using var node = await AcceptCallAsync(host, ct);
-        using var inbound = peers.Acquire(Remote, "inbound", linkPort: 0);
+        using var inbound = peers.Acquire(Remote, "inbound", linkPort: 1);
         await node.WriteAsync(ct, Confirm());
         await using var conn = await connecting.WaitAsync(FakeAgwHost.FrameTimeout, ct);
 
@@ -90,12 +90,12 @@ public sealed class AgwOutboundRetirementTests : IAsyncDisposable
         using var host = new FakeAgwHost();
         var transport = MakeTransport(host, peers);
 
-        var connecting = transport.ConnectAsync(Local, Remote, 0, ct);
+        var connecting = transport.ConnectAsync(Local, Remote, 1, ct);
         using var node = await AcceptCallAsync(host, ct);
         await node.WriteAsync(ct, Confirm());
         var conn = await connecting.WaitAsync(FakeAgwHost.FrameTimeout, ct);
 
-        var inbound = peers.Acquire(Remote, "inbound", linkPort: 0);
+        var inbound = peers.Acquire(Remote, "inbound", linkPort: 1);
         conn.Retired.IsCancellationRequested.Should().BeTrue();
         await conn.DisposeAsync();
 
@@ -113,12 +113,12 @@ public sealed class AgwOutboundRetirementTests : IAsyncDisposable
         using var host = new FakeAgwHost();
         var transport = MakeTransport(host, peers);
 
-        var connecting = transport.ConnectAsync(Local, Remote, 0, ct);
+        var connecting = transport.ConnectAsync(Local, Remote, 1, ct);
         using var node = await AcceptCallAsync(host, ct);
         await node.WriteAsync(ct, Confirm());
         await using var conn = await connecting.WaitAsync(FakeAgwHost.FrameTimeout, ct);
 
-        using var otherPort = peers.Acquire(Remote, "inbound", linkPort: 1);
+        using var otherPort = peers.Acquire(Remote, "inbound", linkPort: 2);
 
         conn.Retired.IsCancellationRequested.Should().BeFalse("that's another link");
         otherPort.Retired.IsCancellationRequested.Should().BeFalse();
@@ -134,7 +134,7 @@ public sealed class AgwOutboundRetirementTests : IAsyncDisposable
         using var host = new FakeAgwHost();
         var transport = MakeTransport(host);
 
-        var connecting = transport.ConnectAsync(Local, Remote, 0, ct);
+        var connecting = transport.ConnectAsync(Local, Remote, 1, ct);
         using var node = await AcceptCallAsync(host, ct);
         await node.WriteAsync(ct, Confirm());
         var conn = await connecting.WaitAsync(FakeAgwHost.FrameTimeout, ct);
@@ -154,7 +154,7 @@ public sealed class AgwOutboundRetirementTests : IAsyncDisposable
         using var host = new FakeAgwHost();
         var transport = MakeTransport(host);
 
-        var connecting = transport.ConnectAsync(Local, Remote, 0, ct);
+        var connecting = transport.ConnectAsync(Local, Remote, 1, ct);
         using var node = await AcceptCallAsync(host, ct);
         await node.WriteAsync(ct, Confirm());
         var conn = await connecting.WaitAsync(FakeAgwHost.FrameTimeout, ct);
@@ -176,7 +176,7 @@ public sealed class AgwOutboundRetirementTests : IAsyncDisposable
         using var host = new FakeAgwHost();
         var transport = MakeTransport(host, clock: clock, logs: logs);
 
-        var connecting = transport.ConnectAsync(Local, Remote, 0, ct);
+        var connecting = transport.ConnectAsync(Local, Remote, 1, ct);
         using var node = await AcceptCallAsync(host, ct);
         await clock.WaitForTimerAsync(AgwOutboundTransport.ConnectConfirmDeadline, ct);
 

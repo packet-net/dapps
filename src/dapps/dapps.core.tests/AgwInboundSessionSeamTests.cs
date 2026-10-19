@@ -43,6 +43,10 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
     private const string Local = "G5ALF-3";
     /// <summary>AGW port index 1 = BPQ port 2, the RF/AXIP port in the field logs.</summary>
     private const byte Port = 1;
+
+    /// <summary>The node's own number for AGW port <see cref="Port"/>, by
+    /// which sessions know their link (#233): BPQ's port 2.</summary>
+    private const int Number = Port + 1;
     /// <summary>What a new session sends first: the prompt, and the
     /// node's rules straight after it, in one write.</summary>
     private const string Prompt = "DAPPSv1>\nexchange id=";
@@ -225,7 +229,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var peers = new PeerSessionRegistry();
         await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
         var bpq = await h.StartAsync(ct);
-        var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Port)!;   // on its way already
+        var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Number)!;   // on its way already
 
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
         await h.Logs.WaitForAsync("holding the prompt", ct);
@@ -251,7 +255,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var peers = new PeerSessionRegistry();
         await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
         var bpq = await h.StartAsync(ct);
-        var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Port)!;
+        var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Number)!;
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
         await h.Logs.WaitForAsync("holding the prompt", ct);
 
@@ -268,7 +272,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var peers = new PeerSessionRegistry();
         await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
         var bpq = await h.StartAsync(ct);
-        var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Port)!;
+        var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Number)!;
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
         await h.Logs.WaitForAsync("holding the prompt", ct);
 
@@ -292,7 +296,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var peers = new PeerSessionRegistry();
         await using var h = new AgwInboundServiceHarness(Local, clock, peerSessions: peers);
         var bpq = await h.StartAsync(ct);
-        using var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Port)!;
+        using var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Number)!;
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
         await clock.WaitForTimerAsync(AgwInboundService.OwnCallHold, ct);
         (await bpq.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'D');
@@ -311,7 +315,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var peers = new PeerSessionRegistry();
         await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
         var bpq = await h.StartAsync(ct);
-        using var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Port + 1)!;
+        using var dialling = peers.TryAcquire(Remote, "outbound", out _, linkPort: Number + 1)!;
 
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
 
@@ -326,7 +330,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
         var peers = new PeerSessionRegistry();
         await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
         var bpq = await h.StartAsync(ct);
-        using var ours = peers.Acquire(Remote, "outbound", linkPort: Port);
+        using var ours = peers.Acquire(Remote, "outbound", linkPort: Number);
 
         await bpq.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
         (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
@@ -797,7 +801,7 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
 
         try
         {
-            using var ours = peers.Acquire(Remote, "outbound", linkPort: Port);
+            using var ours = peers.Acquire(Remote, "outbound", linkPort: Number);
             peers.Connected(ours);
             await h.Logs.WaitForAsync("retired", ct);
 

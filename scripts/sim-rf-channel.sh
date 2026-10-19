@@ -630,7 +630,7 @@ start_dapps() {
             DAPPS_NODE_BEARER="$bearer" \
             DAPPS_AGW_PORT="${AGW_PORT[$n]}" \
             DAPPS_RHP_PORT="${rhp:-9000}" \
-            DAPPS_DEFAULT_BEARER_PORT="$port_byte" \
+            DAPPS_DEFAULT_PORT="$((port_byte + 1))" \
             DAPPS_MQTT_PORT="${MQTT_PORT[$n]}" \
             DAPPS_UDP_LISTEN_PORT=0 \
             DAPPS_AUTH_REQUIRED=false \
@@ -698,7 +698,7 @@ configure_dapps_mesh() {
     for nb in ${NEIGHBOURS[$n]}; do
         curl -fsS -o /dev/null -b "$cookie" -X POST "$base/Neighbours" \
             -H 'content-type: application/json' \
-            -d "{\"Callsign\":\"${DAPPS_CALL[$nb]}\",\"BearerPort\":$port_byte,\"UdpEndpoint\":null}"
+            -d "{\"Callsign\":\"${DAPPS_CALL[$nb]}\",\"Port\":$((port_byte + 1)),\"UdpEndpoint\":null}"
     done
     if [ -n "${ROUTE_HINTS[$n]:-}" ]; then
         local db; db="$(dapps_dir "$n")/data/dapps.db"
@@ -755,7 +755,7 @@ configure_dapps_chain() {
 import json, sys
 print(json.dumps({
     'Callsign': sys.argv[1],
-    'BearerPort': 1,
+    'Port': 2,
     'UdpEndpoint': None,
     'ConnectScript': sys.argv[2],
 }))" "$m_call" "$script")

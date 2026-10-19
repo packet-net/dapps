@@ -29,7 +29,9 @@ public sealed class OperationalSnapshotBuilder(
     Database database,
     UpdateChecker updateChecker,
     Updater.IUpdaterFileSystem updaterFs,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    NodePortNumbers? portNumbers = null,
+    PortNumberUpgradeService? portUpgrade = null)
 {
     private const string PlaceholderCallsign = "N0CALL";
     private const int RecentEventsInSnapshot = 20;
@@ -142,7 +144,8 @@ public sealed class OperationalSnapshotBuilder(
                 DiscoveryChannels: discoveryChannels.ToList(),
                 ProbedNodes: probed,
                 PolledNodes: polled,
-                Update: update);
+                Update: update,
+                PortNotice: portUpgrade?.HeldReason ?? portNumbers?.Warning);
         }
 
         return new OperationalSnapshot(
@@ -286,7 +289,8 @@ public sealed record DashboardTables(
     IReadOnlyList<DbDiscoveryChannel> DiscoveryChannels,
     IReadOnlyList<DbProbedNode> ProbedNodes,
     IReadOnlyList<DbPolledNode> PolledNodes,
-    UpdateStatusInline Update);
+    UpdateStatusInline Update,
+    string? PortNotice = null);
 
 /// <summary>Same shape as <c>VersionStatus</c> on /Update/status.
 /// Inlined so the dashboard one-fetch can render the update card from

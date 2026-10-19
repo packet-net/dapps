@@ -157,7 +157,7 @@ _launch_node() {
             DAPPS_CALLSIGN="${CALLSIGN[$n]}" \
             DAPPS_NODE_HOST=127.0.0.1 \
             DAPPS_AGW_PORT="${AGW_PORT[$n]}" \
-            DAPPS_DEFAULT_BEARER_PORT=0 \
+            DAPPS_DEFAULT_PORT=1 \
             DAPPS_MQTT_PORT="${MQTT_PORT[$n]}" \
             DAPPS_UDP_LISTEN_PORT="${UDP_PORT[$n]}" \
             DAPPS_AUTH_REQUIRED=false \
@@ -218,7 +218,7 @@ configure_node() {
     for nb in ${NEIGHBOURS[$n]}; do
         curl -fsS -o /dev/null -b "$cookie" -X POST "$base/Neighbours" \
             -H 'content-type: application/json' \
-            -d "{\"Callsign\":\"${CALLSIGN[$nb]}\",\"BearerPort\":null,\"UdpEndpoint\":\"127.0.0.1:${UDP_PORT[$nb]}\"}"
+            -d "{\"Callsign\":\"${CALLSIGN[$nb]}\",\"Port\":null,\"UdpEndpoint\":\"127.0.0.1:${UDP_PORT[$nb]}\"}"
     done
 
     if [ -n "${ROUTE_HINTS[$n]:-}" ]; then

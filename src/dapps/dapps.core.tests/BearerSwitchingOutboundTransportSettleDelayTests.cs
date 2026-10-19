@@ -50,11 +50,11 @@ public sealed class BearerSwitchingOutboundTransportSettleDelayTests : IAsyncDis
         var transport = MakeTransport(host, clock, SettleDelay);
 
         var node1 = PlayNodeForOneConnectAsync(host, ct);
-        var conn1 = await transport.ConnectAsync(Local, RemoteA, 0, ct);
+        var conn1 = await transport.ConnectAsync(Local, RemoteA, 1, ct);
         await conn1.DisposeAsync(); // sends 'd' - the settle clock starts here
         await node1;
 
-        var connect2 = transport.ConnectAsync(Local, RemoteA, 0, ct);
+        var connect2 = transport.ConnectAsync(Local, RemoteA, 1, ct);
         await clock.WaitForTimerAsync(SettleDelay, ct);
         connect2.IsCompleted.Should().BeFalse("the redial is parked behind the settle delay");
         (await node!.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'C', "nothing has been dialled yet");
@@ -75,14 +75,14 @@ public sealed class BearerSwitchingOutboundTransportSettleDelayTests : IAsyncDis
         var transport = MakeTransport(host, clock, SettleDelay);
 
         var node1 = PlayNodeForOneConnectAsync(host, ct);
-        var conn1 = await transport.ConnectAsync(Local, RemoteA, 0, ct);
+        var conn1 = await transport.ConnectAsync(Local, RemoteA, 1, ct);
         await conn1.DisposeAsync();
         await node1;
 
         // The clock never moves. If the transport paced this, it would
         // hang here until the frame timeout.
         var node2 = PlayNodeForOneConnectAsync(host, ct);
-        var conn2 = await transport.ConnectAsync(Local, RemoteB, 0, ct).WaitAsync(FakeAgwHost.FrameTimeout, ct);
+        var conn2 = await transport.ConnectAsync(Local, RemoteB, 1, ct).WaitAsync(FakeAgwHost.FrameTimeout, ct);
         await conn2.DisposeAsync();
         await node2;
     }
@@ -96,12 +96,12 @@ public sealed class BearerSwitchingOutboundTransportSettleDelayTests : IAsyncDis
         var transport = MakeTransport(host, clock, TimeSpan.Zero);
 
         var node1 = PlayNodeForOneConnectAsync(host, ct);
-        var conn1 = await transport.ConnectAsync(Local, RemoteA, 0, ct);
+        var conn1 = await transport.ConnectAsync(Local, RemoteA, 1, ct);
         await conn1.DisposeAsync();
         await node1;
 
         var node2 = PlayNodeForOneConnectAsync(host, ct);
-        var conn2 = await transport.ConnectAsync(Local, RemoteA, 0, ct).WaitAsync(FakeAgwHost.FrameTimeout, ct);
+        var conn2 = await transport.ConnectAsync(Local, RemoteA, 1, ct).WaitAsync(FakeAgwHost.FrameTimeout, ct);
         await conn2.DisposeAsync();
         await node2;
     }
@@ -115,11 +115,11 @@ public sealed class BearerSwitchingOutboundTransportSettleDelayTests : IAsyncDis
         var transport = MakeTransport(host, clock, SettleDelay);
 
         var node1 = PlayNodeForOneConnectAsync(host, ct, refuse: true);
-        await transport.Invoking(t => t.ConnectAsync(Local, RemoteA, 0, ct))
+        await transport.Invoking(t => t.ConnectAsync(Local, RemoteA, 1, ct))
             .Should().ThrowAsync<IOException>("the node refused the connect");
         await node1;
 
-        var connect2 = transport.ConnectAsync(Local, RemoteA, 0, ct);
+        var connect2 = transport.ConnectAsync(Local, RemoteA, 1, ct);
         await clock.WaitForTimerAsync(SettleDelay, ct);
         connect2.IsCompleted.Should().BeFalse(
             "a failed attempt may have left half-up link state at either node, so the retry is paced like a clean disconnect");
@@ -145,7 +145,7 @@ public sealed class BearerSwitchingOutboundTransportSettleDelayTests : IAsyncDis
         var transport = MakeTransport(host, new ObservableTimeProvider(), TimeSpan.Zero, peers);
 
         var played = PlayNodeForOneConnectAsync(host, ct);
-        var conn = await transport.ConnectAsync(Local, RemoteA, 0, ct);
+        var conn = await transport.ConnectAsync(Local, RemoteA, 1, ct);
         peers.IsActive(RemoteA, out var direction).Should().BeTrue();
         direction.Should().Be("outbound");
 
@@ -173,7 +173,7 @@ public sealed class BearerSwitchingOutboundTransportSettleDelayTests : IAsyncDis
 
         using (peers.Acquire(RemoteA, "inbound"))
         {
-            await transport.Invoking(t => t.ConnectAsync(Local, RemoteA, 0, ct))
+            await transport.Invoking(t => t.ConnectAsync(Local, RemoteA, 1, ct))
                 .Should().ThrowAsync<PeerSessionBusyException>()
                 .Where(ex => ex.PeerCallsign == RemoteA && ex.OpenDirection == "inbound");
 
@@ -191,7 +191,7 @@ public sealed class BearerSwitchingOutboundTransportSettleDelayTests : IAsyncDis
         var transport = MakeTransport(host, new ObservableTimeProvider(), TimeSpan.Zero, peers);
 
         var played = PlayNodeForOneConnectAsync(host, ct, refuse: true);
-        await transport.Invoking(t => t.ConnectAsync(Local, RemoteA, 0, ct))
+        await transport.Invoking(t => t.ConnectAsync(Local, RemoteA, 1, ct))
             .Should().ThrowAsync<IOException>();
         await played;
 

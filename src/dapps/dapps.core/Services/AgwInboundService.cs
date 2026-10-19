@@ -63,7 +63,9 @@ public sealed class AgwInboundService(
     TimeProvider? timeProvider = null,
     PeerSessionRegistry? peerSessions = null,
     ExchangePolicy? exchangePolicy = null,
-    SessionDirectory? openSessions = null) : IHostedService, IAgwLinkSource
+    SessionDirectory? openSessions = null,
+    PortNumberUpgradeService? portNumberUpgrade = null,
+    INodePortMaps? portMaps = null) : IHostedService, IAgwLinkSource
 {
     internal static readonly TimeSpan IdleBackoff = TimeSpan.FromSeconds(2);
     /// <summary>Delay between cycles that ended without a real failure
@@ -284,6 +286,11 @@ public sealed class AgwInboundService(
         // Before it is published, so a subscriber hears it from the start.
         using var uiFrames = ui.Attach(opened);
         Publish(opened);
+        // Ports an older DAPPS saved as AGW bytes are converted to the
+        // node's own numbers now that its port list can be read (#233).
+        // In the background: until then they stay held, and nothing is
+        // sent on them.
+        portNumberUpgrade?.LinkOpened(opened);
         var unwanted = false;
         try
         {
@@ -343,7 +350,9 @@ public sealed class AgwInboundService(
             // this peer (see PeerSessionRegistry). Released once the
             // handler is done and our 'd', if any, has gone out. Connected
             // now, so any older session with this peer is retired.
-            lease = peerSessions?.Acquire(remote, "inbound", port);
+            // By the node's own port number (#233), as outbound calls are.
+            var number = (TryGetLink() is { } current ? portMaps?.TryGet(current)?.FromAgwPort(port) : null) ?? port + 1;
+            lease = peerSessions?.Acquire(remote, "inbound", number);
             if (lease is not null) session.SilenceWhen(lease.Retired);
             logger.LogDebug("AGW inbound: session {0}<->{1} on port {2} registered", local, remote, port);
 

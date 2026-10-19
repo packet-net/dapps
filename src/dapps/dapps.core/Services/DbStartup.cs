@@ -93,7 +93,7 @@ public static class DbStartup
     [
         ("NodeHost", "localhost"),
         ("AgwPort", "8000"),
-        ("DefaultBearerPort", "0"),
+        ("DefaultPort", "1"),
         ("Callsign", PlaceholderCallsign),
         ("MqttPort", "1883"),
         ("UdpListenPort", "0"),
@@ -220,6 +220,11 @@ public static class DbStartup
         // one - ends up with.
         var isFreshInstall = options.Count == 0;
 
+        // Port numbers as the node shows them (#233, #370): ports an older
+        // DAPPS saved, counting from 0, are converted once. Before the
+        // seeding, which would otherwise add DefaultPort's default.
+        PortNumberUpgrade.ApplyAtStartup(db, options, isFreshInstall, logger);
+
         // Seeded defaults. A set env var DAPPS_<KEY> always wins for a
         // row that doesn't exist yet (first start). What happens to an
         // EXISTING row depends on the DAPPS_ENV_MANAGED mode switch:
@@ -305,7 +310,7 @@ public static class DbStartup
     private static void SeedOrApplyEnv(SQLiteConnection db, List<DbSystemOption> options, string key, string defaultValue, ILogger? logger)
     {
         var envKey = EnvVarFor(key);
-        var envValue = ReadEnvironment(envKey);
+        var envValue = ReadEnvironmentFor(key);
 
         var existing = options.FirstOrDefault(o => string.Equals(o.Option, key, StringComparison.OrdinalIgnoreCase));
         if (existing is null)
@@ -587,7 +592,30 @@ public static class DbStartup
     /// false in the standalone default mode, where a set env var only
     /// seeds first-start values and the dashboard stays in charge.</summary>
     public static bool IsEnvManaged(string key) =>
-        IsEnvManagedMode && !string.IsNullOrEmpty(ReadEnvironment(EnvVarFor(key)));
+        IsEnvManagedMode && !string.IsNullOrEmpty(ReadEnvironmentFor(key));
+
+    /// <summary>The env var <c>DAPPS_DEFAULT_PORT</c> replaced up to 0.53,
+    /// which counted the node's ports from 0. Still read, as counting
+    /// from 0, when <c>DAPPS_DEFAULT_PORT</c> is not set (#233). Deprecated.</summary>
+    public const string LegacyDefaultPortEnvVar = "DAPPS_DEFAULT_BEARER_PORT";
+
+    /// <summary>The value the environment gives option
+    /// <paramref name="key"/>, null or empty when it gives none. For
+    /// <c>DefaultPort</c> that may come from
+    /// <see cref="LegacyDefaultPortEnvVar"/>, one higher.</summary>
+    internal static string? ReadEnvironmentFor(string key)
+    {
+        var value = ReadEnvironment(EnvVarFor(key));
+        if (!string.IsNullOrEmpty(value)
+            || !string.Equals(key, nameof(SystemOptions.DefaultPort), StringComparison.OrdinalIgnoreCase))
+        {
+            return value;
+        }
+        var legacy = ReadEnvironment(LegacyDefaultPortEnvVar);
+        return int.TryParse(legacy, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var counted)
+            ? (counted + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : null;
+    }
 
     /// <summary>Seeded option keys that are deployment-managed right
     /// now (<see cref="IsEnvManaged"/>), for the dashboard's "managed
@@ -627,7 +655,7 @@ public static class DbStartup
     /// <summary>
     /// Convert a PascalCase or camelCase identifier to SCREAMING_SNAKE_CASE
     /// for use as an environment-variable suffix. <c>NodeHost</c> →
-    /// <c>NODE_HOST</c>; <c>DefaultBearerPort</c> → <c>DEFAULT_BEARER_PORT</c>.
+    /// <c>NODE_HOST</c>; <c>DefaultPort</c> -> <c>DEFAULT_PORT</c>.
     /// </summary>
     private static string ToScreamingSnake(string identifier)
     {

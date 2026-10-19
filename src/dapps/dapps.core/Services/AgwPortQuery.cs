@@ -31,8 +31,13 @@ namespace dapps.core.Services;
 /// wait is bounded by the same 3 s.
 /// </para>
 /// </summary>
-public class AgwPortQuery(IAgwLinkSource links, ILogger<AgwPortQuery> logger)
+public class AgwPortQuery(IAgwLinkSource links, ILogger<AgwPortQuery> logger, INodePortMaps? portMaps = null)
 {
+    /// <summary>What the last answer says is wrong with the node's port
+    /// numbering (hidden BPQ ports, an XRouter whose numbers could not be
+    /// read), for the dashboard; null when nothing is.</summary>
+    public virtual string? LastWarning { get; private set; }
+
     private static readonly TimeSpan QueryTimeout = AgwLink.PortQueryTimeout;
 
     // Virtual so unit tests can substitute a fake; not sealed for the
@@ -49,22 +54,57 @@ public class AgwPortQuery(IAgwLinkSource links, ILogger<AgwPortQuery> logger)
             && string.Equals(link.Host, host, StringComparison.OrdinalIgnoreCase)
             && link.TcpPort == agwPort)
         {
+            byte[] payload;
             try
             {
-                return Parse((await link.QueryPortsAsync(ct)).Payload);
+                payload = (await link.QueryPortsAsync(ct)).Payload;
             }
             catch (TimeoutException)
             {
                 throw TimedOut(host, agwPort);
             }
+            var map = portMaps is null ? NodePortNumbers.Plain(payload) : await portMaps.GetAsync(link, ct);
+            return Numbered(payload, map);
         }
 
-        return await QueryOnItsOwnAsync(host, agwPort, ct);
+        var own = await QueryOnItsOwnAsync(host, agwPort, ct);
+        // No link to read an XRouter's numbers over: a plain host's are
+        // its positions from 1, an XRouter's stay unknown.
+        return Numbered(own, NodePortNumbers.XrouterAgwPortCount(own) is null ? NodePortNumbers.Plain(own) : null);
+    }
+
+    /// <summary>The ports in <paramref name="payload"/>, each with the
+    /// node's own number for it from <paramref name="map"/> (null when not
+    /// known), and <see cref="LastWarning"/> set.</summary>
+    private IReadOnlyList<AgwPortInfo> Numbered(byte[] payload, NodePortMap? map)
+    {
+        var xrouter = NodePortNumbers.XrouterAgwPortCount(payload) is not null;
+        LastWarning = NodePortNumbers.HiddenPortsWarning(payload)
+            ?? (xrouter && map is not { IsXrouter: true }
+                ? "DAPPS can't read this XRouter's PORT= numbers from its RHPv2 port, so it can't show them here: type the port number from XROUTER.CFG."
+                : null);
+        return Parse(payload)
+            .Select(p => p with
+            {
+                Number = map?.FromAgwPort((byte)Math.Min(p.Index, 255)),
+                Description = Describe(p.Description),
+            })
+            .ToList();
+    }
+
+    /// <summary>A port's description without the host's own position
+    /// label ("Port2 with ", "2 with "), which is not the port's number on
+    /// XRouter, and without XRouter's quotes.</summary>
+    internal static string Describe(string description)
+    {
+        var d = System.Text.RegularExpressions.Regex.Replace(description, "^(Port)?[0-9]+ with ", "");
+        if (d.Length >= 2 && d[0] == '"' && d[^1] == '"') d = d[1..^1];
+        return d.Length == 0 ? description : d;
     }
 
     /// <summary>The port query on a connection of its own, closed on the
     /// way out. Never sends an <c>'X'</c>.</summary>
-    private async Task<IReadOnlyList<AgwPortInfo>> QueryOnItsOwnAsync(string host, int agwPort, CancellationToken ct)
+    private async Task<byte[]> QueryOnItsOwnAsync(string host, int agwPort, CancellationToken ct)
     {
         using var tcp = new TcpClient();
         using var queryCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -87,7 +127,7 @@ public class AgwPortQuery(IAgwLinkSource links, ILogger<AgwPortQuery> logger)
                 var frame = await framing.ReadFrameAsync(queryCts.Token);
                 if (frame.Kind == 'G')
                 {
-                    return Parse(frame.Payload);
+                    return frame.Payload;
                 }
             }
             throw new TimeoutException("No 'G' reply received");
@@ -141,8 +181,8 @@ public class AgwPortQuery(IAgwLinkSource links, ILogger<AgwPortQuery> logger)
     }
 }
 
-/// <summary>One AGW port as advertised by BPQ. <see cref="Index"/> is the
-/// 0-indexed slot used in <c>AgwFrame.Port</c> when originating; the
-/// description is whatever BPQ has in <c>PORTNUM</c> /
-/// <c>ID=</c> for the port.</summary>
-public sealed record AgwPortInfo(int Index, string Description);
+/// <summary>One AGW port as the node lists it. <see cref="Index"/> is its
+/// AGW port byte; <see cref="Number"/> is the node's own number for it
+/// (#233), what the operator types and DAPPS stores, null when it can't
+/// be told; the description is the port's <c>ID=</c> text.</summary>
+public sealed record AgwPortInfo(int Index, string Description, int? Number = null);

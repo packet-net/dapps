@@ -169,14 +169,16 @@ public sealed class PollSchedulerService(
             .Select(p => p.Callsign)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var defaultPort = options.CurrentValue.DefaultBearerPort;
+        var defaultPort = options.CurrentValue.DefaultPort;
         var targets = new List<PollTarget>();
         foreach (var n in neighbours)
         {
             if (string.IsNullOrWhiteSpace(n.Callsign)) continue;
             if (n.UdpEndpoint is not null) continue;
             if (optOut.Contains(n.Callsign)) continue;
-            targets.Add(new PollTarget(n.Callsign, n.BearerPort ?? defaultPort));
+            // Saved by an older DAPPS and not converted yet (#233): skipped.
+            if (Routing.RouteBuilder.PortOf(n, defaultPort) is not { } port) continue;
+            targets.Add(new PollTarget(n.Callsign, port));
         }
         return targets
             .OrderBy(t => t.Callsign, StringComparer.OrdinalIgnoreCase)

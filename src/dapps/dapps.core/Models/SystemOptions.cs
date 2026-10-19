@@ -65,11 +65,14 @@ public class SystemOptions
     public string RhpPass { get; set; } = "";
 
     /// <summary>
-    /// Default bearer port (0-indexed) to use when originating a connection
-    /// to a neighbour DAPPS instance via AGW. Individual neighbours can
-    /// override this with DbNeighbour.BearerPort.
+    /// The radio port a neighbour with no port of its own is called on,
+    /// numbered as the node shows it (#233): XRouter's <c>PORT=</c>, BPQ's
+    /// <c>PORTNUM</c>, pdn's port as <c>PORTS</c> lists it. Neighbours
+    /// override it with DbNeighbour.BearerPort. 0 only while an older
+    /// DAPPS's default (which counted from 0) waits to be converted: no
+    /// neighbour is called on it until then.
     /// </summary>
-    public int DefaultBearerPort { get; set; }
+    public int DefaultPort { get; set; } = 1;
 
     /// <summary>This DAPPS instance's local callsign + SSID, used as `callfrom` on outbound AGW connects.</summary>
     public string Callsign { get; set; } = "";

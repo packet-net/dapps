@@ -34,7 +34,8 @@ public class DiscoveryChannelsController(Database database, DiscoveryService dis
             Enabled: c.Enabled,
             Notes: c.Notes,
             AirtimeBudgetSecondsPerHour: c.AirtimeBudgetSecondsPerHour,
-            SolicitIntervalSeconds: c.SolicitIntervalSeconds));
+            SolicitIntervalSeconds: c.SolicitIntervalSeconds,
+            PortPending: c.PortPending == true));
     }
 
     [HttpPost]
@@ -46,10 +47,17 @@ public class DiscoveryChannelsController(Database database, DiscoveryService dis
         {
             return BadRequest($"LinkClass must be one of: {string.Join(", ", Enum.GetNames<LinkClass>())}");
         }
+        var bearer = model.Bearer.Trim().ToLowerInvariant();
+        if (bearer == "agw"
+            && (!int.TryParse(model.ChannelKey.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var number)
+                || number is < 1 or > 255))
+        {
+            return BadRequest("ChannelKey: for an AGW channel, the node's own number for the radio port (XRouter's PORT=, BPQ's PORTNUM); ports count from 1.");
+        }
 
         await database.UpsertDiscoveryChannel(new DbDiscoveryChannel
         {
-            Bearer = model.Bearer.Trim().ToLowerInvariant(),
+            Bearer = bearer,
             ChannelKey = model.ChannelKey.Trim(),
             LinkClass = linkClass,
             BeaconIntervalSeconds = model.BeaconIntervalSeconds,
@@ -88,6 +96,10 @@ public class DiscoveryChannelsController(Database database, DiscoveryService dis
         {
             return BadRequest($"Channel {id} ({channel.Bearer}/{channel.ChannelKey}) is disabled");
         }
+        if (channel.PortPending == true)
+        {
+            return Conflict($"Channel {id}'s port was saved by an older DAPPS and is waiting for the node's AGW connection to answer, to be converted to the node's own port number; nothing is sent on it until then.");
+        }
 
         try
         {
@@ -108,6 +120,10 @@ public class DiscoveryChannelsController(Database database, DiscoveryService dis
 /// <summary>
 /// Wire shape for /DiscoveryChannels. Leave numeric fields at 0 to pick
 /// up <see cref="LinkClassDefaults"/> for the chosen <c>LinkClass</c>.
+/// For an AGW channel <see cref="ChannelKey"/> is the node's own number
+/// for the radio port, counting from 1 (#233; up to 0.53 it counted from
+/// 0). <see cref="PortPending"/> (read-only) is true while a channel saved
+/// by an older DAPPS waits to be converted to that number.
 /// </summary>
 public sealed record DiscoveryChannelModel(
     int Id,
@@ -120,4 +136,5 @@ public sealed record DiscoveryChannelModel(
     bool Enabled = true,
     string? Notes = null,
     int AirtimeBudgetSecondsPerHour = 0,
-    int SolicitIntervalSeconds = 0);
+    int SolicitIntervalSeconds = 0,
+    bool PortPending = false);

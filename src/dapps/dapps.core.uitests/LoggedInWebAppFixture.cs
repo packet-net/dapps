@@ -26,6 +26,9 @@ public sealed class LoggedInWebAppFixture : IAsyncLifetime
 
     public string BaseUrl => _app.BaseUrl;
 
+    /// <summary>See <see cref="WebAppFixture.DatabasePath"/>.</summary>
+    public string DatabasePath => _app.DatabasePath;
+
     public async ValueTask InitializeAsync()
     {
         await _app.InitializeAsync();

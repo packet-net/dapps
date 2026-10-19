@@ -20,11 +20,20 @@ public class DbNeighbour
     public string Callsign { get; set; } = "";
 
     /// <summary>
-    /// Optional override for which bearer port (0-indexed) to use when
-    /// connecting to this neighbour. Null falls back to
-    /// SystemOptions.DefaultBearerPort.
+    /// Optional override for which radio port to call this neighbour on,
+    /// numbered as the node shows it (#233). Null falls back to
+    /// SystemOptions.DefaultPort.
     /// </summary>
     public int? BearerPort { get; set; }
+
+    /// <summary>
+    /// True while the port above was saved by an older DAPPS, which
+    /// counted the node's AGW ports from 0, and has not yet been turned
+    /// into the node's own number (#233, #370). That needs the node's AGW
+    /// port list, so it happens when the AGW connection first answers
+    /// after the upgrade; until then nothing is sent on this port.
+    /// </summary>
+    public bool? PortPending { get; set; }
 
     /// <summary>
     /// Optional UDP endpoint (<c>host:port</c>) for the datagram

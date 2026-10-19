@@ -58,7 +58,8 @@ public sealed class TopologyTests(LoggedInWebAppFixture app, PlaywrightFixture p
         try
         {
             await page.FillAsync("#neigh-form input[name='callsign']", testCallsign);
-            await page.FillAsync("#neigh-form input[name='bearerPort']", "0");
+            // The node's own number for the port, XRouter's PORT=19 (#233).
+            await page.FillAsync("#neigh-form input[name='bearerPort']", "19");
             await page.ClickAsync("#neigh-form button[type='submit']");
 
             // The handler reloads the page on success.
@@ -68,6 +69,8 @@ public sealed class TopologyTests(LoggedInWebAppFixture app, PlaywrightFixture p
                 $"() => {{ const el = document.querySelector('#neigh-body'); return el && el.textContent.includes('{testCallsign}'); }}",
                 null,
                 new PageWaitForFunctionOptions { Timeout = 30_000 });
+            var cells = await page.Locator($"#neigh-body tr:has-text('{testCallsign}') td").AllInnerTextsAsync();
+            cells[1].Trim().Should().Be("19", "the port shows as it was typed, the node's own number");
         }
         finally
         {
@@ -104,7 +107,7 @@ public sealed class TopologyTests(LoggedInWebAppFixture app, PlaywrightFixture p
         try
         {
             await page.FillAsync("#neigh-form input[name='callsign']", testCallsign);
-            await page.FillAsync("#neigh-form input[name='bearerPort']", "0");
+            await page.FillAsync("#neigh-form input[name='bearerPort']", "2");
             await page.FillAsync("#neigh-form input[name='connectVia']", "G0NODE2");
             await page.FillAsync("#neigh-form textarea[name='connectScript']", script);
             await page.ClickAsync("#neigh-form button[type='submit']");
@@ -120,7 +123,7 @@ public sealed class TopologyTests(LoggedInWebAppFixture app, PlaywrightFixture p
             (await page.InputValueAsync("#neigh-form textarea[name='connectScript']")).Should().Be(script);
             (await page.InputValueAsync("#neigh-form input[name='connectVia']")).Should().Be("G0NODE2",
                 "saving the edit without it would drop the row's Connect via");
-            (await page.InputValueAsync("#neigh-form input[name='bearerPort']")).Should().Be("0");
+            (await page.InputValueAsync("#neigh-form input[name='bearerPort']")).Should().Be("2");
             (await page.Locator("#neigh-form input[name='callsign']").GetAttributeAsync("readonly")).Should().NotBeNull();
 
             await page.FillAsync("#neigh-form textarea[name='connectScript']", edited);
@@ -217,8 +220,42 @@ public sealed class TopologyTests(LoggedInWebAppFixture app, PlaywrightFixture p
             new PageWaitForFunctionOptions { Timeout = 10_000 });
 
         var hint = await page.Locator("#neigh-form [data-port-picker='bearerPort'] .hint, #neigh-form .hint:has-text('couldn')").AllInnerTextsAsync();
-        hint.Should().Contain(t => t.Contains("can't list BPQ's ports"),
-            "the hint should explain why we fell back to a text input");
+        hint.Should().Contain(t => t.Contains("can't list the node's ports") && t.Contains("as your node shows it"),
+            "the hint should explain why we fell back to a text input, and that the port is the node's own number (#233)");
+        (await page.GetAttributeAsync("#neigh-form input[name='bearerPort']", "min")).Should().Be("1", "ports count from 1");
+    }
+
+    /// <summary>
+    /// A port saved by an older DAPPS (which counted from 0) and not yet
+    /// converted is shown as waiting, not as a number that would now mean
+    /// another port (#233).
+    /// </summary>
+    [Fact]
+    public async Task Topology_Neighbours_APortWaitingToBeConverted_ShowsAsWaiting()
+    {
+        const string testCallsign = "TEST-HLD";
+        using (var db = new SQLite.SQLiteConnection(app.DatabasePath))
+        {
+            db.Execute("insert into neighbours (Callsign, BearerPort, PortPending) values (?, 0, 1)", testCallsign);
+        }
+        try
+        {
+            await using var ctx = await pw.Browser.NewLoggedInContextAsync(app);
+            var page = await ctx.NewPageAsync();
+            await page.GotoAsync($"{app.BaseUrl}/Topology?tab=neighbours");
+            await page.WaitForFunctionAsync(
+                $"() => {{ const el = document.querySelector('#neigh-body'); return el && el.textContent.includes('{testCallsign}'); }}",
+                null,
+                new PageWaitForFunctionOptions { Timeout = 30_000 });
+
+            var cells = await page.Locator($"#neigh-body tr:has-text('{testCallsign}') td").AllInnerTextsAsync();
+            cells[1].Trim().Should().BeEquivalentTo("waiting", "a pill, shown in capitals");
+        }
+        finally
+        {
+            using var db = new SQLite.SQLiteConnection(app.DatabasePath);
+            db.Execute("delete from neighbours where Callsign = ?", testCallsign);
+        }
     }
 
     /// <summary>

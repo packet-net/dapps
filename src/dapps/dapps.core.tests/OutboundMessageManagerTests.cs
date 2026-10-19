@@ -47,13 +47,13 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
             c.CreateTable<DbDiscoveredPeer>();
             // A neighbour entry alone is enough to route messages to
             // app@N0DEST (post-A2 resolver matches base callsigns).
-            c.Insert(new DbNeighbour { Callsign = "N0DEST", BearerPort = 0 });
+            c.Insert(new DbNeighbour { Callsign = "N0DEST", BearerPort = 1 });
         }
 
         optionsMonitor = new TestOptionsMonitor<SystemOptions>(new SystemOptions
         {
             Callsign = "N0CALL",
-            DefaultBearerPort = 0,
+            DefaultPort = 1,
         });
         database = new Database(NullLogger<Database>.Instance, optionsMonitor);
         backhaul = new FakeBackhaul();
@@ -336,6 +336,38 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DoRun_APeerHeardBeforeAnUpgrade_IsNotRoutedTo_UntilItsPortIsConverted()
+    {
+        // #370: its port is still an AGW byte counted from 0 until the
+        // node's AGW connection answers; routed now, it could go out on
+        // another radio port. The cheaper channel is the held one.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Execute("delete from neighbours");
+            var now = DateTime.UtcNow;
+            c.Insert(new DbDiscoveredPeer
+            {
+                PeerKey = DbDiscoveredPeer.MakeKey("N0DEST", "agw", "1"),
+                Callsign = "N0DEST", Bearer = "agw", ChannelKey = "1",
+                LinkClass = LinkClass.VhfUhfFm, CostHint = 1,
+                BearerPort = 1, PortPending = true, TtlSeconds = 5400, LastSeen = now,
+            });
+            c.Insert(new DbDiscoveredPeer
+            {
+                PeerKey = DbDiscoveredPeer.MakeKey("N0DEST", "agw", "3"),
+                Callsign = "N0DEST", Bearer = "agw", ChannelKey = "3",
+                LinkClass = LinkClass.Hf, CostHint = 5,
+                BearerPort = 3, TtlSeconds = 86400, LastSeen = now,
+            });
+        }
+        InsertMessage("heldpeer", ttl: null, createdAt: DateTime.UtcNow);
+
+        await manager.DoRun(TestContext.Current.CancellationToken);
+
+        backhaul.Sent.Should().ContainSingle().Which.Route.BearerPort.Should().Be(3, "the held row is skipped");
+    }
+
+    [Fact]
     public async Task DoRun_StaleRfPeer_FallsBackToFreshInternetBridge()
     {
         // Preferred RF channel has gone silent past its advertised TTL.
@@ -399,7 +431,7 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
 
         var route = backhaul.Sent.Single().Route;
         route.UdpEndpoint.Should().BeNull("the manual neighbour entry has no UdpEndpoint set");
-        route.BearerPort.Should().Be(0, "the manual neighbour points at bearer port 0");
+        route.BearerPort.Should().Be(1, "the manual neighbour points at port 1");
     }
 
     [Fact]

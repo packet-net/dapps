@@ -54,7 +54,7 @@ public sealed class StaticRoutingAlgorithm(ILogger<StaticRoutingAlgorithm> logge
         var manual = CallsignMatch.Best(neighbours, n => n.Callsign, destCall, ctx.LocalCallsign);
         if (manual is not null)
         {
-            return new RouteDecision.NextHop(RouteBuilder.FromNeighbour(manual, ctx.DefaultBearerPort));
+            return new RouteDecision.NextHop(RouteBuilder.FromNeighbour(manual, ctx.DefaultPort));
         }
 
         // 2. Discovered peers, freshness-filtered, ordered by cost.
@@ -64,6 +64,7 @@ public sealed class StaticRoutingAlgorithm(ILogger<StaticRoutingAlgorithm> logge
             .Where(p => DestinationParser.SameStation(p.Callsign, destCall)
                 || CallsignMatch.StandsIn(p.Callsign, destCall, ctx.LocalCallsign))
             .Where(p => (now - p.LastSeen).TotalSeconds <= p.TtlSeconds)
+            .Where(p => p.PortPending != true) // heard before an upgrade, not converted yet (#370)
             .Where(p => !Avoided(p.Callsign))
             .OrderBy(p => DestinationParser.SameStation(p.Callsign, destCall) ? 0 : 1)
             .ThenBy(p => p.CostHint)
@@ -78,7 +79,8 @@ public sealed class StaticRoutingAlgorithm(ILogger<StaticRoutingAlgorithm> logge
                 freshPeer.CostHint, freshPeer.Hops);
             return new RouteDecision.NextHop(new BackhaulRoute(
                 freshPeer.Callsign,
-                BearerPort: freshPeer.BearerPort ?? ctx.DefaultBearerPort,
+                BearerPort: freshPeer.BearerPort ?? ctx.DefaultPort,
+                PortHeld: freshPeer.BearerPort is null && ctx.DefaultPort < 1 && freshPeer.UdpEndpoint is null && freshPeer.MeshCoreChannel is null,
                 UdpEndpoint: freshPeer.UdpEndpoint,
                 MeshCoreChannel: freshPeer.MeshCoreChannel));
         }
@@ -94,7 +96,7 @@ public sealed class StaticRoutingAlgorithm(ILogger<StaticRoutingAlgorithm> logge
         {
             logger.LogInformation("Routing {0} for {1} via route-hint next-hop {2}",
                 message.Id, message.Destination, hintNeighbour.Callsign);
-            return new RouteDecision.NextHop(RouteBuilder.FromNeighbour(hintNeighbour, ctx.DefaultBearerPort));
+            return new RouteDecision.NextHop(RouteBuilder.FromNeighbour(hintNeighbour, ctx.DefaultPort));
         }
 
         return new RouteDecision.Unreachable();

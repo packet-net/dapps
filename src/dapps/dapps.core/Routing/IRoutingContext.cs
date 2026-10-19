@@ -25,7 +25,7 @@ public interface IRoutingContext
 
     /// <summary>Default bearer port (0-indexed) for AGW routes when
     /// no per-neighbour override is set.</summary>
-    int DefaultBearerPort { get; }
+    int DefaultPort { get; }
 
     Task<IReadOnlyList<DbNeighbour>> GetNeighboursAsync(CancellationToken ct);
 

@@ -46,15 +46,17 @@ If you installed DAPPS separately (say from the [apt repo](../install/index.md))
 | Node host | pdn's host (`localhost` if it's the same machine) |
 | RHPv2 port | `9000`, or whatever pdn's `rhp.port` says |
 
-Set each neighbour's **Radio port** when you add it on the dashboard's **Topology > Neighbours** tab; one without a port uses `0`, pdn's first port (see below).
+Set each neighbour's **Radio port** when you add it on the dashboard's **Topology > Neighbours** tab; one without a port uses `1`, pdn's first port (see below).
 
 If DAPPS is on another machine, pdn's `rhp.bind` has to be an address that machine can reach. RHPv2 has no encryption, so keep it on a network you trust. If you set `requireAuth: true`, give DAPPS a pdn username and password as its RHPv2 user and password.
 
 ## Which port DAPPS uses
 
-DAPPS asks pdn for a port by number, one more than its bearer port: bearer port `0` is pdn's first port, `1` its second, in the order your config lists them. pdn node-v0.56.0 and later take a port's number as well as its name, so the port can have any name.
+A port is pdn's own number for it, the one its `PORTS` command lists and `C 2 CALL` uses: `1` is the first port in your config, `2` the second. DAPPS asks pdn for the port by that number. pdn node-v0.56.0 and later take a port's number as well as its name, so the port can have any name.
 
-Older pdn releases only take a port's name ([packet.net#841](https://github.com/packet-net/packet.net/issues/841)). On those, name the port DAPPS uses `1`, or `2` if you set DAPPS's bearer port to `1`, and so on:
+Upgrading from DAPPS 0.53 or earlier: older DAPPS counted ports from 0, so pdn's first port was `0`. DAPPS converts what you saved when it starts, once, and uses the same ports as before: a neighbour saved as `0` now shows `1`.
+
+Older pdn releases only take a port's name ([packet.net#841](https://github.com/packet-net/packet.net/issues/841)). On those, name the port DAPPS uses `1`, or `2` if its **Radio port** is `2`, and so on:
 
 ```yaml
 ports:

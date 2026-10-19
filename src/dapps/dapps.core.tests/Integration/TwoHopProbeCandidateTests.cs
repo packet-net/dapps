@@ -67,7 +67,7 @@ public sealed class TwoHopProbeCandidateTests(ThreeInstanceLinbpqFixture fixture
         var byHand = await a.Http.PostAsync($"Probes/run/{fixture.ApplCallC}", null, ct);
         byHand.EnsureSuccessStatusCode();
         var probed = (await byHand.Content.ReadFromJsonAsync<ProbedNodeModel>(ct))!;
-        probed.LastBearerPort.Should().Be(port);
+        probed.LastPort.Should().Be(port + 1, "the node's own number for the port, one past the fixture's count from 0");
         probed.ConsecutiveFailures.Should().Be(ProbeSchedulerService.UnansweredCandidateTries + 1);
 
         // Mail to C still goes through B: B told A of C when A asked for its

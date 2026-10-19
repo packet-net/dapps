@@ -32,7 +32,8 @@ public sealed class BearerSwitchingOutboundTransport(
     PeerSessionRegistry? peerSessions = null,
     TimeSpan? linkSettleSpread = null,
     TimeSpan? peersCallWait = null,
-    IAgwLinkSource? agwLinks = null) : IDappsOutboundTransport
+    IAgwLinkSource? agwLinks = null,
+    INodePortMaps? portMaps = null) : IDappsOutboundTransport
 {
     /// <summary>
     /// How long to wait, after the node refuses a dial because something
@@ -93,6 +94,7 @@ public sealed class BearerSwitchingOutboundTransport(
         }
         await settle.WaitAsync(key, stoppingToken);
 
+
         // #178/#185: register the link so the forwarder leaves this peer
         // alone until it is torn down (a scheduled poll or probe can be
         // mid-session with the same callsign when the forwarder ticks).
@@ -108,6 +110,8 @@ public sealed class BearerSwitchingOutboundTransport(
         if (peerSessions is not null)
         {
             // Only AGW links take part in retirement (see PeerSessionRegistry).
+            // The lease knows the link by the node's own port number (#233),
+            // as the inbound side does.
             lease = peerSessions.TryAcquire(remoteCallsign, "outbound", out var openDirection, linkPort: isRhpv2 ? null : bearerPort);
             if (lease is null)
             {
@@ -133,9 +137,13 @@ public sealed class BearerSwitchingOutboundTransport(
             else
             {
                 // Over the daemon's one AGW connection, the listener's (#272).
+                // The port is the node's own number for it (#233); AGW wants
+                // its port byte, which depends on how the node numbers its
+                // ports (NodePortMap). An unknown port sends nothing.
                 if (agwLinks is null) throw new AgwLinkDownException(remoteCallsign, AgwLinkState.Idle);
+                var agwPort = await ResolveAgwPortAsync(agwLinks, remoteCallsign, bearerPort, stoppingToken);
                 var agw = new AgwOutboundTransport(agwLinks, loggerFactory);
-                inner = await agw.ConnectAsync(localCallsign, remoteCallsign, bearerPort, stoppingToken);
+                inner = await agw.ConnectAsync(localCallsign, remoteCallsign, agwPort, stoppingToken);
             }
         }
         catch (PeerLinkAlreadyUpException ex) when (ex.HeldByPeersCall is null)
@@ -194,6 +202,26 @@ public sealed class BearerSwitchingOutboundTransport(
             logger.LogInformation("Outbound: the link to {0} was already up, so no prompt is coming", remoteCallsign);
         }
         return new SettleTrackingConnection(inner, settle, key, lease, linkWasUp);
+    }
+
+    /// <summary>
+    /// The AGW port byte for the node's port <paramref name="portNumber"/>
+    /// on the daemon's AGW connection. Throws, having sent nothing, when
+    /// the connection is down, the node's numbering can't be read (an
+    /// XRouter whose RHPv2 port can't be reached), or the node has no
+    /// such port.
+    /// </summary>
+    private async Task<byte> ResolveAgwPortAsync(IAgwLinkSource links, string remoteCallsign, int portNumber, CancellationToken ct)
+    {
+        var link = links.TryGetLink() ?? await links.ReopenAsync(AgwOutboundTransport.LinkOpenWait, ct)
+            ?? throw new AgwLinkDownException(remoteCallsign, links.State);
+        var map = portMaps is null || link.ListenOnly
+            ? NodePortMap.Plain()
+            : await portMaps.GetAsync(link, ct)
+              ?? throw new AgwLinkDownException(
+                  $"AGW: the node's port numbers could not be read (XRouter: check RHPPORT and DAPPS's RHPv2 settings); {remoteCallsign} was not called");
+        return map.ToAgwPort(portNumber)
+            ?? throw new AgwLinkDownException($"AGW: the node has no port {portNumber} ({map}); {remoteCallsign} was not called");
     }
 
     /// <summary>

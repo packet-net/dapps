@@ -8,9 +8,8 @@ namespace dapps.core.Controllers;
 /// <summary>
 /// Bearer-introspection endpoints for the dashboard. Today: AGW port
 /// list, used by the Topology page so an operator picks a labelled
-/// port from a dropdown ("Port 1 - VHF FM 1200 baud") instead of
-/// guessing 0-indexed integers when adding a neighbour or a discovery
-/// channel.
+/// port from a dropdown ("Port 1 - VHF FM 1200 baud"), numbered as the
+/// node numbers it (#233), when adding a neighbour or a discovery channel.
 /// </summary>
 [ApiController]
 [Route("[controller]")]
@@ -37,7 +36,7 @@ public sealed class BearerController(
         try
         {
             var ports = await agwPortQuery.QueryAsync(opts.NodeHost, opts.AgwPort, ct);
-            return Ok(ports);
+            return Ok(new AgwPortListModel(ports, agwPortQuery.LastWarning));
         }
         catch (TimeoutException ex)
         {
@@ -50,3 +49,8 @@ public sealed class BearerController(
         }
     }
 }
+
+/// <summary>The node's AGW ports, each with its own number for it
+/// (<see cref="AgwPortInfo.Number"/>), and what is wrong with its port
+/// numbering, if anything (hidden BPQ ports, say).</summary>
+public sealed record AgwPortListModel(IReadOnlyList<AgwPortInfo> Ports, string? Warning);

@@ -35,7 +35,8 @@ public sealed class DiscoveryService(
     OperationalMetrics? metrics = null,
     TransmissionAuditService? transmissionAudit = null,
     IAgwLinkSource? agwLinks = null,
-    IUiFrameSender? listenOnlyUiSender = null) : BackgroundService
+    IUiFrameSender? listenOnlyUiSender = null,
+    INodePortMaps? portMaps = null) : BackgroundService
 {
     private static readonly TimeSpan SweepInterval = TimeSpan.FromMinutes(1);
 
@@ -127,7 +128,10 @@ public sealed class DiscoveryService(
         var added = new List<(string, DiscoveryChannelInfo)>();
         var removed = new List<(string, string)>();
         var rows = await database.GetDiscoveryChannels();
-        var wanted = rows.Where(r => r.Enabled)
+        // A channel saved by an older DAPPS waits for its port to be
+        // converted to the node's own number (#233): it neither beacons
+        // nor hears until then.
+        var wanted = rows.Where(r => r.Enabled && r.PortPending != true)
             .GroupBy(r => r.Bearer.Trim().ToLowerInvariant())
             .ToDictionary(g => g.Key, g => (IReadOnlyList<DiscoveryChannelInfo>)g.Select(ToInfo).ToList(), StringComparer.Ordinal);
 
@@ -242,7 +246,7 @@ public sealed class DiscoveryService(
     {
         return bearerName switch
         {
-            "agw" when agwLinks is not null => new AgwUiDiscoveryBearer(agwLinks, loggerFactory, listenOnlyUiSender),
+            "agw" when agwLinks is not null => new AgwUiDiscoveryBearer(agwLinks, loggerFactory, listenOnlyUiSender, portMaps: portMaps),
             "udp" => new UdpMulticastDiscoveryBearer(opts.Callsign, loggerFactory),
             _ => null,
         };
@@ -806,7 +810,7 @@ public sealed class DiscoveryService(
             Source = $"node-prompt:{sourceCallsign}",
         });
         logger.LogInformation(
-            "Auto-discovered node-prompt candidate: {0} (derived from beacon {1} on AGW port {2})",
+            "Auto-discovered node-prompt candidate: {0} (derived from beacon {1} on port {2})",
             baseCallsign, sourceCallsign, bearerPort);
     }
 }

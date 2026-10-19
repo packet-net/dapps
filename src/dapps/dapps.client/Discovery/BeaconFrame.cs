@@ -18,7 +18,8 @@ public sealed record BeaconFrame(
 
 public abstract record BeaconBearerHint(string Kind);
 
-/// <summary>Beacon arrived as an AGW UI frame on the given bearer port.</summary>
+/// <summary>Beacon arrived as an AGW UI frame on the node's port
+/// <paramref name="BearerPort"/>, numbered as the node shows it (#233).</summary>
 public sealed record AgwBearerHint(int BearerPort) : BeaconBearerHint("agw");
 
 /// <summary>Beacon arrived as a UDP datagram from this host:port.</summary>

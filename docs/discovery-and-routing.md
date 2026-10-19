@@ -17,7 +17,7 @@ Plus two derived stores:
 
 ## Discovery channels
 
-A discovery channel is the tuple `(bearer, channel-key)`. For AGW, the channel key is the bearer port. For UDP datagram, it's the multicast endpoint. Each channel carries:
+A discovery channel is the tuple `(bearer, channel-key)`. For AGW, the channel key is the radio port, numbered as the node shows it (BPQ's `PORTNUM`, XRouter's `PORT=`). For UDP datagram, it's the multicast endpoint. Each channel carries:
 
 - **Beacon cadence** - how often we transmit our own beacon on this channel.
 - **Advertised TTL** - how long peers should consider our beacon valid.
@@ -26,7 +26,7 @@ A discovery channel is the tuple `(bearer, channel-key)`. For AGW, the channel k
 - **Optional scheduled-solicit interval** - for HF NVIS where push-only beaconing is too expensive.
 - **Enabled flag** + free-form notes. The dashboard form sets the bearer, port, link class, beacon cadence, airtime budget, solicit interval and enabled flag, and a row can be edited, enabled or disabled from the table, taking effect within about 10 seconds; the TTL and cost take the link class defaults and notes stay empty unless set through `POST /DiscoveryChannels`. AGW discovery goes over DAPPS's one AGW connection to the node, so it is up whenever that is, and beacons on each channel as soon as it (re)connects; while the node is down nothing is sent or saved up. With RHPv2 as the bearer, an AGW discovery channel still works: DAPPS then opens the AGW connection only to hear beacons, registers no callsign on it and takes no calls over it, and sends its own beacons and solicits through the node's RHPv2 port, from its callsign. (XRouter's AGW sends nothing from a connection that has registered no callsign.) They go out through the RHPv2 host even when another program answers AGW on the same host (pdn with Dire Wolf or BPQ beside it, say), and only on the port that matches the channel's AGW port: today DAPPS can tell that only when XRouter answers both, so in any other mix it sends nothing and logs one line per beacon saying why (see [XRouter: discovery beacons](connect/xrouter.md#discovery-beacons)). On BPQ's AXIP ports, UI frames to `DAPPS` only go out if the port has a `BROADCAST DAPPS` line and its MAP entries carry the `B` flag.
 
-There is **no default channel**. Operators add channels via the dashboard's **Discovery channels** section once they've thought about which bearer port DAPPS should beacon on. Defaulting to "beacon on port 0" would silently put DAPPS chatter on whatever band that port happens to be - possibly a band the operator's licence class doesn't permit at the relevant power level. Explicit add is the right contract.
+There is **no default channel**. Operators add channels via the dashboard's **Discovery channels** section once they've thought about which radio port DAPPS should beacon on. Defaulting to "beacon on port 1" would silently put DAPPS chatter on whatever band that port happens to be - possibly a band the operator's licence class doesn't permit at the relevant power level. Explicit add is the right contract.
 
 ## Beacons
 
@@ -60,7 +60,7 @@ Node-prompt auto-discovery is gated on `DAPPS_AUTO_DISCOVER_VIA_NODE_CALL=true`.
 
 The actual forwarding partners. You add them on the dashboard's **Topology > Neighbours** tab or with the `/Neighbours` REST endpoint. DAPPS doesn't add neighbours by itself; you pick them from the peers you've heard.
 
-Each neighbour row carries: callsign, bearer port (for AGW or RHPv2), UDP endpoint (for the datagram bearer), and optionally a connect-script plus per-neighbour compression and session-tail overrides.
+Each neighbour row carries: callsign, radio port (the node's own number for it, over AGW or RHPv2), UDP endpoint (for the datagram bearer), and optionally a connect-script plus per-neighbour compression and session-tail overrides.
 
 Enter a neighbour under its DAPPS callsign with the SSID. Mail goes to the neighbour with the exact call+SSID first. One entered under another SSID of the same callsign still works as a stand-in, and the Neighbours panel marks it so you can tidy it up.
 
@@ -120,7 +120,7 @@ When the only path to a peer runs through bare packet nodes that don't speak DAP
 For most operators, the simplest workable setup is:
 
 1. Add **one or two manual neighbours** for the peers you actually want to talk to. This works without any discovery system at all.
-2. **Add a discovery channel** for the bearer port your DAPPS beacon should go on. The link class sets the cadence (every 30 minutes on VHF/UHF FM, every 2 hours on HF) unless you set **Beacon every**. Set a per-channel airtime budget.
+2. **Add a discovery channel** for the radio port your DAPPS beacon should go on. The link class sets the cadence (every 30 minutes on VHF/UHF FM, every 2 hours on HF) unless you set **Beacon every**. Set a per-channel airtime budget.
 3. Once you've heard from a few peers via beacons and have an idea of the on-air ecosystem, **enable probing** with the `Overnight` strategy so the connectivity matrix is verified during quiet hours.
 4. Decide whether you want **scheduled polling** on (you probably don't if your peers are well-behaved; every session carries traffic both ways, which covers the common case).
 

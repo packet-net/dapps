@@ -119,9 +119,12 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     /// session (or spurious RF on a gateway node) to a callsign only ever heard
     /// over LoRa. Excluding MeshCore routes leaves it Unreachable so the message
     /// waits for MeshCore to return rather than mis-routing over the wrong bearer.
+    ///
+    /// A route whose port is held (<see cref="BackhaulRoute.PortHeld"/>) is
+    /// declined too: its message waits until the port is converted.
     /// </summary>
     public bool CanHandle(BackhaulRoute route) =>
-        route.UdpEndpoint is null && route.MeshCoreChannel is null;
+        route.UdpEndpoint is null && route.MeshCoreChannel is null && !route.PortHeld;
 
     /// <summary>
     /// One message on its own session. The forwarder uses

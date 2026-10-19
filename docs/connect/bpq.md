@@ -53,13 +53,13 @@ In the dashboard's `/Setup` wizard (first run) or on the dashboard's **Settings*
 | Node bearer   | **AGW**                                        |
 | AGW port      | `8000`                                         |
 
-Neither page has a default bearer port field: set each neighbour's **Radio port** when you add it on the **Topology > Neighbours** tab. A neighbour without one uses bearer port `0` (change that with `DAPPS_DEFAULT_BEARER_PORT` before first start, or `POST /Config`). Bearer ports are 0-indexed in the order they appear in `bpq32.cfg`'s `PORTNUM` lines.
+Neither page has a default port field: set each neighbour's **Radio port** when you add it on the **Topology > Neighbours** tab, picked from the list DAPPS reads from BPQ. Ports are BPQ's own numbers, the ones `PORTS` lists and `C 2 CALL` uses. A neighbour without one uses port `1` (change that with `DAPPS_DEFAULT_PORT` before first start, or `POST /Config`).
 
 The wizard's **Detect packet node** button probes localhost:8000 and pre-selects AGW automatically when BPQ is on the same host. SSID matters: BPQ dispatches based on the full call+SSID, so `M0LTE-1` is different from `M0LTE-2`.
 
-Saved settings hot-reload - the daemon picks up the new callsign and bearer port within a few seconds, no restart needed.
+Saved settings hot-reload - the daemon picks up the new callsign within a few seconds, no restart needed.
 
-(The `DAPPS_CALLSIGN`, `DAPPS_NODE_HOST`, `DAPPS_AGW_PORT`, `DAPPS_DEFAULT_BEARER_PORT` env vars still work as **first-run seeds** for automated deployments - set them before the daemon's first start and they populate the equivalent rows. After first start, the persisted values win and env vars stop mattering.)
+(The `DAPPS_CALLSIGN`, `DAPPS_NODE_HOST`, `DAPPS_AGW_PORT`, `DAPPS_DEFAULT_PORT` env vars still work as **first-run seeds** for automated deployments - set them before the daemon's first start and they populate the equivalent rows. After first start, the persisted values win and env vars stop mattering.)
 
 ## Step 4: watch for AGW registration
 
@@ -95,7 +95,13 @@ Send a test message with the **Quick send** form on the dashboard's Overview. Th
 
 ## Multi-port setups
 
-If your BPQ has multiple radio ports (e.g. port 1 = VHF FM, port 2 = HF), every neighbour record can specify which bearer port to use for that peer. The dashboard's add-neighbour form has the bearer-port field; the discovery system records the port a peer was heard on automatically.
+If your BPQ has multiple radio ports (e.g. port 1 = VHF FM, port 2 = HF), every neighbour can say which port to use for that peer, by BPQ's own port number. The discovery system records the port a peer was heard on automatically.
+
+**Number the ports DAPPS uses 1, 2, 3 in `bpq32.cfg` order, and hide none of them.** BPQ's AGW interface sends and connects by a port's position in the config (counting hidden ports for some commands and not for others), but reports the frames it hears by `PORTNUM`. These only agree when `PORTNUM`s run 1 to N in config order with no hidden ports, which is what BPQ does when you don't set `PORTNUM` at all. Otherwise DAPPS could hear a peer on one port and call it on another. DAPPS can't see `PORTNUM` over AGW, but it can see hidden ports (BPQ counts more ports than it lists), and warns about them on the Topology page and in its log. It never sends on a port number past the ones BPQ lists.
+
+### Upgrading from 0.53 or earlier
+
+Older DAPPS counted ports from 0, so BPQ's port 2 showed as `1`. On upgrade DAPPS converts what you saved, once, as soon as BPQ's AGW connection answers (a few seconds after start), and everything shows one higher: your port 2 now shows as `2`. The same ports are used on air as before. Until the conversion, nothing is sent on those ports and the Topology page marks them **waiting**.
 
 You don't need an `APPLICATION` line per port - the single `APPLICATION DAPPS` line covers all ports. The port choice is per-neighbour for outbound; for inbound, BPQ dispatches the same way no matter which port the connect arrived on.
 
@@ -118,10 +124,12 @@ Same-callsign-same-SSID with another application is **not** supported - AGW will
 
 ## Troubleshooting
 
-See the [Troubleshooting](../troubleshooting.md) page for the AGW-specific failure modes (registration timeouts, port-byte confusion, BPQ refusing the inbound dispatch).
+See the [Troubleshooting](../troubleshooting.md) page for the AGW-specific failure modes (registration timeouts, port numbering, BPQ refusing the inbound dispatch).
 
 ## Other AGW hosts
 
 The AGW protocol is well-defined and stable; any host that implements it should work. Direwolf in particular ships an AGW host as a built-in option. The configuration shape is the same: enable AGW, give DAPPS the callsign and host:port, register on connect.
+
+On these hosts DAPPS numbers ports as the host's AGW port list does: `Port1` is `1`. On Dire Wolf that makes channel 0 port `1`, channel 1 port `2`.
 
 If you've got a non-BPQ AGW setup working, please [open an issue](https://github.com/packet-net/dapps/issues) so we can document it here.

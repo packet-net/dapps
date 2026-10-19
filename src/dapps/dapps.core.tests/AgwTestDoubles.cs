@@ -412,3 +412,13 @@ internal sealed class NullBackhaulInbox : IBackhaulInbox
     public Task DeliverAsync(BackhaulMessage message, string sourceCallsign, CancellationToken ct)
         => Task.CompletedTask;
 }
+
+/// <summary>A node whose port numbering is known up front, for tests that
+/// need one (an XRouter's, say) without a real RHPv2 port to read it from.</summary>
+internal sealed class FixedPortMaps(dapps.client.Transport.Agw.NodePortMap? map) : dapps.client.Transport.Agw.INodePortMaps
+{
+    public dapps.client.Transport.Agw.NodePortMap? TryGet(dapps.client.Transport.Agw.AgwLink link) => map;
+
+    public Task<dapps.client.Transport.Agw.NodePortMap?> GetAsync(dapps.client.Transport.Agw.AgwLink link, CancellationToken ct) =>
+        Task.FromResult(map);
+}

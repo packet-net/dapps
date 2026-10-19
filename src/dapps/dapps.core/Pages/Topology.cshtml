@@ -16,6 +16,10 @@
     <a href="~/Topology?tab=polls" class="@(tab == "polls" ? "active" : "")">Polled nodes <span class="count" id="cnt-polls">0</span></a>
 }
 
+<div class="panel" id="port-notice" style="display: none;">
+    <p class="panel-sub"><span class="pill warn">Ports</span> <span id="port-notice-text"></span></p>
+</div>
+
 @if (tab == "neighbours")
 {
     <div class="panel">
@@ -31,9 +35,9 @@
             <div class="field" data-port-picker="bearerPort">
                 <label>Radio port</label>
                 <select name="bearerPort">
-                    <option value="">(default - port @Model.Options.DefaultBearerPort)</option>
+                    <option value="">(default - port @Model.Options.DefaultPort)</option>
                 </select>
-                <span class="hint" data-port-picker-hint>loading from BPQ...</span>
+                <span class="hint" data-port-picker-hint>loading the node's ports...</span>
             </div>
             <div class="field span-all">
                 <label>Connect script (optional)</label>
@@ -197,7 +201,7 @@ else
 <script>
 (function () {
     const tab = '@tab';
-    const defaultPort = @Model.Options.DefaultBearerPort;
+    const defaultPort = @Model.Options.DefaultPort;
     const escape = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
         ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const fmtAt = (iso) => {
@@ -228,14 +232,21 @@ else
                 try {
                     const res = await fetch('@Url.Content("~/Bearer/agw/ports")', { credentials: 'same-origin' });
                     if (!res.ok) return { error: (await res.text()) || `HTTP ${res.status}` };
-                    const ports = await res.json();
-                    // Expose an index->description map so the
-                    // neighbours/channels tables can show "Port 0 (VHF
-                    // FM 1200)" instead of just "0".
+                    const body = await res.json();
+                    // Each port with the node's own number for it (BPQ's
+                    // PORTNUM, XRouter's PORT=). Without every number (an
+                    // XRouter whose numbers can't be read) the form takes a
+                    // typed number instead.
+                    const ports = (body.ports || []).filter(p => p.number != null);
+                    if (ports.length === 0 || ports.length !== (body.ports || []).length) {
+                        return { error: body.warning || 'the node did not list its port numbers' };
+                    }
+                    // A number->description map so the neighbours and
+                    // channels tables can show "2 (VHF FM 1200)".
                     const map = {};
-                    for (const p of ports) map[p.index] = p.description;
+                    for (const p of ports) map[p.number] = p.description;
                     window.__dappsAgwPortMap = map;
-                    return { ports };
+                    return { ports, warning: body.warning };
                 } catch (e) { return { error: e.message ?? String(e) }; }
             })();
         }
@@ -265,7 +276,7 @@ else
         const compression = { '': null, 'off': false, 'on': true }[f.compression.value] ?? null;
         const body = {
             Callsign: f.callsign.value,
-            BearerPort: f.bearerPort.value === '' ? null : parseInt(f.bearerPort.value, 10),
+            Port: f.bearerPort.value === '' ? null : parseInt(f.bearerPort.value, 10),
             UdpEndpoint: f.udpEndpoint.value || null,
             ConnectScript: f.connectScript.value || null,
             ConnectVia: f.connectVia.value || null,
@@ -491,19 +502,21 @@ else
             const r = await loadAgwPorts();
             if (r.error) {
                 wrap.innerHTML = `<label>Radio port</label>
-                    <input name="bearerPort" type="number" min="0" max="255" placeholder="0" />
+                    <input name="bearerPort" type="number" min="1" max="255" placeholder="1" />
                     <span class="hint">${/not AGW/.test(r.error)
-                        ? 'the node\'s port number, counting from 0: its first port is 0'
-                        : `can't list BPQ's ports (${escape(r.error).replace(/\.$/, '')}); type the port number, counting from 0`}</span>`;
+                        ? 'the port number as your node shows it (XRouter: its PORT= number; pdn: its PORTS list)'
+                        : `can't list the node's ports (${escape(r.error).replace(/\.$/, '')}); type the port number as your node shows it`}</span>`;
                 return;
             }
             for (const p of r.ports) {
                 const opt = document.createElement('option');
-                opt.value = String(p.index);
-                opt.textContent = `Port ${p.index} - ${p.description}`;
+                opt.value = String(p.number);
+                opt.textContent = `Port ${p.number} - ${p.description}`;
                 select.appendChild(opt);
             }
-            hint.textContent = `${r.ports.length} port${r.ports.length === 1 ? '' : 's'} from BPQ. Default is port ${defaultPort}.`;
+            hint.textContent = r.warning
+                ? r.warning
+                : `${r.ports.length} port${r.ports.length === 1 ? '' : 's'} from the node. Default is port ${defaultPort}.`;
         })();
     }
 
@@ -529,19 +542,19 @@ else
                 // AGW path - show port dropdown.
                 const r = await loadAgwPorts();
                 if (r.error) {
-                    wrap.innerHTML = `<input name="channelKey" type="number" min="0" max="255" required placeholder="0" />`;
+                    wrap.innerHTML = `<input name="channelKey" type="number" min="1" max="255" required placeholder="1" />`;
                     hint.textContent = /not AGW/.test(r.error)
-                        ? 'the node\'s port number, counting from 0: its first port is 0'
-                        : `can't list BPQ's ports (${r.error.replace(/\.$/, '')}); type the port number, counting from 0`;
+                        ? 'the port number as your node shows it (XRouter: its PORT= number)'
+                        : `can't list the node's ports (${r.error.replace(/\.$/, '')}); type the port number as your node shows it`;
                     return;
                 }
                 const opts = r.ports.map(p =>
-                    `<option value="${p.index}">Port ${p.index} - ${escape(p.description)}</option>`).join('');
+                    `<option value="${p.number}">Port ${p.number} - ${escape(p.description)}</option>`).join('');
                 wrap.innerHTML = `<select name="channelKey" required>
                     <option value="">(pick a port)</option>
                     ${opts}
                 </select>`;
-                hint.textContent = `${r.ports.length} port${r.ports.length === 1 ? '' : 's'} from BPQ`;
+                hint.textContent = r.warning || `${r.ports.length} port${r.ports.length === 1 ? '' : 's'} from the node`;
             }
 
             bearerSel.addEventListener('change', render);
@@ -550,8 +563,18 @@ else
         })();
     }
 
+    // A port saved by an older DAPPS (which counted from 0) that is still
+    // waiting to be converted to the node's own number: nothing is sent
+    // on it until the node's AGW connection answers.
+    const heldPill = '<span class="pill warn" title="Saved by an older DAPPS, which counted ports from 0. Converted to the node\'s own port number when its AGW connection answers; nothing is sent on it until then.">waiting</span>';
+
     function apply(s) {
         const t = s.tables ?? {};
+        const notice = document.getElementById('port-notice');
+        if (notice) {
+            notice.style.display = t.portNotice ? '' : 'none';
+            document.getElementById('port-notice-text').textContent = t.portNotice || '';
+        }
         setCount('cnt-neigh', (t.neighbours || []).length);
         setCount('cnt-chan',  (t.discoveryChannels || []).length);
         setCount('cnt-peers', (t.discoveredPeers || []).length);
@@ -562,14 +585,16 @@ else
             const body = document.getElementById('neigh-body');
             const ns = t.neighbours || [];
             window.__dappsNeighbours = ns;
-            // Resolve port descriptions if BPQ's port list has loaded;
-            // otherwise just show the index. Best-effort - the table
+            // Resolve port descriptions if the node's port list has loaded;
+            // otherwise just show the number. Best-effort - the table
             // refreshes every snap so a later resolve will pick up.
             const portMap = window.__dappsAgwPortMap || {};
-            const fmtPort = (idx) => {
-                if (idx == null) return '<span class="muted">default</span>';
-                const desc = portMap[idx];
-                return desc ? `${idx} <span class="muted">(${escape(desc)})</span>` : String(idx);
+            const fmtPort = (n) => {
+                const num = n.bearerPort;
+                if (num == null) return '<span class="muted">default</span>';
+                if (n.portPending) return `${heldPill}`;
+                const desc = portMap[num];
+                return desc ? `${num} <span class="muted">(${escape(desc)})</span>` : String(num);
             };
             const fmtCompression = (c) => c == null ? '<span class="muted">default</span>' : (c ? 'on' : 'off');
             const fmtHold = (s) => s == null ? '<span class="muted">default</span>' : (s === 0 ? 'off' : String(s));
@@ -592,7 +617,7 @@ else
             } else {
                 body.innerHTML = ns.map(n => `<tr>
                     <td><code>${escape(n.callsign)}</code>${ssidNote(n)}</td>
-                    <td>${fmtPort(n.bearerPort)}</td>
+                    <td>${fmtPort(n)}</td>
                     <td>${n.udpEndpoint ? '<code>' + escape(n.udpEndpoint) + '</code>' : '<span class="muted">-</span>'}</td>
                     <td>${fmtCompression(n.compressionEnabled)}</td>
                     <td>${fmtHold(n.sessionTailSeconds)}</td>
@@ -614,12 +639,13 @@ else
             const cs = t.discoveryChannels || [];
             window.__dappsChannels = cs;
             const fmtDur = (s) => s >= 3600 && s % 3600 === 0 ? `${s / 3600}h` : s >= 60 ? `${Math.round(s / 60)}m` : `${s}s`;
-            // For AGW channels the channelKey is a 0-indexed port
+            // For AGW channels the channelKey is the node's own port
             // number; resolve the human description so the row reads
-            // "0 (VHF FM 1200 baud)" instead of just "0". UDP rows
+            // "2 (VHF FM 1200 baud)" instead of just "2". UDP rows
             // (multicast addr) keep their key verbatim.
             const portMap = window.__dappsAgwPortMap || {};
             const fmtKey = (c) => {
+                if (c.portPending) return heldPill;
                 if (c.bearer === 'agw' && portMap[c.channelKey]) {
                     return `<code>${escape(c.channelKey)}</code> <span class="muted">(${escape(portMap[c.channelKey])})</span>`;
                 }
@@ -657,7 +683,7 @@ else
                 body.innerHTML = ps.map(p => `<tr>
                     <td><code>${escape(p.callsign)}</code></td>
                     <td>${escape(p.bearer)}</td>
-                    <td><code>${escape(p.channelKey)}</code></td>
+                    <td>${p.portPending ? heldPill : `<code>${escape(p.channelKey)}</code>`}</td>
                     <td class="numeric">${p.hops}</td>
                     <td class="numeric">${p.costHint}</td>
                     <td>${fmtAgo(p.lastSeen)}</td>
@@ -674,7 +700,7 @@ else
                 body.innerHTML = xs.map(p => `<tr class="${p.consecutiveFailures >= 3 ? 'warn' : ''}">
                     <td><code>${escape(p.callsign)}</code></td>
                     <td>${escape(p.source || 'neighbour')}</td>
-                    <td class="numeric">${p.lastBearerPort != null ? p.lastBearerPort : '<span class="muted">-</span>'}</td>
+                    <td class="numeric">${p.portPending ? heldPill : p.lastBearerPort != null ? p.lastBearerPort : '<span class="muted">-</span>'}</td>
                     <td>${fmtAgo(p.lastProbedAt)}</td>
                     <td>${p.lastSuccessAt ? fmtAgo(p.lastSuccessAt) : '<span class="muted">never</span>'}</td>
                     <td class="numeric">${p.consecutiveFailures}</td>

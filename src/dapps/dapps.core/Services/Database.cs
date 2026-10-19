@@ -518,6 +518,9 @@ public class Database(
         else
         {
             channel.Id = existing.Id;
+            // Same key, same meaning: a channel saved by an older DAPPS
+            // stays pending until it is converted (#233).
+            channel.PortPending = existing.PortPending;
             await connection.UpdateAsync(channel);
         }
     }
@@ -589,6 +592,11 @@ public class Database(
         }
         else
         {
+            // A port saved by an older DAPPS and not converted yet stays
+            // pending when the same number comes back (a form loaded before
+            // the conversion, saved for another field): it still means the
+            // old thing. Any other port is the node's own number (#233).
+            if (existing.PortPending == true && existing.BearerPort != bearerPort) existing.PortPending = null;
             existing.BearerPort = bearerPort;
             existing.UdpEndpoint = udpEndpoint;
             existing.ConnectScriptJson = connectScriptJson;

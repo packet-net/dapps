@@ -56,13 +56,13 @@ That sequence becomes a connect-script.
 If you can connect to the peer's node on one of your ports, you can usually connect to the peer's DAPPS callsign on that port too: it's on the same node and radio. No script is needed. For `MB7NPW-3`, a DAPPS node on the BPQ node `MB7NPW` that you reach on your XRouter's `PORT=2`:
 
 - Callsign: `MB7NPW-3`
-- Radio port: `1`
+- Radio port: `2`
 
 Check it by hand first, from your node's prompt: `C 2 MB7NPW-3` should answer `DAPPSv1>` straight after "Connected". Not every node hands a connect to its DAPPS callsign straight to DAPPS: on some, the connect is accepted ("Connected to MB7NPW-3") but nothing follows, and DAPPS is only reached through the node's command. If that's what you see, connect via the node instead:
 
 - Callsign: `MB7NPW-3`
 - Connect via: `MB7NPW`
-- Radio port: `1`
+- Radio port: `2`
 - Connect script: `DAPPS|DAPPSv1>|60` (the command the node gives DAPPS)
 
 #### Example: a peer only reachable over NET/ROM
@@ -82,11 +82,11 @@ If the peer's node does give its DAPPS application a NET/ROM quality (`APPL1QUAL
 
 #### The general case
 
-In the dashboard's **Add / update neighbour** form (or `POST /Neighbours`):
+In the dashboard's **Add / update neighbour** form (or `POST /Neighbours`, where the radio port is `Port`):
 
 - **Callsign**: the far-end DAPPS node (`G0DPC-3` in the example). Routing, probes, polls and the dashboard know the neighbour by this.
 - **Connect via**: the node DAPPS dials first (`G0NODE2` in the example). DAPPS makes this connect itself, over the bearer, before the script starts. Left blank, DAPPS dials the Callsign itself and plays the script at its prompt. Needs a connect script.
-- **Radio port**: the port to dial the first node on. It's 0-indexed: on AGW it's BPQ's port byte; on RHPv2 (XRouter) `0` is `PORT=1` in `XROUTER.CFG`, `1` is `PORT=2`, and so on.
+- **Radio port**: the port to dial the first node on, by your node's own number for it: the number `C 2 G0NODE2` would use at your node's prompt (BPQ's `PORTNUM`, XRouter's `PORT=`, pdn's `PORTS` list).
 - **Connect script**: what you'd type once connected to that node, one step per line, `SEND|EXPECT[|TIMEOUT_SECONDS]`:
 
 ```

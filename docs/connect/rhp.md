@@ -24,14 +24,14 @@ Set **Node bearer** to RHPv2, plus the node host and RHPv2 port, in the `/Setup`
 DAPPS_NODE_BEARER=rhpv2
 DAPPS_NODE_HOST=<host>
 DAPPS_RHP_PORT=<rhp port>
-DAPPS_DEFAULT_BEARER_PORT=0
+DAPPS_DEFAULT_PORT=1
 ```
 
 `DAPPS_NODE_BEARER=rhpv2` flips the bearer selector from AGW (the default) to RHPv2. The AGW knobs (`DAPPS_AGW_PORT`) are then unused.
 
 `DAPPS_RHP_PORT` matches the host's RHPv2 listener port (XRouter's `RHPPORT=` directive; default 9000).
 
-`DAPPS_DEFAULT_BEARER_PORT` is the same 0-indexed port byte used in the AGW path. DAPPS adds 1 internally to derive the RHPv2 port name (which is 1-indexed in XRouter, matching `PORT=N` in `XROUTER.CFG`). So `DAPPS_DEFAULT_BEARER_PORT=0` -> RHPv2 port "1" -> `PORT=1` in XRouter's config.
+`DAPPS_DEFAULT_PORT` is the radio port a neighbour without one of its own is called on, by the node's own number for it: XRouter's `PORT=` number, or pdn's port as its `PORTS` command lists it. DAPPS hands that number to RHPv2 as it is. (`DAPPS_DEFAULT_BEARER_PORT`, its name up to 0.53, counted from 0; it still works, one higher, but is deprecated.)
 
 If RHPv2 requires authentication on your host, also set:
 

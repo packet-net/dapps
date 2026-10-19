@@ -14,7 +14,7 @@ public class ConfigStartup(ILogger<ConfigStartup> logger, IOptionsMonitor<System
         }
 
         logger.LogInformation($"Callsign: {optionsValue.Callsign}");
-        logger.LogInformation($"Packet node: {optionsValue.NodeHost}:{optionsValue.AgwPort} (default port byte {optionsValue.DefaultBearerPort})");
+        logger.LogInformation($"Packet node: {optionsValue.NodeHost}:{optionsValue.AgwPort} (default radio port {optionsValue.DefaultPort})");
     }
 
     public Task StopAsync(CancellationToken cancellationToken)

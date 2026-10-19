@@ -161,6 +161,16 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<MqttBrokerService>
 // Registered as singletons (not just AddHostedService<T>) so
 // OperationalController can resolve the concrete instances directly -
 // each exposes a manual "retry now" trigger the dashboard surfaces.
+// How the node numbers its radio ports (#233, #370), and the one-off
+// conversion of ports an older DAPPS saved counting from 0.
+builder.Services.AddSingleton<NodePortNumbers>();
+builder.Services.AddSingleton<INodePortMaps>(sp => sp.GetRequiredService<NodePortNumbers>());
+builder.Services.AddSingleton<PortNumberUpgradeService>(sp => new PortNumberUpgradeService(
+    sp.GetRequiredService<INodePortMaps>(),
+    sp.GetRequiredService<IOptionsMonitor<SystemOptions>>(),
+    sp.GetRequiredService<ILogger<PortNumberUpgradeService>>(),
+    services: sp));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<PortNumberUpgradeService>());
 builder.Services.AddSingleton<AgwInboundService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AgwInboundService>());
 // The daemon's one AGW connection, published for those that use it.

@@ -90,6 +90,11 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
     public async Task<IDappsConnection> ConnectAsync(
         string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken)
     {
+        if (bearerPort < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(bearerPort), bearerPort,
+                $"RHP: port {bearerPort} is not a port number (the node's ports count from 1); {remoteCallsign} was not called");
+        }
         logger.LogInformation("RHP: connecting to {host}:{port}", host, port);
         var rhp = await RhpClient.ConnectAsync(host, port, stoppingToken);
         try
@@ -99,13 +104,11 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
                 await rhp.AuthenticateAsync(authUser, authPass ?? "", stoppingToken);
             }
 
-            // RHP port-byte addressing: the bearerPort here is DAPPS's
-            // bearer-neutral "AGW port byte". RHPv2 takes the port as a
-            // string label that XRouter resolves to an INTERFACE/PORT
-            // pair. XR's convention is that port="1" means PORT=1 in
-            // XROUTER.CFG, etc. - 1-indexed, where DAPPS's port byte is
-            // 0-indexed. Add one and convert.
-            var portName = (bearerPort + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            // The port is the node's own number for it (#233, #370):
+            // XRouter's PORT= number, or pdn's port as its PORTS command
+            // numbers it. RHPv2 takes it as that number, as a string,
+            // gaps and all.
+            var portName = bearerPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
             // RF-emitting: an active OpenAsync triggers an AX.25 SABM on
             // the remote port. Block here when the gate is closed.

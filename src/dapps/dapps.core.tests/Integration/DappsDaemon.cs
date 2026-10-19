@@ -41,7 +41,9 @@ internal sealed class DappsDaemon : IAsyncDisposable
         Http = http;
     }
 
-    /// <summary>A neighbour row to seed: its callsign and the node port (AGW port byte) that reaches it.
+    /// <summary>A neighbour row to seed: its callsign and the node port that reaches it, counted
+    /// from 0 as the fixtures count them (the AGW port byte on BPQ, <c>PORT=</c> less one on
+    /// XRouter); seeded as the node's own number, one higher (#233).
     /// <paramref name="UdpEndpoint"/> switches this neighbour to the UDP datagram
     /// backhaul (<c>host:port</c>); <paramref name="BearerPort"/> is then unused.</summary>
     public sealed record Neighbour(
@@ -68,7 +70,7 @@ internal sealed class DappsDaemon : IAsyncDisposable
         string name, string callsign, NodeAttachment node,
         IEnumerable<Neighbour> neighbours, IReadOnlyDictionary<string, string>? settings, CancellationToken ct,
         IEnumerable<RouteHint>? routeHints = null, IEnumerable<DbDiscoveryChannel>? discoveryChannels = null,
-        bool waitForNode = true)
+        bool waitForNode = true, Action<SQLiteConnection>? seed = null, string? daemonDll = null)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"dapps-e2e-{name}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(Path.Combine(directory, "data"));
@@ -79,7 +81,7 @@ internal sealed class DappsDaemon : IAsyncDisposable
             {
                 db.Insert(new DbNeighbour
                 {
-                    Callsign = n.Callsign, BearerPort = n.BearerPort, UdpEndpoint = n.UdpEndpoint,
+                    Callsign = n.Callsign, BearerPort = n.BearerPort + 1, UdpEndpoint = n.UdpEndpoint,
                     CompressionEnabled = n.CompressionEnabled, SessionTailSeconds = n.SessionTailSeconds,
                     ConnectScriptJson = n.Script?.ToJson(), ConnectVia = n.ConnectVia,
                 });
@@ -89,6 +91,9 @@ internal sealed class DappsDaemon : IAsyncDisposable
                 db.CreateTable<DbDiscoveryChannel>();
                 foreach (var c in discoveryChannels) db.Insert(c);
             }
+            // Anything else the test wants in the database before the first
+            // start: an older version's rows, say.
+            seed?.Invoke(db);
             if (routeHints is not null)
             {
                 db.CreateTable<DbRouteHint>();
@@ -108,7 +113,7 @@ internal sealed class DappsDaemon : IAsyncDisposable
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        var dll = LocateDaemon();
+        var dll = daemonDll ?? LocateDaemon();
         start.ArgumentList.Add(dll);
         start.ArgumentList.Add("--contentRoot");
         start.ArgumentList.Add(Path.GetDirectoryName(dll)!);
@@ -116,7 +121,7 @@ internal sealed class DappsDaemon : IAsyncDisposable
         {
             ["DAPPS_CALLSIGN"] = callsign,
             ["DAPPS_NODE_HOST"] = node.Host,
-            ["DAPPS_DEFAULT_BEARER_PORT"] = node.BearerPort.ToString(),
+            ["DAPPS_DEFAULT_PORT"] = (node.BearerPort + 1).ToString(),
             ["DAPPS_MQTT_PORT"] = mqttPort.ToString(),
             ["DAPPS_UDP_LISTEN_PORT"] = "0",
             ["DAPPS_AUTH_REQUIRED"] = "false",
@@ -175,11 +180,19 @@ internal sealed class DappsDaemon : IAsyncDisposable
     /// again on the same database, as after an upgrade.
     /// </summary>
     /// <returns>True if it didn't stop within 15 s and had to be killed.</returns>
-    public async Task<bool> RestartAsync(CancellationToken ct)
+    public async Task<bool> RestartAsync(CancellationToken ct, string? daemonDll = null)
     {
         var killed = await StopAsync();
         Append($"--- restarted by the test at {DateTime.UtcNow:HH:mm:ss.fff} ---");
         var start = process.StartInfo;
+        if (daemonDll is not null || start.ArgumentList[0] != LocateDaemon())
+        {
+            // Onto another build (an older release, then this one), as an
+            // upgrade would.
+            var dll = daemonDll ?? LocateDaemon();
+            start.ArgumentList[0] = dll;
+            start.ArgumentList[2] = Path.GetDirectoryName(dll)!;
+        }
         process.Dispose();
         process = new Process { StartInfo = start, EnableRaisingEvents = true };
         await LaunchAsync(ct);
@@ -234,13 +247,36 @@ internal sealed class DappsDaemon : IAsyncDisposable
     /// neighbours, config). "Auth off" only opens the app API. Does the
     /// first-run password step, which signs the operator straight in.
     /// </summary>
+    /// <summary>
+    /// Sign in again with the password <see cref="SignInAsAdminAsync"/>
+    /// set: after a restart, whose new keys don't read the old cookie.
+    /// </summary>
+    public async Task LogInAsAdminAsync(CancellationToken ct)
+    {
+        var page = await Http.GetStringAsync("Login", ct);
+        var token = System.Text.RegularExpressions.Regex.Match(
+            page, "name=\"__RequestVerificationToken\" type=\"hidden\" value=\"([^\"]+)\"").Groups[1].Value;
+        if (token.Length == 0) throw new InvalidOperationException($"{Name}: no antiforgery token on /Login");
+        var response = await Http.PostAsync("Login", new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["Password"] = AdminPassword,
+            ["__RequestVerificationToken"] = token,
+        }), ct);
+        if ((int)response.StatusCode is not (302 or 303 or 200))
+        {
+            throw new InvalidOperationException($"{Name}: signing in failed with {(int)response.StatusCode}");
+        }
+    }
+
+    private const string AdminPassword = "e2e-test-password";
+
     public async Task SignInAsAdminAsync(CancellationToken ct)
     {
         var page = await Http.GetStringAsync("Setup", ct);
         var token = System.Text.RegularExpressions.Regex.Match(
             page, "name=\"__RequestVerificationToken\" type=\"hidden\" value=\"([^\"]+)\"").Groups[1].Value;
         if (token.Length == 0) throw new InvalidOperationException($"{Name}: no antiforgery token on /Setup");
-        const string password = "e2e-test-password";
+        const string password = AdminPassword;
         var response = await Http.PostAsync("Setup?handler=Password", new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["Password"] = password,

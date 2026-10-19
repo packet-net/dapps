@@ -41,6 +41,10 @@ public class ConfigController(SystemOptionsStore options, AdminPasswordStore adm
         {
             return BadRequest($"Callsign: {callError}");
         }
+        if (merged.DefaultPort != options.CurrentValue.DefaultPort && merged.DefaultPort < 1)
+        {
+            return BadRequest("DefaultPort: the node's port number, as the node shows it; ports count from 1.");
+        }
         await options.SaveAsync(merged);
         return Ok();
     }
@@ -56,6 +60,7 @@ public class ConfigController(SystemOptionsStore options, AdminPasswordStore adm
         var json = JsonSerializerOptions.Web;
         var merged = JsonSerializer.SerializeToNode(current, json)!.AsObject();
         var names = merged.Select(p => p.Key).ToList();
+        changes = WithLegacyDefaultPort(changes);
         foreach (var (name, value) in changes)
         {
             var key = names.FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase));
@@ -67,6 +72,27 @@ public class ConfigController(SystemOptionsStore options, AdminPasswordStore adm
             merged[key] = value?.DeepClone();
         }
         return merged.Deserialize<SystemOptions>(json)!;
+    }
+
+    /// <summary>
+    /// The default port was <c>DefaultBearerPort</c> up to 0.53, counting
+    /// the node's ports from 0. It is <c>DefaultPort</c> now, the node's
+    /// own number (#233). An old caller's <c>DefaultBearerPort</c> is still
+    /// taken, as counting from 0, unless <c>DefaultPort</c> is sent too.
+    /// Deprecated.
+    /// </summary>
+    internal static JsonObject WithLegacyDefaultPort(JsonObject changes)
+    {
+        var legacy = changes.FirstOrDefault(p => string.Equals(p.Key, "DefaultBearerPort", StringComparison.OrdinalIgnoreCase));
+        if (legacy.Key is null) return changes;
+        var copy = changes.DeepClone().AsObject();
+        copy.Remove(legacy.Key);
+        if (copy.Any(p => string.Equals(p.Key, nameof(SystemOptions.DefaultPort), StringComparison.OrdinalIgnoreCase))) return copy;
+        if (legacy.Value is null) throw new JsonException("DefaultBearerPort can't be null.");
+        var counted = legacy.Value.Deserialize<int>();
+        if (counted < 0) throw new JsonException("DefaultBearerPort counts from 0; it can't be negative.");
+        copy[nameof(SystemOptions.DefaultPort)] = counted + 1;
+        return copy;
     }
 
     private static bool Nullable(string jsonName)

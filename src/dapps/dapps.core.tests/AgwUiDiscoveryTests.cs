@@ -23,9 +23,15 @@ public sealed class AgwUiDiscoveryTests
     private const string Local = "G5ALF-3";
     private const string Remote = "M0AHN-3";
 
-    private static DiscoveryChannelInfo Channel(int id, byte port) =>
-        new(id, "agw", port.ToString(), LinkClass.VhfUhfFm,
+    /// <summary>A channel on the node's port <paramref name="number"/>,
+    /// numbered as the node shows it (#233): AGW port byte number - 1 on
+    /// BPQ.</summary>
+    private static DiscoveryChannelInfo Channel(int id, int number) =>
+        new(id, "agw", number.ToString(), LinkClass.VhfUhfFm,
             BeaconIntervalSeconds: 1800, AdvertisedTtlSeconds: 5400, CostHint: 5);
+
+    /// <summary>XRouter with ports PORT=2 and PORT=7: AGW bytes 0 and 1.</summary>
+    private static readonly FixedPortMaps Xrouter27 = new(NodePortMap.Xrouter([2, 7]));
 
     [Fact]
     public async Task Beacons_GoOutOnTheLink_FromItsCallsign_WithNoSocketRegistrationOrMonitorOfTheirOwn()
@@ -34,14 +40,15 @@ public sealed class AgwUiDiscoveryTests
         await using var h = new AgwInboundServiceHarness(Local);
         var bpq = await h.StartAsync(ct);
         await using var bearer = new AgwUiDiscoveryBearer(h.Service, h.Logs);
-        await bearer.StartAsync([Channel(1, 0), Channel(2, 1)], ct);
+        await bearer.StartAsync([Channel(1, 1), Channel(2, 2)], ct);
 
-        await bearer.AnnounceAsync(new BeaconFrame(Local, 0, 600, new AgwBearerHint(1)), "1", ct);
+        // Port 2 as BPQ numbers it is its AGW port byte 1 (#233).
+        await bearer.AnnounceAsync(new BeaconFrame(Local, 0, 600, new AgwBearerHint(2)), "2", ct);
         var beacon = await bpq.ReadUntilAsync('M', ct);
         (beacon.Port, beacon.CallFrom, beacon.CallTo, beacon.Pid).Should().Be(((byte)1, Local, "DAPPS", (byte)0xF0));
         Encoding.ASCII.GetString(beacon.Payload).Should().StartWith("DAPPS v1");
 
-        await bearer.SolicitAsync(new SolicitFrame(Local), "0", ct);
+        await bearer.SolicitAsync(new SolicitFrame(Local), "1", ct);
         var solicit = await bpq.ReadUntilAsync('M', ct);
         (solicit.Port, solicit.CallFrom).Should().Be(((byte)0, Local));
         Encoding.ASCII.GetString(solicit.Payload).Should().StartWith("DAPPS v1 solicit ");
@@ -58,7 +65,8 @@ public sealed class AgwUiDiscoveryTests
         await using var h = new AgwInboundServiceHarness(Local);
         var bpq = await h.StartAsync(ct);
         await using var bearer = new AgwUiDiscoveryBearer(h.Service, h.Logs);
-        await bearer.StartAsync([Channel(1, 1), Channel(2, 3)], ct);
+        // Ports 2 and 4 as BPQ numbers them: AGW port bytes 1 and 3.
+        await bearer.StartAsync([Channel(1, 2), Channel(2, 4)], ct);
         await using var heard = bearer.ListenAsync(ct).GetAsyncEnumerator(ct);
 
         await bpq.WriteAsync(ct,
@@ -71,10 +79,10 @@ public sealed class AgwUiDiscoveryTests
             Monitored(3, "M0END", "DAPPS v1 callsign=M0END hops=0 ttl=600 end=1", junk: "9 Z3"));
 
         var first = (ReceivedBeacon)await NextAsync(heard, ct);
-        (first.Beacon.Callsign, first.ChannelKey, first.Beacon.Hops, first.Beacon.Ttl).Should().Be(("G7XYZ-9", "1", 1, 600));
-        ((AgwBearerHint)first.Beacon.Bearer).BearerPort.Should().Be(1);
+        (first.Beacon.Callsign, first.ChannelKey, first.Beacon.Hops, first.Beacon.Ttl).Should().Be(("G7XYZ-9", "2", 1, 600));
+        ((AgwBearerHint)first.Beacon.Bearer).BearerPort.Should().Be(2, "the port as the node numbers it, not its AGW byte");
         var second = (ReceivedSolicit)await NextAsync(heard, ct);
-        (second.Solicit.Callsign, second.ChannelKey).Should().Be(("G0AXP", "3"));
+        (second.Solicit.Callsign, second.ChannelKey).Should().Be(("G0AXP", "4"));
         var third = (ReceivedBeacon)await NextAsync(heard, ct);
         (third.Beacon.Callsign, third.Beacon.Ttl).Should().Be(("M0END", 600), "nothing else in between was a UI frame from a peer on a configured port");
     }
@@ -87,13 +95,13 @@ public sealed class AgwUiDiscoveryTests
         await using var h = new AgwInboundServiceHarness(Local, clock);
         var bpq = await h.StartAsync(ct);
         await using var bearer = new AgwUiDiscoveryBearer(h.Service, h.Logs);
-        await bearer.StartAsync([Channel(1, 1)], ct);
+        await bearer.StartAsync([Channel(1, 2)], ct);
         await using var heard = bearer.ListenAsync(ct).GetAsyncEnumerator(ct);
 
         bpq.Close();
         await clock.WaitForTimerAsync(ReconnectBackoffSchedule.DelayForAttempt(1), ct);
         bearer.Connection.Should().BeNull();
-        await FluentActions.Awaiting(() => bearer.AnnounceAsync(new BeaconFrame(Local, 0, 111, new AgwBearerHint(1)), "1", ct)
+        await FluentActions.Awaiting(() => bearer.AnnounceAsync(new BeaconFrame(Local, 0, 111, new AgwBearerHint(2)), "2", ct)
                 .WaitAsync(FakeAgwHost.FrameTimeout, ct))
             .Should().ThrowAsync<AgwLinkDownException>();
 
@@ -105,7 +113,7 @@ public sealed class AgwUiDiscoveryTests
         await again.WriteAsync(ct, Ui(1, "G7XYZ-9", "DAPPS v1 callsign=G7XYZ-9 hops=0 ttl=600"));
         ((ReceivedBeacon)await NextAsync(heard, ct)).Beacon.Callsign.Should().Be("G7XYZ-9");
 
-        await bearer.AnnounceAsync(new BeaconFrame(Local, 0, 222, new AgwBearerHint(1)), "1", ct);
+        await bearer.AnnounceAsync(new BeaconFrame(Local, 0, 222, new AgwBearerHint(2)), "2", ct);
         var beacon = await again.ReadUntilAsync('M', ct);
         Encoding.ASCII.GetString(beacon.Payload).Should().Contain("ttl=222", "the beacon tried while the link was down was not held back");
         again.Received.Count(f => f.Kind == 'M').Should().Be(1);
@@ -118,8 +126,8 @@ public sealed class AgwUiDiscoveryTests
         await using var h = new AgwInboundServiceHarness(Local);
         h.Options.Set(h.With(o => o.NodeBearer = "rhpv2"));
         var rhp = new RecordingUiSender();
-        await using var bearer = new AgwUiDiscoveryBearer(h.Service, h.Logs, rhp);
-        await bearer.StartAsync([Channel(1, 1)], ct);
+        await using var bearer = new AgwUiDiscoveryBearer(h.Service, h.Logs, rhp, portMaps: Xrouter27);
+        await bearer.StartAsync([Channel(1, 7)], ct);
         await using var heard = bearer.ListenAsync(ct).GetAsyncEnumerator(ct);
 
         await h.Service.StartAsync(ct);
@@ -131,9 +139,10 @@ public sealed class AgwUiDiscoveryTests
         // XRouter drops an 'M' from a socket that registered no callsign:
         // the beacon goes through the bearer, from our callsign, and the
         // link sends none.
-        await bearer.AnnounceAsync(new BeaconFrame(Local, 0, 600, new AgwBearerHint(1)), "1", ct);
+        // PORT=7 by its number (#370), which XRouter's AGW hears as byte 1.
+        await bearer.AnnounceAsync(new BeaconFrame(Local, 0, 600, new AgwBearerHint(7)), "7", ct);
         var sent = rhp.Sent.Should().ContainSingle().Subject;
-        (sent.Port, sent.From, sent.To).Should().Be(((byte)1, Local, "DAPPS"));
+        (sent.Port, sent.From, sent.To).Should().Be((7, Local, "DAPPS"));
         Encoding.ASCII.GetString(sent.Payload).Should().StartWith($"DAPPS v1 callsign={Local}");
         await FluentActions.Awaiting(() => link.SendUiAsync(1, "DAPPS", [1], ct)).Should().ThrowAsync<InvalidOperationException>();
         await bpq.WriteAsync(ct, Ui(1, "G7XYZ-9", "DAPPS v1 callsign=G7XYZ-9 hops=0 ttl=600"));
@@ -162,15 +171,36 @@ public sealed class AgwUiDiscoveryTests
         var ct = TestContext.Current.CancellationToken;
         await using var h = new AgwInboundServiceHarness(Local);
         h.Options.Set(h.With(o => o.NodeBearer = "rhpv2"));
-        await using var bearer = new AgwUiDiscoveryBearer(h.Service, h.Logs);
-        await bearer.StartAsync([Channel(1, 1)], ct);
+        await using var bearer = new AgwUiDiscoveryBearer(h.Service, h.Logs, portMaps: Xrouter27);
+        await bearer.StartAsync([Channel(1, 7)], ct);
         await h.Service.StartAsync(ct);
         using var bpq = await AcceptListenOnlyAsync(h.Host, ct);
         await h.Service.GetLinkAsync(FakeAgwHost.FrameTimeout, ct);
 
-        (await FluentActions.Awaiting(() => bearer.AnnounceAsync(new BeaconFrame(Local, 0, 600, new AgwBearerHint(1)), "1", ct))
+        (await FluentActions.Awaiting(() => bearer.AnnounceAsync(new BeaconFrame(Local, 0, 600, new AgwBearerHint(7)), "7", ct))
             .Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("nothing else sends UI frames");
         (await bpq.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'M');
+    }
+
+    [Fact]
+    public async Task AListenOnlyLinkToAnotherProgramsAgw_SendsNothingThroughRhpv2()
+    {
+        // pdn with Dire Wolf or BPQ answering AGW: their port numbers say
+        // nothing about pdn's, so a beacon by number could go out on a
+        // radio port other than the one the channel hears (#369, #370).
+        var ct = TestContext.Current.CancellationToken;
+        await using var h = new AgwInboundServiceHarness(Local);
+        h.Options.Set(h.With(o => o.NodeBearer = "rhpv2"));
+        var rhp = new RecordingUiSender();
+        await using var bearer = new AgwUiDiscoveryBearer(h.Service, h.Logs, rhp, portMaps: new FixedPortMaps(NodePortMap.Plain(2)));
+        await bearer.StartAsync([Channel(1, 2)], ct);
+        await h.Service.StartAsync(ct);
+        using var bpq = await AcceptListenOnlyAsync(h.Host, ct);
+        await h.Service.GetLinkAsync(FakeAgwHost.FrameTimeout, ct);
+
+        (await FluentActions.Awaiting(() => bearer.AnnounceAsync(new BeaconFrame(Local, 0, 600, new AgwBearerHint(2)), "2", ct))
+            .Should().ThrowAsync<UiFrameNotSentException>()).Which.Message.Should().Contain("not XRouter's");
+        rhp.Sent.Should().BeEmpty();
     }
 
     [Fact]
@@ -180,8 +210,8 @@ public sealed class AgwUiDiscoveryTests
         var clock = new ObservableTimeProvider();
         await using var h = new AgwInboundServiceHarness(Local, clock);
         var rhp = new RecordingUiSender();
-        await using var bearer = new AgwUiDiscoveryBearer(h.Service, h.Logs, rhp);
-        await bearer.StartAsync([Channel(1, 1)], ct);
+        await using var bearer = new AgwUiDiscoveryBearer(h.Service, h.Logs, rhp, portMaps: Xrouter27);
+        await bearer.StartAsync([Channel(1, 7)], ct);
         using var full = await h.StartAsync(ct);
 
         h.Options.Set(h.With(o => o.NodeBearer = "rhpv2"));
@@ -189,7 +219,7 @@ public sealed class AgwUiDiscoveryTests
         clock.Advance(AgwInboundService.NonFailureRetryDelay);
         using var listening = await AcceptListenOnlyAsync(h.Host, ct);
         (await h.Service.GetLinkAsync(FakeAgwHost.FrameTimeout, ct))!.ListenOnly.Should().BeTrue();
-        await bearer.AnnounceAsync(new BeaconFrame(Local, 0, 600, new AgwBearerHint(1)), "1", ct);
+        await bearer.AnnounceAsync(new BeaconFrame(Local, 0, 600, new AgwBearerHint(7)), "7", ct);
         rhp.Sent.Should().ContainSingle().Which.From.Should().Be(Local);
         (await listening.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'M');
 
@@ -199,9 +229,11 @@ public sealed class AgwUiDiscoveryTests
         using var registered = await AcceptRegisteredAsync(h.Host, ct);
         (await h.Service.GetLinkAsync(FakeAgwHost.FrameTimeout, ct))!.ListenOnly.Should().BeFalse();
 
-        // Registered again: the beacon goes on the link as an 'M'.
-        await bearer.AnnounceAsync(new BeaconFrame(Local, 0, 600, new AgwBearerHint(1)), "1", ct);
-        (await registered.ReadUntilAsync('M', ct)).CallFrom.Should().Be(Local);
+        // Registered again: the beacon goes on the link as an 'M', on
+        // PORT=7's AGW byte.
+        await bearer.AnnounceAsync(new BeaconFrame(Local, 0, 600, new AgwBearerHint(7)), "7", ct);
+        var m = await registered.ReadUntilAsync('M', ct);
+        (m.CallFrom, m.Port).Should().Be((Local, (byte)1));
         rhp.Sent.Should().HaveCount(1);
     }
 
@@ -327,7 +359,7 @@ public sealed class AgwUiDiscoveryTests
 
         await old.DisposeAsync();
         await using var edited = new AgwUiDiscoveryBearer(h.Service, h.Logs);
-        await edited.StartAsync([Channel(1, 3)], ct);
+        await edited.StartAsync([Channel(1, 4)], ct);
         await using var heard = edited.ListenAsync(ct).GetAsyncEnumerator(ct);
         await clock.WaitForTimerAsync(AgwInboundService.ListenOnlyLinger, ct);
         clock.Advance(AgwInboundService.ListenOnlyLinger);
@@ -421,9 +453,10 @@ public sealed class AgwUiDiscoveryTests
             h.Options.Set(h.With(o => o.NodeBearer = "rhpv2"));
             var airtime = new AirtimeAccountant(h.Options, TimeProvider.System, new Logger<AirtimeAccountant>(h.Logs));
             var sender = new ThrowingUiSender(notSent
-                ? new UiFrameNotSentException("RHP: not sending on AGW port 1: test")
+                ? new UiFrameNotSentException("RHP: not sending on port 1: test")
                 : new IOException("RHP: the UI frame may have gone"));
-            var service = await StartDiscoveryAsync(h.Options, h.Logs, h.Service, 1800, ct, airtime, sender: sender);
+            var service = await StartDiscoveryAsync(h.Options, h.Logs, h.Service, 1800, ct, airtime, sender: sender,
+                portMaps: new FixedPortMaps(NodePortMap.Xrouter([1, 2])));
             try
             {
                 await h.Service.StartAsync(ct);
@@ -438,6 +471,45 @@ public sealed class AgwUiDiscoveryTests
                 {
                     airtime.ConsumedSecondsLastHour.Should().BeGreaterThan(0);
                 }
+            }
+            finally
+            {
+                await service.StopAsync(CancellationToken.None);
+            }
+        });
+    }
+
+    [Fact]
+    public async Task AChannelSavedByAnOlderDapps_NeitherBeaconsNorHears_UntilItIsConverted()
+    {
+        // #233: its key still counts from 0 until the node's AGW connection
+        // answers; run as it is, it would beacon on another radio port.
+        var ct = TestContext.Current.CancellationToken;
+        await WithDatabaseAsync(async () =>
+        {
+            var logs = new CapturingLoggerFactory();
+            var options = new MutableOptionsMonitor<SystemOptions>(new SystemOptions { Callsign = Local });
+            using (var c = DbInfo.GetConnection())
+            {
+                c.Insert(new DbDiscoveryChannel { Bearer = "agw", ChannelKey = "1", LinkClass = LinkClass.VhfUhfFm, Enabled = true, PortPending = true });
+            }
+            var database = new Database(NullLogger<Database>.Instance, options);
+            var service = new DiscoveryService(database, options, TimeProvider.System, logs, new Logger<DiscoveryService>(logs),
+                agwLinks: new FlickeringLinkSource(null))
+            {
+                ChannelReloadInterval = TimeSpan.FromMilliseconds(100),
+            };
+            await service.StartAsync(ct);
+            try
+            {
+                await logs.WaitForAsync("no enabled channels", ct);
+                logs.Any("started bearer 'agw'").Should().BeFalse();
+
+                using (var c = DbInfo.GetConnection())
+                {
+                    c.Execute("update discoverychannels set ChannelKey = '2', PortPending = null");
+                }
+                await logs.WaitForAsync("started bearer 'agw'", ct);
             }
             finally
             {
@@ -478,7 +550,8 @@ public sealed class AgwUiDiscoveryTests
 
     private static async Task<DiscoveryService> StartDiscoveryAsync(
         MutableOptionsMonitor<SystemOptions> options, CapturingLoggerFactory logs, IAgwLinkSource links, int beaconIntervalSeconds,
-        CancellationToken ct, AirtimeAccountant? airtime = null, TimeSpan? reload = null, IUiFrameSender? sender = null)
+        CancellationToken ct, AirtimeAccountant? airtime = null, TimeSpan? reload = null, IUiFrameSender? sender = null,
+        INodePortMaps? portMaps = null)
     {
         var database = new Database(NullLogger<Database>.Instance, options);
         await database.UpsertDiscoveryChannel(new DbDiscoveryChannel
@@ -487,7 +560,7 @@ public sealed class AgwUiDiscoveryTests
         });
         var service = new DiscoveryService(
             database, options, TimeProvider.System, logs, new Logger<DiscoveryService>(logs), airtime: airtime, agwLinks: links,
-            listenOnlyUiSender: sender)
+            listenOnlyUiSender: sender, portMaps: portMaps)
         {
             ChannelReloadInterval = reload ?? TimeSpan.FromMilliseconds(100),
         };
@@ -598,18 +671,18 @@ public sealed class AgwUiDiscoveryTests
     /// <summary>Stands in for the RHPv2 sender: records each UI frame.</summary>
     private sealed class RecordingUiSender : IUiFrameSender
     {
-        public List<(byte Port, string From, string To, byte[] Payload)> Sent { get; } = [];
+        public List<(int Port, string From, string To, byte[] Payload)> Sent { get; } = [];
 
-        public Task SendUiAsync(byte bearerPort, string from, string to, byte[] payload, AgwPortList? agwPorts, CancellationToken ct)
+        public Task SendUiAsync(int portNumber, string from, string to, byte[] payload, CancellationToken ct)
         {
-            lock (Sent) Sent.Add((bearerPort, from, to, payload));
+            lock (Sent) Sent.Add((portNumber, from, to, payload));
             return Task.CompletedTask;
         }
     }
 
     private sealed class ThrowingUiSender(Exception failure) : IUiFrameSender
     {
-        public Task SendUiAsync(byte bearerPort, string from, string to, byte[] payload, AgwPortList? agwPorts, CancellationToken ct) =>
+        public Task SendUiAsync(int portNumber, string from, string to, byte[] payload, CancellationToken ct) =>
             Task.FromException(failure);
     }
 }

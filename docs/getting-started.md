@@ -79,7 +79,7 @@ This advertises a `DAPPS` command at the BPQ node prompt, and - via the APPLCALL
 DAPPS knows nothing about other DAPPS nodes until you tell it about one. On the dashboard's **Topology > Neighbours** tab, enter:
 
 - A peer's DAPPS callsign with SSID.
-- The **Radio port** your link to it goes out on. With BPQ the form lists BPQ's ports to pick from; with XRouter or pdn type the port number counting from 0 (the node's first port is 0).
+- The **Radio port** your link to it goes out on, numbered as your node numbers it. With BPQ the form lists BPQ's ports to pick from; with XRouter type its `PORT=` number, with pdn the number its `PORTS` command shows.
 
 There's a REST API and a [discovery system](discovery-and-routing.md) that auto-finds peers if you turn on beaconing - but a single manual neighbour gets you to "first message" fastest.
 

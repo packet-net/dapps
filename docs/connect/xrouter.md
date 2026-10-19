@@ -57,13 +57,13 @@ In the dashboard's `/Setup` wizard (first run) or on the dashboard's **Settings*
 | RHPv2 user    | leave blank if XRouter doesn't require RHPv2 auth          |
 | RHPv2 password | matching credential, otherwise blank                       |
 
-Neither page has a default bearer port field: set each neighbour's **Radio port** when you add it on the **Topology > Neighbours** tab. A neighbour without one uses bearer port `0` (change that with `DAPPS_DEFAULT_BEARER_PORT` before first start, or `POST /Config`). Bearer ports are 0-indexed against the order `PORT=N` blocks appear in `XROUTER.CFG` (so `PORT=1` -> 0, `PORT=2` -> 1, etc); DAPPS adds 1 internally to derive RHPv2's 1-indexed port name.
+Neither page has a default port field: set each neighbour's **Radio port** when you add it on the **Topology > Neighbours** tab. Type the port's `PORT=` number from `XROUTER.CFG`: `PORT=19` is `19`. A neighbour without one uses port `1` (change that with `DAPPS_DEFAULT_PORT` before first start, or `POST /Config`).
 
 The wizard's **Detect packet node** button probes localhost:9000 and pre-selects RHPv2 automatically when XRouter is on the same host.
 
 Saved settings hot-reload - the daemon binds the listener on the new callsign within a few seconds, no restart needed.
 
-(The `DAPPS_CALLSIGN`, `DAPPS_NODE_BEARER`, `DAPPS_NODE_HOST`, `DAPPS_RHP_PORT`, `DAPPS_RHP_USER`, `DAPPS_RHP_PASS`, `DAPPS_DEFAULT_BEARER_PORT` env vars still work as **first-run seeds** for automated deployments - set them before the daemon's first start and they populate the equivalent rows. After first start, the persisted values win and env vars stop mattering.)
+(The `DAPPS_CALLSIGN`, `DAPPS_NODE_BEARER`, `DAPPS_NODE_HOST`, `DAPPS_RHP_PORT`, `DAPPS_RHP_USER`, `DAPPS_RHP_PASS`, `DAPPS_DEFAULT_PORT` env vars still work as **first-run seeds** for automated deployments - set them before the daemon's first start and they populate the equivalent rows. After first start, the persisted values win and env vars stop mattering.)
 
 ## Step 5: start DAPPS, watch for the listener bind
 
@@ -99,7 +99,7 @@ Add a manual neighbour on the dashboard's **Topology > Neighbours** tab:
 | Field          | Value                                       |
 |----------------|---------------------------------------------|
 | Callsign       | another DAPPS node's callsign with SSID     |
-| Radio port     | the XRouter port the peer is reached on, counting from 0 (`PORT=1` is 0) |
+| Radio port     | the `PORT=` number the peer is reached on, e.g. `19` for `PORT=19` |
 | UDP endpoint   | leave blank                                 |
 
 Send a test message with the **Quick send** form on the dashboard's Overview. The forwarder service picks it up within a few seconds, asks XRouter to dial the remote callsign, and you'll see the session in XRouter's stats / monitor view.
@@ -108,15 +108,15 @@ Send a test message with the **Quick send** form on the dashboard's Overview. Th
 
 An AGW discovery channel works with RHPv2 as the bearer (see [Discovery channels](../discovery-and-routing.md#discovery-channels)). DAPPS hears other nodes' beacons on XRouter's AGW monitor, so `AGWPORT=` must be set and DAPPS's **AGW TCP port** setting must match it. That AGW connection registers no callsign and never takes a call, so calls to DAPPS's callsign always reach its RHPv2 listener. DAPPS sends its own beacons and solicits through the RHPv2 port instead, as UI frames from its callsign: XRouter's AGW sends nothing from a connection that has registered no callsign.
 
-AGW and RHPv2 number XRouter's ports differently: AGW counts them from 0 in order of their `PORT=` numbers, RHPv2 uses the `PORT=` number itself. So before each beacon DAPPS asks XRouter which `PORT=` numbers exist (this sends nothing on air) and sends on the one at the channel's position: with `PORT=1`, `PORT=3` and `PORT=4`, a channel on AGW port 2 beacons on `PORT=4`. If the AGW connection isn't XRouter's own, or the two port lists don't match, DAPPS sends nothing and logs one line per beacon saying why, and the beacon is not charged against the airtime budget.
+Give the channel its `PORT=` number, as for a neighbour. XRouter's AGW counts its ports from 0 in order of their `PORT=` numbers and never says which numbers they are, so when the AGW connection opens DAPPS asks XRouter's RHPv2 port which `PORT=` numbers exist (this sends nothing on air). With `PORT=2`, `PORT=7` and `PORT=19`, a beacon heard on AGW's third port was heard on `PORT=19`. If the AGW connection isn't XRouter's own, or the two port lists don't match, DAPPS sends nothing on that channel and says why, and nothing is charged against the airtime budget.
 
 ## Multi-port setups
 
-If your XRouter has multiple radio ports (`PORT=1`, `PORT=2`, etc.), every neighbour record can specify which port to use. The dashboard's add-neighbour form has the field; the discovery system records the port a peer was heard on automatically.
+If your XRouter has several radio ports, every neighbour can say which one to use. DAPPS uses XRouter's own `PORT=` numbers everywhere: in the forms, on the Topology page, in the logs and in the API. Gaps are fine: with `PORT=1`, `PORT=2`, `PORT=7` and `PORT=20`, a neighbour on `7` is called on `PORT=7`, and a peer heard on `PORT=20` is called back on `PORT=20`.
 
-The byte numbering in DAPPS is 0-indexed against the order ports appear in `XROUTER.CFG`. `PORT=1` -> byte 0, `PORT=2` -> byte 1, and so on. DAPPS handles the +1 conversion to RHPv2's port-name shape internally, so the same `BearerPort` value works for both AGW (BPQ) and RHPv2 (XRouter) neighbours.
+### Upgrading from 0.53 or earlier
 
-For calls to neighbours that +1 is all DAPPS does, so number your ports `PORT=1`, `PORT=2`, `PORT=3` in order with no gaps: with `PORT=1` and `PORT=3`, a neighbour on radio port 1 would be called on `PORT=2`, which doesn't exist. Discovery beacons don't depend on this (see [Discovery beacons](#discovery-beacons)).
+Older DAPPS counted ports from 0, so `PORT=19` was entered as `18`. On upgrade DAPPS converts what you saved, once, and keeps using the same radio ports: a neighbour saved as `18` now shows `19`. Discovery channels and peers heard on them are converted when XRouter's AGW connection first answers, a few seconds after start; until then nothing is sent on them and the Topology page marks them **waiting**. The one change on air: on a node whose `PORT=` numbers have gaps, a peer DAPPS learned from its beacon is now called on the port it was heard on, where older versions could pick the wrong one.
 
 ## Sharing a callsign between XRouter and DAPPS
 
@@ -133,7 +133,7 @@ Same-callsign-same-SSID with another XRouter declaration is **not** supported - 
 | Authentication failure in the log | `DAPPS_RHP_USER` / `DAPPS_RHP_PASS` don't match XRouter's RHPv2 credentials. |
 | Inbound `c <DAPPS-callsign>` lands at the XRouter node prompt instead of `DAPPSv1>` | DAPPS isn't successfully bound - either it's not running, or the bind failed (callsign collision with NODECALL / CONSOLECALL / CHATCALL / APPL). Check DAPPS logs. |
 | Inbound `c <DAPPS-callsign>` fails with no L2 response | The remote node doesn't have a route to your DAPPS callsign. NetROM/AX.25 routing is XRouter's job, not DAPPS's. |
-| Outbound forwards never connect | DAPPS's neighbour has the wrong `bearer port` byte - check the port-numbering note above. |
+| Outbound forwards never connect | The neighbour's **Radio port** isn't the `PORT=` number the peer is reached on - see [Multi-port setups](#multi-port-setups). |
 
 For more general DAPPS troubleshooting, see the main [Troubleshooting](../troubleshooting.md) page.
 

@@ -333,9 +333,9 @@ Implementations that don't care about app-level headers can drop them on receive
 
 ```
 C: peers\n
-S: peer M0LTE-9 source=n port=0\n
+S: peer M0LTE-9 source=n\n
 S: peer GB7RDG source=d\n
-S: peer G7VVK-9 source=n port=1\n
+S: peer G7VVK-9 source=n\n
 S: end\n
 ```
 
@@ -344,12 +344,12 @@ The connecting peer asks "who do you forward to?"; the server emits one `peer` l
 Per-line format:
 
 ```
-peer <callsign> source=<n|d> [port=<byte>]
+peer <callsign> source=<n|d> [port=<number>]
 ```
 
 - `source=n`: a configured neighbour (`DbNeighbour`).
 - `source=d`: a beacon-discovered peer (`DbDiscoveredPeer`).
-- `port=<0-255>`: optional AGW bearer port. Omitted for UDP-discovered peers (no meaningful port-as-byte concept there).
+- `port=<number>`: optional, and not sent since 0.54: up to 0.53 it carried the sender's own AGW port byte to that peer, a number on the sender's node that means nothing to the asker. Receivers have ignored it since 0.47.1; accept it and ignore it.
 
 Unknown lines between `peer` and `end` are silently skipped on both sides - lets a future server add fields without breaking older clients. The alias `who\n` is accepted in place of `peers\n` because that's the verb a sysop already types at a node prompt.
 

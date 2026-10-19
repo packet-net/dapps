@@ -58,6 +58,10 @@ public sealed class WebAppFixture : IAsyncLifetime
         _authRequired = authRequired;
     }
 
+    /// <summary>The running app's database, for a test that needs rows
+    /// the dashboard can't make (an older version's, say).</summary>
+    public string DatabasePath => Path.Combine(_workDir ?? throw new InvalidOperationException("Fixture not initialised"), "data", "dapps.db");
+
     public string BaseUrl => _baseUrl
         ?? throw new InvalidOperationException("Fixture not initialised - call InitializeAsync first.");
 

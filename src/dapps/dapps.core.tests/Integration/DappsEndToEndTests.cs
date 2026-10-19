@@ -367,7 +367,8 @@ public sealed class DappsEndToEndTests(TwoInstanceLinbpqFixture fixture) : Dapps
             (await caller.ReadLineAsync(t, ct)).Should().Be($"bad {worldId}", "the payload doesn't hash to its id");
 
             await caller.SendAsync("peers\n", ct);
-            (await ReadUntilEndAsync(caller, ct)).Should().Contain($"peer {fixture.ApplCallA} source=n port={fixture.AxipPortIndex}");
+            (await ReadUntilEndAsync(caller, ct)).Should().Contain($"peer {fixture.ApplCallA} source=n")
+                .And.NotContain(l => l.Contains("port="), "a port is a number on the answering node; not sent since #233");
 
             await caller.SendAsync("routes\n", ct);
             (await ReadUntilEndAsync(caller, ct)).Should().Contain($"route {fixture.ApplCallA} hops=1", "a route names the station, SSID included (#242)");

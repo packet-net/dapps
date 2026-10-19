@@ -180,7 +180,7 @@ public class TxGateTests
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            var act = async () => await transport.ConnectAsync("M0LTE-1", "M0LTE-2", 0, cts.Token);
+            var act = async () => await transport.ConnectAsync("M0LTE-1", "M0LTE-2", 1, cts.Token);
             (await act.Should().ThrowAsync<TxStoppedException>())
                 .WithMessage("*kill-switch active*");
         }

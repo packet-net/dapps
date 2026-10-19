@@ -45,7 +45,7 @@ public sealed class RemainingControllersTests : IAsyncLifetime
             Callsign = "N0CALL",
             NodeHost = "localhost",
             AgwPort = 8000,
-            DefaultBearerPort = 0,
+            DefaultPort = 1,
             MqttPort = 1883,
         });
         database = new Database(NullLogger<Database>.Instance, optionsMonitor);
@@ -67,13 +67,13 @@ public sealed class RemainingControllersTests : IAsyncLifetime
         var ctrl = new NeighboursController(database);
 
         // POST a neighbour with both bearer hints set.
-        var post = await ctrl.Upsert(new NeighbourModel("g7xyz-9", BearerPort: 1, UdpEndpoint: "10.0.0.1:1880"));
+        var post = await ctrl.Upsert(new NeighbourModel("g7xyz-9", Port: 1, UdpEndpoint: "10.0.0.1:1880"));
         post.Should().BeOfType<NoContentResult>();
 
         var list = (await ctrl.List()).ToList();
         list.Should().ContainSingle();
         list[0].Callsign.Should().Be("G7XYZ-9", "callsigns are upper-cased server-side");
-        list[0].BearerPort.Should().Be(1);
+        list[0].Port.Should().Be(1);
         list[0].UdpEndpoint.Should().Be("10.0.0.1:1880");
 
         var del = await ctrl.Remove("G7XYZ-9");
@@ -94,14 +94,14 @@ public sealed class RemainingControllersTests : IAsyncLifetime
     {
         var ctrl = new NeighboursController(database);
 
-        (await ctrl.Upsert(new NeighbourModel("g7xyz-3", BearerPort: 1, ConnectVia: "g7xyz")))
+        (await ctrl.Upsert(new NeighbourModel("g7xyz-3", Port: 1, ConnectVia: "g7xyz")))
             .Should().BeOfType<BadRequestObjectResult>("without a script DAPPS would sit at the node's prompt");
 
-        (await ctrl.Upsert(new NeighbourModel("g7xyz-3", BearerPort: 1, ConnectScript: "DAPPS|DAPPSv1>", ConnectVia: " g7xyz ")))
+        (await ctrl.Upsert(new NeighbourModel("g7xyz-3", Port: 1, ConnectScript: "DAPPS|DAPPSv1>", ConnectVia: " g7xyz ")))
             .Should().BeOfType<NoContentResult>();
         (await ctrl.List()).Single().ConnectVia.Should().Be("G7XYZ");
 
-        await ctrl.Upsert(new NeighbourModel("g7xyz-3", BearerPort: 1, ConnectScript: "DAPPS|DAPPSv1>", ConnectVia: ""));
+        await ctrl.Upsert(new NeighbourModel("g7xyz-3", Port: 1, ConnectScript: "DAPPS|DAPPSv1>", ConnectVia: ""));
         (await ctrl.List()).Single().ConnectVia.Should().BeNull("a blank Connect via dials the Callsign itself");
     }
 
@@ -114,7 +114,7 @@ public sealed class RemainingControllersTests : IAsyncLifetime
     {
         var ctrl = new NeighboursController(database);
 
-        (await ctrl.Upsert(new NeighbourModel("gb7agm-3", BearerPort: 1,
+        (await ctrl.Upsert(new NeighbourModel("gb7agm-3", Port: 1,
             ConnectScript: "C GB7BDH|Connected\nC 14 GB7AGM-3|Connected\nDAPPS|DAPPSv1>")))
             .Should().BeOfType<NoContentResult>();
 
@@ -128,7 +128,7 @@ public sealed class RemainingControllersTests : IAsyncLifetime
     {
         var ctrl = new NeighboursController(database);
 
-        await ctrl.Upsert(new NeighbourModel("gb7agm-3", BearerPort: 1, ConnectVia: "GB7BDH",
+        await ctrl.Upsert(new NeighbourModel("gb7agm-3", Port: 1, ConnectVia: "GB7BDH",
             ConnectScript: "C G0NODE3|Connected\nDAPPS|DAPPSv1>"));
 
         var row = (await ctrl.List()).Single();
@@ -144,7 +144,7 @@ public sealed class RemainingControllersTests : IAsyncLifetime
     {
         var ctrl = new NeighboursController(database);
 
-        await ctrl.Upsert(new NeighbourModel("mb7npw-3", BearerPort: 1, ConnectScript: script));
+        await ctrl.Upsert(new NeighbourModel("mb7npw-3", Port: 1, ConnectScript: script));
 
         var row = (await ctrl.List()).Single();
         row.ConnectVia.Should().BeNull();
@@ -156,7 +156,7 @@ public sealed class RemainingControllersTests : IAsyncLifetime
     {
         var ctrl = new NeighboursController(database);
 
-        await ctrl.Upsert(new NeighbourModel("mb7npw", BearerPort: 1, ConnectScript: "C MB7NPW|Connected\nDAPPS|DAPPSv1>"));
+        await ctrl.Upsert(new NeighbourModel("mb7npw", Port: 1, ConnectScript: "C MB7NPW|Connected\nDAPPS|DAPPSv1>"));
 
         var row = (await ctrl.List()).Single();
         row.ConnectVia.Should().BeNull("the peer is dialled anyway");
@@ -175,7 +175,7 @@ public sealed class RemainingControllersTests : IAsyncLifetime
     public async Task NeighboursController_PostBlankUdpEndpoint_TreatedAsNull()
     {
         var ctrl = new NeighboursController(database);
-        await ctrl.Upsert(new NeighbourModel("g7xyz-9", BearerPort: 1, UdpEndpoint: "   "));
+        await ctrl.Upsert(new NeighbourModel("g7xyz-9", Port: 1, UdpEndpoint: "   "));
 
         var list = (await ctrl.List()).ToList();
         list.Single().UdpEndpoint.Should().BeNull(
@@ -193,7 +193,7 @@ public sealed class RemainingControllersTests : IAsyncLifetime
             c.Insert(new DbSystemOption { Option = "Callsign", Value = "M0LTE-9" });
             c.Insert(new DbSystemOption { Option = "NodeHost", Value = "bpq.local" });
             c.Insert(new DbSystemOption { Option = "AgwPort", Value = "8001" });
-            c.Insert(new DbSystemOption { Option = "DefaultBearerPort", Value = "2" });
+            c.Insert(new DbSystemOption { Option = "DefaultPort", Value = "3" });
             c.Insert(new DbSystemOption { Option = "MqttPort", Value = "1884" });
         }
         var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
@@ -204,7 +204,7 @@ public sealed class RemainingControllersTests : IAsyncLifetime
         got.Callsign.Should().Be("M0LTE-9");
         got.NodeHost.Should().Be("bpq.local");
         got.AgwPort.Should().Be(8001);
-        got.DefaultBearerPort.Should().Be(2);
+        got.DefaultPort.Should().Be(3);
         got.MqttPort.Should().Be(1884);
     }
 
@@ -219,13 +219,42 @@ public sealed class RemainingControllersTests : IAsyncLifetime
             ["Callsign"] = "M0LTE-2",
             ["NodeHost"] = "127.0.0.1",
             ["AgwPort"] = 8000,
-            ["DefaultBearerPort"] = 0,
+            ["DefaultPort"] = 2,
             ["MqttPort"] = 1883,
         });
         post.Should().BeOfType<OkResult>();
 
         var got = ctrl.Get().Value!;
         got.Callsign.Should().Be("M0LTE-2");
+        got.DefaultPort.Should().Be(2);
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(2, 3)]
+    public async Task ConfigController_TheOldDefaultBearerPort_IsTakenAsCountingFromZero(int counted, int expected)
+    {
+        // #233: up to 0.53 it was DefaultBearerPort, counting from 0. An
+        // old caller's value still means the same radio port. Deprecated.
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        var ctrl = new ConfigController(store, new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance));
+
+        (await ctrl.Post(new System.Text.Json.Nodes.JsonObject { ["DefaultBearerPort"] = counted })).Should().BeOfType<OkResult>();
+
+        ctrl.Get().Value!.DefaultPort.Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task ConfigController_DefaultPortWins_OverTheOldName_AndZeroIsRefused()
+    {
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        var ctrl = new ConfigController(store, new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance));
+
+        (await ctrl.Post(new System.Text.Json.Nodes.JsonObject { ["DefaultPort"] = 5, ["DefaultBearerPort"] = 0 })).Should().BeOfType<OkResult>();
+        ctrl.Get().Value!.DefaultPort.Should().Be(5);
+
+        (await ctrl.Post(new System.Text.Json.Nodes.JsonObject { ["DefaultPort"] = 0 })).Should().BeOfType<BadRequestObjectResult>();
+        ctrl.Get().Value!.DefaultPort.Should().Be(5);
     }
 
     [Fact]

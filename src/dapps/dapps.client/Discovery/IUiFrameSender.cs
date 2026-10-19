@@ -1,5 +1,3 @@
-using dapps.client.Transport.Agw;
-
 namespace dapps.client.Discovery;
 
 /// <summary>
@@ -12,14 +10,13 @@ namespace dapps.client.Discovery;
 public interface IUiFrameSender
 {
     /// <summary>Sends <paramref name="payload"/> as one UI frame (PID 0xF0)
-    /// from <paramref name="from"/> to <paramref name="to"/> on the radio
-    /// port the AGW connection numbers <paramref name="agwPort"/> (counting
-    /// from 0). <paramref name="agwPorts"/> is that connection's latest
-    /// answer to a 'G', which the sender uses to find the same port on the
-    /// bearer. Throws <see cref="UiFrameNotSentException"/> when nothing
-    /// went to the node, and another exception when the frame may have
-    /// gone.</summary>
-    Task SendUiAsync(byte agwPort, string from, string to, byte[] payload, AgwPortList? agwPorts, CancellationToken ct);
+    /// from <paramref name="from"/> to <paramref name="to"/> on the node's
+    /// radio port <paramref name="portNumber"/>, numbered as the node shows
+    /// it (XRouter's <c>PORT=</c>). The caller has already matched it to
+    /// the port the AGW connection hears on. Throws
+    /// <see cref="UiFrameNotSentException"/> when nothing went to the node,
+    /// and another exception when the frame may have gone.</summary>
+    Task SendUiAsync(int portNumber, string from, string to, byte[] payload, CancellationToken ct);
 }
 
 /// <summary>

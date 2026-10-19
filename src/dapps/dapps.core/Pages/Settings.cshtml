@@ -33,7 +33,7 @@
     }
 </style>
 
-<form id="settings-form" onsubmit="dappsSaveConfig(event)" autocomplete="off" data-default-bearer-port="@Model.Options.DefaultBearerPort">
+<form id="settings-form" onsubmit="dappsSaveConfig(event)" autocomplete="off">
     <div class="panel">
         <h3>Identity &amp; packet-node bearer</h3>
         <p class="panel-sub">DAPPS's callsign on the air, and the packet node it talks through.</p>
@@ -62,12 +62,12 @@
                        autocomplete="off" data-form-type="other" data-1p-ignore="true" data-lpignore="true"
                        class="masked" />
                 <span class="hint">stored on this node, not a sysop credential</span></div>
-            <!-- DefaultBearerPort retired from the UI: with per-
+            <!-- DefaultPort retired from the UI: with per-
                  neighbour radio-port assignment (now picked from a
                  BPQ-supplied dropdown in Topology -> Neighbours) the
                  global default added more confusion than value. The
-                 model field stays in SystemOptions for back-compat
-                 with stored configs and is preserved on save below. -->
+                 model field stays in SystemOptions (POST /Config) and
+                 is left alone on save. -->
         </div>
     </div>
 
@@ -235,12 +235,10 @@ async function dappsSaveConfig(ev) {
         RhpPort: parseInt(f.RhpPort.value, 10),
         RhpUser: f.RhpUser.value,
         RhpPass: f.RhpPass.value,
-        // DefaultBearerPort is no longer exposed on this form (Topology
-        // -> Neighbours has a per-row port picker that supersedes it).
-        // Send the existing persisted value back so we don't zero it
-        // out on save - rendered server-side into the form's data
-        // attribute on first paint.
-        DefaultBearerPort: parseInt(f.dataset.defaultBearerPort ?? '0', 10),
+        // DefaultPort is not on this form (Topology -> Neighbours has a
+        // per-row port picker), and not sent: /Config keeps what it
+        // doesn't get, so a page loaded before an upgrade's port
+        // conversion can't save the old value back over the new one.
         MqttPort: parseInt(f.MqttPort.value, 10),
         UdpListenPort: parseInt(f.UdpListenPort.value, 10),
         AuthRequired: f.AuthRequired.checked,
@@ -314,7 +312,7 @@ async function dappsRotatePassword(ev) {
     if (!form) return;
     for (const m of managed) {
         const el = form.querySelector(`[name='${m.key}']`);
-        if (!el) continue; // option without a form field (e.g. Ssid, DefaultBearerPort)
+        if (!el) continue; // option without a form field (e.g. Ssid, DefaultPort)
         if (el.tagName === 'SELECT' || el.type === 'checkbox') el.disabled = true;
         else el.readOnly = true;
         const badge = document.createElement('span');

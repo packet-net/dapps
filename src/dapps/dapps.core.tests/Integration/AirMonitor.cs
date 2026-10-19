@@ -167,6 +167,12 @@ internal sealed class AirMonitor : IAirMonitor
         }
     }
 
+    /// <summary>Forget what has been heard so far.</summary>
+    public void Clear()
+    {
+        lock (frames) frames.Clear();
+    }
+
     /// <summary>Frames the node on side <paramref name="heardBy"/> received.</summary>
     public IReadOnlyList<string> HeardBy(string heardBy)
     {

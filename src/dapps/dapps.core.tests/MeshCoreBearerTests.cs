@@ -234,7 +234,7 @@ public class MeshCoreBearerTests
     public void RouteBuilder_CopiesMeshCoreChannelHint()
     {
         var route = RouteBuilder.FromNeighbour(
-            new DbNeighbour { Callsign = "GB7XYZ-1", MeshCoreChannel = "dapps" }, defaultBearerPort: null);
+            new DbNeighbour { Callsign = "GB7XYZ-1", MeshCoreChannel = "dapps" }, defaultPort: null);
         route.Callsign.Should().Be("GB7XYZ-1");
         route.MeshCoreChannel.Should().Be("dapps");
     }

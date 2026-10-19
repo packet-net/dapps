@@ -398,7 +398,7 @@ start_dapps() {
             DAPPS_NODE_BEARER="$bearer" \
             DAPPS_AGW_PORT="${AGW_PORT[$n]}" \
             DAPPS_RHP_PORT="${rhp:-9000}" \
-            DAPPS_DEFAULT_BEARER_PORT="$port_byte" \
+            DAPPS_DEFAULT_PORT="$((port_byte + 1))" \
             DAPPS_MQTT_PORT="${MQTT_PORT[$n]}" \
             DAPPS_UDP_LISTEN_PORT=0 \
             DAPPS_AUTH_REQUIRED=false \
@@ -460,7 +460,7 @@ configure_dapps() {
     for nb in ${NEIGHBOURS[$n]}; do
         curl -fsS -o /dev/null -b "$cookie" -X POST "$base/Neighbours" \
             -H 'content-type: application/json' \
-            -d "{\"Callsign\":\"${DAPPS_CALL[$nb]}\",\"BearerPort\":$port_byte,\"UdpEndpoint\":null}"
+            -d "{\"Callsign\":\"${DAPPS_CALL[$nb]}\",\"Port\":$((port_byte + 1)),\"UdpEndpoint\":null}"
     done
 
     # Static route hints so multi-hop paths are deterministic. Format

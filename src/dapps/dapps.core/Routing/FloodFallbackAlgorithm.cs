@@ -135,7 +135,7 @@ public sealed class FloodFallbackAlgorithm(
             .ToHashSet();
         return neighbours
             .Where(n => !upstream.Contains(n))
-            .Select(n => RouteBuilder.FromNeighbour(n, ctx.DefaultBearerPort))
+            .Select(n => RouteBuilder.FromNeighbour(n, ctx.DefaultPort))
             .ToList();
     }
 }

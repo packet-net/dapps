@@ -102,8 +102,12 @@ public class InboundConnectionHandler(
 
     /// <summary>
     /// Plan B6.1 Phase 2 - emit the set of callsigns we forward to.
-    /// One <c>peer &lt;callsign&gt; source=&lt;n|d&gt;[ port=&lt;byte&gt;]</c>
-    /// line per known forward target, then <c>end</c>. Callers (today:
+    /// One <c>peer &lt;callsign&gt; source=&lt;n|d&gt;</c> line per known
+    /// forward target, then <c>end</c>. Up to 0.53 a line could end
+    /// <c> port=&lt;byte&gt;</c>, our own port to that peer; no receiver has
+    /// used it since 0.47.1 (#246), it is a number on another node, and
+    /// now that ports are the node's own numbers (#233) it is not sent.
+    /// Readers still accept it. Callers (today:
     /// dapps probers populating their own <c>DbProbedNode</c> table for
     /// transitive discovery) parse line-by-line until <c>end</c>.
     ///
@@ -133,7 +137,6 @@ public class InboundConnectionHandler(
             if (n.UdpEndpoint is not null) continue;   // UDP-only - not AGW-reachable for the asker
             if (!emitted.Add(n.Callsign)) continue;
             sb.Append("peer ").Append(n.Callsign).Append(" source=n");
-            if (n.BearerPort is { } port) sb.Append(" port=").Append(port);
             sb.Append('\n');
         }
 
@@ -144,7 +147,6 @@ public class InboundConnectionHandler(
             if (string.IsNullOrWhiteSpace(p.Callsign)) continue;
             if (!emitted.Add(p.Callsign)) continue;     // already reported as a neighbour
             sb.Append("peer ").Append(p.Callsign).Append(" source=d");
-            if (p.BearerPort is { } port) sb.Append(" port=").Append(port);
             sb.Append('\n');
         }
 

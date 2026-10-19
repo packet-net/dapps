@@ -65,7 +65,7 @@ service:
     DAPPS_NODE_BEARER: rhpv2              # speak RHPv2 to pdn (not AGW)
     DAPPS_NODE_HOST: "127.0.0.1"
     DAPPS_RHP_PORT: "9000"                # pdn's RHP server loopback port
-    DAPPS_DEFAULT_BEARER_PORT: "0"
+    DAPPS_DEFAULT_PORT: "1"               # pdn's first port, as its PORTS command numbers it
     DAPPS_UPDATE_CHECK_ENABLED: "false"   # the host package owns updates — no self-update nag
     ASPNETCORE_URLS: http://127.0.0.1:18080  # loopback only; must match ui.upstream
     DAPPS_MQTT_PORT: "18831"              # off the well-known 1883 — don't fight a real broker

@@ -28,9 +28,11 @@ namespace dapps.client.Discovery;
 /// (the node's RHPv2 port) instead, from the same callsign. Hearing stays
 /// on the link's monitor.
 ///
-/// Channels for this bearer have <c>ChannelKey</c> = the bearer port
-/// byte stringified ("0", "1", ...). The bearer rejects any other key
-/// shape on start.
+/// Channels for this bearer have <c>ChannelKey</c> = the node's port
+/// number as the node shows it ("1", "7", ...; #233), which the
+/// <see cref="INodePortMaps"/> turns into the AGW port byte and back. The
+/// bearer rejects any other key shape on start. A heard beacon's
+/// <see cref="AgwBearerHint"/> carries that number too.
 /// </summary>
 public sealed class AgwUiDiscoveryBearer : IDiscoveryBearer
 {
@@ -40,10 +42,12 @@ public sealed class AgwUiDiscoveryBearer : IDiscoveryBearer
 
     private readonly IAgwLinkSource _links;
     private readonly IUiFrameSender? _listenOnlySender;
+    private readonly INodePortMaps? _portMaps;
     private readonly string _broadcastCall;
     private readonly ILogger _logger;
 
-    private IReadOnlyDictionary<byte, string> _portToChannelKey = new Dictionary<byte, string>();
+    private IReadOnlyDictionary<int, string> _numberToChannelKey = new Dictionary<int, string>();
+    private int _unmappedLogged;
     private IDisposable? _subscription;
 
     private readonly Channel<ReceivedDiscoveryFrame> _incoming
@@ -57,10 +61,12 @@ public sealed class AgwUiDiscoveryBearer : IDiscoveryBearer
         IAgwLinkSource links,
         ILoggerFactory loggerFactory,
         IUiFrameSender? listenOnlySender = null,
-        string broadcastCall = DefaultBroadcastCall)
+        string broadcastCall = DefaultBroadcastCall,
+        INodePortMaps? portMaps = null)
     {
         _links = links;
         _listenOnlySender = listenOnlySender;
+        _portMaps = portMaps;
         _broadcastCall = broadcastCall;
         _logger = loggerFactory.CreateLogger<AgwUiDiscoveryBearer>();
     }
@@ -73,19 +79,19 @@ public sealed class AgwUiDiscoveryBearer : IDiscoveryBearer
             throw new ArgumentException("AgwUiDiscoveryBearer requires at least one channel", nameof(channels));
         }
 
-        // Channel-key parsing: all keys must be valid bearer ports.
-        var portToChannelKey = new Dictionary<byte, string>();
+        // Channel-key parsing: all keys must be port numbers.
+        var numberToChannelKey = new Dictionary<int, string>();
         foreach (var ch in channels)
         {
-            var portByte = ParsePortByte(ch.ChannelKey);
-            portToChannelKey[portByte] = ch.ChannelKey;
+            var number = ParsePortNumber(ch.ChannelKey);
+            numberToChannelKey[number] = ch.ChannelKey;
         }
-        _portToChannelKey = portToChannelKey;
+        _numberToChannelKey = numberToChannelKey;
         _subscription = _links.SubscribeUi(OnUi);
 
         _logger.LogInformation(
             "AGW UI discovery monitoring ports [{0}] on the node's AGW connection",
-            string.Join(",", _portToChannelKey.Keys));
+            string.Join(",", _numberToChannelKey.Keys));
         return Task.CompletedTask;
     }
 
@@ -101,16 +107,38 @@ public sealed class AgwUiDiscoveryBearer : IDiscoveryBearer
     private async Task SendAsync(byte[] payload, string channelKey, CancellationToken ct)
     {
         if (_subscription is null) throw new InvalidOperationException("AgwUiDiscoveryBearer not started");
-        var portByte = ParsePortByte(channelKey);
+        var number = ParsePortNumber(channelKey);
         var link = _links.TryGetLink()
-            ?? throw new AgwLinkDownException($"AGW: the connection to the node is not open; nothing sent on port {portByte}");
+            ?? throw new AgwLinkDownException($"AGW: the connection to the node is not open; nothing sent on port {number}");
         if (link.ListenOnly)
         {
             var sender = _listenOnlySender
-                ?? throw new InvalidOperationException($"AGW: the connection only listens and nothing else sends UI frames; nothing sent on port {portByte}");
-            await sender.SendUiAsync(portByte, link.Callsign, _broadcastCall, payload, link.LatestPorts, ct);
+                ?? throw new InvalidOperationException($"AGW: the connection only listens and nothing else sends UI frames; nothing sent on port {number}");
+            // The frame goes out on the RHPv2 port by its number, and is
+            // heard on the AGW port the map gives that number: only when
+            // the map came from the same node's RHPv2 port (XRouter's AGW)
+            // do the two name the same radio. pdn has no AGW of its own,
+            // so another program's AGW port numbers say nothing about it.
+            var map = await MapAsync(link, ct);
+            if (map is null || !map.IsXrouter)
+            {
+                throw new UiFrameNotSentException(
+                    $"RHP: not sending on port {number}: the AGW port list is not XRouter's, so its ports cannot be matched to the RHPv2 host's");
+            }
+            if (map.ToAgwPort(number) is null)
+            {
+                throw new UiFrameNotSentException(
+                    $"RHP: not sending on port {number}: the node has no port {number} (its ports are {string.Join(",", map.Numbers ?? [])})");
+            }
+            await sender.SendUiAsync(number, link.Callsign, _broadcastCall, payload, ct);
             return;
         }
+        var registeredMap = await MapAsync(link, ct)
+            ?? throw new UiFrameNotSentException(
+                $"AGW: the node's port numbers could not be read, so nothing was sent on port {number} (XRouter: check RHPPORT and DAPPS's RHPv2 settings)");
+        var portByte = registeredMap.ToAgwPort(number)
+            ?? throw new UiFrameNotSentException(
+                $"AGW: the node has no port {number}; nothing sent");
         await link.SendUiAsync(portByte, _broadcastCall, payload, ct);
     }
 
@@ -126,7 +154,20 @@ public sealed class AgwUiDiscoveryBearer : IDiscoveryBearer
     /// <summary>A monitored UI frame, on the link's reader: never waits.</summary>
     private void OnUi(AgwFrame frame)
     {
-        if (!_portToChannelKey.TryGetValue(frame.Port, out var channelKey))
+        var map = _portMaps is null ? NodePortMap.Plain()
+            : _links.TryGetLink() is { } current ? _portMaps.TryGet(current) : null;
+        if (map is null)
+        {
+            // An XRouter whose port numbers are still being read (or
+            // could not be): which channel this is can't be told yet.
+            if (Interlocked.Exchange(ref _unmappedLogged, 1) == 0)
+            {
+                _logger.LogInformation("AGW UI discovery: the node's port numbers are not known yet; frames heard meanwhile are skipped");
+            }
+            return;
+        }
+        if (map.FromAgwPort(frame.Port) is not { } number
+            || !_numberToChannelKey.TryGetValue(number, out var channelKey))
         {
             // A port with no channel: the monitor covers them all.
             return;
@@ -150,7 +191,7 @@ public sealed class AgwUiDiscoveryBearer : IDiscoveryBearer
             return;
         }
 
-        var hint = new AgwBearerHint(frame.Port);
+        var hint = new AgwBearerHint(number);
         if (!BeaconCodec.TryParse(payload, hint, out var beacon) || beacon is null)
             return;
 
@@ -182,13 +223,16 @@ public sealed class AgwUiDiscoveryBearer : IDiscoveryBearer
         return ValueTask.CompletedTask;
     }
 
-    private static byte ParsePortByte(string channelKey)
+    private Task<NodePortMap?> MapAsync(AgwLink link, CancellationToken ct) =>
+        _portMaps is null ? Task.FromResult<NodePortMap?>(NodePortMap.Plain()) : _portMaps.GetAsync(link, ct);
+
+    private static int ParsePortNumber(string channelKey)
     {
-        if (!byte.TryParse(channelKey, NumberStyles.None, CultureInfo.InvariantCulture, out var b))
+        if (!int.TryParse(channelKey, NumberStyles.None, CultureInfo.InvariantCulture, out var n) || n < 1 || n > 255)
         {
             throw new FormatException(
-                $"AGW discovery channel-key must be a bearer port (e.g. '0', '1'); got '{channelKey}'");
+                $"AGW discovery channel-key must be the node's port number (e.g. '1', '7'); got '{channelKey}'");
         }
-        return b;
+        return n;
     }
 }

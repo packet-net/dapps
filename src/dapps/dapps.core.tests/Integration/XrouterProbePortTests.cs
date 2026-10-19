@@ -75,7 +75,7 @@ public sealed class XrouterProbePortTests : IAsyncLifetime
         var rhpX = x.GetMappedPublicPort(InsideRhpX);
         var rhpY = x.GetMappedPublicPort(InsideRhpY);
 
-        // DAPPS port bytes are 0-indexed: 0 is XRouter's PORT=1, 1 is PORT=2.
+        // The fixtures count from 0 (DappsDaemon seeds one higher, #233): 0 is XRouter's PORT=1, 1 is PORT=2.
         var a = await StartAsync("xr246-a", CallA, rhpX, 0, [new(CallB, 0)], ct);
         var b = await StartAsync("xr246-b", CallB, rhpY, 0, [new(CallA, 0), new(CallC, 1)], ct);
         var c = await StartAsync("xr246-c", CallC, rhpY, 1, [new(CallB, 1)], ct);
@@ -96,7 +96,7 @@ public sealed class XrouterProbePortTests : IAsyncLifetime
         var probedC = (await ProbesAsync(a, ct)).Single(p => p.Callsign == CallC);
         probedC.LastProbedAt.Should().NotBeNull();
         probedC.LastError.Should().NotContain("RHP error 10", "X has no port 2: that is B's port to C");
-        probedC.LastBearerPort.Should().Be(0, "C is reached through B, on A's port to B");
+        probedC.LastPort.Should().Be(1, "C is reached through B, on A's port to B, PORT=1");
         probedC.LastSuccessAt.Should().NotBeNull($"C should answer A's probe through Y: {probedC.LastError}\n{a.Tail()}\n{c.Tail()}");
     }
 

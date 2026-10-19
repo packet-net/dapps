@@ -8,7 +8,7 @@ Every operator-tunable setting on a DAPPS node has three configuration surfaces:
 
 Most settings take effect within seconds of saving, with no restart. The MQTT and UDP listener ports, the routing algorithm, and MeshCore's enable, port and region need a restart. The dashboard's own address (`ASPNETCORE_URLS`) is env-only.
 
-A few knobs aren't on the Settings page: the default bearer port, the routing algorithm and the multi-part message timings. Change those with `POST /Config`, which changes only the settings you send. Route gossip staleness can be set with its env var before first start, or with `POST /Config` (from 0.48.1).
+A few knobs aren't on the Settings page: the default port, the routing algorithm and the multi-part message timings. Change those with `POST /Config`, which changes only the settings you send. Route gossip staleness can be set with its env var before first start, or with `POST /Config` (from 0.48.1).
 
 > **Deployment-managed mode (`DAPPS_ENV_MANAGED=true`)**: when a supervising deployment (a packet.net node host, say) sets `DAPPS_ENV_MANAGED=true`, every *set* `DAPPS_*` env var becomes deployment-managed config instead - re-applied over the persisted row at **every** start, with the matching dashboard fields badged "managed by environment" and rendered read-only. `DAPPS_ENV_MANAGED` itself is a mode switch read each start, never stored. Leave it unset for the standalone installs documented here: with it unset (or `false`) env vars keep the first-start-only semantics above and the dashboard stays in charge.
 
@@ -33,7 +33,13 @@ Walks the persisted `systemoptions` table and prints `DAPPS_SCREAMING_SNAKE=valu
 | RHPv2 port       | `DAPPS_RHP_PORT` | `9000`      | TCP port the packet node's RHPv2 listener is on. Used when `Node bearer = rhpv2`. |
 | RHPv2 user       | `DAPPS_RHP_USER` | _empty_     | Username for RHPv2 authentication. Leave empty if your packet node accepts unauthenticated RHPv2. |
 | RHPv2 password   | `DAPPS_RHP_PASS` | _empty_     | Password matching the RHPv2 user.                                         |
-| Default bearer port | `DAPPS_DEFAULT_BEARER_PORT` | `0` | Bearer port (0-indexed) for outbound sessions when a neighbour has no per-row override. For AGW this is the AGW port byte; for RHPv2 DAPPS adds 1 internally to derive XRouter's 1-indexed `PORT=N` name. |
+| Default port | `DAPPS_DEFAULT_PORT` | `1` | The radio port a neighbour without one of its own is called on, by the node's own number for it: BPQ's `PORTNUM`, XRouter's `PORT=`, pdn's port as `PORTS` lists it. `DAPPS_DEFAULT_BEARER_PORT` and `DefaultBearerPort`, its names up to 0.53, counted from 0; they still work, one higher, but are deprecated. |
+
+#### Radio port numbers
+
+Every radio port in DAPPS is the node's own number for it, the one you'd type in `C 2 CALL` at its prompt: BPQ's `PORTNUM`, XRouter's `PORT=`, pdn's port as `PORTS` lists it, and on Dire Wolf the `PortN` of its AGW port list (channel 0 is `1`). That goes for the dashboard, the logs and the REST API: `POST /Neighbours` takes `Port`, an AGW discovery channel's `ChannelKey` is the port number, `GET /Probes` shows `LastPort`, and `POST /Config` takes `DefaultPort`.
+
+Up to 0.53 DAPPS counted ports from 0. The old REST names still work, counting from 0, but are deprecated: `BearerPort` on `POST /Neighbours` and `DefaultBearerPort` on `POST /Config`. A port saved by an older DAPPS is converted on upgrade, once, so the same radio ports are used; see the upgrading notes on the [BPQ](connect/bpq.md#upgrading-from-053-or-earlier) and [XRouter](connect/xrouter.md#upgrading-from-053-or-earlier) pages.
 
 ### App-interface ports
 

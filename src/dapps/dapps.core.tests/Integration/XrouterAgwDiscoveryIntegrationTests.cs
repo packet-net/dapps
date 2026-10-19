@@ -33,7 +33,8 @@ public sealed class XrouterAgwDiscoveryIntegrationTests(XrouterIntegrationFixtur
         await using var a = await StartAsync("xr-disc-a", CallA, ct);
         await using var b = await StartAsync("xr-disc-b", CallB, ct);
 
-        var key = fixture.BearerPortIndex.ToString();
+        // The channel is the node's own number for the port, PORT=1 (#233).
+        var key = (fixture.BearerPortIndex + 1).ToString();
         await WaitForLogAsync(a, "so the AGW connection only hears them", b, ct);
         await WaitForLogAsync(b, $"heard {CallA} via agw/{key}", a, ct);
         await WaitForLogAsync(a, $"heard {CallB} via agw/{key}", b, ct);
@@ -65,7 +66,7 @@ public sealed class XrouterAgwDiscoveryIntegrationTests(XrouterIntegrationFixtur
         [
             new DbDiscoveryChannel
             {
-                Bearer = "agw", ChannelKey = fixture.BearerPortIndex.ToString(), LinkClass = LinkClass.VhfUhfFm,
+                Bearer = "agw", ChannelKey = (fixture.BearerPortIndex + 1).ToString(), LinkClass = LinkClass.VhfUhfFm,
                 BeaconIntervalSeconds = 10, AdvertisedTtlSeconds = 600, CostHint = 1,
             },
         ]);

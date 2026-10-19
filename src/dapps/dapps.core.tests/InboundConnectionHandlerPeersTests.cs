@@ -80,7 +80,7 @@ public sealed class InboundConnectionHandlerPeersTests : IAsyncLifetime
         var output = await DriveSession("peers\nq\n");
 
         output.Should().Contain("peer N0NEIGH-9 source=n");
-        output.Should().Contain("port=1");
+        output.Should().NotContain("port=", "a port is a number on this node, meaningless to the asker; not sent since #233");
         output.Should().Contain("peer N0BCN-7 source=d");
         // Neighbours emit before discovered peers - pin that ordering
         // so future shuffles in HandlePeers are noticed.
@@ -149,7 +149,7 @@ public sealed class InboundConnectionHandlerPeersTests : IAsyncLifetime
         var lines = output.Split('\n').Where(l => l.StartsWith("peer ")).ToList();
         lines.Should().ContainSingle();
         lines[0].Should().Contain("source=n");
-        lines[0].Should().Contain("port=5");
+        lines[0].Should().NotContain("port=");
     }
 
     [Fact]

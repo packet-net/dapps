@@ -79,7 +79,7 @@ public sealed class SystemOptionsStore : IOptionsMonitor<SystemOptions>
         await Upsert(connection, existing, nameof(options.RhpPort), options.RhpPort.ToString());
         await Upsert(connection, existing, nameof(options.RhpUser), options.RhpUser);
         await Upsert(connection, existing, nameof(options.RhpPass), options.RhpPass);
-        await Upsert(connection, existing, nameof(options.DefaultBearerPort), options.DefaultBearerPort.ToString());
+        await Upsert(connection, existing, nameof(options.DefaultPort), options.DefaultPort.ToString());
         await Upsert(connection, existing, nameof(options.Callsign), options.Callsign);
         await Upsert(connection, existing, nameof(options.MqttPort), options.MqttPort.ToString());
         await Upsert(connection, existing, nameof(options.UdpListenPort), options.UdpListenPort.ToString());
@@ -163,7 +163,7 @@ public sealed class SystemOptionsStore : IOptionsMonitor<SystemOptions>
             RhpPort = TryGetInt(r, nameof(SystemOptions.RhpPort), 9000),
             RhpUser = TryGet(r, nameof(SystemOptions.RhpUser), ""),
             RhpPass = TryGet(r, nameof(SystemOptions.RhpPass), ""),
-            DefaultBearerPort = TryGetInt(r, nameof(SystemOptions.DefaultBearerPort), 0),
+            DefaultPort = TryGetInt(r, nameof(SystemOptions.DefaultPort), 1, min: 0),
             Callsign = TryGet(r, nameof(SystemOptions.Callsign), DbStartup.PlaceholderCallsign),
             MqttPort = TryGetInt(r, nameof(SystemOptions.MqttPort), 1883),
             UdpListenPort = TryGetInt(r, nameof(SystemOptions.UdpListenPort), 0),
