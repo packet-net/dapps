@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.Sockets;
+using dapps.client;
 using dapps.core.Models;
 using dapps.core.Services;
 using dapps.core.Updater;
@@ -17,7 +18,7 @@ namespace dapps.core.Controllers;
 ///
 /// Definition of healthy:
 /// <list type="bullet">
-/// <item><description>Callsign is configured (not the placeholder).</description></item>
+/// <item><description>Callsign is configured (not the placeholder) and valid.</description></item>
 /// <item><description>The configured packet node is reachable on its bearer port (AGW or RHPv2 depending on <see cref="SystemOptions.NodeBearer"/>).</description></item>
 /// <item><description>The MQTT broker is bound on the configured port.</description></item>
 /// </list>
@@ -41,6 +42,7 @@ public sealed class HealthController(
 
         var callsignOk = !string.IsNullOrWhiteSpace(opts.Callsign)
             && !string.Equals(opts.Callsign, PlaceholderCallsign, StringComparison.OrdinalIgnoreCase);
+        var callsignProblem = callsignOk ? MessageFields.CallsignError(opts.Callsign) : null;
 
         var nodePort = string.Equals(opts.NodeBearer, "rhpv2", StringComparison.OrdinalIgnoreCase)
             ? (opts.RhpPort > 0 ? opts.RhpPort : 9000)
@@ -50,13 +52,14 @@ public sealed class HealthController(
 
         var pendingOutbound = await database.CountPendingOutbound();
 
-        var status = (callsignOk && nodeOk && mqttOk) ? "healthy" : "degraded";
+        var status = (callsignOk && callsignProblem is null && nodeOk && mqttOk) ? "healthy" : "degraded";
         var body = new HealthResponse(
             Status: status,
             Callsign: opts.Callsign,
             Version: UpdaterCli.ResolveCurrentVersion(),
             UptimeSeconds: (long)Math.Max(0, (DateTime.UtcNow - Process.GetCurrentProcess().StartTime.ToUniversalTime()).TotalSeconds),
             CallsignConfigured: callsignOk,
+            CallsignProblem: callsignProblem,
             NodeReachable: nodeOk,
             MqttBrokerUp: mqttOk,
             LastForwardSuccessAt: metrics.LastForwardSuccessAt,
@@ -88,6 +91,7 @@ public sealed record HealthResponse(
     string Version,
     long UptimeSeconds,
     bool CallsignConfigured,
+    string? CallsignProblem,
     bool NodeReachable,
     bool MqttBrokerUp,
     DateTime? LastForwardSuccessAt,

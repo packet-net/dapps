@@ -280,6 +280,10 @@
                 out.push({ tone: 'warn', title: 'Callsign not set',
                           body: 'DAPPS will not transmit until a callsign is configured.' });
             }
+            if (s.callsignProblem) {
+                out.push({ tone: 'err', title: 'Callsign is not valid',
+                          body: 'Every message sent from this node is dropped until the callsign is fixed in Settings. ' + s.callsignProblem });
+            }
             if (s.neighbourCount === 0 && s.discoveredPeerCount === 0) {
                 out.push({ tone: 'warn', title: 'No neighbours and no discovered peers',
                           body: 'Nowhere to send messages. Add a neighbour in Topology, or a discovery channel to hear other nodes.' });

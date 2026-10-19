@@ -1,4 +1,5 @@
 using System.Text;
+using dapps.client;
 using dapps.core.Models;
 using SQLite;
 
@@ -311,6 +312,8 @@ public static class DbStartup
     {
         var envKey = EnvVarFor(key);
         var envValue = ReadEnvironmentFor(key);
+        // An env file saved with CRLF line endings gives "G1AAA\r" (#359).
+        if (key == "Callsign") envValue = envValue?.Trim();
 
         var existing = options.FirstOrDefault(o => string.Equals(o.Option, key, StringComparison.OrdinalIgnoreCase));
         if (existing is null)
@@ -422,7 +425,7 @@ public static class DbStartup
         // An explicit DAPPS_CALLSIGN wins over derivation. (It was
         // already applied above; this guard also keeps a pathological
         // DAPPS_CALLSIGN=N0CALL from being re-derived underneath.)
-        if (!string.IsNullOrEmpty(ReadEnvironment(EnvVarFor("Callsign"))))
+        if (!string.IsNullOrWhiteSpace(ReadEnvironment(EnvVarFor("Callsign"))))
         {
             ClearPendingMarker(db, markerRow); // identity explicitly pinned - nothing pending
             return;
@@ -625,7 +628,8 @@ public static class DbStartup
         SeededOptions.Select(s => s.Key).Where(IsEnvManaged).ToArray();
 
     /// <summary>
-    /// Warn if the callsign is the seeded placeholder. The daemon starts
+    /// Warn if the callsign is the seeded placeholder, and log an error if
+    /// it is set but not a valid callsign. The daemon starts
     /// either way - inbound bearer services and the outbound forwarder
     /// gate themselves on a real callsign at runtime, and /Health reports
     /// <c>setupRequired</c> until the operator configures one via the
@@ -649,6 +653,16 @@ public static class DbStartup
                 "open the dashboard's /Setup page to configure a callsign and bearer. Inbound bearer " +
                 "services and the outbound forwarder will not bind/transmit until then.",
                 callsign);
+        }
+        else if (MessageFields.CallsignError(callsign) is { } error)
+        {
+            // An environment variable, the host node or a version before
+            // 0.52 can store a callsign /Config and /Setup would refuse
+            // (#359). Every local message goes out from it and is dropped.
+            logger?.LogError(
+                "Callsign '{Callsign}' is not valid: {Error} Every message sent from this node will be dropped " +
+                "until it is fixed in Settings or wherever it is set (DAPPS_CALLSIGN, PDN_APP_CALLSIGN or PDN_NODE_CALLSIGN).",
+                callsign, error);
         }
     }
 

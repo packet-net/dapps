@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text.Json;
+using dapps.client;
 using dapps.core.Controllers;
 using dapps.core.Models;
 using dapps.core.Updater;
@@ -59,6 +60,7 @@ public sealed class OperationalSnapshotBuilder(
 
         var callsignOk = !string.IsNullOrWhiteSpace(opts.Callsign)
             && !string.Equals(opts.Callsign, PlaceholderCallsign, StringComparison.OrdinalIgnoreCase);
+        var callsignProblem = callsignOk ? MessageFields.CallsignError(opts.Callsign) : null;
         var nodePort = string.Equals(opts.NodeBearer, "rhpv2", StringComparison.OrdinalIgnoreCase)
             ? (opts.RhpPort > 0 ? opts.RhpPort : 9000)
             : opts.AgwPort;
@@ -154,8 +156,9 @@ public sealed class OperationalSnapshotBuilder(
             GeneratedAt: timeProvider.GetUtcNow().UtcDateTime,
             UptimeSeconds: (long)Math.Max(0, (timeProvider.GetUtcNow().UtcDateTime - Process.GetCurrentProcess().StartTime.ToUniversalTime()).TotalSeconds),
 
-            Status: (callsignOk && nodeOk && mqttOk) ? "healthy" : "degraded",
+            Status: (callsignOk && callsignProblem is null && nodeOk && mqttOk) ? "healthy" : "degraded",
             CallsignConfigured: callsignOk,
+            CallsignProblem: callsignProblem,
             NodeReachable: nodeOk,
             MqttBrokerUp: mqttOk,
             LastForwardSuccessAt: counters.LastForwardSuccessAt,
@@ -226,6 +229,9 @@ public sealed record OperationalSnapshot(
 
     string Status,
     bool CallsignConfigured,
+    /// <summary>Why a configured callsign is not valid, or null. Every
+    /// message sent from this node is dropped while it is set (#359).</summary>
+    string? CallsignProblem,
     bool NodeReachable,
     bool MqttBrokerUp,
     DateTime? LastForwardSuccessAt,

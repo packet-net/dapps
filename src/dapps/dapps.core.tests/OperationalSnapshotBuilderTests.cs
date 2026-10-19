@@ -128,6 +128,34 @@ public sealed class OperationalSnapshotBuilderTests : IAsyncLifetime
         var snap = await builder.BuildAsync(TestContext.Current.CancellationToken);
 
         snap.CallsignConfigured.Should().BeFalse();
+        snap.CallsignProblem.Should().BeNull("the placeholder is reported as not configured, not as invalid");
+        snap.Status.Should().Be("degraded");
+    }
+
+    [Fact]
+    public async Task BuildAsync_InvalidCallsign_ReportsTheProblem()
+    {
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-01T12:00:00Z"));
+        var opts = new TestOptionsMonitor<SystemOptions>(new SystemOptions
+        {
+            Callsign = "G0TST-99",
+            NodeHost = "127.0.0.1",
+            AgwPort = 1,
+            MqttPort = 1,
+        });
+        var metrics = new OperationalMetrics(clock);
+        var airtime = new AirtimeAccountant(opts, clock, NullLogger<AirtimeAccountant>.Instance);
+        var db = new Database(NullLogger<Database>.Instance, opts);
+
+        var builder = new OperationalSnapshotBuilder(
+            opts, metrics, airtime, db,
+            updateChecker: BuildUpdateChecker(),
+            updaterFs: new FakeUpdaterFs(),
+            timeProvider: clock);
+        var snap = await builder.BuildAsync(TestContext.Current.CancellationToken);
+
+        snap.CallsignConfigured.Should().BeTrue();
+        snap.CallsignProblem.Should().NotBeNull();
         snap.Status.Should().Be("degraded");
     }
 
