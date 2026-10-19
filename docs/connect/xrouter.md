@@ -114,7 +114,7 @@ Give the channel its `PORT=` number, as for a neighbour. XRouter's AGW counts it
 
 If your XRouter has several radio ports, every neighbour can say which one to use. DAPPS uses XRouter's own `PORT=` numbers everywhere: in the forms, on the Topology page, in the logs and in the API. Gaps are fine: with `PORT=1`, `PORT=2`, `PORT=7` and `PORT=20`, a neighbour on `7` is called on `PORT=7`, and a peer heard on `PORT=20` is called back on `PORT=20`.
 
-### Upgrading from 0.53 or earlier
+### Upgrading from 0.52 or earlier
 
 Older DAPPS counted ports from 0, so `PORT=19` was entered as `18`. On upgrade DAPPS converts what you saved, once, and keeps using the same radio ports: a neighbour saved as `18` now shows `19`. Discovery channels and peers heard on them are converted when XRouter's AGW connection first answers, a few seconds after start; until then nothing is sent on them and the Topology page marks them **waiting**. The one change on air: on a node whose `PORT=` numbers have gaps, a peer DAPPS learned from its beacon is now called on the port it was heard on, where older versions could pick the wrong one.
 

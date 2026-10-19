@@ -98,6 +98,57 @@ public sealed class NodePortNumbersTests
         AgwPortQuery.Describe("Port1 Telnet").Should().Be("Port1 Telnet");
     }
 
+    [Fact]
+    public void DireWolfWithAChannelGap_NumbersPortsByTheirLabels()
+    {
+        // Mono soundcards on channels 0 and 2 (direwolf server.c): two
+        // ports, labelled Port1 and Port3, AGW bytes 0 and 2.
+        var payload = Bytes("2;Port1 first soundcard mono;Port3 second soundcard mono;\0");
+        var map = NodePortNumbers.Plain(payload);
+
+        (map.ToAgwPort(1), map.ToAgwPort(3), map.ToAgwPort(2)).Should().Be(((byte?)0, (byte?)2, (byte?)null));
+        (map.FromAgwPort(0), map.FromAgwPort(2), map.FromAgwPort(1)).Should().Be((1, 3, (int?)null));
+        map.Numbers.Should().Equal(1, 3);
+        NodePortNumbers.HiddenPortsWarning(payload).Should().BeNull("Dire Wolf counts the ports it lists");
+        AgwPortQuery.NumberPorts(payload, map).Select(p => (p.Number, p.Index, p.Description))
+            .Should().Equal((1, 0, "Port1 first soundcard mono"), (3, 2, "Port3 second soundcard mono"));
+    }
+
+    [Theory]
+    [InlineData("3;Port1 Telnet;Port2 VHF;Port3 HF;\0")]          // BPQ
+    [InlineData("3;1 with Telnet;2 with VHF;3 with HF;\0")]       // linbpq's own build
+    [InlineData("3;Telnet;VHF;HF;\0")]                            // no labels: counted from 1
+    public void Bpq_WithNoHiddenPorts_IsNumberedOneToN_AsBefore(string g)
+    {
+        var map = NodePortNumbers.Plain(Bytes(g));
+        map.Numbers.Should().Equal(1, 2, 3);
+        (map.ToAgwPort(1), map.ToAgwPort(3), map.ToAgwPort(4)).Should().Be(((byte?)0, (byte?)2, (byte?)null));
+        AgwPortQuery.NumberPorts(Bytes(g), map).Select(p => (p.Number, p.Index)).Should().Equal((1, 0), (2, 1), (3, 2));
+    }
+
+    [Fact]
+    public void Bpq_WithAHiddenPort_UsesNoByteBeyondTheListedPorts()
+    {
+        // linbpq: three ports, the second hidden. Its 'C' takes the byte as
+        // a position among the visible ports and connects one past them on
+        // its first port (M0LTE/linbpq#78).
+        var payload = Bytes("3;1 with Telnet;3 with AXIP three;\0");
+        var map = NodePortNumbers.Plain(payload);
+        map.Numbers.Should().Equal(1);
+        map.ToAgwPort(3).Should().BeNull();
+        NodePortNumbers.HiddenPortsWarning(payload).Should().Contain("counts 3 ports over AGW but lists 2");
+        AgwPortQuery.NumberPorts(payload, map).Select(p => p.Number).Should().Equal(1, null);
+    }
+
+    [Fact]
+    public void AStoredDireWolfByte_ConvertsToItsLabel_AndIsUsable()
+    {
+        var map = NodePortNumbers.Plain(Bytes("2;Port1 first soundcard mono;Port3 second soundcard mono;\0"));
+        var number = map.FromAgwPortUnbounded(2);
+        number.Should().Be(3);
+        map.ToAgwPort(number!.Value).Should().Be((byte)2, "channel 2's 0.52 byte goes out on channel 2 again");
+    }
+
     // ── Reading XRouter's numbers ─────────────────────────────────
 
     [Fact]
@@ -134,6 +185,46 @@ public sealed class NodePortNumbersTests
         numbers.TryGet(link).Should().BeSameAs(map);
         server.ReceivedFrames.OfType<BindMessage>().Count().Should().Be(binds, "read once per AGW connection");
         numbers.Warning.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ADuplicateSocketAnswer_IsAPort()
+    {
+        // Probed on 505p: a bind to a number that is no port answers "Invalid
+        // port" even while another socket holds our callsign on a real one,
+        // so XRouter checks the port first; "Duplicate socket" means the
+        // port exists and a beacon holds it now.
+        await using var server = new MockRhpServer
+        {
+            Handler = m => m is BindMessage b
+                ? b.Port == "7" ? new BindReplyMessage { Handle = b.Handle, ErrCode = 9, ErrText = "Duplicate socket" }
+                : int.TryParse(b.Port, out var n) && n is 2 or 19 ? null
+                : new BindReplyMessage { Handle = b.Handle, ErrCode = 10, ErrText = "Invalid port" }
+                : null,
+        };
+        server.Start();
+        await using var rhp = await RhpClient.ConnectAsync(server.Endpoint.Address.ToString(), server.Endpoint.Port, TestContext.Current.CancellationToken);
+
+        (await NodePortNumbers.RhpPortNumbersAsync(rhp, Local, 3, TestContext.Current.CancellationToken)).Should().Equal(2, 7, 19);
+    }
+
+    [Fact]
+    public async Task ANodeThatDoesntAnswerThePortQuery_HasNoMap_UntilItDoes()
+    {
+        // A slow first answer from an XRouter must not leave a plain map
+        // (byte = number - 1) for the whole connection (#370).
+        var ct = TestContext.Current.CancellationToken;
+        var numbers = new NodePortNumbers(Rhpv2UiFrameSenderTests.Options("127.0.0.1", 1), NullLogger<NodePortNumbers>.Instance);
+        using var host = new FakeAgwHost();
+        var answer = false;
+        await using var link = await OpenLinkAsync(host, Bytes("2;Port1 Telnet;Port2 VHF;\0"), ct, () => answer);
+
+        (await numbers.GetAsync(link, ct)).Should().BeNull("no answer within the port query's time: nothing is guessed");
+        numbers.TryGet(link).Should().BeNull();
+        numbers.Warning.Should().Contain("did not answer");
+
+        answer = true;
+        (await numbers.GetAsync(link, ct))!.Numbers.Should().Equal(1, 2);
     }
 
     [Fact]
@@ -190,7 +281,7 @@ public sealed class NodePortNumbersTests
 
     /// <summary>A registered AGW link to a fake node that answers the
     /// port query with <paramref name="ports"/>.</summary>
-    private static async Task<AgwLink> OpenLinkAsync(FakeAgwHost host, byte[] ports, CancellationToken ct)
+    private static async Task<AgwLink> OpenLinkAsync(FakeAgwHost host, byte[] ports, CancellationToken ct, Func<bool>? answer = null)
     {
         var opening = AgwLink.OpenAsync("127.0.0.1", host.Port, Local, _ => { }, NullLogger.Instance, ct: ct);
         var node = await host.AcceptAsync(ct);
@@ -205,7 +296,7 @@ public sealed class NodePortNumbersTests
                 while (true)
                 {
                     var f = await node.ReadFrameAsync(ct);
-                    if (f.Kind == 'G') await node.WriteAsync(ct, new AgwFrame(0, 'G', 0, "", "", ports));
+                    if (f.Kind == 'G' && (answer is null || answer())) await node.WriteAsync(ct, new AgwFrame(0, 'G', 0, "", "", ports));
                 }
             }
             catch { /* the link closed */ }

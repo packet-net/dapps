@@ -250,6 +250,8 @@ public sealed class TopologyTests(LoggedInWebAppFixture app, PlaywrightFixture p
 
             var cells = await page.Locator($"#neigh-body tr:has-text('{testCallsign}') td").AllInnerTextsAsync();
             cells[1].Trim().Should().BeEquivalentTo("waiting", "a pill, shown in capitals");
+            (await page.Locator($"#neigh-body tr:has-text('{testCallsign}') button:has-text('edit')").CountAsync()).Should().Be(0,
+                "editing would load the old count-from-0 value as a node number and save it");
         }
         finally
         {

@@ -103,7 +103,7 @@ public class InboundConnectionHandler(
     /// <summary>
     /// Plan B6.1 Phase 2 - emit the set of callsigns we forward to.
     /// One <c>peer &lt;callsign&gt; source=&lt;n|d&gt;</c> line per known
-    /// forward target, then <c>end</c>. Up to 0.53 a line could end
+    /// forward target, then <c>end</c>. Up to 0.52 a line could end
     /// <c> port=&lt;byte&gt;</c>, our own port to that peer; no receiver has
     /// used it since 0.47.1 (#246), it is a number on another node, and
     /// now that ports are the node's own numbers (#233) it is not sent.

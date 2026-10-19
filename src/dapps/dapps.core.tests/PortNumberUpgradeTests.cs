@@ -19,7 +19,7 @@ namespace dapps.core.tests;
 /// it is done. The rule throughout: an existing node calls, beacons and
 /// hears on exactly the radio ports it used before, except a peer heard on
 /// a gapped XRouter, which is now called on the port it was heard on.
-/// Each test starts from a 0.53 database: the tables as they were then
+/// Each test starts from a 0.52 database: the tables as they were then
 /// (no PortPending column), and the options it would hold.
 /// </summary>
 [Collection(SqliteOverridePathCollection.Name)]
@@ -60,7 +60,7 @@ public sealed class PortNumberUpgradeTests : IAsyncLifetime
     [Fact]
     public void AnRhpv2Node_ItsNeighbourAndProbePorts_GoUpByOneAtStartUp_SoTheSameRadioPortsAreCalled()
     {
-        // 0.53 dialled neighbour port k as RHPv2 port "k+1" (XRouter's
+        // 0.52 dialled neighbour port k as RHPv2 port "k+1" (XRouter's
         // PORT=k+1, pdn's port k+1): G6FCI's PORT=19 was entered as 18.
         SeedOld(bearer: "rhpv2", defaultBearerPort: 2);
         using (var c = DbInfo.GetConnection())
@@ -172,7 +172,7 @@ public sealed class PortNumberUpgradeTests : IAsyncLifetime
     [Fact]
     public void InEnvManagedMode_TheOldEnvVar_IsReappliedAtEveryStart_CountingFromZero()
     {
-        // pdn-app.yaml up to 0.53 sets DAPPS_DEFAULT_BEARER_PORT: "0",
+        // pdn-app.yaml up to 0.52 sets DAPPS_DEFAULT_BEARER_PORT: "0",
         // re-applied at every start: pdn's first port, "1" over RHPv2.
         env["DAPPS_ENV_MANAGED"] = "true";
         env["DAPPS_NODE_BEARER"] = "rhpv2";
@@ -207,7 +207,7 @@ public sealed class PortNumberUpgradeTests : IAsyncLifetime
 
         result.Should().Be(new PortNumberUpgrade.Result(1, 1, 1, 1, "2", 0));
         var plain = NodePortMap.Plain(3);
-        plain.ToAgwPort(Neighbour(db, "M0AHN-7").BearerPort!.Value).Should().Be((byte)0, "the byte 0.53 sent");
+        plain.ToAgwPort(Neighbour(db, "M0AHN-7").BearerPort!.Value).Should().Be((byte)0, "the byte 0.52 sent");
         Neighbour(db, "M0AHN-7").PortPending.Should().NotBe(true);
         db.Find<DbProbedNode>("M0CCC")!.LastBearerPort.Should().Be(3);
         db.Query<DbDiscoveryChannel>("select * from discoverychannels").Single().ChannelKey.Should().Be("2");
@@ -223,7 +223,7 @@ public sealed class PortNumberUpgradeTests : IAsyncLifetime
     [Fact]
     public void OnAGappedXrouter_EachAgwByte_BecomesThePortNumberAtThatPosition()
     {
-        // PORT=2, 7 and 19: 0.53 beaconed and heard channel byte 1 on
+        // PORT=2, 7 and 19: 0.52 beaconed and heard channel byte 1 on
         // PORT=7, and learned a peer heard on PORT=19 as byte 2 (which it
         // then called on "3", #370).
         SeedOld(bearer: "rhpv2", defaultBearerPort: 0);
@@ -291,6 +291,83 @@ public sealed class PortNumberUpgradeTests : IAsyncLifetime
     }
 
     [Fact]
+    public void AHeldDefault_KeepsTheConversionPending()
+    {
+        // 0.52's default byte 5 on an XRouter that now has two ports: no
+        // port to give it, so it stays held, and so does the marker (and
+        // with it the dashboard's notice).
+        SeedOld(bearer: "agw", defaultBearerPort: 5);
+        DbStartup.EnsureSchemaAndSeed();
+
+        using var db = DbInfo.GetConnection();
+        var result = PortNumberUpgrade.ConvertPending(db, NodePortMap.Xrouter([2, 7]))!;
+
+        (result.Held, result.DefaultPort).Should().Be((1, (string?)null));
+        Option(db, "DefaultPort").Should().Be("0");
+        Option(db, PortNumberUpgrade.MarkerKey).Should().Be(PortNumberUpgrade.Pending);
+    }
+
+    [Fact]
+    public async Task OnAnRhpv2NodeWithAPendingChannel_TheServiceKeepsTheAgwConnectionWanted_UntilConverted()
+    {
+        // G6FCI's path: RHPv2 is the bearer, so the AGW connection opens
+        // only for running discovery channels, and a pending one doesn't
+        // run. Without the service's own subscription it would never open
+        // and nothing would be converted.
+        SeedOld(bearer: "rhpv2", defaultBearerPort: 0);
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Execute("insert into discoverychannels (Bearer, ChannelKey, Enabled) values ('agw', '1', 1)");
+        }
+        DbStartup.EnsureSchemaAndSeed();
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        var links = new CountingLinkSource();
+        var service = new PortNumberUpgradeService(new FixedPortMaps(NodePortMap.Xrouter([2, 7, 19])), store,
+            NullLogger<PortNumberUpgradeService>.Instance, agwLinks: links);
+
+        await service.StartAsync(TestContext.Current.CancellationToken);
+        links.Subscribed.Should().Be(1, "the AGW connection must open for the conversion");
+
+        await service.ConvertAsync(null!);
+        links.Subscribed.Should().Be(0, "converted: the channel runs and wants the connection itself");
+        using var db = DbInfo.GetConnection();
+        db.Query<DbDiscoveryChannel>("select * from discoverychannels").Single().ChannelKey.Should().Be("7");
+    }
+
+    [Fact]
+    public async Task TheService_TriesAgainWhileTheNumberingCantBeRead_AndNeverGuesses()
+    {
+        SeedOld(bearer: "agw", defaultBearerPort: 1);
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Execute("insert into neighbours (Callsign, BearerPort) values ('M0AHN-7', 0)");
+        }
+        DbStartup.EnsureSchemaAndSeed();
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        var maps = new SequencePortMaps(null, null, NodePortMap.Xrouter([2, 7]));
+        var service = new PortNumberUpgradeService(maps, store, NullLogger<PortNumberUpgradeService>.Instance)
+        {
+            RetryInterval = TimeSpan.FromMilliseconds(50),
+        };
+        await service.StartAsync(TestContext.Current.CancellationToken);
+        using var host = new FakeAgwHost();
+        var ct = TestContext.Current.CancellationToken;
+        var opening = AgwLink.OpenAsync("127.0.0.1", host.Port, "G5ALF-3", _ => { }, NullLogger.Instance, ct: ct);
+        using var node = await host.AcceptAsync(ct);
+        await node.ExpectRegisterAsync(ct);
+        await node.WriteAsync(ct, FakeAgwSocket.RegisterReply(0x01));
+        await using var link = await opening;
+
+        await service.ConvertWhileOpenAsync(link).WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        maps.Calls.Should().Be(3);
+        service.Pending.Should().BeFalse();
+        using var db = DbInfo.GetConnection();
+        Neighbour(db, "M0AHN-7").BearerPort.Should().Be(2, "XRouter's lowest port, from the numbering read on the third try");
+        Option(db, "DefaultPort").Should().Be("7");
+    }
+
+    [Fact]
     public async Task TheService_WithAnXrouterItCantRead_HoldsEverything_AndSaysWhy()
     {
         SeedOld(bearer: "agw", defaultBearerPort: 1);
@@ -332,25 +409,28 @@ public sealed class PortNumberUpgradeTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ResavingAHeldNeighboursSamePort_KeepsItHeld_ButANewPortIsTheNodesNumber()
+    public async Task AnyWriteToAHeldNeighbour_IsTheNodesNumber_AndIsNotConvertedAgain()
     {
-        DbStartup.EnsureSchemaAndSeed();
+        // On BPQ, held byte 2 is port 3. An operator who types 2 means port
+        // 2: kept as typed, and the conversion leaves it alone.
+        SeedOld(bearer: "agw", defaultBearerPort: 0);
         using (var c = DbInfo.GetConnection())
         {
-            c.Execute("insert into neighbours (Callsign, BearerPort, PortPending) values ('M0AHN-7', 0, 1)");
+            c.Execute("insert into neighbours (Callsign, BearerPort) values ('M0AHN-7', 2)");
         }
+        DbStartup.EnsureSchemaAndSeed();
         var database = new Database(NullLogger<Database>.Instance, new MutableOptionsMonitor<SystemOptions>(new SystemOptions()));
 
-        // A form loaded before the conversion, saved for another field.
-        await database.UpsertNeighbour("M0AHN-7", 0, compressionEnabled: true);
-        (await database.GetNeighbour("M0AHN-7"))!.PortPending.Should().BeTrue();
+        await database.UpsertNeighbour("M0AHN-7", 2, compressionEnabled: true);
+        (await database.GetNeighbour("M0AHN-7"))!.Should().Match<DbNeighbour>(n => n.BearerPort == 2 && n.PortPending != true);
 
-        await database.UpsertNeighbour("M0AHN-7", 3);
-        (await database.GetNeighbour("M0AHN-7"))!.Should().Match<DbNeighbour>(n => n.BearerPort == 3 && n.PortPending != true);
+        using var db = DbInfo.GetConnection();
+        PortNumberUpgrade.ConvertPending(db, NodePortMap.Plain(3));
+        Neighbour(db, "M0AHN-7").BearerPort.Should().Be(2, "typed after the upgrade, so already the node's number");
     }
 
     [Fact]
-    public async Task AHeldChannel_NeitherRunsNorSolicits_AndKeepsItsMeaningWhenResaved()
+    public async Task AHeldChannel_NeitherRunsNorSolicits_UntilWrittenAgain()
     {
         DbStartup.EnsureSchemaAndSeed();
         using (var c = DbInfo.GetConnection())
@@ -358,15 +438,16 @@ public sealed class PortNumberUpgradeTests : IAsyncLifetime
             c.Execute("insert into discoverychannels (Bearer, ChannelKey, Enabled, LinkClass, PortPending) values ('agw', '1', 1, 1, 1)");
         }
         var database = new Database(NullLogger<Database>.Instance, new MutableOptionsMonitor<SystemOptions>(new SystemOptions()));
-        await database.UpsertDiscoveryChannel(new DbDiscoveryChannel { Bearer = "agw", ChannelKey = "1", LinkClass = LinkClass.Hf });
-        (await database.GetDiscoveryChannels()).Single().Should().Match<DbDiscoveryChannel>(ch => ch.PortPending == true && ch.LinkClass == LinkClass.Hf);
-
         var options = new MutableOptionsMonitor<SystemOptions>(new SystemOptions { Callsign = "G5ALF-3" });
         var discovery = new DiscoveryService(database, options, TimeProvider.System, NullLoggerFactory.Instance, NullLogger<DiscoveryService>.Instance);
         var controller = new DiscoveryChannelsController(database, discovery);
         var id = (await database.GetDiscoveryChannels()).Single().Id;
         (await controller.Solicit(id, TestContext.Current.CancellationToken)).Should().BeOfType<ConflictObjectResult>();
         (await controller.List()).Single().PortPending.Should().BeTrue();
+
+        // Written through the API: the key is port 1 as the node numbers it.
+        (await controller.Upsert(new DiscoveryChannelModel(0, "agw", "1", "Hf"))).Should().BeOfType<NoContentResult>();
+        (await database.GetDiscoveryChannels()).Single().Should().Match<DbDiscoveryChannel>(ch => ch.PortPending != true && ch.LinkClass == LinkClass.Hf);
     }
 
     [Fact]
@@ -378,7 +459,8 @@ public sealed class PortNumberUpgradeTests : IAsyncLifetime
         var controller = new DiscoveryChannelsController(database,
             new DiscoveryService(database, options, TimeProvider.System, NullLoggerFactory.Instance, NullLogger<DiscoveryService>.Instance));
 
-        (await controller.Upsert(new DiscoveryChannelModel(0, "agw", "0", "VhfUhfFm"))).Should().BeOfType<BadRequestObjectResult>();
+        var zero = (await controller.Upsert(new DiscoveryChannelModel(0, "agw", "0", "VhfUhfFm"))).Should().BeOfType<BadRequestObjectResult>().Subject;
+        zero.Value!.ToString().Should().Contain("counting from 1").And.Contain("0.52 and earlier counted AGW channel keys from 0");
         (await controller.Upsert(new DiscoveryChannelModel(0, "agw", "x", "VhfUhfFm"))).Should().BeOfType<BadRequestObjectResult>();
         (await controller.Upsert(new DiscoveryChannelModel(0, "agw", "19", "VhfUhfFm"))).Should().BeOfType<NoContentResult>();
         (await controller.Upsert(new DiscoveryChannelModel(0, "udp", "239.1.1.1:1", "VhfUhfFm"))).Should().BeOfType<NoContentResult>();
@@ -412,7 +494,7 @@ public sealed class PortNumberUpgradeTests : IAsyncLifetime
     private static void SeedOld(string bearer, int defaultBearerPort)
     {
         using var c = DbInfo.GetConnection();
-        // The 0.53 shapes of the tables that hold ports: no PortPending.
+        // The 0.52 shapes of the tables that hold ports: no PortPending.
         c.Execute("create table neighbours (Id integer primary key autoincrement not null, Callsign varchar, BearerPort integer)");
         c.Execute("create table probednodes (Callsign varchar primary key not null, LastBearerPort integer, Source varchar)");
         c.Execute("create table discoverychannels (Id integer primary key autoincrement not null, Bearer varchar, ChannelKey varchar, Enabled integer, LinkClass integer)");
@@ -434,4 +516,51 @@ public sealed class PortNumberUpgradeTests : IAsyncLifetime
             throw new InvalidOperationException("not called");
     }
 
+
+    private sealed class CountingLinkSource : IAgwLinkSource
+    {
+        private int subscribed;
+
+        public int Subscribed => Volatile.Read(ref subscribed);
+
+        public AgwLinkState State => AgwLinkState.Idle;
+
+        public AgwLink? TryGetLink() => null;
+
+        public Task<AgwLink?> GetLinkAsync(TimeSpan wait, CancellationToken ct) => Task.FromResult<AgwLink?>(null);
+
+        public Task<AgwLink?> ReopenAsync(TimeSpan wait, CancellationToken ct) => Task.FromResult<AgwLink?>(null);
+
+        public IDisposable SubscribeUi(Action<AgwFrame> onUi)
+        {
+            Interlocked.Increment(ref subscribed);
+            return new Unsubscribe(this);
+        }
+
+        private sealed class Unsubscribe(CountingLinkSource source) : IDisposable
+        {
+            private int done;
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref done, 1) == 0) Interlocked.Decrement(ref source.subscribed);
+            }
+        }
+    }
+
+    /// <summary>Gives each map in turn, the last one from then on.</summary>
+    private sealed class SequencePortMaps(params NodePortMap?[] maps) : INodePortMaps
+    {
+        private int calls;
+
+        public int Calls => calls;
+
+        public NodePortMap? TryGet(AgwLink link) => null;
+
+        public Task<NodePortMap?> GetAsync(AgwLink link, CancellationToken ct)
+        {
+            var i = Interlocked.Increment(ref calls) - 1;
+            return Task.FromResult(maps[Math.Min(i, maps.Length - 1)]);
+        }
+    }
 }

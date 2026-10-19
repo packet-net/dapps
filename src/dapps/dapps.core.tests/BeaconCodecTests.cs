@@ -97,6 +97,27 @@ public class BeaconCodecTests
         (b!.Callsign, b.Hops, b.Ttl).Should().Be(("M0LTE-9", 1, 600));
     }
 
+    [Theory]
+    [InlineData(" end")]             // seen from a 0.52 sender through 64-bit LinBPQ
+    [InlineData(" end junk")]
+    [InlineData(" W~ #9")]
+    [InlineData("@` x")]             // on the last field and after it
+    public void Decode_FromAnOlderSender_JunkWordsAfterTheLastField_AreIgnored(string junk)
+    {
+        var bytes = Encoding.ASCII.GetBytes($"DAPPS v1 callsign=M0LTE-9 hops=1 ttl=600{junk}\r");
+        BeaconCodec.TryParse(bytes, new AgwBearerHint(0), out var b).Should().BeTrue();
+        (b!.Callsign, b.Hops, b.Ttl).Should().Be(("M0LTE-9", 1, 600));
+    }
+
+    [Theory]
+    [InlineData("DAPPS v1 callsign=A junk hops=0 ttl=60")]        // a word between fields
+    [InlineData("DAPPS v1 callsign=A hops=0 ttl=60 end x=1")]      // a field after the junk
+    [InlineData("DAPPS v1 end")]                                  // no fields at all
+    public void Decode_JunkWordsAnywhereButTheEnd_Fail(string raw)
+    {
+        BeaconCodec.TryParse(Encoding.ASCII.GetBytes(raw), new AgwBearerHint(0), out _).Should().BeFalse();
+    }
+
     [Fact]
     public void Decode_FromAnOlderSender_DigitJunk_IsCappedAtADay()
     {

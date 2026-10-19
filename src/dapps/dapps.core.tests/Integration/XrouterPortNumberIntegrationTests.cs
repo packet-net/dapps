@@ -24,10 +24,10 @@ namespace dapps.core.tests.Integration;
 ///
 /// Proves: a neighbour on 19 is called on <c>PORT=19</c>; a channel on 7
 /// beacons and hears on <c>PORT=7</c>; a peer heard on 7 is learned as 7
-/// and called on <c>PORT=7</c> (on 0.53 it would have been called on "8",
-/// which doesn't exist); and a 0.53 database calls and beacons on the same
-/// ports after the upgrade as 0.53 did. With
-/// <c>DAPPS_BEFORE_DAEMON_DLL</c> pointing at a 0.53 build, the last test
+/// and called on <c>PORT=7</c> (on 0.52 it would have been called on "8",
+/// which doesn't exist); and a 0.52 database calls and beacons on the same
+/// ports after the upgrade as 0.52 did. With
+/// <c>DAPPS_BEFORE_DAEMON_DLL</c> pointing at a 0.52 build, the last test
 /// also runs that build first, on the same database, and compares.
 /// </summary>
 [Collection("XRouter integration")]
@@ -92,7 +92,7 @@ public sealed class XrouterPortNumberIntegrationTests : IAsyncLifetime
         learned.Should().ContainSingle(p => p.Callsign == CallA)
             .Which.Should().Match<Peer>(p => p.BearerPort == 7 && p.ChannelKey == "7", "the port it was heard on, as XRouter numbers it");
 
-        // B calls A on PORT=7, where it heard it: 0.53 called "8" (#370).
+        // B calls A on PORT=7, where it heard it: 0.52 called "8" (#370).
         var toA = "Hello A, heard your beacon"u8.ToArray();
         await b.SubmitAsync("chat", CallA, toA, ct);
         (await a.WaitForInboundAsync("chat", 1, Within, ct)).Single().Payload.Should().Equal(toA);
@@ -115,21 +115,21 @@ public sealed class XrouterPortNumberIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ADatabaseFrom053_CallsAndBeaconsOnTheSamePortsAfterTheUpgrade()
+    public async Task ADatabaseFrom052_CallsAndBeaconsOnTheSamePortsAfterTheUpgrade()
     {
         var ct = TestContext.Current.CancellationToken;
-        // 0.53 rows, counting from 0: neighbour B saved as 18 (dialled as
+        // 0.52 rows, counting from 0: neighbour B saved as 18 (dialled as
         // RHPv2 "19", PORT=19), the default 0 ("1", which doesn't exist
-        // here), and an AGW channel on byte 1, which 0.53 beaconed on its
-        // second-lowest port, PORT=7 (#369), and heard on AGW byte 1.
+        // here), and an AGW channel on byte 1, which 0.52 beaconed ('M' on
+        // AGW byte 1) and heard on XRouter's second-lowest port, PORT=7.
         var b = await StartAsync("xr-up-b", CallB, [], channel: "7", ct);
         var before = Environment.GetEnvironmentVariable("DAPPS_BEFORE_DAEMON_DLL");
-        var a = await StartAsync("xr-up-a", CallA, [], channel: null, ct, seed: Seed053, daemonDll: before);
+        var a = await StartAsync("xr-up-a", CallA, [], channel: null, ct, seed: Seed052, daemonDll: before);
 
         if (!string.IsNullOrEmpty(before))
         {
             // The release before, on that database: where it calls and beacons.
-            await ExpectPortsAsync(a, b, ct, phase: "0.53");
+            await ExpectPortsAsync(a, b, ct, phase: "0.52");
             air!.Clear();
             await a.RestartAsync(ct, daemonDll: null);
             await a.LogInAsAdminAsync(ct);
@@ -164,7 +164,7 @@ public sealed class XrouterPortNumberIntegrationTests : IAsyncLifetime
             $"{phase}: A calls B on PORT=19:\n{air!.Transcript()}\n{a.Tail()}");
     }
 
-    private static void Seed053(SQLite.SQLiteConnection db)
+    private static void Seed052(SQLite.SQLiteConnection db)
     {
         db.Insert(new DbNeighbour { Callsign = CallB, BearerPort = 18 });
         db.CreateTable<DbDiscoveryChannel>();

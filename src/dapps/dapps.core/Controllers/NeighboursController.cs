@@ -114,7 +114,7 @@ public class NeighboursController(Database database) : ControllerBase
 /// node's own number for it (#233): XRouter's <c>PORT=</c>, BPQ's
 /// <c>PORTNUM</c>, pdn's port as its <c>PORTS</c> command lists it; null
 /// falls back to the default port. <see cref="BearerPort"/> is the name it
-/// had up to 0.53, when it counted from 0: still taken on a POST without
+/// had up to 0.52, when it counted from 0: still taken on a POST without
 /// <see cref="Port"/>, never sent. Deprecated. <see cref="PortPending"/>
 /// (read-only) is true while a port saved by an older DAPPS waits to be
 /// converted; the neighbour isn't called until then.

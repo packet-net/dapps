@@ -68,7 +68,7 @@ public sealed class LinbpqPortNumberIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ADatabaseFrom053_SendsOnTheSamePortsAfterTheUpgrade()
+    public async Task ADatabaseFrom052_SendsOnTheSamePortsAfterTheUpgrade()
     {
         var ct = TestContext.Current.CancellationToken;
         await StartNodesAsync(ct);
@@ -77,14 +77,14 @@ public sealed class LinbpqPortNumberIntegrationTests : IAsyncLifetime
         // B, a fresh install, hears on its port 2 and answers anything.
         var bDaemon = await StartDaemonAsync("bpq-up-b", ApplB, AgwPortB, [Channel("2")], ct);
 
-        // 0.53's rows on A, counting from 0: neighbour B on byte 2 (BPQ's
+        // 0.52's rows on A, counting from 0: neighbour B on byte 2 (BPQ's
         // port 3) and a channel on byte 1 (BPQ's port 2).
         var before = Environment.GetEnvironmentVariable("DAPPS_BEFORE_DAEMON_DLL");
-        var aDaemon = await StartDaemonAsync("bpq-up-a", ApplA, AgwPortA, null, ct, seed: Seed053, daemonDll: before);
+        var aDaemon = await StartDaemonAsync("bpq-up-a", ApplA, AgwPortA, null, ct, seed: Seed052, daemonDll: before);
 
         if (!string.IsNullOrEmpty(before))
         {
-            await ExpectPortsAsync(aDaemon, bDaemon, ct, phase: "0.53");
+            await ExpectPortsAsync(aDaemon, bDaemon, ct, phase: "0.52");
             air.Clear();
             await aDaemon.RestartAsync(ct, daemonDll: null);
             await aDaemon.LogInAsAdminAsync(ct);
@@ -154,7 +154,7 @@ public sealed class LinbpqPortNumberIntegrationTests : IAsyncLifetime
 
     private IReadOnlyList<string> Heard(Func<string, bool> which) => air!.HeardBy("B").Where(which).ToList();
 
-    private static void Seed053(SQLite.SQLiteConnection db)
+    private static void Seed052(SQLite.SQLiteConnection db)
     {
         db.Insert(new DbNeighbour { Callsign = ApplB, BearerPort = 2 });
         db.CreateTable<DbDiscoveryChannel>();

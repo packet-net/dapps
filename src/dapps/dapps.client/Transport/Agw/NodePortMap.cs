@@ -24,33 +24,42 @@ namespace dapps.client.Transport.Agw;
 public sealed class NodePortMap
 {
     private readonly IReadOnlyList<int>? numbers;
-    private readonly int? listed;
+    private readonly IReadOnlyList<int>? labels;
 
-    private NodePortMap(IReadOnlyList<int>? numbers, int? listed)
+    private NodePortMap(IReadOnlyList<int>? numbers, IReadOnlyList<int>? labels)
     {
         this.numbers = numbers;
-        this.listed = listed;
+        this.labels = labels;
     }
 
-    /// <summary>Byte = number - 1. <paramref name="listedPorts"/> is how
-    /// many ports the node's AGW port list names, when it gave one: a
-    /// number past them is refused rather than sent (BPQ sends an unknown
-    /// port's frames out on another port).</summary>
-    public static NodePortMap Plain(int? listedPorts = null) => new(null, listedPorts is > 0 ? listedPorts : null);
+    /// <summary>
+    /// Byte = number - 1. <paramref name="listedNumbers"/> are the ports the
+    /// node's AGW port list names, by their <c>PortN</c> labels, when it gave
+    /// one: a number it doesn't name is refused rather than sent (BPQ sends
+    /// an unknown port's frames out on another port). The labels may have
+    /// gaps: Dire Wolf with mono soundcards on channels 0 and 2 lists
+    /// <c>Port1</c> and <c>Port3</c>, bytes 0 and 2.
+    /// </summary>
+    public static NodePortMap Plain(IReadOnlyCollection<int>? listedNumbers = null) =>
+        new(null, listedNumbers is { Count: > 0 } ? listedNumbers.Order().ToArray() : null);
+
+    /// <summary>As <see cref="Plain(IReadOnlyCollection{int}?)"/>, for a
+    /// list naming ports 1 to <paramref name="listedPorts"/>.</summary>
+    public static NodePortMap Plain(int listedPorts) =>
+        Plain(listedPorts > 0 ? Enumerable.Range(1, listedPorts).ToArray() : null);
 
     /// <summary>XRouter's ports, by <c>PORT=</c> number, in its AGW order
     /// (lowest first).</summary>
     public static NodePortMap Xrouter(IReadOnlyList<int> numbersInAgwOrder) =>
-        new(numbersInAgwOrder.ToArray(), numbersInAgwOrder.Count);
+        new(numbersInAgwOrder.ToArray(), null);
 
     /// <summary>True when the node is XRouter and the numbers came from its
     /// RHPv2 port, so its AGW ports are matched to its RHPv2 ones.</summary>
     public bool IsXrouter => numbers is not null;
 
     /// <summary>The node's port numbers in AGW order, when known (XRouter,
-    /// or a plain host's listed ports).</summary>
-    public IReadOnlyList<int>? Numbers =>
-        numbers ?? (listed is { } n ? Enumerable.Range(1, n).ToArray() : null);
+    /// or the ports a plain host's list names).</summary>
+    public IReadOnlyList<int>? Numbers => numbers ?? labels;
 
     /// <summary>The AGW port byte for the node's port
     /// <paramref name="number"/>, or null when the node has no such port.</summary>
@@ -65,7 +74,7 @@ public sealed class NodePortMap
             return null;
         }
         if (number < 1 || number > AgwFrameTransport.MaxPort + 1) return null;
-        if (listed is { } n && number > n) return null;
+        if (labels is not null && !labels.Contains(number)) return null;
         return (byte)(number - 1);
     }
 
@@ -74,19 +83,19 @@ public sealed class NodePortMap
     public int? FromAgwPort(byte port)
     {
         if (numbers is not null) return port < numbers.Count ? numbers[port] : null;
-        if (listed is { } n && port >= n) return null;
+        if (labels is not null && !labels.Contains(port + 1)) return null;
         return port + 1;
     }
 
     /// <summary>As <see cref="FromAgwPort"/>, but for a plain host never
-    /// refused for being past the port list: for converting a stored AGW
+    /// refused for being off the port list: for converting a stored AGW
     /// byte, which must keep naming the byte it named before.</summary>
     public int? FromAgwPortUnbounded(byte port) =>
         numbers is not null ? (port < numbers.Count ? numbers[port] : null) : port + 1;
 
     public override string ToString() =>
         numbers is not null ? $"XRouter ports [{string.Join(",", numbers)}]"
-        : listed is { } n ? $"ports 1 to {n}" : "ports counted from 1";
+        : labels is not null ? $"ports [{string.Join(",", labels)}]" : "ports counted from 1";
 }
 
 /// <summary>

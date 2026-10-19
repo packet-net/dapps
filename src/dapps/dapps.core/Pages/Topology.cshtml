@@ -626,7 +626,7 @@ else
                           + '<pre class="connect-script" style="margin: 0; font-size: 0.8rem; white-space: pre;">' + escape(connectScriptLines(n.connectScriptJson)) + '</pre>'
                         : '<span class="muted">-</span>'}</td>
                     <td><div class="actions">
-                        <button class="link-btn" onclick="dappsEditNeighbour('${escape(n.callsign)}')">edit</button>
+                        ${n.portPending ? '' : `<button class="link-btn" onclick="dappsEditNeighbour('${escape(n.callsign)}')">edit</button>`}
                         <button class="link-btn" onclick="dappsProbeOne('${escape(n.callsign)}')">probe</button>
                         <button class="link-btn danger" onclick="dappsDeleteNeighbour('${escape(n.callsign)}')">remove</button>
                     </div></td>
@@ -665,8 +665,8 @@ else
                     <td class="numeric">${c.solicitIntervalSeconds > 0 ? c.solicitIntervalSeconds + 's' : '<span class="muted">-</span>'}</td>
                     <td>${c.enabled ? '<span class="pill ok">yes</span>' : '<span class="pill warn">no</span>'}</td>
                     <td><div class="actions">
-                        <button class="link-btn" onclick="dappsEditChannel(${c.id})">edit</button>
-                        <button class="link-btn" onclick="dappsSetChannelEnabled(${c.id}, ${c.enabled ? 'false' : 'true'})">${c.enabled ? 'disable' : 'enable'}</button>
+                        ${c.portPending ? '' : `<button class="link-btn" onclick="dappsEditChannel(${c.id})">edit</button>
+                        <button class="link-btn" onclick="dappsSetChannelEnabled(${c.id}, ${c.enabled ? 'false' : 'true'})">${c.enabled ? 'disable' : 'enable'}</button>`}
                         <button class="link-btn" onclick="dappsSolicitChannel(${c.id})" title="Send a one-shot 'who's there?'">solicit</button>
                         <button class="link-btn danger" onclick="dappsDeleteChannel(${c.id})">remove</button>
                     </div></td>

@@ -78,7 +78,7 @@ Terms used throughout this manual.
 
 **`exchange`** - The DAPPSv1 line with which each end of a session between DAPPS nodes says what it takes from the other. Once both have been sent, either side sends its traffic whenever it has some, so every session carries messages both ways.
 
-**radio port** - Which of the node's radio ports DAPPS uses for a neighbour or discovery channel, by the node's own number for it: BPQ's `PORTNUM`, XRouter's `PORT=`, pdn's port as its `PORTS` command lists it, Dire Wolf's `PortN` in its AGW port list. DAPPS works out the AGW port byte from it. Per-neighbour or default (`DAPPS_DEFAULT_PORT`). Up to 0.53 DAPPS called this the bearer port and counted from 0.
+**radio port** - Which of the node's radio ports DAPPS uses for a neighbour or discovery channel, by the node's own number for it: BPQ's `PORTNUM`, XRouter's `PORT=`, pdn's port as its `PORTS` command lists it, Dire Wolf's `PortN` in its AGW port list. DAPPS works out the AGW port byte from it. Per-neighbour or default (`DAPPS_DEFAULT_PORT`). Up to 0.52 DAPPS called this the bearer port and counted from 0.
 
 **REST** - DAPPS's HTTP-based app interface, alongside MQTT. Same submit shape; different protocol.
 

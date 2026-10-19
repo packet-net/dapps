@@ -83,11 +83,31 @@ public class AgwPortQuery(IAgwLinkSource links, ILogger<AgwPortQuery> logger, IN
             ?? (xrouter && map is not { IsXrouter: true }
                 ? "DAPPS can't read this XRouter's PORT= numbers from its RHPv2 port, so it can't show them here: type the port number from XROUTER.CFG."
                 : null);
-        return Parse(payload)
-            .Select(p => p with
+        return NumberPorts(payload, map);
+    }
+
+    /// <summary>The ports in <paramref name="payload"/>, each with the
+    /// node's own number for it from <paramref name="map"/> and its AGW
+    /// byte; Number null for a port the map doesn't use.</summary>
+    internal static IReadOnlyList<AgwPortInfo> NumberPorts(byte[] payload, NodePortMap? map)
+    {
+        var parts = Parse(payload);
+        var labelled = parts.All(p => NodePortNumbers.Label(p.Description) is not null);
+        return parts
+            .Select(p =>
             {
-                Number = map?.FromAgwPort((byte)Math.Min(p.Index, 255)),
-                Description = Describe(p.Description),
+                // XRouter's list is in AGW order; anything else names each
+                // port by its label (PortN), whose byte is N - 1.
+                var number = map is { IsXrouter: true }
+                    ? map.FromAgwPort((byte)Math.Min(p.Index, 255))
+                    : labelled ? NodePortNumbers.Label(p.Description) : p.Index + 1;
+                var agwByte = number is { } n ? map?.ToAgwPort(n) : null;
+                return p with
+                {
+                    Index = agwByte ?? p.Index,
+                    Number = agwByte is null ? null : number,
+                    Description = Describe(p.Description),
+                };
             })
             .ToList();
     }

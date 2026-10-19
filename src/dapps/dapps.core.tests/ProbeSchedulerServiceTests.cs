@@ -99,6 +99,48 @@ public sealed class ProbeSchedulerServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AProbeOfAHeldTarget_IsRefusedWith409_AndNothingIsDialledOrWritten()
+    {
+        // #233: on-demand, a neighbour whose port waits to be converted.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0HELD-9", BearerPort = 1, PortPending = true });
+            c.Insert(new DbProbedNode { Callsign = "N0HELD-9", LastBearerPort = 1, PortPending = true, Source = "neighbour" });
+        }
+        var transport = new RecordingTransport();
+        var controller = new dapps.core.Controllers.ProbesController(database, MakeScheduler(transport),
+            MakeOptions(new SystemOptions { Callsign = "N0US", DefaultPort = 7 }));
+
+        (await controller.RunOne("N0HELD-9", CancellationToken.None)).Result.Should().BeOfType<Microsoft.AspNetCore.Mvc.ConflictObjectResult>();
+
+        transport.Connects.Should().BeEmpty();
+        (await database.GetProbedNode("N0HELD-9"))!.Should().Match<DbProbedNode>(r => r.LastBearerPort == 1 && r.PortPending == true,
+            "a held row is never written with a value, so it is converted once, from what it held");
+
+        // Nor does a probe recorded with a held port (0) write over it.
+        await MakeScheduler(new RecordingTransport()).ProbeAndRecordAsync("N0US", "N0HELD-9", 0, CancellationToken.None);
+        (await database.GetProbedNode("N0HELD-9"))!.Should().Match<DbProbedNode>(r => r.LastBearerPort == 1 && r.PortPending == true);
+    }
+
+    [Fact]
+    public async Task AProbeOnANumberedPort_StoresTheNodesNumber_AndStopsTheRowWaiting()
+    {
+        // The neighbour was re-saved (now port 2, the node's number), but
+        // its probe row still holds a pending byte from an older DAPPS.
+        // Without clearing the flag, the conversion would turn 2 into 3.
+        await database.UpsertNeighbour("N0THEM-9", bearerPort: 2);
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbProbedNode { Callsign = "N0THEM-9", LastBearerPort = 0, PortPending = true, Source = "neighbour" });
+        }
+        var sched = MakeScheduler(new RecordingTransport());
+
+        await sched.ProbeAndRecordAsync("N0US", "N0THEM-9", 2, CancellationToken.None);
+
+        (await database.GetProbedNode("N0THEM-9"))!.Should().Match<DbProbedNode>(r => r.LastBearerPort == 2 && r.PortPending != true);
+    }
+
+    [Fact]
     public async Task EnumerateTargets_AHeldDefault_HoldsNeighboursWithoutAPortOfTheirOwn()
     {
         await database.UpsertNeighbour("N0NULL-9", bearerPort: null);

@@ -121,9 +121,12 @@ public sealed partial class NodePortNumbers(
             }
             catch (TimeoutException)
             {
-                // A host that doesn't answer a 'G' isn't XRouter.
-                logger.LogDebug("AGW: the node did not answer a port query; counting its ports from 1");
-                return NodePortMap.Plain();
+                // No answer yet. It may be an XRouter slow to answer, whose
+                // numbering is nothing like a plain host's: guess nothing.
+                // Not kept, so the next caller asks again.
+                Warning = "the node did not answer DAPPS's request for its port list; nothing is sent on AGW ports until it does";
+                logger.LogWarning("AGW: {0}", Warning);
+                return null;
             }
         }
 
@@ -205,14 +208,50 @@ public sealed partial class NodePortNumbers(
         return found;
     }
 
-    /// <summary>A plain host's map, bounded by the ports its answer to a
-    /// 'G' lists, when it gave one.</summary>
+    /// <summary>
+    /// A plain host's map: the ports its answer to a 'G' names, by their
+    /// <c>PortN</c> labels (BPQ's own build says <c>N with ...</c>), byte =
+    /// label - 1. Dire Wolf labels its channels from 1 with gaps for unused
+    /// ones (server.c), and BPQ labels by position in bpq32.cfg, which is
+    /// its <c>PORTNUM</c> when the ports are numbered 1..N with none hidden.
+    /// A list whose entries carry no labels counts them from 1. When the
+    /// count is larger than the list (BPQ's hidden ports), only labels up
+    /// to the number listed are used: BPQ calls by position among the
+    /// visible ports, and connects a byte past them on its first port.
+    /// </summary>
     internal static NodePortMap Plain(byte[]? payload)
     {
         if (payload is null) return NodePortMap.Plain();
-        var listed = AgwPortQuery.Parse(payload).Count;
-        return NodePortMap.Plain(listed > 0 ? listed : null);
+        var parts = AgwPortQuery.Parse(payload);
+        if (parts.Count == 0) return NodePortMap.Plain();
+        var labels = parts.Select(p => Label(p.Description)).ToList();
+        IEnumerable<int> numbers = labels.All(l => l is not null)
+            ? labels.Select(l => l!.Value)
+            : Enumerable.Range(1, parts.Count);
+        if (CountedPorts(payload) is { } count && count > parts.Count)
+        {
+            numbers = numbers.Where(n => n <= parts.Count);
+        }
+        return NodePortMap.Plain(numbers.Distinct().ToArray());
     }
+
+    /// <summary>The <c>N</c> of a port description <c>PortN ...</c> or
+    /// <c>N with ...</c>, if it has one.</summary>
+    internal static int? Label(string description)
+    {
+        var m = PortLabel().Match(description);
+        return m.Success && int.TryParse(m.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var n) && n is >= 1 and <= 256
+            ? n : null;
+    }
+
+    private static int? CountedPorts(byte[] payload)
+    {
+        var first = System.Text.Encoding.ASCII.GetString(payload).TrimEnd('\0').Trim().Split(';')[0];
+        return int.TryParse(first, NumberStyles.None, CultureInfo.InvariantCulture, out var count) ? count : null;
+    }
+
+    [GeneratedRegex("^(?:Port)?([0-9]+)(?: |$)")]
+    private static partial Regex PortLabel();
 
     /// <summary>A warning when the answer to a 'G' counts more ports than
     /// it lists: BPQ leaves hidden ports out of the list but not the

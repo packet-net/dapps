@@ -36,6 +36,22 @@ public sealed class SolicitCodecTests
         solicit!.Callsign.Should().Be("M0LTE-9");
     }
 
+    [Theory]
+    [InlineData(" end")]
+    [InlineData(" end junk")]
+    public void TryParse_FromAnOlderSender_JunkWordsAfterTheLastField_AreIgnored(string junk)
+    {
+        var bytes = Encoding.ASCII.GetBytes($"DAPPS v1 solicit callsign=M0LTE-9{junk}\r");
+        SolicitCodec.TryParse(bytes, out var solicit).Should().BeTrue();
+        solicit!.Callsign.Should().Be("M0LTE-9");
+    }
+
+    [Fact]
+    public void TryParse_AWordBetweenFields_StillFails()
+    {
+        SolicitCodec.TryParse(Encoding.ASCII.GetBytes("DAPPS v1 solicit junk callsign=M0LTE-9"), out _).Should().BeFalse();
+    }
+
     [Fact]
     public void TryParse_BeaconPayload_DoesNotMatch()
     {

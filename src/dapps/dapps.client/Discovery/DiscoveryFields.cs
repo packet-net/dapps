@@ -15,10 +15,17 @@ namespace dapps.client.Discovery;
 /// parsers ignore <c>end</c> as an unknown key.
 ///
 /// Lines from older senders have no <c>end</c>, so the junk lands on
-/// their last field. That one field alone is read tolerantly
-/// (<see cref="Tolerant"/>): a number takes its leading digits, a
-/// callsign the leading run of callsign characters, which must then be a
-/// whole callsign. Every other field is read as strictly as before.
+/// their last field, or after it as words of its own (a 0.52 beacon has
+/// been seen as <c>... ttl=600 end</c>). That last field alone is read
+/// tolerantly: a number takes its leading digits, a callsign the leading
+/// run of callsign characters, which must then be a whole callsign. Words
+/// with no '=' after the last field are ignored, but only at the end of
+/// a line with no <c>end</c> field: a word between fields still fails the
+/// line. Every other field is read as strictly as before.
+///
+/// <c>end=1</c> exists only for that LinBPQ bug (M0LTE/linbpq#75). Once
+/// fixed BPQ is common, senders can stop sending it: this parser reads
+/// lines with or without it.
 /// </summary>
 internal static class DiscoveryFields
 {
@@ -35,14 +42,21 @@ internal static class DiscoveryFields
     {
         fields = [];
         lastIsTolerant = true;
-        foreach (var token in rest.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        var tokens = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 0; i < tokens.Length; i++)
         {
+            var token = tokens[i];
             if (token.StartsWith("end=", StringComparison.Ordinal))
             {
                 lastIsTolerant = false;
                 return true;
             }
             var eq = token.IndexOf('=');
+            if (eq < 0 && fields.Count > 0 && tokens.Skip(i).All(t => !t.Contains('=')))
+            {
+                // Junk words after the last field (class doc).
+                return true;
+            }
             if (eq <= 0 || eq == token.Length - 1) return false;
             fields.Add((token[..eq], token[(eq + 1)..]));
         }

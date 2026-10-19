@@ -349,7 +349,7 @@ peer <callsign> source=<n|d> [port=<number>]
 
 - `source=n`: a configured neighbour (`DbNeighbour`).
 - `source=d`: a beacon-discovered peer (`DbDiscoveredPeer`).
-- `port=<number>`: optional, and not sent since 0.54: up to 0.53 it carried the sender's own AGW port byte to that peer, a number on the sender's node that means nothing to the asker. Receivers have ignored it since 0.47.1; accept it and ignore it.
+- `port=<number>`: optional, and not sent since 0.53: up to 0.52 it carried the sender's own AGW port byte to that peer, a number on the sender's node that means nothing to the asker. Receivers have ignored it since 0.47.1; accept it and ignore it.
 
 Unknown lines between `peer` and `end` are silently skipped on both sides - lets a future server add fields without breaking older clients. The alias `who\n` is accepted in place of `peers\n` because that's the verb a sysop already types at a node prompt.
 

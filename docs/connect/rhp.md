@@ -31,7 +31,7 @@ DAPPS_DEFAULT_PORT=1
 
 `DAPPS_RHP_PORT` matches the host's RHPv2 listener port (XRouter's `RHPPORT=` directive; default 9000).
 
-`DAPPS_DEFAULT_PORT` is the radio port a neighbour without one of its own is called on, by the node's own number for it: XRouter's `PORT=` number, or pdn's port as its `PORTS` command lists it. DAPPS hands that number to RHPv2 as it is. (`DAPPS_DEFAULT_BEARER_PORT`, its name up to 0.53, counted from 0; it still works, one higher, but is deprecated.)
+`DAPPS_DEFAULT_PORT` is the radio port a neighbour without one of its own is called on, by the node's own number for it: XRouter's `PORT=` number, or pdn's port as its `PORTS` command lists it. DAPPS hands that number to RHPv2 as it is. (`DAPPS_DEFAULT_BEARER_PORT`, its name up to 0.52, counted from 0; it still works, one higher, but is deprecated.)
 
 If RHPv2 requires authentication on your host, also set:
 

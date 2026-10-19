@@ -356,7 +356,14 @@ public sealed class ProbeSchedulerService(
             // before the first probe runs (see PersistTransitiveDiscoveriesAsync).
             Source = "neighbour",
         };
-        row.LastBearerPort = result.BearerPort;
+        // A port the probe used is the node's own number (#233): a row
+        // saved by an older DAPPS stops waiting to be converted. A held
+        // port (0) is never probed, and never written over a stored one.
+        if (result.BearerPort >= 1)
+        {
+            row.LastBearerPort = result.BearerPort;
+            row.PortPending = null;
+        }
         row.LastProbedAt = result.At;
         if (result.Success)
         {
@@ -415,6 +422,7 @@ public sealed class ProbeSchedulerService(
                     && !await IsNeighbourOrDiscoveredPeerAsync(p.Callsign))
                 {
                     existing.LastBearerPort = result.BearerPort;
+                    existing.PortPending = null;
                     // Failures on the wrong port say nothing about this one.
                     existing.ConsecutiveFailures = 0;
                     await database.UpsertProbedNode(existing);

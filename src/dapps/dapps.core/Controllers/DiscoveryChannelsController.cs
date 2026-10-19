@@ -52,7 +52,7 @@ public class DiscoveryChannelsController(Database database, DiscoveryService dis
             && (!int.TryParse(model.ChannelKey.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var number)
                 || number is < 1 or > 255))
         {
-            return BadRequest("ChannelKey: for an AGW channel, the node's own number for the radio port (XRouter's PORT=, BPQ's PORTNUM); ports count from 1.");
+            return BadRequest("ChannelKey: for an AGW channel, the node's own number for the radio port (XRouter's PORT=, BPQ's PORTNUM), counting from 1. DAPPS 0.52 and earlier counted AGW channel keys from 0: add one to an old key.");
         }
 
         await database.UpsertDiscoveryChannel(new DbDiscoveryChannel
@@ -121,7 +121,7 @@ public class DiscoveryChannelsController(Database database, DiscoveryService dis
 /// Wire shape for /DiscoveryChannels. Leave numeric fields at 0 to pick
 /// up <see cref="LinkClassDefaults"/> for the chosen <c>LinkClass</c>.
 /// For an AGW channel <see cref="ChannelKey"/> is the node's own number
-/// for the radio port, counting from 1 (#233; up to 0.53 it counted from
+/// for the radio port, counting from 1 (#233; up to 0.52 it counted from
 /// 0). <see cref="PortPending"/> (read-only) is true while a channel saved
 /// by an older DAPPS waits to be converted to that number.
 /// </summary>

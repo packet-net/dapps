@@ -234,7 +234,7 @@ public sealed class RemainingControllersTests : IAsyncLifetime
     [InlineData(2, 3)]
     public async Task ConfigController_TheOldDefaultBearerPort_IsTakenAsCountingFromZero(int counted, int expected)
     {
-        // #233: up to 0.53 it was DefaultBearerPort, counting from 0. An
+        // #233: up to 0.52 it was DefaultBearerPort, counting from 0. An
         // old caller's value still means the same radio port. Deprecated.
         var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
         var ctrl = new ConfigController(store, new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance));

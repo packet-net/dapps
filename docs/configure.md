@@ -33,13 +33,13 @@ Walks the persisted `systemoptions` table and prints `DAPPS_SCREAMING_SNAKE=valu
 | RHPv2 port       | `DAPPS_RHP_PORT` | `9000`      | TCP port the packet node's RHPv2 listener is on. Used when `Node bearer = rhpv2`. |
 | RHPv2 user       | `DAPPS_RHP_USER` | _empty_     | Username for RHPv2 authentication. Leave empty if your packet node accepts unauthenticated RHPv2. |
 | RHPv2 password   | `DAPPS_RHP_PASS` | _empty_     | Password matching the RHPv2 user.                                         |
-| Default port | `DAPPS_DEFAULT_PORT` | `1` | The radio port a neighbour without one of its own is called on, by the node's own number for it: BPQ's `PORTNUM`, XRouter's `PORT=`, pdn's port as `PORTS` lists it. `DAPPS_DEFAULT_BEARER_PORT` and `DefaultBearerPort`, its names up to 0.53, counted from 0; they still work, one higher, but are deprecated. |
+| Default port | `DAPPS_DEFAULT_PORT` | `1` | The radio port a neighbour without one of its own is called on, by the node's own number for it: BPQ's `PORTNUM`, XRouter's `PORT=`, pdn's port as `PORTS` lists it. `DAPPS_DEFAULT_BEARER_PORT` and `DefaultBearerPort`, its names up to 0.52, counted from 0; they still work, one higher, but are deprecated. |
 
 #### Radio port numbers
 
 Every radio port in DAPPS is the node's own number for it, the one you'd type in `C 2 CALL` at its prompt: BPQ's `PORTNUM`, XRouter's `PORT=`, pdn's port as `PORTS` lists it, and on Dire Wolf the `PortN` of its AGW port list (channel 0 is `1`). That goes for the dashboard, the logs and the REST API: `POST /Neighbours` takes `Port`, an AGW discovery channel's `ChannelKey` is the port number, `GET /Probes` shows `LastPort`, and `POST /Config` takes `DefaultPort`.
 
-Up to 0.53 DAPPS counted ports from 0. The old REST names still work, counting from 0, but are deprecated: `BearerPort` on `POST /Neighbours` and `DefaultBearerPort` on `POST /Config`. A port saved by an older DAPPS is converted on upgrade, once, so the same radio ports are used; see the upgrading notes on the [BPQ](connect/bpq.md#upgrading-from-053-or-earlier) and [XRouter](connect/xrouter.md#upgrading-from-053-or-earlier) pages.
+Up to 0.52 DAPPS counted ports from 0. The old REST names still work, counting from 0, but are deprecated: `BearerPort` on `POST /Neighbours` and `DefaultBearerPort` on `POST /Config`. A port saved by an older DAPPS is converted on upgrade, once, so the same radio ports are used; see the upgrading notes on the [BPQ](connect/bpq.md#upgrading-from-052-or-earlier) and [XRouter](connect/xrouter.md#upgrading-from-052-or-earlier) pages.
 
 ### App-interface ports
 

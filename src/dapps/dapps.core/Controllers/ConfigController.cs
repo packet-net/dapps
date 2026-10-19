@@ -75,7 +75,7 @@ public class ConfigController(SystemOptionsStore options, AdminPasswordStore adm
     }
 
     /// <summary>
-    /// The default port was <c>DefaultBearerPort</c> up to 0.53, counting
+    /// The default port was <c>DefaultBearerPort</c> up to 0.52, counting
     /// the node's ports from 0. It is <c>DefaultPort</c> now, the node's
     /// own number (#233). An old caller's <c>DefaultBearerPort</c> is still
     /// taken, as counting from 0, unless <c>DefaultPort</c> is sent too.

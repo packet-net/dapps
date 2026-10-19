@@ -594,7 +594,7 @@ public static class DbStartup
     public static bool IsEnvManaged(string key) =>
         IsEnvManagedMode && !string.IsNullOrEmpty(ReadEnvironmentFor(key));
 
-    /// <summary>The env var <c>DAPPS_DEFAULT_PORT</c> replaced up to 0.53,
+    /// <summary>The env var <c>DAPPS_DEFAULT_PORT</c> replaced up to 0.52,
     /// which counted the node's ports from 0. Still read, as counting
     /// from 0, when <c>DAPPS_DEFAULT_PORT</c> is not set (#233). Deprecated.</summary>
     public const string LegacyDefaultPortEnvVar = "DAPPS_DEFAULT_BEARER_PORT";

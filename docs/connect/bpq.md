@@ -99,7 +99,7 @@ If your BPQ has multiple radio ports (e.g. port 1 = VHF FM, port 2 = HF), every 
 
 **Number the ports DAPPS uses 1, 2, 3 in `bpq32.cfg` order, and hide none of them.** BPQ's AGW interface sends and connects by a port's position in the config (counting hidden ports for some commands and not for others), but reports the frames it hears by `PORTNUM`. These only agree when `PORTNUM`s run 1 to N in config order with no hidden ports, which is what BPQ does when you don't set `PORTNUM` at all. Otherwise DAPPS could hear a peer on one port and call it on another. DAPPS can't see `PORTNUM` over AGW, but it can see hidden ports (BPQ counts more ports than it lists), and warns about them on the Topology page and in its log. It never sends on a port number past the ones BPQ lists.
 
-### Upgrading from 0.53 or earlier
+### Upgrading from 0.52 or earlier
 
 Older DAPPS counted ports from 0, so BPQ's port 2 showed as `1`. On upgrade DAPPS converts what you saved, once, as soon as BPQ's AGW connection answers (a few seconds after start), and everything shows one higher: your port 2 now shows as `2`. The same ports are used on air as before. Until the conversion, nothing is sent on those ports and the Topology page marks them **waiting**.
 
@@ -130,6 +130,6 @@ See the [Troubleshooting](../troubleshooting.md) page for the AGW-specific failu
 
 The AGW protocol is well-defined and stable; any host that implements it should work. Direwolf in particular ships an AGW host as a built-in option. The configuration shape is the same: enable AGW, give DAPPS the callsign and host:port, register on connect.
 
-On these hosts DAPPS numbers ports as the host's AGW port list does: `Port1` is `1`. On Dire Wolf that makes channel 0 port `1`, channel 1 port `2`.
+On these hosts DAPPS numbers ports as the host's AGW port list labels them: `Port1` is `1`. On Dire Wolf that makes channel 0 port `1`, channel 1 port `2`, and with soundcards on channels 0 and 2, ports `1` and `3`.
 
 If you've got a non-BPQ AGW setup working, please [open an issue](https://github.com/packet-net/dapps/issues) so we can document it here.
