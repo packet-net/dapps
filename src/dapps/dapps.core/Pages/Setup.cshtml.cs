@@ -2,6 +2,7 @@ using dapps.client;
 using System.Security.Claims;
 using dapps.core.Models;
 using dapps.core.Services;
+using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
@@ -36,11 +37,21 @@ namespace dapps.core.Pages;
 /// (browse to a fresh node, no password, no cookie) needs the page
 /// reachable without auth, and once a password is set the operator's
 /// just-acquired cookie carries them through the bearer step.
+///
+/// So the bearer step does its own gating (#316): viewing or posting it
+/// needs the admin cookie, the post needs an antiforgery token, and the
+/// post is refused once the node has a real callsign, so the wizard
+/// can't be used to rewrite a set-up node. The page-level
+/// <c>[IgnoreAntiforgeryToken]</c> stays only for the password step,
+/// which runs before any cookie exists and which scripts (the sim
+/// harnesses) post to directly; Razor Pages can't vary the filter per
+/// handler, so the bearer handler validates the token itself.
 /// </summary>
 [IgnoreAntiforgeryToken]
 public sealed class SetupModel(
     AdminPasswordStore store,
-    SystemOptionsStore optionsStore) : PageModel
+    SystemOptionsStore optionsStore,
+    IAntiforgery antiforgery) : PageModel
 {
     public enum SetupStep { Password, Bearer }
 
@@ -88,6 +99,13 @@ public sealed class SetupModel(
         var opts = optionsStore.CurrentValue;
         if (IsCallsignPlaceholder(opts.Callsign))
         {
+            // The bearer step shows the node host and RHPv2 login, so
+            // only the signed-in operator gets to see it (#316).
+            if (User.Identity is not { IsAuthenticated: true })
+            {
+                return LocalRedirect("~/Login");
+            }
+
             // Operator set the password but hasn't done bearer yet.
             // Pre-fill the form from the persisted defaults so they
             // only type what they want to change. Under a pdn host
@@ -165,6 +183,19 @@ public sealed class SetupModel(
         if (User.Identity is not { IsAuthenticated: true })
         {
             return LocalRedirect("~/Login");
+        }
+
+        // Cross-site form posts can't carry this (#316).
+        if (!await antiforgery.IsRequestValidAsync(HttpContext))
+        {
+            return BadRequest();
+        }
+
+        // The wizard is one-shot: once the node has a real callsign,
+        // changes go through Settings, never back through here (#316).
+        if (!await store.IsConfiguredAsync() || !IsCallsignPlaceholder(optionsStore.CurrentValue.Callsign))
+        {
+            return LocalRedirect("~/");
         }
 
         Step = SetupStep.Bearer;

@@ -111,7 +111,7 @@ The receiver prints incoming messages with `[<source>] <text>` and notes the res
 
 A single-page browser app: pick a file, type a destination callsign, click Send. The receiving end - any other browser tab pointed at any DAPPS daemon that the message can route to - shows the file with an inline preview if it's `image/*`, or a Download link otherwise.
 
-Open `index.html` directly from disk; no static server needed. The app speaks MQTT-over-WebSocket to the daemon's `/mqtt` endpoint, so there's no CORS surface to deal with.
+Open `index.html` directly from disk; no static server needed. The app speaks MQTT-over-WebSocket to the daemon's `/mqtt` endpoint, so there's no CORS surface to deal with. It needs app tokens on (the default on new installs): with them off, `/mqtt` turns away pages that aren't served by the node itself.
 
 ```html
 <!-- in the HTML, abbreviated -->

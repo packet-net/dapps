@@ -427,6 +427,9 @@ app.UseMiddleware<AdminAuthMiddleware>();
 // AdminAuthMiddleware alongside /Health - WebSocket clients don't
 // carry the admin cookie.
 app.UseWebSockets();
+// Refuses cross-site browser pages on /mqtt while the broker needs no
+// credentials (#314); see the class for the rule.
+app.UseMiddleware<MqttWebSocketOriginMiddleware>();
 app.MapMqtt("/mqtt");
 app.MapControllers();
 app.MapRazorPages();

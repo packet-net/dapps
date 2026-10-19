@@ -131,9 +131,12 @@ public sealed class GatewayPathBaseTests
         surfaces.Add(("GET /Setup (bearer step)", bearerBody));
 
         // 5. POST the bearer config - LocalRedirect("~/") to the
-        //    dashboard.
+        //    dashboard. The bearer step needs its antiforgery token
+        //    (#316).
+        var token = Regex.Match(bearerBody, "name=\"__RequestVerificationToken\" type=\"hidden\" value=\"([^\"]+)\"").Groups[1].Value;
         var bearerPost = await SendAsync(HttpMethod.Post, "/Setup?handler=Bearer", new FormUrlEncodedContent(new Dictionary<string, string>
         {
+            ["__RequestVerificationToken"] = token,
             ["callsign"] = "M0LTE-7",
             ["nodeHost"] = "localhost",
             ["nodeBearer"] = "agw",

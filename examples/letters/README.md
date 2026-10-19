@@ -67,6 +67,8 @@ New installs require a token by default (`AuthRequired`); mint one for app slug 
 
 Each end needs its own token from its own DAPPS instance.
 
+If app tokens are off on a node, this page can't connect to it: `/mqtt` refuses browser pages that the node didn't serve itself, so that a website can't drive an open node. Turn **Require per-app tokens for MQTT/REST** on in Settings and mint a token.
+
 ## Storage notes
 
 The app uses a single IndexedDB database called `dapps-letters`:

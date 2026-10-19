@@ -54,6 +54,8 @@ New installs require a token by default (`AuthRequired`), so each end usually ne
 
 Each end needs its own token from its own DAPPS instance.
 
+If app tokens are off on a node, this page can't connect to it: `/mqtt` refuses browser pages that the node didn't serve itself, so that a website can't drive an open node. Turn **Require per-app tokens for MQTT/REST** on in Settings and mint a token.
+
 ## Limits
 
 DAPPS is **not** built for bulk transfer. The fragment threshold defaults to 4 KB; everything above that gets split, forwarded fragment-by-fragment, reassembled, and delivered. A 200 KB JPEG works fine, but moves slower than you'd want for anything interactive over a 1200-baud VHF link. A multi-MB file isn't what DAPPS is for - if you need that, set up a one-shot `scp` or HTTP fetch arranged via a DAPPS message.

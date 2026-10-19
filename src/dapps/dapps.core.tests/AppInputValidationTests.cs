@@ -334,6 +334,15 @@ public sealed class DashboardSendValidationTests : IAsyncLifetime
         store.CurrentValue.MqttPort.Should().Be(1884);
     }
 
+    private sealed class AlwaysValidAntiforgery : Microsoft.AspNetCore.Antiforgery.IAntiforgery
+    {
+        public Microsoft.AspNetCore.Antiforgery.AntiforgeryTokenSet GetAndStoreTokens(Microsoft.AspNetCore.Http.HttpContext httpContext) => throw new NotSupportedException();
+        public Microsoft.AspNetCore.Antiforgery.AntiforgeryTokenSet GetTokens(Microsoft.AspNetCore.Http.HttpContext httpContext) => throw new NotSupportedException();
+        public Task<bool> IsRequestValidAsync(Microsoft.AspNetCore.Http.HttpContext httpContext) => Task.FromResult(true);
+        public Task ValidateRequestAsync(Microsoft.AspNetCore.Http.HttpContext httpContext) => Task.CompletedTask;
+        public void SetCookieTokenAndHeader(Microsoft.AspNetCore.Http.HttpContext httpContext) { }
+    }
+
     [Theory]
     [InlineData("G1AAA SRC=G0EVIL")]
     [InlineData("G1AAA\nQUIT")]
@@ -341,7 +350,14 @@ public sealed class DashboardSendValidationTests : IAsyncLifetime
     public async Task Setup_RefusesABadNodeCallsign(string callsign)
     {
         var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
-        var page = new SetupModel(new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance), store)
+        // The bearer step only runs mid-setup: password set, callsign
+        // still the placeholder.
+        var passwords = new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance);
+        await passwords.SetAsync("hunter2hunter2");
+        var placeholder = store.CurrentValue;
+        placeholder.Callsign = DbStartup.PlaceholderCallsign;
+        await store.SaveAsync(placeholder);
+        var page = new SetupModel(passwords, store, new AlwaysValidAntiforgery())
         {
             Callsign = callsign,
             PageContext = new Microsoft.AspNetCore.Mvc.RazorPages.PageContext

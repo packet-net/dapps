@@ -55,10 +55,16 @@ public sealed class LoggedInWebAppFixture : IAsyncLifetime
         }
 
         // Step 2: bearer. Cookie is in the container, so the bearer
-        // handler's auth check passes.
+        // handler's auth check passes; the redirect landed on the
+        // bearer step, whose form carries the antiforgery token the
+        // handler requires (#316).
+        var bearerPage = await pwResp.Content.ReadAsStringAsync();
+        var token = System.Text.RegularExpressions.Regex.Match(
+            bearerPage, "name=\"__RequestVerificationToken\" type=\"hidden\" value=\"([^\"]+)\"").Groups[1].Value;
         var bearerResp = await http.PostAsync("/Setup?handler=Bearer",
             new FormUrlEncodedContent(new Dictionary<string, string>
             {
+                ["__RequestVerificationToken"] = token,
                 ["callsign"] = Callsign,
                 ["nodeHost"] = "localhost",
                 ["nodeBearer"] = "agw",
