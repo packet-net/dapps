@@ -466,6 +466,59 @@ public sealed class PortNumberUpgradeTests : IAsyncLifetime
         (await controller.Upsert(new DiscoveryChannelModel(0, "udp", "239.1.1.1:1", "VhfUhfFm"))).Should().BeOfType<NoContentResult>();
     }
 
+    [Fact]
+    public async Task OverRest_AWaitingPort_IsShownAsNull_AndItsOldValueCantBePostedBack()
+    {
+        DbStartup.EnsureSchemaAndSeed();
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Execute("insert into neighbours (Callsign, BearerPort, PortPending) values ('M0AHN-7', 2, 1)");
+        }
+        var database = new Database(NullLogger<Database>.Instance, new MutableOptionsMonitor<SystemOptions>(new SystemOptions()));
+        var controller = new NeighboursController(database);
+
+        var shown = (await controller.List()).Single();
+        (shown.Port, shown.PortPending).Should().Be(((int?)null, true), "byte 2 is not port 2: a script would post it back one low");
+
+        (await controller.Upsert(shown with { Port = 2 })).Should().BeOfType<ConflictObjectResult>("the old value, echoed");
+        (await controller.Upsert(shown)).Should().BeOfType<ConflictObjectResult>("null, echoed");
+        (await database.GetNeighbour("M0AHN-7"))!.Should().Match<DbNeighbour>(n => n.BearerPort == 2 && n.PortPending == true);
+
+        // The old field counts from 0, so its 2 is port 3: not an echo.
+        (await controller.Upsert(new NeighbourModel("M0AHN-7", Port: null, BearerPort: 2))).Should().BeOfType<NoContentResult>();
+        (await database.GetNeighbour("M0AHN-7"))!.Should().Match<DbNeighbour>(n => n.BearerPort == 3 && n.PortPending != true);
+    }
+
+    [Fact]
+    public async Task ARetryThatKeepsFailing_LogsOnce_ThenHourly_AndOnceWhenItWorks()
+    {
+        // XRouter's RHPv2 port unreachable: the service retries every 30 s.
+        SeedOld(bearer: "agw", defaultBearerPort: 1);
+        DbStartup.EnsureSchemaAndSeed();
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        var clock = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(DateTimeOffset.Parse("2026-10-19T00:00:00Z"));
+        var logs = new CapturingLoggerFactory();
+        var tries = Enumerable.Repeat<NodePortMap?>(null, 200).Append(NodePortMap.Plain()).ToArray();
+        var service = new PortNumberUpgradeService(new SequencePortMaps(tries), store,
+            new Microsoft.Extensions.Logging.Logger<PortNumberUpgradeService>(logs), clock: clock);
+        await service.StartAsync(TestContext.Current.CancellationToken);
+
+        for (var i = 0; i < 120; i++)          // an hour of 30 s retries
+        {
+            await service.ConvertAsync(null!);
+            clock.Advance(TimeSpan.FromSeconds(30));
+        }
+        logs.Warnings.Count().Should().Be(1, "the first failure, then nothing for an hour");
+
+        await service.ConvertAsync(null!);      // an hour on
+        logs.Warnings.Count().Should().Be(2);
+        logs.Warnings.Last().Message.Should().Contain("still failing");
+
+        while (service.Pending) await service.ConvertAsync(null!);
+        logs.Any("can be read now").Should().BeTrue();
+        service.HeldReason.Should().BeNull();
+    }
+
     // ── The REST field ────────────────────────────────────────────
 
     [Fact]

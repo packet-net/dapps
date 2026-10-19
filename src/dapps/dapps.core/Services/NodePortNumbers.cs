@@ -34,8 +34,12 @@ namespace dapps.core.Services;
 /// </summary>
 public sealed partial class NodePortNumbers(
     IOptionsMonitor<SystemOptions> options,
-    ILogger<NodePortNumbers> logger) : INodePortMaps
+    ILogger<NodePortNumbers> logger,
+    TimeProvider? clock = null) : INodePortMaps
 {
+    // Retried every 30 s while it fails: logged once, then hourly.
+    private readonly FailureLog failures = new(logger, clock);
+
     /// <summary>The highest RHPv2 port number asked about.</summary>
     internal const int MaxPortNumber = 255;
 
@@ -98,7 +102,7 @@ public sealed partial class NodePortNumbers(
         }
         catch (Exception ex)
         {
-            logger.LogWarning("AGW: could not work out the node's port numbers ({0})", ex.Message);
+            failures.Failed($"AGW: could not work out the node's port numbers ({ex.Message})");
             map = null;
         }
         if (map is null)
@@ -125,7 +129,7 @@ public sealed partial class NodePortNumbers(
                 // numbering is nothing like a plain host's: guess nothing.
                 // Not kept, so the next caller asks again.
                 Warning = "the node did not answer DAPPS's request for its port list; nothing is sent on AGW ports until it does";
-                logger.LogWarning("AGW: {0}", Warning);
+                failures.Failed($"AGW: {Warning}");
                 return null;
             }
         }
@@ -136,6 +140,7 @@ public sealed partial class NodePortNumbers(
             var map = Plain(ports.Payload);
             Warning = HiddenPortsWarning(ports.Payload);
             if (Warning is not null) logger.LogWarning("AGW: {0}", Warning);
+            failures.Worked("AGW: the node's port numbers can be read again");
             logger.LogInformation("AGW: the node's ports are numbered {0}", map);
             return map;
         }
@@ -144,11 +149,12 @@ public sealed partial class NodePortNumbers(
         if (numbers.Count != count)
         {
             Warning = $"XRouter lists {count} port(s) over AGW, but its RHPv2 port gave [{string.Join(",", numbers)}], so DAPPS can't tell which PORT= number each AGW port is; nothing is sent on AGW-heard ports until it can (check RHPPORT in XROUTER.CFG and DAPPS's RHPv2 settings)";
-            logger.LogWarning("AGW: {0}", Warning);
+            failures.Failed($"AGW: {Warning}");
             return null;
         }
         Warning = null;
         var xrouter = NodePortMap.Xrouter(numbers);
+        failures.Worked("AGW: the node's port numbers can be read again");
         logger.LogInformation("AGW: the node's ports are numbered {0}", xrouter);
         return xrouter;
     }
@@ -172,7 +178,7 @@ public sealed partial class NodePortNumbers(
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or System.Net.Sockets.SocketException or RhpServerException)
         {
-            logger.LogWarning("AGW: could not read XRouter's port numbers from its RHPv2 port at {0}:{1} ({2})", host, port, ex.Message);
+            failures.Failed($"AGW: could not read XRouter's port numbers from its RHPv2 port at {host}:{port} ({ex.Message})");
             return [];
         }
     }
@@ -215,9 +221,11 @@ public sealed partial class NodePortNumbers(
     /// ones (server.c), and BPQ labels by position in bpq32.cfg, which is
     /// its <c>PORTNUM</c> when the ports are numbered 1..N with none hidden.
     /// A list whose entries carry no labels counts them from 1. When the
-    /// count is larger than the list (BPQ's hidden ports), only labels up
-    /// to the number listed are used: BPQ calls by position among the
-    /// visible ports, and connects a byte past them on its first port.
+    /// count is larger than the list (BPQ's hidden ports), only a port whose
+    /// label is its own position in the list is used: BPQ's 'C' takes the
+    /// byte as a position among the visible ports, its 'M' and heard frames
+    /// as a position among all of them (M0LTE/linbpq#78), and they agree
+    /// only for a port with no hidden one before it.
     /// </summary>
     internal static NodePortMap Plain(byte[]? payload)
     {
@@ -230,7 +238,7 @@ public sealed partial class NodePortNumbers(
             : Enumerable.Range(1, parts.Count);
         if (CountedPorts(payload) is { } count && count > parts.Count)
         {
-            numbers = numbers.Where(n => n <= parts.Count);
+            numbers = numbers.Where((n, i) => n == i + 1);
         }
         return NodePortMap.Plain(numbers.Distinct().ToArray());
     }
@@ -262,10 +270,16 @@ public sealed partial class NodePortNumbers(
         var text = System.Text.Encoding.ASCII.GetString(payload).TrimEnd('\0').Trim();
         var first = text.Split(';')[0];
         if (!int.TryParse(first, NumberStyles.None, CultureInfo.InvariantCulture, out var count)) return null;
-        var listed = AgwPortQuery.Parse(payload).Count;
-        return count > listed
-            ? $"the node counts {count} ports over AGW but lists {listed}; BPQ hides ports that way, and then numbers calls and heard frames differently, so DAPPS may call a neighbour on the wrong port. Number the ports DAPPS uses 1 to N in bpq32.cfg order, with none hidden."
-            : null;
+        var parts = AgwPortQuery.Parse(payload);
+        var listed = parts.Count;
+        if (count <= listed) return null;
+        var unusable = parts.Select((p, i) => (Label: Label(p.Description), Position: i + 1))
+            .Where(p => p.Label is { } l && l != p.Position)
+            .Select(p => p.Label!.Value)
+            .ToList();
+        var which = unusable.Count == 0 ? ""
+            : $" DAPPS won't use port{(unusable.Count == 1 ? "" : "s")} {string.Join(", ", unusable)}: with a hidden port before {(unusable.Count == 1 ? "it" : "them")}, BPQ would call on one port and send beacons on another.";
+        return $"the node counts {count} ports over AGW but lists {listed}; BPQ hides ports that way, and then numbers calls and heard frames differently.{which} Number the ports DAPPS uses 1 to N in bpq32.cfg order, with none hidden.";
     }
 
     /// <summary>The number of ports in XRouter's answer to a 'G'

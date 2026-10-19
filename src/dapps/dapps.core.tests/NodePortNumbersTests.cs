@@ -140,6 +140,24 @@ public sealed class NodePortNumbersTests
         AgwPortQuery.NumberPorts(payload, map).Select(p => p.Number).Should().Equal(1, null);
     }
 
+    [Theory]
+    [InlineData("4;1 with A;3 with C;4 with D;\0", new[] { 1 }, "won't use ports 3, 4")]   // slot 2 hidden
+    [InlineData("3;1 with A;2 with B;\0", new[] { 1, 2 }, "")]                            // slot 3 hidden, after them
+    public void Bpq_WithAHiddenPort_UsesOnlyPortsWhoseCallsAndBeaconsAgree(string g, int[] usable, string named)
+    {
+        // Slots 1 to 4, slot 2 hidden: 'C' would put byte 2 on slot 4
+        // (a position among visible ports), 'M' and heard frames on slot 3
+        // (M0LTE/linbpq#78). Only a port whose label is its position agrees.
+        var payload = Bytes(g);
+        var map = NodePortNumbers.Plain(payload);
+        map.Numbers.Should().Equal(usable);
+        foreach (var n in new[] { 1, 2, 3, 4 }.Except(usable)) map.ToAgwPort(n).Should().BeNull($"port {n} is refused");
+        var warning = NodePortNumbers.HiddenPortsWarning(payload);
+        warning.Should().Contain("1 to N");
+        if (named.Length > 0) warning.Should().Contain(named);
+        else warning.Should().NotContain("won't use");
+    }
+
     [Fact]
     public void AStoredDireWolfByte_ConvertsToItsLabel_AndIsUsable()
     {

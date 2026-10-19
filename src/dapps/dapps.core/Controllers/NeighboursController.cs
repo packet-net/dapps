@@ -27,7 +27,9 @@ public class NeighboursController(Database database) : ControllerBase
             // (round-trip with ParseLines/ToLines) instead of the raw
             // JSON, since that's what the operator typed in.
             var script = ConnectScript.FromJson(n.ConnectScriptJson);
-            return new NeighbourModel(n.Callsign, n.BearerPort, n.UdpEndpoint,
+            // A port still waiting to be converted counts from 0 (#233):
+            // not shown as a number, which a script could post back one low.
+            return new NeighbourModel(n.Callsign, n.PortPending == true ? null : n.BearerPort, n.UdpEndpoint,
                 ConnectScript: script?.ToLines(),
                 ConnectScriptStepCount: script?.Steps.Count ?? 0,
                 CompressionEnabled: n.CompressionEnabled,
@@ -53,6 +55,15 @@ public class NeighboursController(Database database) : ControllerBase
         {
             if (counted < 0) return BadRequest("BearerPort counts the node's ports from 0; it can't be negative. Send Port, the node's own port number, instead.");
             port = counted + 1;
+        }
+        // While the row's port waits to be converted it is shown as null:
+        // posting null, or the old count-from-0 value, back would store the
+        // wrong port. Wait for the conversion (seconds after the node's AGW
+        // connection answers) or send another value.
+        var existing = await database.GetNeighbour(callsign);
+        if (existing is { PortPending: true } && (port is null || port == existing.BearerPort))
+        {
+            return Conflict($"{callsign}'s radio port was saved by an older DAPPS, which counted from 0, and is waiting to be converted to the node's own number; send the port as your node numbers it once that is done (GET /Neighbours shows it then), or a different value now.");
         }
         if (port is < 1)
         {
@@ -117,7 +128,9 @@ public class NeighboursController(Database database) : ControllerBase
 /// had up to 0.52, when it counted from 0: still taken on a POST without
 /// <see cref="Port"/>, never sent. Deprecated. <see cref="PortPending"/>
 /// (read-only) is true while a port saved by an older DAPPS waits to be
-/// converted; the neighbour isn't called until then.
+/// converted; the neighbour isn't called until then, and <see cref="Port"/>
+/// is null meanwhile. A POST to such a row with no port, or with the old
+/// value, is refused (409) rather than stored one too low.
 ///
 /// <para>
 /// <see cref="ConnectScript"/> is the optional human-readable

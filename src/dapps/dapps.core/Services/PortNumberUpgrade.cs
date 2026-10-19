@@ -244,8 +244,13 @@ public sealed class PortNumberUpgradeService(
     IOptionsMonitor<SystemOptions> options,
     ILogger<PortNumberUpgradeService> logger,
     IAgwLinkSource? agwLinks = null,
-    IServiceProvider? services = null) : IHostedService
+    IServiceProvider? services = null,
+    TimeProvider? clock = null) : IHostedService
 {
+    // Retried every 30 s while the numbering can't be read: logged once,
+    // then hourly, and once more when it can.
+    private readonly FailureLog failures = new(logger, clock);
+
     // Resolved at start, not injected: the AGW service is the link source
     // and calls back into this one when its connection opens.
     private IAgwLinkSource? links = agwLinks;
@@ -331,17 +336,18 @@ public sealed class PortNumberUpgradeService(
             catch (Exception ex)
             {
                 couldNotRead = true;
-                logger.LogWarning("Port numbers: could not read the node's port numbers ({0}); ports saved by an older DAPPS stay held", ex.Message);
+                failures.Failed($"Port numbers: could not read the node's port numbers ({ex.Message}); ports saved by an older DAPPS stay held");
                 return;
             }
             if (map is null)
             {
                 couldNotRead = true;
                 HeldReason = "Ports saved by an older DAPPS can't be converted yet: DAPPS couldn't read the node's port numbers (no answer to its port list, or an XRouter whose RHPv2 port it can't reach: set RHPPORT in XROUTER.CFG and DAPPS's RHPv2 settings to match). It keeps trying; nothing is sent on those ports until then.";
-                logger.LogWarning("Port numbers: {0}", HeldReason);
+                failures.Failed($"Port numbers: {HeldReason}");
                 return;
             }
             couldNotRead = false;
+            failures.Worked("Port numbers: the node's port numbers can be read now");
 
             PortNumberUpgrade.Result? result;
             using (var db = DbInfo.GetConnection())
