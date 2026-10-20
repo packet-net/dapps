@@ -78,7 +78,7 @@ Stop / unload:
 sudo launchctl bootout system/uk.m0lte.dapps
 ```
 
-The supervised in-place update path (`/Update/apply` on the dashboard) is **Linux only** today - it relies on systemd. On macOS you replace the binary by stopping launchd, swapping the file, and starting again. The dashboard's update banner still surfaces "v0.X.Y available" so you know when to do that.
+To upgrade, stop launchd, swap in the new binary from the [release page](https://github.com/packet-net/dapps/releases/latest), and start it again. DAPPS does not update itself; the dashboard's banner tells you when a new version is out. See [Upgrade](../update.md).
 
 ## Logs
 

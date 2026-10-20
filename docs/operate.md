@@ -10,7 +10,7 @@ The day-to-day surfaces of a running DAPPS node - what's there, what each one's 
 
 The home page, refreshing its live panels every 5 seconds:
 
-- **Status tiles** - packet-node reachability (probes the configured bearer port - AGW or RHPv2, with a **Retry now** link while it's reconnecting), the MQTT broker, whether transmitting is allowed or stopped, and the running build with **Check now** and, when there's one to apply, **Apply update**. See [Update](update.md).
+- **Status tiles** - packet-node reachability (probes the configured bearer port - AGW or RHPv2, with a **Retry now** link while it's reconnecting), the MQTT broker, whether transmitting is allowed or stopped, and the running build with **Check now**, which says when a newer version is out. See [Upgrade](update.md).
 - **Activity** - forwards per minute since the page loaded.
 - **Recent decisions** - the last 20 entries of the decision-events ring ("rejected forward, no route to X" etc.).
 - **Outbound queue / Local inbox** - pending and undelivered counts, with links to the Messages tabs.
@@ -112,7 +112,7 @@ If you're already running an MQTT-shaped monitoring pipeline, this is the easies
 - **"Is the link to peer Y working?"** - Topology > Probed nodes, or trigger a probe via the dashboard / REST.
 - **"What's my airtime usage right now?"** - the Discovery airtime panel on the Overview.
 - **"What's queued and not going anywhere?"** - the Outbound queue / Local inbox tabs on the Messages page.
-- **"Is there an update?"** - the Build tile on the Overview, or `GET /Update/status`.
+- **"Is there an update?"** - the Build tile on the Overview, or `GET /Events/version`. To upgrade, see [Upgrade](update.md).
 
 ## Logs
 

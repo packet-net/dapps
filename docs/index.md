@@ -13,7 +13,7 @@
 - [**Discovery & routing**](discovery-and-routing.md) - channels, beacons, probes, neighbours, route hints.
 - [**Operate**](operate.md) - dashboard, `/Health` and `/Operational`, MQTT heartbeat.
 - [**Audit log**](audit.md) - persistent record of every transmission, with the reason for it.
-- [**Update**](update.md) - banner, one-click apply, rollback.
+- [**Upgrade**](update.md) - apt, Docker or a new binary; the dashboard tells you when there is a new version.
 - [**App developers**](app-developers/index.md) - concepts, tutorial, reference, sample gallery.
 - [**Troubleshooting**](troubleshooting.md) - common failure modes and how to diagnose.
 - [**Glossary**](glossary.md) - terms.

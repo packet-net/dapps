@@ -28,7 +28,7 @@ Then open `http://<node>:5000/`. The first request lands on `/Setup` - a two-ste
 sudo apt update && sudo apt upgrade
 ```
 
-The package restarts the service for you. The dashboard checks the apt repository every six hours and, when a newer version is there, shows a banner with this command; there is no `dapps-updater` unit or Apply button in the apt install, because apt is the update path here - see [Update](../update.md).
+The package restarts the service for you. The dashboard checks the apt repository every six hours and, when a newer version is there, shows a banner with this command - see [Upgrade](../update.md).
 
 ### Configuration
 
@@ -91,9 +91,9 @@ On a systemd Linux that is not Debian-family - or where you would rather not add
 curl -sSL https://packet-net.github.io/dapps/install.sh | sudo bash
 ```
 
-Detects your architecture (`x86_64` / `aarch64` / `armv7l`), downloads the matching single-file binary from the [latest GitHub Release](https://github.com/packet-net/dapps/releases/latest) to `/opt/dapps/dapps`, creates the `dapps` system user and `/var/lib/dapps` state directory, drops `dapps.service` plus the privileged `dapps-updater.service` + `.timer`, and enables both. No env vars, no callsign yet - configuration happens in the dashboard once the daemon is up.
+Detects your architecture (`x86_64` / `aarch64` / `armv7l`), downloads the matching single-file binary from the [latest GitHub Release](https://github.com/packet-net/dapps/releases/latest) to `/opt/dapps/dapps`, creates the `dapps` system user and `/var/lib/dapps` state directory, drops `dapps.service`, and enables it. No env vars, no callsign yet - configuration happens in the dashboard once the daemon is up.
 
-This path keeps the in-app update story: re-run the installer to upgrade in place, or use the dashboard's **Apply update** button, which goes through the supervised updater. See [Update](../update.md).
+To upgrade, re-run the installer; it replaces the binary in place and restarts the service. DAPPS does not update itself. See [Upgrade](../update.md).
 
 Use apt if you can. This exists so that "not Debian" does not mean "build it yourself", and it is the same binary either way.
 
@@ -117,16 +117,14 @@ Substitute `dapps-linux-arm64` (Pi 4/5, Apple Silicon Linux) or `dapps-linux-arm
 
 ### 2. Set up the runtime user
 
-DAPPS runs as a non-privileged user. The updater service runs as root because it needs to swap a binary that's currently executing - but the daemon itself does not.
+DAPPS runs as a non-privileged user, not root.
 
 ```bash
 sudo useradd --system --home /var/lib/dapps --shell /usr/sbin/nologin dapps
 sudo chown -R dapps:dapps /var/lib/dapps
 ```
 
-### 3. Install the systemd units
-
-There are two: `dapps.service` (the daemon) and `dapps-updater.service` plus `dapps-updater.timer` (the privileged updater).
+### 3. Install the systemd unit
 
 #### dapps.service
 
@@ -161,45 +159,11 @@ If you bind to a port below 1024 (e.g. you want the dashboard on `:80`), either 
 sudo setcap 'cap_net_bind_service=+ep' /opt/dapps/dapps
 ```
 
-#### dapps-updater.service + .timer
-
-Privileged. Polls a marker file (`/var/lib/dapps/update-requested`) every 60 seconds; when present, runs `dapps --apply-update`, which downloads the latest release for this architecture, swaps `/opt/dapps/dapps`, restarts `dapps.service`, verifies the new daemon stays up for 60 seconds, and rolls back to `/opt/dapps/dapps.previous` on any failure.
-
-```ini
-# /etc/systemd/system/dapps-updater.service
-[Unit]
-Description=DAPPS supervised updater
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/opt/dapps/dapps --apply-update
-```
-
-```ini
-# /etc/systemd/system/dapps-updater.timer
-[Unit]
-Description=Poll for DAPPS update requests
-
-[Timer]
-OnBootSec=2min
-OnUnitActiveSec=1min
-Unit=dapps-updater.service
-
-[Install]
-WantedBy=timers.target
-```
-
-The timer fires the service every minute; the service does nothing if no marker file exists, so the steady state is a no-op heartbeat.
-
-Do **not** install these alongside the apt package. They swap a binary in `/opt/dapps` that an apt install does not use, and the unit in `/etc/systemd/system` silently wins over the packaged one.
-
 ### 4. Enable and start
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now dapps.service
-sudo systemctl enable --now dapps-updater.timer
 sudo systemctl status dapps.service
 ```
 
@@ -245,8 +209,8 @@ sudo systemctl start dapps.service
 ## Uninstall (one-liner installs)
 
 ```bash
-sudo systemctl disable --now dapps.service dapps-updater.timer
-sudo rm /etc/systemd/system/dapps.service /etc/systemd/system/dapps-updater.{service,timer}
+sudo systemctl disable --now dapps.service
+sudo rm /etc/systemd/system/dapps.service
 sudo systemctl daemon-reload
 sudo rm -rf /opt/dapps /var/lib/dapps
 sudo userdel dapps

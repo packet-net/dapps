@@ -557,6 +557,7 @@
         .upgrade-banner[hidden] { display: none; }
         .upgrade-banner p { margin: 0.25rem 0 0; color: var(--text); }
         .upgrade-banner a { color: inherit; text-decoration: underline; }
+        .upgrade-banner .upgrade-cmd[hidden] { display: none; }
         .upgrade-banner .upgrade-cmd { display: flex; gap: 0.5rem; align-items: stretch; flex-wrap: wrap; margin-top: 0.5rem; }
         .upgrade-banner code { flex: 1 1 18rem; min-width: 0; padding: 0.4rem 0.6rem; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); color: var(--text); overflow-wrap: anywhere; font-size: 0.82rem; }
 
@@ -1223,33 +1224,15 @@
                             }
                         }
 
-                        // Build chip - reflects the same five states the
-                        // Overview hero update tile shows, so an operator
-                        // who's clicked Apply on Overview and then
-                        // navigated away still sees progress in the topbar.
+                        // Build chip: the running version, and the newest
+                        // release when it is newer. DAPPS never installs
+                        // an update itself; the banner below says how.
                         const upd = s.tables?.update ?? null;
                         const tsVer = document.getElementById('ts-version');
-                        const lr = upd?.lastRun ?? null;
-                        const phase = lr?.phase ?? null;
-                        const inFlight = phase && ['Checking','Downloading','Swapping','Restarting','Verifying'].includes(phase);
                         if (upd) {
                             if (upd.isDevBuild) {
                                 set('ts-version-v', upd.current || s.version);
                                 led(tsVer, 'warn');
-                            } else if (upd.requestPending || inFlight) {
-                                // Phase shorthand for the chip - the hero
-                                // tile carries the long-form text.
-                                const short = inFlight
-                                    ? phase.toLowerCase() + '...'
-                                    : 'queued...';
-                                set('ts-version-v', short);
-                                led(tsVer, 'live');
-                            } else if (phase === 'Success' && lr.toVersion === upd.current) {
-                                set('ts-version-v', `v${upd.current} updated`);
-                                led(tsVer, 'on');
-                            } else if (phase === 'RolledBack' || phase === 'Failed') {
-                                set('ts-version-v', phase.toLowerCase());
-                                led(tsVer, 'err');
                             } else if (upd.isAvailable && upd.latest) {
                                 set('ts-version-v', `v${upd.current} -> v${upd.latest}`);
                                 led(tsVer, 'warn');
@@ -1262,54 +1245,34 @@
                             led(tsVer, null);
                         }
 
-                        // Upgrade banner - a .deb install with a newer
-                        // version ready. apt owns the upgrade there, so
-                        // the page gives the command instead of an
-                        // Apply button.
+                        // Upgrade banner - a newer version is out. Says how
+                        // to upgrade: the apt command on a .deb install,
+                        // otherwise the release page (or the Docker image).
                         const ub = document.getElementById('upgrade-banner');
                         if (ub) {
-                            const showUb = !!(upd && upd.isAvailable && upd.latest && upd.upgradeCommand && !upd.isDevBuild);
+                            const showUb = !!(upd && upd.isAvailable && upd.latest && !upd.isDevBuild);
                             ub.hidden = !showUb;
                             if (showUb) {
                                 set('upgrade-title', `DAPPS v${upd.latest} is available (you have v${upd.current}).`);
                                 const what = document.getElementById('upgrade-what');
+                                const cmdRow = ub.querySelector('.upgrade-cmd');
                                 if (upd.downloadUrl) {
                                     what.replaceChildren('Download ',
                                         Object.assign(document.createElement('a'), { href: upd.downloadUrl, textContent: upd.downloadUrl.split('/').pop() }),
                                         ', then install it on this machine:');
-                                } else {
+                                } else if (upd.upgradeCommand) {
                                     what.textContent = 'Upgrade it from apt, on this machine:';
+                                } else {
+                                    what.textContent = 'Download it from the release page and replace the binary, or rebuild the Docker image.';
                                 }
+                                cmdRow.hidden = !upd.upgradeCommand;
                                 const cmd = document.getElementById('upgrade-cmd');
-                                if (cmd.textContent !== upd.upgradeCommand) cmd.textContent = upd.upgradeCommand;
+                                if (upd.upgradeCommand && cmd.textContent !== upd.upgradeCommand) cmd.textContent = upd.upgradeCommand;
                                 const notes = document.getElementById('upgrade-notes');
                                 notes.hidden = !upd.releaseUrl;
                                 if (upd.releaseUrl) notes.href = upd.releaseUrl;
                             }
                         }
-
-                        // Hard-refresh on apply-update Success
-                        // transition. We track the previous phase
-                        // across snaps; when it flips from any non-
-                        // Success state to Success the operator just
-                        // witnessed an update land, and the page they
-                        // have open is now serving stale assets from
-                        // the previous binary. Reload after a 2s grace
-                        // so they get a beat to see the green
-                        // "updated" state before the page swaps.
-                        // (We never reload if the previous phase was
-                        // null or already Success - that'd auto-refresh
-                        // every page load on a node that had recently
-                        // updated, which is wrong.)
-                        const newPhase = upd?.lastRun?.phase ?? null;
-                        if (newPhase === 'Success'
-                            && window.__dappsLastSeenPhase
-                            && window.__dappsLastSeenPhase !== 'Success'
-                            && !window.__dappsReloadScheduled) {
-                            window.__dappsReloadScheduled = true;
-                            setTimeout(() => location.reload(), 2000);
-                        }
-                        window.__dappsLastSeenPhase = newPhase;
 
                         for (const fn of window.__dappsSnapListeners) {
                             try { fn(s); } catch (e) { console.error(e); }

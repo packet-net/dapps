@@ -17,12 +17,11 @@ using Microsoft.Extensions.Options;
 using Scalar.AspNetCore;
 using MQTTnet.AspNetCore;
 using System.Net.Sockets;
-// Plan C5.2 - CLI side-doors that don't boot the host.
-// Recognised: --version, --check-update, --apply-update, --rollback.
+// CLI side-doors that don't boot the host: --version, --show-config.
 // Returning before CreateBuilder runs means these work even when the
 // on-disk dapps.db is incompatible / a port is wedged / the callsign
-// is unset, which is exactly when --rollback is most useful.
-if (UpdaterCli.TryHandle(args, out var cliExitCode)) return cliExitCode;
+// is unset.
+if (DappsCli.TryHandle(args, out var cliExitCode)) return cliExitCode;
 // #385: set a forgotten admin password from a shell on the node,
 // against the same database, without starting the daemon.
 if (AdminPasswordCli.TryHandle(args, out var resetExitCode)) return resetExitCode;
@@ -125,11 +124,6 @@ builder.Services.AddHostedService<HeartbeatPublisher>();
 builder.Services.AddSingleton(UpdateInstall.Detect());
 builder.Services.AddSingleton<UpdateChecker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<UpdateChecker>());
-
-// Plan C5.2 - the unprivileged dapps daemon only writes the request
-// marker / reads the status file. The actual update work runs in the
-// privileged dapps-updater.service via `dapps --apply-update`.
-builder.Services.AddSingleton<IUpdaterFileSystem, RealUpdaterFileSystem>();
 
 // Embedded MQTT broker. Register via MQTTnet.AspNetCore so a single
 // MqttServer instance backs both the TCP listener (port from

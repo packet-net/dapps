@@ -104,7 +104,6 @@ public class AptUpdateCheckTests
         checker.UpdateAvailable.Should().BeTrue();
         checker.Latest!.Tag.Should().Be("999.0.0");
         checker.Latest.Url.Should().Be("https://github.com/packet-net/dapps/releases/tag/v999.0.0");
-        checker.CanApply.Should().BeFalse();
         checker.InstallName.Should().Be("apt");
         checker.UpgradeCommand.Should().Be("sudo apt update && sudo apt install --only-upgrade dapps");
         checker.DownloadUrl.Should().BeNull();
@@ -130,7 +129,6 @@ public class AptUpdateCheckTests
         checker.Latest!.Tag.Should().Be(checker.Current);
         checker.UpdateAvailable.Should().BeFalse();
         checker.UpgradeCommand.Should().BeNull();
-        checker.CanApply.Should().BeFalse();
     }
 
     [Fact]
@@ -180,7 +178,6 @@ public class AptUpdateCheckTests
     public void OtherInstalls_KeepTheApplyButton()
     {
         var (checker, _) = Checker(InstallKind.Other, _ => "");
-        checker.CanApply.Should().BeTrue();
         checker.InstallName.Should().Be("other");
         checker.UpgradeCommand.Should().BeNull();
     }

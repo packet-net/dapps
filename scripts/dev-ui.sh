@@ -40,7 +40,7 @@ needs_seed() {
 
 create_schema_via_dotnet() {
     # No clean side-door for "create schema and exit" - the --version /
-    # --check-update CLI shortcuts return before DbStartup runs. So we
+    # --show-config CLI shortcuts return before DbStartup runs. So we
     # boot the daemon, wait until HTTP answers (proves DbStartup
     # finished and the host is up), and kill it. SQLite is crash-safe
     # via its journal; the schema is fully written by the time the

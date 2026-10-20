@@ -3,7 +3,6 @@ using System.Net.Sockets;
 using dapps.client;
 using dapps.core.Models;
 using dapps.core.Services;
-using dapps.core.Updater;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
@@ -56,7 +55,7 @@ public sealed class HealthController(
         var body = new HealthResponse(
             Status: status,
             Callsign: opts.Callsign,
-            Version: UpdaterCli.ResolveCurrentVersion(),
+            Version: Services.AppVersion.Current(),
             UptimeSeconds: (long)Math.Max(0, (DateTime.UtcNow - Process.GetCurrentProcess().StartTime.ToUniversalTime()).TotalSeconds),
             CallsignConfigured: callsignOk,
             CallsignProblem: callsignProblem,

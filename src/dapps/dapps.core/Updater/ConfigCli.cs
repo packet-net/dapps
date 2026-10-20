@@ -15,7 +15,7 @@ namespace dapps.core.Updater;
 /// <c>EnvironmentFile</c> the operator thinks is authoritative.
 ///
 /// Exits 0 on success, 1 if the DB doesn't exist, 2 on any other
-/// failure. Like the rest of <see cref="UpdaterCli"/>, runs before
+/// failure. Like the rest of <see cref="DappsCli"/>, runs before
 /// host plumbing and works even when the daemon won't boot for an
 /// unrelated reason.
 /// </summary>

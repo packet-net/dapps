@@ -16,7 +16,7 @@ A running DAPPS node has several independent loops, each with a clear job:
 | **Solicitor**              | Per-channel scheduled or operator-triggered            | Transmit a solicit on a channel. Peers that hear it reply, and the replies land in the discovered-peers table. |
 | **Poll sweeper**           | Every poll interval (6 h default), if enabled          | Call each neighbour so it can send anything it holds for us. Off by default.                                 |
 | **Heartbeat publisher**    | Every 60 s (configurable, ≥ 10 s)                      | Publish an operational snapshot to MQTT topic `dapps/metrics/heartbeat`. On by default.                      |
-| **Update checker**         | Every 6 h on an apt install, else every 1 h            | Check packet-net's apt repository (apt installs) or GitHub Releases (everything else). Surface "v0.X.Y available" on the dashboard and `/Update/status`. |
+| **Update checker**         | Every 6 h on an apt install, else every 1 h            | Check packet-net's apt repository (apt installs) or GitHub Releases (everything else). Surface "v0.X.Y available" on the dashboard. It never downloads or installs anything. |
 
 Most are turned on by default. The exceptions are **probing**, **scheduled polling**, and **discovery channels** - you opt in to those once you've thought about your bearer's airtime budget. See [Tune](tune.md).
 

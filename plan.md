@@ -387,7 +387,9 @@ Native single-file binaries published as GitHub Release assets, not a Docker ima
 
 README "Getting started" rewritten end-to-end for the native-binary distribution: prerequisites, the BPQ-side `bpq32.cfg` snippet (AGW + Apps Interface slot + APPLICATION line with `TRANS`), download/run instructions for each release artifact, env-var bootstrap, neighbour add/remove via REST, and a verification step that connects from a node prompt and sees the `DAPPSv1>` banner. Troubleshooting block covers the usual surprises (AGW config, callsign typos, BPQ port-byte indexing, `TRANS` flag missing). Backups + upgrade notes added.
 
-### C5. Self-update
+### C5. Self-update *(C5.2 removed; C5.3 dropped)*
+
+**Superseded:** the self-updater (C5.2) was removed. DAPPS is upgraded through the apt repository, or by the operator replacing the binary or rebuilding the Docker image. Only the passive new-version notice (C5.1) remains. The text below is the historical design.
 
 Manual `curl` + `install` + `systemctl restart` is workable for the operator running through the README, miserable for a deployed estate. Goal: keep the bar of "single static binary, drop it in `/opt`, run via systemd" but stop expecting the sysop to chase release notes by hand.
 

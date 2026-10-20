@@ -1,7 +1,6 @@
 using AwesomeAssertions;
 using dapps.core.Models;
 using dapps.core.Services;
-using dapps.core.Updater;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -77,7 +76,6 @@ public sealed class OperationalSnapshotBuilderTests : IAsyncLifetime
         var builder = new OperationalSnapshotBuilder(
             opts, metrics, airtime, db,
             updateChecker: BuildUpdateChecker(),
-            updaterFs: new FakeUpdaterFs(),
             timeProvider: clock);
         var snap = await builder.BuildAsync(TestContext.Current.CancellationToken);
 
@@ -123,7 +121,6 @@ public sealed class OperationalSnapshotBuilderTests : IAsyncLifetime
         var builder = new OperationalSnapshotBuilder(
             opts, metrics, airtime, db,
             updateChecker: BuildUpdateChecker(),
-            updaterFs: new FakeUpdaterFs(),
             timeProvider: clock);
         var snap = await builder.BuildAsync(TestContext.Current.CancellationToken);
 
@@ -150,7 +147,6 @@ public sealed class OperationalSnapshotBuilderTests : IAsyncLifetime
         var builder = new OperationalSnapshotBuilder(
             opts, metrics, airtime, db,
             updateChecker: BuildUpdateChecker(),
-            updaterFs: new FakeUpdaterFs(),
             timeProvider: clock);
         var snap = await builder.BuildAsync(TestContext.Current.CancellationToken);
 
@@ -191,7 +187,6 @@ public sealed class OperationalSnapshotBuilderTests : IAsyncLifetime
         var builder = new OperationalSnapshotBuilder(
             opts, new OperationalMetrics(clock), new AirtimeAccountant(opts, clock, NullLogger<AirtimeAccountant>.Instance), db,
             updateChecker: BuildUpdateChecker(),
-            updaterFs: new FakeUpdaterFs(),
             timeProvider: clock);
         var full = await builder.BuildFullAsync(TestContext.Current.CancellationToken);
 
@@ -233,7 +228,6 @@ public sealed class OperationalSnapshotBuilderTests : IAsyncLifetime
         var builder = new OperationalSnapshotBuilder(
             opts, metrics, airtime, db,
             updateChecker: BuildUpdateChecker(),
-            updaterFs: new FakeUpdaterFs(),
             timeProvider: clock);
 
         var lite = await builder.BuildAsync(TestContext.Current.CancellationToken);
@@ -251,7 +245,6 @@ public sealed class OperationalSnapshotBuilderTests : IAsyncLifetime
         full.Tables.Neighbours[0].Callsign.Should().Be("G7HOP-1");
         full.Tables.Update.Should().NotBeNull();
         full.Tables.Update.Current.Should().NotBeNullOrEmpty();
-        full.Tables.Update.RequestPending.Should().BeFalse();
 
         // Both shapes share the cheap fields verbatim.
         full.Callsign.Should().Be(lite.Callsign);
@@ -265,18 +258,6 @@ public sealed class OperationalSnapshotBuilderTests : IAsyncLifetime
     private sealed class NoopHttpClientFactory : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new();
-    }
-
-    private sealed class FakeUpdaterFs : IUpdaterFileSystem
-    {
-        private readonly Dictionary<string, string> store = new();
-        public bool Exists(string path) => store.ContainsKey(path);
-        public void SwapInPlace(string src, string dest, string previous) { }
-        public void Restore(string previous, string dest) { }
-        public void MarkExecutable(string path) { }
-        public string? ReadAllText(string path) => store.TryGetValue(path, out var v) ? v : null;
-        public void WriteAllText(string path, string contents) => store[path] = contents;
-        public void Delete(string path) => store.Remove(path);
     }
 
     private sealed class TestOptionsMonitor<T>(T value) : IOptionsMonitor<T>

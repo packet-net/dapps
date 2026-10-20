@@ -1,6 +1,6 @@
-# Update
+# Upgrade
 
-How a node updates depends on how it was installed.
+DAPPS never updates itself. You upgrade it the way you installed it, and the dashboard tells you when there is something new.
 
 ## apt installs
 
@@ -10,101 +10,49 @@ sudo apt update && sudo apt upgrade
 
 That is the upgrade. The package stops the old daemon, replaces the payload under `/usr/lib/dapps`, and restarts the service; `/etc/dapps/dapps.env` and the database in `/var/lib/dapps` are left alone.
 
-### Knowing there is one
-
-The dashboard tells you. Every six hours (and when you press **Check now**) DAPPS reads the apt repository's package list - one small GET of `https://packet-net.github.io/apt/Packages`, nothing downloaded or installed - and finds the newest `dapps` for this machine's architecture, compared the way apt compares versions. When it is newer than what is running, a banner across the top of every page says so, links the release notes, and gives the command to run on the machine, with a Copy button:
-
-```bash
-sudo apt update && sudo apt install --only-upgrade dapps
-```
-
-`sudo apt update && sudo apt upgrade` does the same and upgrades everything else too. If the `.deb` was installed by hand rather than from the repository, the banner links the new `.deb` and gives `sudo apt install ./dapps_<version>_<arch>.deb` instead. When the check can't reach the repository it shows nothing and says why in the log, once.
-
-The `.deb` ships **no** `dapps-updater` unit, so there is no **Apply update** button: the self-updater swaps a binary at `/opt/dapps/dapps`, which an apt install does not have and dpkg would not expect to change under it. apt does the upgrade.
-
-Versions up to 0.45 seeded the check off on apt installs, because the only check then was GitHub's and it fed that Apply button. 0.46 turns it on once, on the first start after the upgrade; untick **Check for new releases** in Settings if you don't want it, and it stays off.
-
 A release reaches the apt repository within about a minute of the tag: the release workflow tells [packet-net/apt](https://github.com/packet-net/apt) to reindex as its last step, and a nightly rebuild catches anything that dispatch missed.
 
-The rest of this page is the **one-liner installer's** update story - the supervised in-place updater. It does not apply to apt installs.
+## Docker
 
-## The mechanism
-
-A separate, privileged systemd unit - `dapps-updater.service`, fired every 60 s by `dapps-updater.timer` - polls a marker file at `/var/lib/dapps/update-requested`. When the file is present, it runs `dapps --apply-update`, which:
-
-1. Downloads the latest release for this platform from GitHub Releases.
-2. Saves the current binary as `/opt/dapps/dapps.previous` (the rollback target).
-3. Swaps the new binary into place.
-4. Restarts `dapps.service`.
-5. Verifies the new daemon stays up for 60 s.
-6. **On any failure, restores `dapps.previous` and restarts again.**
-
-The daemon itself has no permission to swap its own binary - that separation is what makes the update both safe (a compromised daemon can't replace itself silently) and supervised (the verification + rollback step happens whether you triggered it from the dashboard or via SSH).
-
-This path is **Linux/systemd only** today. On Docker / Windows / macOS, the update banner still surfaces "v0.X.Y available" so you know when to do a manual binary-swap, but the one-click path doesn't apply.
-
-## Path 1: dashboard banner + button
-
-The simplest. The **Build** tile on the dashboard's Overview shows current version + latest known release. If they differ, the **Apply update** button is enabled. Click it.
-
-Behind the scenes, the dashboard writes the marker file, the next updater tick picks it up, and you watch the phase pill flip through `checking` → `downloading` → `swapping` → `restarting` → `verifying` → `success` (or `rolled back` / `failed`).
-
-The dashboard polls the update phase live, so you don't need to refresh.
-
-## Path 2: REST
-
-If you're scripting this, `POST /Update/apply` writes the same marker file. Poll `GET /Update/status` until `lastRun.phase == Success` and `current == latest`. Same code path as the dashboard button.
-
-## Path 3: command line
-
-If you're already on the box:
+There is no published image yet, so rebuild it from a newer checkout and recreate the container. Your state lives in the volume, so it carries over:
 
 ```bash
-sudo touch /var/lib/dapps/update-requested
+git pull
+docker build -t dapps .
+docker compose up -d
 ```
 
-Wait for the next updater tick (≤ 60 s). Or trigger immediately:
+See [Docker](install/docker.md).
+
+## One-liner installer, or a binary you dropped in yourself
+
+Re-run the installer; it fetches the latest release and restarts the service, keeping the old binary as `/opt/dapps/dapps.previous`:
 
 ```bash
-sudo systemctl start dapps-updater.service
+curl -sSL https://packet-net.github.io/dapps/install.sh | sudo bash
 ```
 
-Either way, the same supervised path runs.
+Or do it by hand: download the binary for your platform from the [release page](https://github.com/packet-net/dapps/releases/latest), stop the service, swap the file, start it again. On macOS and Windows that is your only route; the install pages show the service commands.
 
-## Rollback
+To go back, put the old binary back the same way.
 
-The `--apply-update` path rolls back automatically on a failed verify. For an unprompted rollback (you applied an update, the daemon stayed up for 60 s and passed verify, but you've decided you don't want this version after all):
+If you installed with an older `install.sh`, it also set up a `dapps-updater` timer. That is no longer used; the installer removes it when you re-run it, or remove it yourself:
 
 ```bash
-sudo /opt/dapps/dapps --rollback
+sudo systemctl disable --now dapps-updater.timer
+sudo rm -f /etc/systemd/system/dapps-updater.service /etc/systemd/system/dapps-updater.timer
+sudo systemctl daemon-reload
 ```
 
-This is the SSH-from-the-side-of-the-bed escape hatch: it restores `/opt/dapps/dapps.previous` unconditionally and restarts. Run it when the dashboard isn't reachable and you need the previous version back, fast.
+## Knowing there is a new version
 
-## Channels and signing
+The dashboard tells you. It checks now and then (every six hours on an apt install, hourly otherwise) and nothing is downloaded or installed:
 
-Out of scope today.
+- On an apt install it reads the repository's package list, so the notice appears exactly when apt can install the new version. A banner across the top of every page links the release notes and gives the command, with a Copy button. If the `.deb` was installed by hand, the banner links the new `.deb` instead.
+- Anywhere else it asks GitHub Releases. The banner links the release page and reminds you to replace the binary or rebuild the Docker image.
 
-- **Channels (stable / beta / dev).** The release stream is one channel. If we ever need staged rollouts the framework can carry channel pinning, but YAGNI until we have releases that warrant the distinction.
-- **Binary signing.** Trust today is "GitHub Releases over HTTPS." Sigstore / minisign / etc. is its own initiative - separate decision when there's a real threat model that needs it.
+To check straight away, press **Check now** on the Overview's Build tile, **Check for updates now** in Settings, or `POST /Update/check`. When the check can't reach the server it shows nothing and says why in the log, once.
 
-## Auto-update on a schedule
+Don't want the check (an offline node, say)? Untick **Check for new releases** in Settings, or seed `DAPPS_UPDATE_CHECK_ENABLED=false` on first start.
 
-Currently **parked**. Originally sketched as: opt-in `AutoUpdate=true` with a quiet-hours window, skipping if traffic was forwarded recently, with per-major-version pinning. Parked because the existing surfaces (banner + one-click + REST) already cover today's operator population - author + a small handful of friendly nodes - and a scheduled-apply is a convenience for operators who don't watch the box at all, who don't yet exist. We'll revisit when there's a population that drifts weeks behind because nobody clicks the button.
-
-## When updates check
-
-The update checker polls GitHub Releases every hour (rate-limit-friendly: GitHub's unauthenticated limit is 60 req/hour per IP, so we use 1/60 of that). The poll's a single HTTPS request; the response feeds the dashboard banner and `GET /Update/status`.
-
-To force an immediate re-poll without waiting an hour:
-
-- Dashboard: **Check now** on the Overview's Build tile, or **Check for updates now** in Settings.
-- REST: `POST /Update/check`.
-
-## Disabling the update check
-
-Untick **Check for new releases** in Settings (or seed `DAPPS_UPDATE_CHECK_ENABLED=false` on first start) if your node has no internet access (or you really, really want to know about new versions some other way). The daemon will stop polling; the banner will go quiet. **Recommended only for offline deployments** - the cost is one HTTPS request per hour (every six hours on an apt install), the benefit is knowing about fixes.
-
-## Dev builds
-
-A dev build (anything not built from a tagged release commit) reports `isDevBuild: true` on the update endpoints. Dev builds **never auto-update**, even if the marker file is written, and the dashboard's Apply button is disabled. This is the developer escape hatch - you don't want a local hack getting silently overwritten by `latest` because the update timer fired at 03:00.
+A dev build (anything not built from a tagged release) reports `isDevBuild: true` and never claims to be out of date.

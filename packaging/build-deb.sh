@@ -235,9 +235,8 @@ Description: Store-and-forward messaging overlay for packet radio
  wizard takes the admin password, the callsign and the bearer. Deployment-level
  overrides (bind address, ports) live in /etc/dapps/dapps.env.
  .
- Upgrades come from apt, so this package ships no dapps-updater unit. The
- dashboard checks packet-net's apt repository and, when a newer version is
- there, shows the apt command that installs it.
+ Upgrades come from apt. The dashboard checks packet-net's apt repository
+ and, when a newer version is there, shows the apt command that installs it.
  .
  AGPL-3.0-or-later.
 EOF

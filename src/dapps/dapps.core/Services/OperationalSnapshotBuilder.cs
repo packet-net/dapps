@@ -4,7 +4,6 @@ using System.Text.Json;
 using dapps.client;
 using dapps.core.Controllers;
 using dapps.core.Models;
-using dapps.core.Updater;
 using Microsoft.Extensions.Options;
 
 namespace dapps.core.Services;
@@ -29,7 +28,6 @@ public sealed class OperationalSnapshotBuilder(
     AirtimeAccountant airtime,
     Database database,
     UpdateChecker updateChecker,
-    Updater.IUpdaterFileSystem updaterFs,
     TimeProvider timeProvider,
     NodePortNumbers? portNumbers = null,
     PortNumberUpgradeService? portUpgrade = null)
@@ -115,17 +113,7 @@ public sealed class OperationalSnapshotBuilder(
             var probed = await database.GetProbedNodes();
             var polled = await database.GetPolledNodes();
 
-            // Update status: same shape /Update/status returns. Use the
-            // same IUpdaterFileSystem reads UpdateController uses so we
-            // don't drift.
-            var paths = UpdaterPaths.Default;
-            UpdateStatus? lastRun = null;
-            var rawStatus = updaterFs.ReadAllText(paths.StatusPath);
-            if (!string.IsNullOrWhiteSpace(rawStatus))
-            {
-                try { lastRun = JsonSerializer.Deserialize<UpdateStatus>(rawStatus); }
-                catch (JsonException) { /* surface unknown rather than throw */ }
-            }
+            // Update notice: same shape /Events/version returns.
             var latest = updateChecker.Latest;
             var update = new UpdateStatusInline(
                 Current: updateChecker.Current,
@@ -134,10 +122,7 @@ public sealed class OperationalSnapshotBuilder(
                 ReleaseUrl: latest?.Url,
                 IsAvailable: updateChecker.UpdateAvailable,
                 FetchedAt: latest?.FetchedAt,
-                RequestPending: updaterFs.Exists(paths.RequestPath),
-                LastRun: lastRun,
                 Install: updateChecker.InstallName,
-                CanApply: updateChecker.CanApply,
                 UpgradeCommand: updateChecker.UpgradeCommand,
                 DownloadUrl: updateChecker.DownloadUrl);
 
@@ -156,7 +141,7 @@ public sealed class OperationalSnapshotBuilder(
 
         return new OperationalSnapshot(
             Callsign: opts.Callsign,
-            Version: UpdaterCli.ResolveCurrentVersion(),
+            Version: Services.AppVersion.Current(),
             GeneratedAt: timeProvider.GetUtcNow().UtcDateTime,
             UptimeSeconds: (long)Math.Max(0, (timeProvider.GetUtcNow().UtcDateTime - Process.GetCurrentProcess().StartTime.ToUniversalTime()).TotalSeconds),
 
@@ -302,7 +287,7 @@ public sealed record DashboardTables(
     UpdateStatusInline Update,
     string? PortNotice = null);
 
-/// <summary>Same shape as <c>VersionStatus</c> on /Update/status.
+/// <summary>Same shape as <c>VersionStatus</c> on /Events/version.
 /// Inlined so the dashboard one-fetch can render the update card from
 /// the same /Operational document.</summary>
 public sealed record UpdateStatusInline(
@@ -312,12 +297,8 @@ public sealed record UpdateStatusInline(
     string? ReleaseUrl,
     bool IsAvailable,
     DateTime? FetchedAt,
-    bool RequestPending,
-    Updater.UpdateStatus? LastRun,
     // How DAPPS was installed: "apt" (from packet-net's apt repo), "deb" (a .deb installed by hand) or "other".
     string Install = "other",
-    // Whether the self-updater's Apply applies; false on a .deb install, where apt owns the upgrade.
-    bool CanApply = true,
     // On a .deb install with a newer version ready, the command that upgrades it.
     string? UpgradeCommand = null,
     // On a hand-installed .deb with a newer version ready, the new .deb's download.

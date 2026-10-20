@@ -1,6 +1,5 @@
 using System.Net;
 using System.Net.Http.Json;
-using System.Reflection;
 using System.Text.Json.Serialization;
 using dapps.core.Models;
 using dapps.core.Services.Apt;
@@ -14,9 +13,8 @@ namespace dapps.core.Services;
 /// surface "v0.X.Y available" without the operator chasing release
 /// notes by hand. Plan C5.1.
 ///
-/// Read-only: this service never *applies* updates. Triggered and
-/// auto-applied updates (C5.2 / C5.3) belong in a separate companion
-/// process; dapps stays unprivileged.
+/// Read-only: DAPPS never installs a new version itself. Upgrade with
+/// apt, or replace the binary (or pull the Docker image).
 ///
 /// Failure handling: network is flaky in the wild, so a fetch failure
 /// is logged at Debug and the cached snapshot stays put. We never
@@ -27,9 +25,8 @@ namespace dapps.core.Services;
 /// (<see cref="InstallKind.AptRepo"/> or <see cref="InstallKind.Deb"/>)
 /// reads packet-net's apt index, so the dashboard says a version is
 /// ready exactly when apt can install it, and gives the command that
-/// does; there is no Apply button, because apt owns the upgrade.
-/// Anything else asks GitHub Releases and keeps the self-updater's
-/// Apply button.
+/// does. Anything else asks GitHub Releases and links to the release
+/// page, where the binaries are.
 /// </summary>
 public sealed class UpdateChecker(
     IHttpClientFactory httpClientFactory,
@@ -57,8 +54,8 @@ public sealed class UpdateChecker(
     // one poll/hour is well within budget. 6h was too long for "I just
     // shipped, do my nodes see it?" - the dashboard would tell operators
     // their freshly-pushed release didn't exist for hours. Operators
-    // wanting instant feedback hit POST /Update/check or the dashboard
-    // "Check now" button.
+    // wanting instant feedback hit POST /Update/check or the "Check
+    // for updates now" button in Settings.
     private static readonly TimeSpan PollInterval = TimeSpan.FromHours(1);
     private static readonly TimeSpan StartupDelay = TimeSpan.FromSeconds(15);
 
@@ -70,12 +67,6 @@ public sealed class UpdateChecker(
 
     /// <summary>How this DAPPS was installed, which decides where it looks and how it upgrades.</summary>
     public InstallKind Install => _install.Kind;
-
-    /// <summary>
-    /// Whether the dashboard's Apply button (the self-updater) applies
-    /// here: not on a .deb install, where apt owns /usr/lib/dapps.
-    /// </summary>
-    public bool CanApply => !_install.IsDeb;
 
     /// <summary><see cref="Install"/> as the status JSON carries it: "apt", "deb" or "other".</summary>
     public string InstallName => _install.Kind switch
@@ -103,7 +94,7 @@ public sealed class UpdateChecker(
     /// the dashboard treats those as "running a dev build" and doesn't
     /// claim out-of-date.
     /// </summary>
-    public string Current { get; } = ResolveCurrentVersion();
+    public string Current { get; } = AppVersion.Current();
 
     public bool IsDevBuild =>
         Current.StartsWith("dev-", StringComparison.OrdinalIgnoreCase);
@@ -274,20 +265,6 @@ public sealed class UpdateChecker(
                 "It tries again every {1} hours and says nothing more about this until it works",
                 why, AptPollInterval.TotalHours);
         }
-    }
-
-    private static string ResolveCurrentVersion()
-    {
-        var info = Assembly.GetExecutingAssembly()
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
-        if (!string.IsNullOrEmpty(info))
-        {
-            // Strip the trailing build-metadata that .NET appends for
-            // some publish modes: "0.8.0+abcd1234" → "0.8.0".
-            var plus = info.IndexOf('+');
-            return plus > 0 ? info[..plus] : info;
-        }
-        return Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
     }
 
     /// <summary>Compares two semver-ish version strings (dotted decimals,

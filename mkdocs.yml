@@ -106,7 +106,7 @@ nav:
   - Operate: operate.md
   - Audit log: audit.md
   - Dev-time TX kill-switch: dev-time-tx-kill-switch.md
-  - Update: update.md
+  - Upgrade: update.md
   - App developers:
       - app-developers/index.md
       - Concepts: app-developers/concepts.md

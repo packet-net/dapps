@@ -408,9 +408,9 @@ async function dappsRotatePassword(ev) {
             if (j.isDevBuild) {
                 status.textContent = `running dev build ${j.current} - no upstream comparison`;
             } else if (j.isAvailable && j.latest) {
-                status.textContent = j.canApply === false
+                status.textContent = j.upgradeCommand
                     ? `update available: v${j.current} -> v${j.latest}. Upgrade on this machine with: ${j.upgradeCommand}`
-                    : `update available: v${j.current} -> v${j.latest}. Apply from the Overview hero or the topbar build chip.`;
+                    : `update available: v${j.current} -> v${j.latest}. Download it from the release page and replace the binary, or rebuild the Docker image.`;
             } else {
                 status.textContent = `up to date - v${j.current}`;
             }

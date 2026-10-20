@@ -163,7 +163,7 @@ public sealed class SettingsTests(LoggedInWebAppFixture app, PlaywrightFixture p
         // Stub /Update/check so the test isn't dependent on real GitHub
         // connectivity; assert the POST fires.
         var stubBody = """
-        {"current":"0.33.5","isDevBuild":false,"latest":null,"releaseUrl":null,"isAvailable":false,"fetchedAt":"2026-05-09T00:00:00Z","requestPending":false,"lastRun":null}
+        {"current":"0.33.5","isDevBuild":false,"latest":null,"releaseUrl":null,"isAvailable":false,"fetchedAt":"2026-05-09T00:00:00Z"}
         """;
         await page.RouteAsync("**/Update/check", async route =>
         {

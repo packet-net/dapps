@@ -67,9 +67,7 @@ Set `DAPPS_NODE_HOST` accordingly.
 
 ## Updates
 
-The supervised in-place update path (the `/Update/apply` button on the dashboard) does not work inside the standard image - the privileged updater wants to swap the binary on disk and restart its own service, which Docker doesn't model the same way.
-
-Instead, update by rebuilding the image from a newer checkout and recreating the container:
+DAPPS does not update itself, in Docker or anywhere else. Update by rebuilding the image from a newer checkout and recreating the container:
 
 ```bash
 git pull
@@ -77,7 +75,7 @@ docker build -t dapps .
 docker compose up -d
 ```
 
-The dashboard's update banner still surfaces "v0.X.Y available" so you know when to do this.
+The dashboard's banner tells you when a new version is out. See [Upgrade](../update.md).
 
 ## Persistence
 

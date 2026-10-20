@@ -33,7 +33,7 @@ It covers:
 - [Install](https://packet-net.github.io/dapps/install/) - Linux/systemd, Docker, Windows, macOS.
 - [Connect a node](https://packet-net.github.io/dapps/connect/) - BPQ via AGW, XRouter via RHPv2, and MeshCore radios over USB.
 - [Configure](https://packet-net.github.io/dapps/configure/), [Run](https://packet-net.github.io/dapps/run/), [Tune](https://packet-net.github.io/dapps/tune/) - every operator knob, what each background loop does, what to leave alone.
-- [Discovery & routing](https://packet-net.github.io/dapps/discovery-and-routing/), [Operate](https://packet-net.github.io/dapps/operate/), [Update](https://packet-net.github.io/dapps/update/) - the day-to-day surfaces.
+- [Discovery & routing](https://packet-net.github.io/dapps/discovery-and-routing/), [Operate](https://packet-net.github.io/dapps/operate/), [Upgrade](https://packet-net.github.io/dapps/update/) - the day-to-day surfaces.
 - [App developers](https://packet-net.github.io/dapps/app-developers/) - concepts, hello-world tutorial, full reference, sample gallery.
 - [Troubleshooting](https://packet-net.github.io/dapps/troubleshooting/) and [Glossary](https://packet-net.github.io/dapps/glossary/).
 

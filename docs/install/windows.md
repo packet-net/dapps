@@ -39,7 +39,7 @@ nssm start DAPPS
 
 NSSM handles restart-on-crash and stdout-to-event-log capture without you writing wrappers.
 
-The supervised in-place update path (the `/Update/apply` button on the dashboard) is **Linux only** today - it relies on systemd. On Windows you replace the binary by stopping the service, swapping the file, and starting again. The dashboard's update banner still surfaces "v0.X.Y available" so you know when to do that.
+To upgrade, stop the service, swap in the new binary from the [release page](https://github.com/packet-net/dapps/releases/latest), and start it again. DAPPS does not update itself; the dashboard's banner tells you when a new version is out. See [Upgrade](../update.md).
 
 ## State location
 

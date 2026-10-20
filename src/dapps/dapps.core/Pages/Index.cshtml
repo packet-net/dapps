@@ -89,7 +89,6 @@
         </div>
         <div class="v" id="hero-update-v">checking</div>
         <div class="sub" id="hero-update-sub" style="display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: baseline;">
-            <a href="#" id="hero-update-action" class="link-btn" style="display:none;">Apply update</a>
             <a href="#" id="hero-update-check" class="link-btn">Check now</a>
             <span id="hero-update-meta" class="muted">checking for updates</span>
         </div>
@@ -308,9 +307,9 @@
             const upd = s.tables?.update;
             if (upd && upd.isAvailable && upd.latest && !upd.isDevBuild) {
                 out.push({ tone: 'info', title: `Update available: v${upd.latest}`,
-                          body: upd.canApply === false
-                              ? `Upgrade with apt on this machine: ${upd.upgradeCommand ?? 'sudo apt update && sudo apt upgrade'}`
-                              : 'Apply from the build chip on the top bar or from Overview hero.' });
+                          body: upd.upgradeCommand
+                              ? `Upgrade with apt on this machine: ${upd.upgradeCommand}`
+                              : 'Download it from the release page and replace the binary, or rebuild the Docker image.' });
             }
             return out;
         }
@@ -409,35 +408,13 @@
                 mqttPill.textContent = s.mqttBrokerUp ? 'up' : 'down';
             }
 
-            // Hero - update.
-            //
-            // Five visual states the operator should be able to read at
-            // a glance:
-            //   1. dev build         -> "dev" pill, no action
-            //   2. up to date        -> "current" pill, no action
-            //   3. available         -> "available" pill, "Apply update" link
-            //                           (a .deb install: no link; the layout's
-            //                           banner gives the apt command)
-            //   4. apply in progress -> "applying" pill, phase text in meta
-            //   5. terminal          -> "updated" / "failed" / "rolled back"
-            //
-            // Apply flow:
-            //   - click "Apply update"
-            //   - confirm dialog
-            //   - POST /Update/apply (writes the request marker)
-            //   - immediately repaint pill to "queued" + meta to a clear
-            //     "Will start within 60s" message; the dapps-updater.timer
-            //     fires once a minute and runs the privileged updater
-            //   - subsequent /Operational snaps carry lastRun.phase, which
-            //     drives the per-phase meta text
-            //
-            // Click optimism: we don't wait for the next snap to flip the
-            // visible state - the operator just clicked, they should see
-            // *something* change immediately.
+            // Hero - update. Three states: dev build, up to date, or a
+            // newer release is out. DAPPS never installs an update itself,
+            // so the tile only says how to upgrade (the layout's banner
+            // carries the command).
             const upd = s.tables?.update ?? null;
             const updLed = document.getElementById('hero-update-led');
             const updPill = document.getElementById('hero-update-pill');
-            const updAction = document.getElementById('hero-update-action');
             const updCheck = document.getElementById('hero-update-check');
             const setPill = (cls, text) => {
                 updLed.classList.remove('on','warn','err');
@@ -446,136 +423,31 @@
                 updPill.classList.add(cls === 'on' ? 'ok' : cls);
                 updPill.textContent = text;
             };
-            const phaseMeta = (lr) => {
-                // Maps the UpdatePhase enum (from UpdateStatus.cs) to
-                // operator-readable text. Phases the updater never
-                // pauses on (Idle) get a soft fallback.
-                if (!lr) return 'queued - updater fires within 60s';
-                const dst = lr.toVersion ? `v${lr.toVersion}` : 'new release';
-                switch (lr.phase) {
-                    case 'Checking':    return `checking ${dst} on GitHub...`;
-                    case 'Downloading': return `downloading ${dst}...`;
-                    case 'Swapping':    return `swapping binary to ${dst}...`;
-                    case 'Restarting':  return `restarting daemon on ${dst}...`;
-                    case 'Verifying':   return `verifying ${dst} health (60s window)...`;
-                    case 'Idle':        return 'queued - updater fires within 60s';
-                    default:            return `phase: ${lr.phase}`;
-                }
-            };
-            const isInFlight = (ph) => ph && ['Checking','Downloading','Swapping','Restarting','Verifying'].includes(ph);
 
             if (upd) {
-                const lr = upd.lastRun ?? null;
-                const phase = lr?.phase ?? null;
-
                 if (upd.isDevBuild) {
                     set('hero-update-v', upd.current);
                     setPill('warn', 'dev');
-                    set('hero-update-meta', 'dev builds do not auto-update');
-                    if (updAction) updAction.style.display = 'none';
-                } else if (upd.requestPending || isInFlight(phase)) {
-                    // Apply is in progress (either marker still on disk waiting
-                    // for the timer, or the updater is mid-phase).
-                    const dst = lr?.toVersion ?? upd.latest ?? upd.current;
-                    set('hero-update-v', `v${upd.current} -> v${dst}`);
-                    setPill('warn', isInFlight(phase) ? 'applying' : 'queued');
-                    set('hero-update-meta', upd.requestPending && !isInFlight(phase)
-                        ? 'queued - updater fires within 60s'
-                        : phaseMeta(lr));
-                    if (updAction) updAction.style.display = 'none';
-                } else if (phase === 'Success' && lr.toVersion === upd.current) {
-                    // Just landed on the new version. Show a victory state
-                    // until the page is reloaded.
-                    set('hero-update-v', `v${upd.current}`);
-                    setPill('on', 'updated');
-                    set('hero-update-meta', `updated to v${upd.current} ${lr.updatedAt ? fmtAgo(lr.updatedAt) : 'just now'}`);
-                    if (updAction) updAction.style.display = 'none';
-                } else if (phase === 'RolledBack' || phase === 'Failed') {
-                    // Last attempt failed. Surface the error AND keep the
-                    // Apply affordance so the operator can retry.
-                    set('hero-update-v', upd.isAvailable && upd.latest ? `v${upd.current} -> v${upd.latest}` : `v${upd.current}`);
-                    setPill('err', phase === 'RolledBack' ? 'rolled back' : 'failed');
-                    set('hero-update-meta', lr.error ? `error: ${lr.error}` : `last attempt: ${phase}`);
-                    if (updAction && upd.isAvailable && upd.latest) {
-                        updAction.style.display = '';
-                        updAction.textContent = 'Retry update';
-                    } else if (updAction) {
-                        updAction.style.display = 'none';
-                    }
-                } else if (upd.isAvailable && upd.latest && upd.canApply === false) {
-                    // A .deb install: apt owns the upgrade, and the banner
-                    // at the top of the page carries the command.
-                    set('hero-update-v', `v${upd.current} -> v${upd.latest}`);
-                    setPill('warn', 'available');
-                    set('hero-update-meta', 'upgrade with apt - the command is at the top of the page');
-                    if (updAction) updAction.style.display = 'none';
+                    set('hero-update-meta', 'dev build');
                 } else if (upd.isAvailable && upd.latest) {
                     set('hero-update-v', `v${upd.current} -> v${upd.latest}`);
                     setPill('warn', 'available');
-                    set('hero-update-meta', upd.fetchedAt ? `last checked ${fmtAgo(upd.fetchedAt)}` : 'release fetched');
-                    if (updAction) {
-                        updAction.style.display = '';
-                        updAction.textContent = 'Apply update';
-                    }
+                    set('hero-update-meta', upd.upgradeCommand || upd.downloadUrl
+                        ? 'upgrade with apt - the command is at the top of the page'
+                        : 'download it from the release page, or rebuild the Docker image');
                 } else {
                     set('hero-update-v', `v${upd.current}`);
                     setPill('on', 'current');
                     set('hero-update-meta', upd.fetchedAt ? `up to date - checked ${fmtAgo(upd.fetchedAt)}` : 'up to date');
-                    if (updAction) updAction.style.display = 'none';
                 }
 
-                // (Re)bind the click handler each render so it captures
-                // the latest snap (otherwise a closure on stale upd.latest
-                // would survive across snaps).
-                if (updAction) {
-                    updAction.onclick = async (ev) => {
-                        ev.preventDefault();
-                        const target = upd.latest ?? 'the latest release';
-                        if (!confirm(`Apply v${target}? Dapps will restart and roll back if it fails to come up.`)) return;
-                        // Optimistic UI: flip to queued state immediately.
-                        // Don't wait for the next snap (5s away) - the
-                        // operator just clicked and needs to see *something*.
-                        setPill('warn', 'queued');
-                        set('hero-update-meta', 'request sent - updater fires within 60s, then phase progresses here');
-                        updAction.style.display = 'none';
-                        try {
-                            const res = await fetch('@Url.Content("~/Update/apply")', { method: 'POST' });
-                            if (!res.ok) {
-                                setPill('err', 'failed');
-                                set('hero-update-meta', `apply request failed: HTTP ${res.status}`);
-                                updAction.style.display = '';
-                                updAction.textContent = 'Retry update';
-                                return;
-                            }
-                        } catch (e) {
-                            setPill('err', 'failed');
-                            set('hero-update-meta', `apply request failed: ${e.message ?? e}`);
-                            updAction.style.display = '';
-                            updAction.textContent = 'Retry update';
-                            return;
-                        }
-                        // Force a snap refresh so requestPending=true
-                        // flips quickly without waiting for the 5s tick.
-                        await window.dappsRefreshSnap?.();
-                    };
-                }
-
-                // "Check now" link: visible whenever the operator
-                // could meaningfully act on the result (i.e. *not* in
-                // the middle of an apply, since polling GitHub during
-                // the swap is pointless and the meta line is already
-                // narrating the phase). Show in all other states,
-                // including dev-build, current, available, and the
-                // failed/rolled-back terminals.
                 if (updCheck) {
-                    const inFlightOrQueued = upd.requestPending || isInFlight(phase);
-                    updCheck.style.display = inFlightOrQueued ? 'none' : '';
+                    updCheck.style.display = '';
                     updCheck.onclick = async (ev) => {
                         ev.preventDefault();
                         // Repaint the meta line so the operator sees
                         // their click registered, regardless of the
                         // /Update/check round-trip latency.
-                        const previousMeta = document.getElementById('hero-update-meta')?.textContent ?? '';
                         set('hero-update-meta', 'checking...');
                         updCheck.style.display = 'none';
                         try {
@@ -585,11 +457,8 @@
                                 updCheck.style.display = '';
                                 return;
                             }
-                            // The /Update/check response is the full
-                            // status, but the next snap will repaint
-                            // the tile from /Operational anyway -
-                            // skip the manual rendering and just nudge
-                            // the snap forward.
+                            // The next snap repaints the tile from
+                            // /Operational; just nudge it forward.
                             await window.dappsRefreshSnap?.();
                         } catch (e) {
                             set('hero-update-meta', `check failed: ${e.message ?? e}`);

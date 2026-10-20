@@ -151,28 +151,11 @@ Look at the dashboard:
 
 The default TTL on a submit is open-ended (no expiry). If you're seeing TTL drops, you're explicitly setting one. Either raise it on submit, or accept that mail-style multi-day delivery won't work with a sub-hour TTL.
 
-## Update problems
-
-### "Apply update button does nothing"
-
-Three possibilities:
-
-- The `dapps-updater.service` / `.timer` unit isn't installed. `systemctl status dapps-updater.timer` should show `active (waiting)`. If not, install per the [Linux install page](install/linux.md).
-- The marker file write succeeded but the timer hasn't ticked yet. Wait up to 60 s.
-- The updater ran but failed. `journalctl -u dapps-updater.service` will have the error.
-
-### "Update applied, but rolled back"
-
-The new binary started but didn't pass the 60 s verify. Look at:
-
-- `journalctl -u dapps.service --since '5 minutes ago'` for the new binary's startup messages - there'll be a clear error.
-- The Build tile on the dashboard's Overview - if rollback succeeded, it shows "rolled back" with the reason.
-
-The previous binary is restored automatically; you don't need to do anything to recover. Investigate the new version's failure mode and either wait for a fix or stay on the previous version.
+## Upgrade notices
 
 ### "Update banner shows the same version as I'm running"
 
-The poll cadence is hourly (every six hours on an apt install). To force an immediate re-poll, click **Check now** on the dashboard, or `POST /Update/check`.
+The poll cadence is hourly (every six hours on an apt install). To force an immediate re-poll, click **Check now** on the dashboard, or `POST /Update/check`. The banner only tells you; to upgrade, see [Upgrade](update.md).
 
 ## Investigating "where did message X go?"
 

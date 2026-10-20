@@ -10,9 +10,9 @@
 # /Setup wizard - this script sets no env vars and leaves no callsign-
 # specific state behind.
 #
-# Idempotent: re-running upgrades the binary in place. (Operators with
-# the dashboard up should usually use the in-app "Apply update" button
-# instead, which goes through the supervised dapps-updater.)
+# Idempotent: re-running upgrades the binary in place. DAPPS does not
+# update itself; to upgrade, re-run this script (or install from the apt
+# repository, which is the recommended path on Debian-family systems).
 #
 # Linux + systemd only. macOS, Windows, and non-systemd Linux distros
 # can install manually - see https://packet-net.github.io/dapps/install/
@@ -114,8 +114,7 @@ download_binary() {
     if [[ -x "$target" ]]; then
         # Re-running: keep a sidecar copy of the previous binary so an
         # operator who realises the new release doesn't work for them
-        # has a one-step rollback to the predecessor. This is the same
-        # naming the dapps-updater uses.
+        # has a one-step rollback to the predecessor.
         cp -f "$target" "$target.previous"
     fi
 
@@ -155,32 +154,14 @@ WantedBy=multi-user.target
 EOF
 }
 
-write_updater_units() {
-    local svc="/etc/systemd/system/dapps-updater.service"
-    local timer="/etc/systemd/system/dapps-updater.timer"
-    say "Writing $svc"
-    cat > "$svc" <<EOF
-[Unit]
-Description=DAPPS supervised updater
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=$PREFIX/dapps --apply-update
-EOF
-    say "Writing $timer"
-    cat > "$timer" <<EOF
-[Unit]
-Description=Poll for DAPPS update requests
-
-[Timer]
-OnBootSec=2min
-OnUnitActiveSec=1min
-Unit=dapps-updater.service
-
-[Install]
-WantedBy=timers.target
-EOF
+# Older versions of this script also installed a dapps-updater timer for the
+# since-removed self-updater. Remove it so it stops firing.
+remove_old_updater_units() {
+    if [[ -e /etc/systemd/system/dapps-updater.timer || -e /etc/systemd/system/dapps-updater.service ]]; then
+        say "Removing the old dapps-updater units (DAPPS no longer updates itself)"
+        systemctl disable --now dapps-updater.timer 2>/dev/null || true
+        rm -f /etc/systemd/system/dapps-updater.service /etc/systemd/system/dapps-updater.timer
+    fi
 }
 
 start_service() {
@@ -198,17 +179,6 @@ start_service() {
     else
         say "Enabling and starting dapps.service"
         systemctl enable --now dapps.service
-    fi
-
-    if systemctl is-active --quiet dapps-updater.timer; then
-        # Timer doesn't carry the binary, but reload its definition in
-        # case the unit file changed (e.g. cadence tweak in a future
-        # install.sh).
-        say "Reloading dapps-updater.timer"
-        systemctl restart dapps-updater.timer
-    else
-        say "Enabling and starting dapps-updater.timer"
-        systemctl enable --now dapps-updater.timer
     fi
 }
 
@@ -250,8 +220,8 @@ DAPPS is running.
   Open  http://$host:$port/  in a browser.
 
   Logs:    journalctl -u dapps.service -f
-  Update:  click "Apply update" on the dashboard, or wait for the
-           dapps-updater.timer to pick up future releases.
+  Upgrade: re-run the install command above to fetch the latest
+           release. DAPPS never updates itself.
 EOF
 }
 
@@ -267,7 +237,7 @@ ensure_user
 ensure_dirs
 download_binary "$rid"
 write_unit
-write_updater_units
+remove_old_updater_units
 start_service
 wait_for_http
 print_next_steps
