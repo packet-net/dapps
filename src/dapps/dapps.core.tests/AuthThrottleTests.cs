@@ -59,29 +59,35 @@ public sealed class AuthThrottleTests
         t.Begin("login", B).Should().BeNull();
         t.Begin("mqtt", A).Should().BeNull();
 
-        t.Succeeded("login", A, clearAll: true);
+        t.Succeeded("login", A);
         t.Begin("login", A).Should().BeNull();
     }
 
     [Fact]
-    public void TokenSuccessOnlyTakesBackItsOwnAttempt()
+    public void ParallelValidTokenChecks_NeverLockTheAddress()
     {
         var (t, _) = New();
-        Fail(t, "rest", A, 5);               // five wrong guesses
-        t.Begin("rest", A).Should().BeNull(); // sixth attempt is a valid token
-        t.Succeeded("rest", A);               // gives back just that one
-        t.Begin("rest", A).Should().BeNull("five failures stand, so the next try is the sixth again");
-        t.Begin("rest", A).Should().NotBeNull("a valid token does not wipe the guesses");
+        var refused = 0;
+        Parallel.For(0, 50, _ => { if (t.Check("rest", A) is not null) Interlocked.Increment(ref refused); });
+        refused.Should().Be(0, "checking counts nothing; only wrong tokens do");
+    }
+
+    [Fact]
+    public void WrongTokensLockTheAddress_AndNoSuccessCallResetsThem()
+    {
+        var (t, _) = New();
+        for (var i = 0; i < 6; i++) t.Failed("rest", A);
+        t.Check("rest", A).Should().NotBeNull();
+        t.Check("rest", B).Should().BeNull();
     }
 
     [Fact]
     public void FailuresAreForgottenAfterAQuietSpell()
     {
         var (t, clock) = New();
-        Fail(t, "rest", A, 5);
+        for (var i = 0; i < 6; i++) t.Failed("rest", A);
         clock.Advance(AuthThrottle.Forget + TimeSpan.FromSeconds(1));
-        t.Begin("rest", A).Should().BeNull();
-        t.Begin("rest", A).Should().BeNull("the count started again from one");
+        t.Check("rest", A).Should().BeNull("the count started again");
     }
 
     [Fact]

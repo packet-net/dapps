@@ -34,13 +34,13 @@ public sealed class AuthThrottle(TimeProvider time)
     private readonly object gate = new();
 
     /// <summary>
-    /// Called before checking a credential. If the address is locked out,
+    /// For the dashboard password, which can be guessed: called before
+    /// checking it. If the address is locked out,
     /// returns the time left and the caller must refuse without checking.
     /// Otherwise the attempt is counted as a failure straight away, under
     /// the lock, and returns null: concurrent guesses can not slip past
     /// while the slow hash runs, because each one is counted before it
-    /// starts. Call <see cref="Succeeded"/> when the credential turns out
-    /// to be right.
+    /// starts. Call <see cref="Succeeded"/> if the password is right.
     /// </summary>
     public TimeSpan? Begin(string scope, IPAddress? address)
     {
@@ -67,24 +67,54 @@ public sealed class AuthThrottle(TimeProvider time)
     }
 
     /// <summary>
-    /// The credential was right: take back the failure <see cref="Begin"/>
-    /// counted. With <paramref name="clearAll"/> (the dashboard, where a
-    /// right password proves the operator is at the keyboard) the address
-    /// is forgiven completely. For app tokens it is not: someone holding
-    /// one valid token could otherwise interleave it with guesses at
-    /// another app's token and never be slowed down.
+    /// For app tokens (256 random bits, so a wrong one is a cheap lookup
+    /// and parallel valid requests are normal): returns the time left if
+    /// the address is locked out, else null. Counts nothing; report wrong
+    /// tokens with <see cref="Failed"/>. A right token never resets the
+    /// record, so one valid token can't be interleaved with guesses.
     /// </summary>
-    public void Succeeded(string scope, IPAddress? address, bool clearAll = false)
+    public TimeSpan? Check(string scope, IPAddress? address)
+    {
+        if (Exempt(address)) return null;
+        var key = Key(scope, address);
+        lock (gate)
+        {
+            if (!entries.TryGetValue(key, out var e)) return null;
+            var now = time.GetUtcNow();
+            if (now - e.Last > Forget) { entries.Remove(key); return null; }
+            return e.LockedUntil > now ? e.LockedUntil - now : null;
+        }
+    }
+
+    /// <summary>Counts one wrong credential for <paramref name="address"/>.</summary>
+    public void Failed(string scope, IPAddress? address)
     {
         if (Exempt(address)) return;
         var key = Key(scope, address);
         lock (gate)
         {
-            if (!entries.TryGetValue(key, out var e)) return;
-            if (clearAll) { entries.Remove(key); return; }
-            if (e.Failures > 0) e.Failures--;
-            Relock(e, time.GetUtcNow());
+            var now = time.GetUtcNow();
+            if (!entries.TryGetValue(key, out var e))
+            {
+                if (entries.Count >= MaxEntries) Evict(now);
+                entries[key] = e = new Entry();
+            }
+            if (now - e.Last > Forget) e.Failures = 0;
+            e.Failures++;
+            e.Last = now;
+            Relock(e, now);
         }
+    }
+
+    /// <summary>
+    /// The dashboard password was right (after <see cref="Begin"/>):
+    /// forgive the address completely, since a right password proves the
+    /// operator is at the keyboard.
+    /// </summary>
+    public void Succeeded(string scope, IPAddress? address)
+    {
+        if (Exempt(address)) return;
+        lock (gate) entries.Remove(Key(scope, address));
     }
 
     private static void Relock(Entry e, DateTimeOffset now)

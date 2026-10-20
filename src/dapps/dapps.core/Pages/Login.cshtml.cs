@@ -50,7 +50,7 @@ public sealed class LoginModel(AdminPasswordStore store, AuthThrottle throttle) 
             return Page();
         }
 
-        throttle.Succeeded("login", address, clearAll: true);
+        throttle.Succeeded("login", address);
 
         await AdminSession.SignInAsync(HttpContext);
 

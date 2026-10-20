@@ -330,7 +330,7 @@ public sealed class MqttBrokerService(
         // Only while credentials are enforced: with auth off a bad password
         // is accepted anyway, so there is nothing to protect or lock.
         var address = AddressResolver(e.Endpoint);
-        if (authRequired && throttle.Begin("mqtt", address) is { } wait)
+        if (authRequired && throttle.Check("mqtt", address) is { } wait)
         {
             // Not checked at all while locked out, so guessing costs the
             // attacker time and us no hashing. Looks like any bad login.
@@ -348,6 +348,7 @@ public sealed class MqttBrokerService(
             || !string.Equals(app, e.UserName, StringComparison.OrdinalIgnoreCase)
             || TokenGeneration(app) != generation)
         {
+            if (app is null) throttle.Failed("mqtt", address);
             if (authRequired)
             {
                 e.ReasonCode = MQTTnet.Protocol.MqttConnectReasonCode.BadUserNameOrPassword;
@@ -358,7 +359,6 @@ public sealed class MqttBrokerService(
             return;
         }
 
-        if (authRequired) throttle.Succeeded("mqtt", address);
         Remember(e, app, generation);
         logger.LogInformation("MQTT: client {0} authenticated as {1}", e.ClientId, app);
     }

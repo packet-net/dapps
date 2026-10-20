@@ -165,6 +165,22 @@ public sealed class BearerAuthMiddlewareTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task TwentySimultaneousValidRequests_FromOneRemoteAddress_AllSucceed()
+    {
+        var token = await store.CreateOrRotateAsync("myapp");
+        var throttle = new AuthThrottle(TimeProvider.System);
+        var results = await Task.WhenAll(Enumerable.Range(0, 20).Select(async _ =>
+        {
+            var (mw, c, next) = Build(true, "/AppApi/inbound/myapp", throttle);
+            c.Connection.RemoteIpAddress = System.Net.IPAddress.Parse("192.168.1.50");
+            c.Request.Headers["Authorization"] = $"Bearer {token}";
+            await mw.InvokeAsync(c);
+            return next() && c.Response.StatusCode == StatusCodes.Status200OK;
+        }));
+        results.Should().AllBeEquivalentTo(true);
+    }
+
+    [Fact]
     public async Task LoopbackIsNeverLockedOut()
     {
         var token = await store.CreateOrRotateAsync("myapp");
