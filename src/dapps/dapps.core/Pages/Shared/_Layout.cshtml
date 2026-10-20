@@ -33,7 +33,10 @@
             if (!token || !original) return;
             window.fetch = function (input, init) {
                 var method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
-                if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+                var url = typeof input === 'string' ? input : (input && input.url) || String(input);
+                var sameOrigin = false;
+                try { sameOrigin = new URL(url, location.href).origin === location.origin; } catch (e) { }
+                if (sameOrigin && method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
                     init = Object.assign({}, init);
                     var headers = new Headers(init.headers || (input && input.headers) || undefined);
                     if (!headers.has('RequestVerificationToken')) headers.set('RequestVerificationToken', token);

@@ -102,6 +102,8 @@ Open access for the same reason as `/Health`, with the same 15 second memory for
 
 A proxy on the same machine (the pdn app gateway, Caddy, nginx) can tell DAPPS what the browser used: `X-Forwarded-Proto: https` gets the login cookie the Secure flag, and `X-Forwarded-Prefix: /apps/dapps` puts the dashboard under that path. DAPPS believes these headers only from a proxy connecting from `127.0.0.1` or `::1`; from anywhere else they are ignored. A proxy on another machine or in another container isn't trusted, so run it on the node.
 
+Known limit: behind the pdn gateway every app shares one origin, so the dashboard's antiforgery check cannot keep one pdn app from posting to another.
+
 ## MQTT heartbeat
 
 Subscribers to `dapps/metrics/heartbeat` receive the operational snapshot every `HeartbeatIntervalSeconds` (60 s by default; minimum 10). **Retained** on the broker, so a late subscriber gets the most recent snapshot immediately.

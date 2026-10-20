@@ -31,12 +31,13 @@ public sealed class ConfigCliTests : IDisposable
     }
 
     [Fact]
-    public void FreshDb_ReportsNeverBooted_AndExitsZero()
+    public void EmptyDb_WarnsAndExitsNonZero()
     {
         var db = MakeDb(cwd);
-        var (exit, stdout, _) = Run([]);
-        exit.Should().Be(0);
-        stdout.Should().Contain("(no rows in systemoptions").And.Contain(db);
+        var (exit, stdout, stderr) = Run([]);
+        exit.Should().Be(1);
+        stdout.Should().BeEmpty();
+        stderr.Should().Contain("has no settings").And.Contain(db).And.Contain("--db");
     }
 
     [Fact]
@@ -56,7 +57,7 @@ public sealed class ConfigCliTests : IDisposable
         var (exit, stdout, stderr) = Run([]);
         exit.Should().Be(1);
         stdout.Should().BeEmpty();
-        stderr.Should().Contain("No DAPPS database found").And.Contain("--db");
+        stderr.Should().Contain("No DAPPS database found").And.Contain("--db").And.Contain("sudo -u dapps");
         Directory.GetFiles(cwd, "*", SearchOption.AllDirectories).Should().BeEmpty();
     }
 

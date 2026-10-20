@@ -31,7 +31,8 @@ public sealed class OperationalController(
     OperationalSnapshotBuilder snapshotBuilder,
     IOptionsMonitor<SystemOptions> options,
     AgwInboundService agwInbound,
-    Rhpv2InboundService rhpv2Inbound) : ControllerBase
+    Rhpv2InboundService rhpv2Inbound,
+    TcpReachabilityProbe reachability) : ControllerBase
 {
     /// <summary>
     /// <c>?full=true</c> includes the per-row tables the dashboard
@@ -62,6 +63,8 @@ public sealed class OperationalController(
     public IActionResult RetryNow()
     {
         var isRhpv2 = string.Equals(options.CurrentValue.NodeBearer, "rhpv2", StringComparison.OrdinalIgnoreCase);
+        // Forget the remembered node check so the tile and /Health show the retry at once.
+        reachability.Clear();
         var triggered = isRhpv2 ? rhpv2Inbound.TriggerManualRetry() : agwInbound.TriggerManualRetry();
         return Ok(new { triggered });
     }

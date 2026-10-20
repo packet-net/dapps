@@ -25,6 +25,9 @@ public sealed class TcpReachabilityProbe(TimeProvider? timeProvider = null, Time
     public int Attempts => attempts;
     private int attempts;
 
+    /// <summary>Forget every remembered answer, so the next call connects.</summary>
+    public void Clear() => cache.Clear();
+
     public Task<bool> IsReachableAsync(string host, int port, TimeSpan timeout)
     {
         if (string.IsNullOrWhiteSpace(host) || port <= 0) return Task.FromResult(false);

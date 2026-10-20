@@ -64,6 +64,7 @@ internal static class ConfigCli
         if (dbPath is null)
         {
             stderr.WriteLine($"show-config: {findError}");
+            stderr.WriteLine("On a packaged install the state folder is private to the dapps user; try: sudo -u dapps dapps --show-config");
             return 1;
         }
 
@@ -73,8 +74,9 @@ internal static class ConfigCli
             var rows = db.Query<DbSystemOption>("select * from systemoptions order by Option");
             if (rows.Count == 0)
             {
-                stdout.WriteLine($"# (no rows in systemoptions in {dbPath} - daemon has never booted)");
-                return 0;
+                stderr.WriteLine($"show-config: {dbPath} has no settings in it. If the daemon has never booted, that is expected; " +
+                    "if it has, this is probably not the database it uses (an empty one left in this folder by an older release?). Name the right one with --db PATH.");
+                return 1;
             }
 
             stdout.WriteLine($"# resolved config from {dbPath}");

@@ -32,6 +32,10 @@ public sealed class TxControlController(
         BlockReason: gate.BlockReason,
         RemoteBlockReason: gate.RemoteBlockReason);
 
+    // Stopping transmit is never refused: a page opened before an upgrade,
+    // or restored after the antiforgery cookie expired, must still be able
+    // to do it, and a forged stop only makes the node quieter (#320).
+    [IgnoreAntiforgeryToken]
     [HttpPost("stop")]
     public async Task<IActionResult> Stop() => await SetLocal(enabled: false);
 

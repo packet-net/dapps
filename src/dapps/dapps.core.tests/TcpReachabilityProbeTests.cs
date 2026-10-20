@@ -65,4 +65,19 @@ public sealed class TcpReachabilityProbeTests
         (await probe.IsReachableAsync("127.0.0.1", 0, TimeSpan.FromSeconds(1))).Should().BeFalse();
         probe.Attempts.Should().Be(0);
     }
+
+    [Fact]
+    public async Task Clear_MakesTheNextCallConnectAgain()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var probe = new TcpReachabilityProbe(new FakeTimeProvider(DateTimeOffset.Parse("2026-10-20T12:00:00Z")));
+
+        await probe.IsReachableAsync("127.0.0.1", port, TimeSpan.FromSeconds(2));
+        probe.Clear();
+        await probe.IsReachableAsync("127.0.0.1", port, TimeSpan.FromSeconds(2));
+
+        probe.Attempts.Should().Be(2);
+    }
 }
