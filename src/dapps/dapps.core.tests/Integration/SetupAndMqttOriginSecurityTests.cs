@@ -125,6 +125,43 @@ public sealed class SetupAndMqttOriginSecurityTests
         (await UpgradeAsync(app, origin: "http://elsewhere.example")).Should().Be(HttpStatusCode.SwitchingProtocols);
     }
 
+    [Theory]
+    [InlineData("/Config", "application/x-www-form-urlencoded", "NodePromptApplicationCommand=DAPPS%0DC+GB7XXX")]
+    [InlineData("/Config", "text/plain", "{\"NodePromptApplicationCommand\":\"MSG\"}")]
+    [InlineData("/Neighbours", "text/plain", "{\"callsign\":\"G0EVIL\",\"port\":1,\"connectScript\":\"DAPPS|DAPPSv1>\"}")]
+    public async Task SettingsThatReachNodePrompts_RefuseAFormPost_EvenWithTheAdminCookie(string path, string contentType, string body)
+    {
+        // #309: the application command and connect scripts are typed at
+        // other nodes' prompts. A page on another site can only make a
+        // browser send a form (no custom headers, no JSON content type
+        // without a CORS preflight DAPPS never answers), and these
+        // endpoints take JSON only, so such a post changes nothing.
+        await using var app = await GatewayPathBaseTests.DappsSubprocess.StartAsync();
+        using var admin = NewClient(app);
+        await CompleteSetupAsync(admin, "M0LTE-7");
+
+        var resp = await admin.PostAsync(path, new StringContent(body, System.Text.Encoding.ASCII, contentType), Ct);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.UnsupportedMediaType);
+        var config = await (await admin.GetAsync("/Config", Ct)).Content.ReadFromJsonAsync<JsonObject>(Ct);
+        (config!["nodePromptApplicationCommand"] ?? config["NodePromptApplicationCommand"])!.GetValue<string>().Should().Be("DAPPS");
+        (await (await admin.GetAsync("/Neighbours", Ct)).Content.ReadAsStringAsync(Ct)).Should().NotContain("G0EVIL");
+    }
+
+    [Fact]
+    public async Task ApplicationCommand_WithACr_IsRefused_OverJson()
+    {
+        await using var app = await GatewayPathBaseTests.DappsSubprocess.StartAsync();
+        using var admin = NewClient(app);
+        await CompleteSetupAsync(admin, "M0LTE-7");
+
+        var resp = await admin.PostAsJsonAsync("/Config", new JsonObject { ["NodePromptApplicationCommand"] = "DAPPS\rC GB7XXX" }, Ct);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var config = await (await admin.GetAsync("/Config", Ct)).Content.ReadFromJsonAsync<JsonObject>(Ct);
+        (config!["nodePromptApplicationCommand"] ?? config["NodePromptApplicationCommand"])!.GetValue<string>().Should().Be("DAPPS");
+    }
+
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     private static HttpClient NewClient(GatewayPathBaseTests.DappsSubprocess app) =>

@@ -497,6 +497,33 @@ public sealed class DbStartupTests : IAsyncLifetime
     }
 
     [Fact]
+    public void EnsureSchemaAndSeed_ApplicationCommandFromCrlfEnvFile_IsTrimmed()
+    {
+        // Typed at node prompts, where the stray CR would be refused (#309).
+        SetEnv("DAPPS_NODE_PROMPT_APPLICATION_COMMAND", "MSG\r");
+
+        DbStartup.EnsureSchemaAndSeed();
+
+        using var c = DbInfo.GetConnection();
+        c.Find<DbSystemOption>("NodePromptApplicationCommand")!.Value.Should().Be("MSG");
+    }
+
+    [Fact]
+    public void EnsureSchemaAndSeed_InvalidApplicationCommand_LogsAWarning_Visibly()
+    {
+        // Typed at other nodes' prompts over the air (#309): a stored
+        // value with a CR in it is kept, but called out at every start.
+        SetEnv("DAPPS_NODE_PROMPT_APPLICATION_COMMAND", "DAPPS\rC GB7XXX");
+        var logs = new CapturingLoggerFactory();
+
+        DbStartup.EnsureSchemaAndSeed(logs.CreateLogger("DbStartup"));
+
+        logs.Entries.Should().Contain(e => e.Level == LogLevel.Warning
+            && e.Message.Contains(@"'DAPPS\x0DC GB7XXX' is not valid"));
+        logs.Entries.Should().NotContain(e => e.Message.Contains('\r'));
+    }
+
+    [Fact]
     public void EnsureSchemaAndSeed_ValidCallsign_LogsNoError()
     {
         SetEnv("DAPPS_CALLSIGN", "G0TST-7");

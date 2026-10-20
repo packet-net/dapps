@@ -89,6 +89,36 @@ public sealed class RemainingControllersTests : IAsyncLifetime
         result.Should().BeOfType<BadRequestObjectResult>();
     }
 
+    [Theory]
+    [InlineData("DAPPS\rC GB7XXX|DAPPSv1>")]
+    [InlineData("C\tGB7XXX|Connected\nDAPPS|DAPPSv1>")]
+    [InlineData("C GB7XXX\u0003|Connected\nDAPPS|DAPPSv1>")]
+    [InlineData("C GB7ÄXX|Connected\nDAPPS|DAPPSv1>")]
+    public async Task NeighboursController_ConnectScriptLineThatIsNotOneCommand_IsRefused(string script)
+    {
+        // Each send is typed at a node prompt then a CR (#309): a CR or
+        // other control character inside it would start another command.
+        var ctrl = new NeighboursController(database);
+
+        var result = await ctrl.Upsert(new NeighbourModel("G7XYZ-3", Port: 1, ConnectScript: script));
+
+        result.Should().BeOfType<BadRequestObjectResult>().Which.Value.Should().BeOfType<string>()
+            .Which.Should().StartWith("Connect script:");
+        (await ctrl.List()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task NeighboursController_ConnectViaThatIsNotACallsign_IsRefused()
+    {
+        var ctrl = new NeighboursController(database);
+
+        var result = await ctrl.Upsert(new NeighbourModel("G7XYZ-3", Port: 1, ConnectScript: "DAPPS|DAPPSv1>", ConnectVia: "G7XYZ\rC GB7XXX"));
+
+        result.Should().BeOfType<BadRequestObjectResult>().Which.Value.Should().BeOfType<string>()
+            .Which.Should().StartWith("Connect via:");
+        (await ctrl.List()).Should().BeEmpty();
+    }
+
     [Fact]
     public async Task NeighboursController_ConnectVia_RoundTrips_AndNeedsAScript()
     {

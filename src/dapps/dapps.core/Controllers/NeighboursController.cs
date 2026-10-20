@@ -70,6 +70,11 @@ public class NeighboursController(Database database) : ControllerBase
             return BadRequest("Port: the node's own number for the radio port (XRouter's PORT=, BPQ's PORTNUM, pdn's PORTS list); ports count from 1.");
         }
         var connectVia = string.IsNullOrWhiteSpace(neighbour.ConnectVia) ? null : neighbour.ConnectVia.Trim().ToUpperInvariant();
+        // DAPPS dials this callsign itself, so it must be one (#309).
+        if (connectVia is not null && MessageFields.CallsignError(connectVia) is { } viaError)
+        {
+            return BadRequest("Connect via: " + viaError);
+        }
         string? scriptJson = null;
         if (!string.IsNullOrWhiteSpace(neighbour.ConnectScript))
         {

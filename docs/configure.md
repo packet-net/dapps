@@ -70,7 +70,7 @@ The admin password (for the dashboard cookie) is set on `/Setup` first-run flow,
 | Overnight end hour         | `DAPPS_PROBE_OVERNIGHT_END_HOUR`           | `6`              | Local-time hour the Overnight strategy's window closes. Wraps midnight if `end < start`. |
 | Quiet window (s)           | `DAPPS_PROBE_QUIET_WINDOW_SECONDS`         | `300`            | Seconds of forwarder-quiet required for `WhenQuiet` to fire.                       |
 | Auto-discover via NODECALL | `DAPPS_AUTO_DISCOVER_VIA_NODE_CALL`        | `false`          | When true, AGW DAPPS beacons auto-seed node-prompt-probe candidates for the source's base callsign. |
-| Node-prompt application command | `DAPPS_NODE_PROMPT_APPLICATION_COMMAND` | `DAPPS`         | The application name typed at the BPQ node prompt to enter the DAPPS slot. Override if your `APPLICATION` line uses a different name. |
+| Node-prompt application command | `DAPPS_NODE_PROMPT_APPLICATION_COMMAND` | `DAPPS`         | The application name typed at the BPQ node prompt to enter the DAPPS slot. Override if your `APPLICATION` line uses a different name. One word: letters, digits, `-` or `_`, up to 16 characters. |
 | Discovery airtime budget (s/hr) | `DAPPS_DISCOVERY_AIRTIME_BUDGET_SECONDS_PER_HOUR` | `0` | Trailing-hour cap on discovery transmissions (beacons + solicits + probes). `0` disables the cap. |
 
 ### Links and polling

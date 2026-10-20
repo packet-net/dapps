@@ -72,6 +72,22 @@ public sealed record ConnectScript(IReadOnlyList<ConnectScriptStep> Steps)
     public bool EndsOnDappsPrompt =>
         Steps.Count > 0 && Steps[^1].Expect.Contains(DappsPrompt, StringComparison.Ordinal);
 
+    /// <summary>Why this script can't be played, or null when it can:
+    /// the first step whose send isn't safe to type at a node prompt
+    /// (<see cref="NodePromptText.SendLineError"/>). A script stored by
+    /// an older DAPPS never went through that check (#309).</summary>
+    public string? SendError()
+    {
+        for (var i = 0; i < Steps.Count; i++)
+        {
+            if (NodePromptText.SendLineError(Steps[i].Send) is { } error)
+            {
+                return $"step {i + 1} ('{NodePromptText.Printable(Steps[i].Send)}'): {error}";
+            }
+        }
+        return null;
+    }
+
     /// <summary>
     /// Parse a human-friendly multi-line text form: one step per line,
     /// pipe-separated as <c>SEND|EXPECT[|TIMEOUT_SECONDS]</c>. Blank
@@ -121,6 +137,12 @@ public sealed record ConnectScript(IReadOnlyList<ConnectScriptStep> Steps)
             {
                 throw new FormatException(
                     $"line {lineNumber}: send and expect must both be non-empty");
+            }
+            // The send is typed at a node prompt: a CR, a tab or other
+            // control character in it could start a second command (#309).
+            if (NodePromptText.SendLineError(send) is { } sendError)
+            {
+                throw new FormatException($"line {lineNumber}: {sendError}");
             }
             steps.Add(new ConnectScriptStep(send, expect, timeout));
         }

@@ -38,6 +38,18 @@ public static class ConnectScriptRunner
         ILogger? logger,
         CancellationToken ct)
     {
+        // Nothing goes on the link unless every line is safe to type at a
+        // node prompt. A script saved by an older DAPPS wasn't checked, so it can
+        // still hold a CR that would make the node run a second command
+        // (#309): refuse it, loudly, rather than send any of it.
+        if (script.SendError() is { } refused)
+        {
+            logger?.LogWarning(
+                "Connect-script refused, nothing sent: {0}. Fix the neighbour's connect script on the Topology page.",
+                refused);
+            throw new ConnectScriptException($"refused, nothing sent: {refused}");
+        }
+
         var transcript = new StringBuilder();
         for (var i = 0; i < script.Steps.Count; i++)
         {

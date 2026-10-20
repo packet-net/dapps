@@ -334,6 +334,48 @@ public sealed class DashboardSendValidationTests : IAsyncLifetime
         store.CurrentValue.MqttPort.Should().Be(1884);
     }
 
+    [Theory]
+    [InlineData("DAPPS\rC GB7XXX")]
+    [InlineData("DAPPS\nC GB7XXX")]
+    [InlineData("C GB7XXX")]
+    [InlineData("DAP\tPS")]
+    [InlineData("")]
+    [InlineData("ABCDEFGHIJKLMNOPQ")]
+    [InlineData("DÄPPS")]
+    public async Task Config_RefusesAnApplicationCommandThatIsNotOneWord(string command)
+    {
+        // Typed at other nodes' prompts over the air, then a CR (#309).
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        var ctrl = new ConfigController(store, new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance));
+
+        var result = await ctrl.Post(new System.Text.Json.Nodes.JsonObject { ["NodePromptApplicationCommand"] = command });
+
+        result.Should().BeOfType<BadRequestObjectResult>().Which.Value.Should().BeOfType<string>()
+            .Which.Should().StartWith("NodePromptApplicationCommand:");
+        store.CurrentValue.NodePromptApplicationCommand.Should().Be("DAPPS");
+    }
+
+    [Fact]
+    public async Task Config_AcceptsAGoodApplicationCommand_Trimmed_AndAnUnchangedOldOne()
+    {
+        var store = new SystemOptionsStore(NullLogger<SystemOptionsStore>.Instance);
+        var ctrl = new ConfigController(store, new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance));
+
+        (await ctrl.Post(new System.Text.Json.Nodes.JsonObject { ["NodePromptApplicationCommand"] = " DAPPS-2 " }))
+            .Should().BeOfType<OkResult>();
+        store.CurrentValue.NodePromptApplicationCommand.Should().Be("DAPPS-2");
+
+        // A value stored before the rule existed must not stop the
+        // Settings page (which always sends it) saving the rest; the
+        // prober refuses to send it instead.
+        var legacy = store.CurrentValue;
+        legacy.NodePromptApplicationCommand = "DAPPS\rBYE";
+        await store.SaveAsync(legacy);
+        (await ctrl.Post(new System.Text.Json.Nodes.JsonObject { ["NodePromptApplicationCommand"] = "DAPPS\rBYE", ["MqttPort"] = 1884 }))
+            .Should().BeOfType<OkResult>();
+        store.CurrentValue.MqttPort.Should().Be(1884);
+    }
+
     private sealed class AlwaysValidAntiforgery : Microsoft.AspNetCore.Antiforgery.IAntiforgery
     {
         public Microsoft.AspNetCore.Antiforgery.AntiforgeryTokenSet GetAndStoreTokens(Microsoft.AspNetCore.Http.HttpContext httpContext) => throw new NotSupportedException();

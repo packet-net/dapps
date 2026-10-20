@@ -98,6 +98,7 @@ C 1 G0DPC-3|DAPPSv1>|60
 Notes:
 
 - Each `SEND` is transmitted with a `\r` line terminator (BPQ-style node prompts use CR, not LF).
+- Each `SEND` is one command: plain printable ASCII, up to 128 characters, no tabs or other control characters. A script that breaks this (one saved by an older DAPPS, say) isn't played; the log says which step to fix.
 - Each `EXPECT` is a substring match against the inbound bytes; case-sensitive. Pick something distinctive enough that earlier banner text won't accidentally match, but don't copy a node's whole reply: nodes word it their own way (BPQ says `Connected to NPWNOD:MB7NPW`, with the node's alias, for `C MB7NPW`), so `Connected` is the safe expect for a connect to a node.
 - `TIMEOUT_SECONDS` is per-step; default 30s. The final step that lands on `DAPPSv1>` may want longer: it waits for a connect over the last link, which can take several tries on a busy or marginal channel.
 - The first step is *not* "C G0NODE2" - DAPPS has already connected to it (Connect via). The script picks up at G0NODE2's prompt.

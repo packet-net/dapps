@@ -319,7 +319,9 @@ public static class DbStartup
         var envKey = EnvVarFor(key);
         var envValue = ReadEnvironmentFor(key);
         // An env file saved with CRLF line endings gives "G1AAA\r" (#359).
-        if (key == "Callsign") envValue = envValue?.Trim();
+        // The application command is typed at node prompts, so a stray CR
+        // there would be refused at every probe (#309).
+        if (key is "Callsign" or "NodePromptApplicationCommand") envValue = envValue?.Trim();
 
         var existing = options.FirstOrDefault(o => string.Equals(o.Option, key, StringComparison.OrdinalIgnoreCase));
         if (existing is null)
@@ -672,6 +674,19 @@ public static class DbStartup
                 "Callsign '{Callsign}' is not valid: {Error} Every message sent from this node will be dropped " +
                 "until it is fixed in Settings or wherever it is set (DAPPS_CALLSIGN, PDN_APP_CALLSIGN or PDN_NODE_CALLSIGN).",
                 shown, error);
+        }
+
+        // Typed at other nodes' prompts over the air. An environment
+        // variable or a version before the check (#309) can store one the
+        // Settings page would refuse; the prober won't send it.
+        var command = options.SingleOrDefault(
+            o => string.Equals(o.Option, "NodePromptApplicationCommand", StringComparison.OrdinalIgnoreCase))?.Value;
+        if (command is not null && NodePromptText.ApplicationCommandError(command) is { } commandError)
+        {
+            logger?.LogWarning(
+                "Node-prompt application command '{Command}' is not valid: {Error} Node-prompt probes won't send it, " +
+                "so they fail, until it is fixed in Settings or wherever it is set (DAPPS_NODE_PROMPT_APPLICATION_COMMAND).",
+                NodePromptText.Printable(command), commandError);
         }
     }
 

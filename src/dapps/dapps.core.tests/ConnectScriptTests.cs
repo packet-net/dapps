@@ -157,6 +157,36 @@ public class ConnectScriptTests
     }
 
     [Fact]
+    public void ParseLines_ControlCharacterInASend_Throws()
+    {
+        // #309: a CR inside a send would make the node run a second command.
+        var act = () => ConnectScript.ParseLines("C G0A\rC G0EVIL|Connected\nDAPPS|DAPPSv1>");
+        act.Should().Throw<FormatException>().WithMessage("line 1:*control characters*");
+    }
+
+    [Fact]
+    public void ParseLines_SendLongerThanALine_Throws()
+    {
+        var act = () => ConnectScript.ParseLines(new string('A', NodePromptText.MaxSendLineLength + 1) + "|DAPPSv1>");
+        act.Should().Throw<FormatException>().WithMessage("line 1:*longer than*");
+    }
+
+    [Fact]
+    public async Task Runner_StoredScriptWithACrInASend_SendsNothing_AndThrows()
+    {
+        // A script saved by an older DAPPS never went through ParseLines'
+        // check (#309). The runner refuses all of it, not just that line.
+        var script = ConnectScript.FromJson(
+            "{\"steps\":[{\"send\":\"C G0A\",\"expect\":\"Connected\"},{\"send\":\"DAPPS\\rC G0EVIL\",\"expect\":\"DAPPSv1>\"}]}")!;
+        var stream = new ScriptedDuplexStream(["*** Connected to G0A\r\n", "DAPPSv1>\n"]);
+
+        var act = async () => await ConnectScriptRunner.RunAsync(stream, script, NullLogger.Instance, CancellationToken.None);
+
+        await act.Should().ThrowAsync<ConnectScriptException>().WithMessage(@"refused, nothing sent: step 2 ('DAPPS\x0DC G0EVIL')*");
+        stream.SentText.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Runner_TimeoutOnExpect_ThrowsConnectScriptException()
     {
         var script = new ConnectScript([

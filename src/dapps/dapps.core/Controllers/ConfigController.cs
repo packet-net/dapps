@@ -45,6 +45,19 @@ public class ConfigController(SystemOptionsStore options, AdminPasswordStore adm
         {
             return BadRequest("DefaultPort: the node's port number, as the node shows it; ports count from 1.");
         }
+        // Typed at other nodes' prompts over the air, so it must be one
+        // word: a CR in it would run a second command there (#309). Like
+        // the callsign, checked only when it changes, so an older stored
+        // value doesn't stop other settings being saved; the prober
+        // refuses to send that value instead.
+        if (!string.Equals(merged.NodePromptApplicationCommand, options.CurrentValue.NodePromptApplicationCommand, StringComparison.Ordinal))
+        {
+            merged.NodePromptApplicationCommand = merged.NodePromptApplicationCommand.Trim();
+            if (NodePromptText.ApplicationCommandError(merged.NodePromptApplicationCommand) is { } commandError)
+            {
+                return BadRequest($"NodePromptApplicationCommand: {commandError}");
+            }
+        }
         await options.SaveAsync(merged);
         return Ok();
     }
