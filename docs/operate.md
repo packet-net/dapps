@@ -90,13 +90,17 @@ Changing the password in Settings also signs out every other browser.
 }
 ```
 
-HTTP 200 when healthy, 503 when the callsign isn't set or isn't valid, the packet node is unreachable or the MQTT broker is down. **Open access** - no admin cookie required, since watchdog units don't carry one.
+HTTP 200 when healthy, 503 when the callsign isn't set or isn't valid, the packet node is unreachable or the MQTT broker is down. **Open access** - no admin cookie required, since watchdog units don't carry one. The packet-node and MQTT checks are remembered for 15 seconds, so polling it often doesn't mean opening a connection to your node each time.
 
 ## /Operational - for monitoring
 
 `GET http://<node>:5000/Operational`. Much richer JSON: process metrics, the decision-events ring, per-link state, message counts, probe stats. The same snapshot is published to the MQTT heartbeat topic - pick whichever ingestion path your monitoring stack prefers.
 
-Open access for the same reason as `/Health`.
+Open access for the same reason as `/Health`, with the same 15 second memory for its node and MQTT checks.
+
+## Behind a reverse proxy
+
+A proxy on the same machine (the pdn app gateway, Caddy, nginx) can tell DAPPS what the browser used: `X-Forwarded-Proto: https` gets the login cookie the Secure flag, and `X-Forwarded-Prefix: /apps/dapps` puts the dashboard under that path. DAPPS believes these headers only from a proxy connecting from `127.0.0.1` or `::1`; from anywhere else they are ignored. A proxy on another machine or in another container isn't trusted, so run it on the node.
 
 ## MQTT heartbeat
 

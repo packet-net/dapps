@@ -1,4 +1,5 @@
 @inject SystemOptionsBackedTxGate TxGate
+@inject Microsoft.AspNetCore.Antiforgery.IAntiforgery Antiforgery
 @inject Microsoft.Extensions.Options.IOptionsMonitor<SystemOptions> SysOpts
 @{
     var title = ViewData["Title"] as string ?? "DAPPS";
@@ -21,6 +22,27 @@
         <meta http-equiv="refresh" content="@refreshSeconds" />
     }
     <title>@title</title>
+    @* #320: the admin API refuses state changes without an antiforgery
+       token. Every non-GET fetch() on a dashboard page carries it. *@
+    <meta name="request-verification-token" content="@Antiforgery.GetAndStoreTokens(Context).RequestToken" />
+    <script>
+        (function () {
+            var meta = document.querySelector('meta[name="request-verification-token"]');
+            var token = meta ? meta.content : '';
+            var original = window.fetch;
+            if (!token || !original) return;
+            window.fetch = function (input, init) {
+                var method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+                if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+                    init = Object.assign({}, init);
+                    var headers = new Headers(init.headers || (input && input.headers) || undefined);
+                    if (!headers.has('RequestVerificationToken')) headers.set('RequestVerificationToken', token);
+                    init.headers = headers;
+                }
+                return original.call(this, input, init);
+            };
+        })();
+    </script>
     <style>
         :root {
             /* Dark "operator console" palette - cool blue/slate with a

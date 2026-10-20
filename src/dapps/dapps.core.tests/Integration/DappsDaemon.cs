@@ -266,6 +266,7 @@ internal sealed class DappsDaemon : IAsyncDisposable
         {
             throw new InvalidOperationException($"{Name}: signing in failed with {(int)response.StatusCode}");
         }
+        await Http.UseAntiforgeryTokenAsync(ct: ct);
     }
 
     private const string AdminPassword = "e2e-test-password";
@@ -287,6 +288,7 @@ internal sealed class DappsDaemon : IAsyncDisposable
         {
             throw new InvalidOperationException($"{Name}: setting the admin password failed with {(int)response.StatusCode}");
         }
+        await Http.UseAntiforgeryTokenAsync(ct: ct);
     }
 
     public sealed record Inbound(string Id, string SourceCallsign, byte[] Payload, int? Ttl, string? OriginatorCallsign, string? ViaCallsign = null);

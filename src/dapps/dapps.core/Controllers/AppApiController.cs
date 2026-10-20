@@ -15,6 +15,8 @@ namespace dapps.core.Controllers;
 /// </summary>
 [ApiController]
 [Route("[controller]")]
+// Bearer-token API with no cookie, so there is nothing for a forged request to ride on (#320).
+[IgnoreAntiforgeryToken]
 public class AppApiController(Database database) : ControllerBase
 {
     /// <summary>

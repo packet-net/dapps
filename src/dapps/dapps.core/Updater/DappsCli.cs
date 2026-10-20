@@ -28,7 +28,7 @@ public static class DappsCli
                 return true;
 
             case "--show-config":
-                exitCode = ConfigCli.ShowConfig();
+                exitCode = ConfigCli.ShowConfig(args[1..]);
                 return true;
 
             case "--apply-update":

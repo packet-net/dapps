@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net.Sockets;
 using System.Text.Json;
 using dapps.client;
 using dapps.core.Controllers;
@@ -30,8 +29,11 @@ public sealed class OperationalSnapshotBuilder(
     UpdateChecker updateChecker,
     TimeProvider timeProvider,
     NodePortNumbers? portNumbers = null,
-    PortNumberUpgradeService? portUpgrade = null)
+    PortNumberUpgradeService? portUpgrade = null,
+    TcpReachabilityProbe? reachability = null)
 {
+    private readonly TcpReachabilityProbe probe = reachability ?? new TcpReachabilityProbe(timeProvider);
+
     private const string PlaceholderCallsign = "N0CALL";
     private const int RecentEventsInSnapshot = 20;
 
@@ -62,8 +64,8 @@ public sealed class OperationalSnapshotBuilder(
         var nodePort = string.Equals(opts.NodeBearer, "rhpv2", StringComparison.OrdinalIgnoreCase)
             ? (opts.RhpPort > 0 ? opts.RhpPort : 9000)
             : opts.AgwPort;
-        var nodeOk = await ProbeTcp(opts.NodeHost, nodePort, TimeSpan.FromMilliseconds(500));
-        var mqttOk = await ProbeTcp("127.0.0.1", opts.MqttPort, TimeSpan.FromMilliseconds(250));
+        var nodeOk = await probe.IsReachableAsync(opts.NodeHost, nodePort, TimeSpan.FromMilliseconds(500));
+        var mqttOk = await probe.IsReachableAsync("127.0.0.1", opts.MqttPort, TimeSpan.FromMilliseconds(250));
 
         var counters = metrics.Take();
         var isRhpv2 = string.Equals(opts.NodeBearer, "rhpv2", StringComparison.OrdinalIgnoreCase);
@@ -191,22 +193,6 @@ public sealed class OperationalSnapshotBuilder(
             // we've ever forwarded to).
             NeighbourLinks: counters.Neighbours,
             Tables: tables);
-    }
-
-    private static async Task<bool> ProbeTcp(string host, int port, TimeSpan timeout)
-    {
-        if (string.IsNullOrWhiteSpace(host) || port <= 0) return false;
-        try
-        {
-            using var tcp = new TcpClient();
-            using var cts = new CancellationTokenSource(timeout);
-            await tcp.ConnectAsync(host, port, cts.Token);
-            return tcp.Connected;
-        }
-        catch
-        {
-            return false;
-        }
     }
 }
 

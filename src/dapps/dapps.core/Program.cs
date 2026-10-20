@@ -49,8 +49,13 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 // sqlite-net returns stored times with no kind; write them all as UTC
 // with a Z so the dashboard doesn't read them as local time (#238, #362).
-builder.Services.AddControllers().AddJsonOptions(o =>
-    dapps.core.Controllers.UtcDateTimeJsonConverter.Configure(o.JsonSerializerOptions));
+// #320: a non-JSON POST to an admin endpoint needs an antiforgery token (the
+// dashboard's fetch() calls add it; see _Layout and AdminPostAntiforgeryFilter).
+// Only /AppApi, which has no cookie and authenticates with a bearer token,
+// opts out.
+builder.Services.AddControllers(o => o.Filters.Add<AdminPostAntiforgeryFilter>())
+    .AddJsonOptions(o =>
+        dapps.core.Controllers.UtcDateTimeJsonConverter.Configure(o.JsonSerializerOptions));
 builder.Services.AddRazorPages();
 // OpenAPI document for the REST surface, served at /openapi/v1.json, with
 // Scalar as the viewer at /scalar. Both sit behind AdminAuthMiddleware
@@ -118,6 +123,7 @@ builder.Services.AddSingleton<OutboundActivityTracker>();
 // Plan C3 PR-B - operational snapshot composer used by both
 // /Operational and HeartbeatPublisher. Singleton so the two
 // consumers see consistent state.
+builder.Services.AddSingleton<TcpReachabilityProbe>();
 builder.Services.AddSingleton<OperationalSnapshotBuilder>();
 builder.Services.AddHostedService<HeartbeatPublisher>();
 
@@ -376,11 +382,20 @@ CookieEncryption.EnsureGcmKey(
     app.Services.GetRequiredService<IKeyManager>(),
     app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CookieEncryption"));
 
+// #320: behind a TLS-terminating reverse proxy on this machine, trust its
+// X-Forwarded-Proto so cookies get the Secure flag. The framework only
+// honours it from loopback by default; from anyone else it is ignored.
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto,
+});
+
 // pdn app-gateway support (packet.net docs/app-gateway.md). When the
 // dashboard is reverse-proxied under /apps/dapps/, the gateway strips
 // the prefix from the forwarded path and injects
 // `X-Forwarded-Prefix: /apps/dapps`. Setting Request.PathBase from the
-// header makes every framework-generated URL (Razor tag helpers, `~/`
+// header (from a proxy on this machine only, see ForwardedPrefixMiddleware)
+// makes every framework-generated URL (Razor tag helpers, `~/`
 // hrefs, Url.Content, RedirectToPage, LocalRedirect("~/..."), the
 // cookie scheme's /Login challenge) come out prefixed, so links and
 // redirects rendered through the proxy stay inside the mount. The
@@ -392,15 +407,7 @@ CookieEncryption.EnsureGcmKey(
 // MUST run first in the pipeline - before auth (the cookie challenge
 // builds its redirect from PathBase) and before any endpoint that
 // generates URLs.
-app.Use((ctx, next) =>
-{
-    var prefix = ctx.Request.Headers["X-Forwarded-Prefix"].ToString().TrimEnd('/');
-    if (!string.IsNullOrEmpty(prefix) && prefix.StartsWith('/'))
-    {
-        ctx.Request.PathBase = new PathString(prefix);
-    }
-    return next(ctx);
-});
+app.UseMiddleware<ForwardedPrefixMiddleware>();
 
 // #248: delete the default-named antiforgery cookie earlier versions
 // set. It's a session cookie, and browsers that restore sessions

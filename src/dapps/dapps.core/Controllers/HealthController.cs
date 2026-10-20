@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net.Sockets;
 using dapps.client;
 using dapps.core.Models;
 using dapps.core.Services;
@@ -30,7 +29,8 @@ namespace dapps.core.Controllers;
 public sealed class HealthController(
     IOptionsMonitor<SystemOptions> options,
     OperationalMetrics metrics,
-    Database database) : ControllerBase
+    Database database,
+    TcpReachabilityProbe probe) : ControllerBase
 {
     private const string PlaceholderCallsign = "N0CALL";
 
@@ -46,8 +46,8 @@ public sealed class HealthController(
         var nodePort = string.Equals(opts.NodeBearer, "rhpv2", StringComparison.OrdinalIgnoreCase)
             ? (opts.RhpPort > 0 ? opts.RhpPort : 9000)
             : opts.AgwPort;
-        var nodeOk = await ProbeTcp(opts.NodeHost, nodePort, TimeSpan.FromMilliseconds(500));
-        var mqttOk = await ProbeTcp("127.0.0.1", opts.MqttPort, TimeSpan.FromMilliseconds(250));
+        var nodeOk = await probe.IsReachableAsync(opts.NodeHost, nodePort, TimeSpan.FromMilliseconds(500));
+        var mqttOk = await probe.IsReachableAsync("127.0.0.1", opts.MqttPort, TimeSpan.FromMilliseconds(250));
 
         var pendingOutbound = await database.CountPendingOutbound();
 
@@ -65,22 +65,6 @@ public sealed class HealthController(
             PendingOutboundCount: pendingOutbound);
 
         return status == "healthy" ? Ok(body) : StatusCode(503, body);
-    }
-
-    private static async Task<bool> ProbeTcp(string host, int port, TimeSpan timeout)
-    {
-        if (string.IsNullOrWhiteSpace(host) || port <= 0) return false;
-        try
-        {
-            using var tcp = new TcpClient();
-            using var cts = new CancellationTokenSource(timeout);
-            await tcp.ConnectAsync(host, port, cts.Token);
-            return tcp.Connected;
-        }
-        catch
-        {
-            return false;
-        }
     }
 }
 

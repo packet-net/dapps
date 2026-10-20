@@ -10,6 +10,8 @@ Most settings take effect within seconds of saving, with no restart. The MQTT an
 
 A few knobs aren't on the Settings page: the default port, the routing algorithm and the multi-part message timings. Change those with `POST /Config`, which changes only the settings you send. Route gossip staleness can be set with its env var before first start, or with `POST /Config` (from 0.48.1).
 
+`POST /Config` and the other admin calls take a JSON body, as in the [token recipe](app-developers/reference.md#minting-a-token-from-the-command-line). A POST without one (`POST /Probes/run`, say) also needs the dashboard's antiforgery token, sent as a `RequestVerificationToken` header; any dashboard page carries it in its `request-verification-token` meta tag.
+
 > **Deployment-managed mode (`DAPPS_ENV_MANAGED=true`)**: when a supervising deployment (a packet.net node host, say) sets `DAPPS_ENV_MANAGED=true`, every *set* `DAPPS_*` env var becomes deployment-managed config instead - re-applied over the persisted row at **every** start, with the matching dashboard fields badged "managed by environment" and rendered read-only. `DAPPS_ENV_MANAGED` itself is a mode switch read each start, never stored. Leave it unset for the standalone installs documented here: with it unset (or `false`) env vars keep the first-start-only semantics above and the dashboard stays in charge.
 
 ## Show the current persisted config
@@ -18,7 +20,17 @@ A few knobs aren't on the Settings page: the default port, the routing algorithm
 dapps --show-config
 ```
 
-Walks the persisted `systemoptions` table and prints `DAPPS_SCREAMING_SNAKE=value` pairs for every set knob, **without booting the host**. Useful when the daemon won't start and you need to see what state it'd boot into.
+Prints the saved settings as `DAPPS_SCREAMING_SNAKE=value` pairs, **without booting the host**. Useful when the daemon won't start and you need to see what state it'd boot into.
+
+It finds the database the same way `dapps reset-admin-password` does: the current folder first, then `/var/lib/dapps` and `/var/lib/packetnet/apps/dapps`. If it finds more than one, or none, it says so and stops; it never creates a database. Point it at one with `--db PATH` (the file, or the folder dapps runs in).
+
+The state folder belongs to the `dapps` user, so on a packaged install run it as that user:
+
+```bash
+sudo -u dapps dapps --show-config
+```
+
+Secrets (the admin password hash and salt, the RHP password, MeshCore keys) show as `(set, hidden)`, so the output is safe to paste into a support thread.
 
 ## The knobs
 
