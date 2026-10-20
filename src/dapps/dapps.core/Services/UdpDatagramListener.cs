@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using dapps.client.Backhaul;
 using dapps.client.Backhaul.Datagram;
+using dapps.client.Discovery;
 using Microsoft.Extensions.Options;
 using dapps.core.Models;
 
@@ -16,7 +17,9 @@ namespace dapps.core.Services;
 /// <see cref="IBackhaulInbox"/>.
 ///
 /// The bearer is fire-and-forget - we don't ack the sender. We
-/// advertise our port only in UDP discovery beacons (udpport). Discovery over UDP and
+/// advertise our port in UDP discovery beacons (udpport), and the
+/// beacons go out from this socket (<see cref="UdpListenerSocket"/>,
+/// #383) so their source port is this port too. Discovery over UDP and
 /// reliable delivery are higher-layer concerns (Phase B).
 /// </summary>
 public sealed class UdpDatagramListener(
@@ -24,7 +27,8 @@ public sealed class UdpDatagramListener(
     IBackhaulInbox inbox,
     Database database,
     TimeProvider timeProvider,
-    ILogger<UdpDatagramListener> logger) : BackgroundService
+    ILogger<UdpDatagramListener> logger,
+    UdpListenerSocket? sharedSocket = null) : BackgroundService
 {
     /// <summary>Source address used for inbound delivery's sourceCallsign
     /// when the bearer doesn't carry an explicit one. The DAPPSv1
@@ -53,9 +57,22 @@ public sealed class UdpDatagramListener(
         }
 
         using var udp = new UdpClient(new IPEndPoint(IPAddress.Any, port));
+        sharedSocket?.Attach(udp.Client);
+        try
+        {
+            await ReceiveLoopAsync(udp, stoppingToken);
+        }
+        finally
+        {
+            sharedSocket?.Detach(udp.Client);
+        }
+    }
+
+    private async Task ReceiveLoopAsync(UdpClient udp, CancellationToken stoppingToken)
+    {
         var reassembler = new Reassembler();
         var nextSweep = timeProvider.GetUtcNow().UtcDateTime + SweepInterval;
-        logger.LogInformation("UDP datagram listener bound on :{0}", port);
+        logger.LogInformation("UDP datagram listener bound on :{0}", ((IPEndPoint)udp.Client.LocalEndPoint!).Port);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -73,6 +90,12 @@ public sealed class UdpDatagramListener(
                 logger.LogWarning(ex, "UDP receive failed; continuing");
                 continue;
             }
+
+            // A discovery beacon or solicit is never mail. One only lands
+            // here if the listener shares a port with a discovery group;
+            // drop it quietly rather than fail to parse it as a fragment.
+            if (IsDiscoveryFrame(received.Buffer))
+                continue;
 
             try
             {
@@ -156,6 +179,13 @@ public sealed class UdpDatagramListener(
         // delivered (passive learning will skip it, which is correct
         // behaviour when the link source is genuinely unknown).
         return UnknownSourceCallsign;
+    }
+
+    internal static bool IsDiscoveryFrame(ReadOnlySpan<byte> datagram)
+    {
+        ReadOnlySpan<byte> magic = "DAPPS v1"u8;
+        return datagram.StartsWith(magic)
+            && (datagram.Length == magic.Length || datagram[magic.Length] == (byte)' ');
     }
 
     private static int? ParsePort(string endpoint)

@@ -331,6 +331,9 @@ builder.Services.AddSingleton(sp => new Dappsv1SessionBackhaul(
 builder.Services.AddSingleton<IDappsBackhaul>(sp => sp.GetRequiredService<Dappsv1SessionBackhaul>());
 builder.Services.AddSingleton<DatabaseAndMqttInbox>();
 builder.Services.AddSingleton<IBackhaulInbox>(sp => sp.GetRequiredService<DatabaseAndMqttInbox>());
+// The listener's bound socket, shared with UDP discovery so beacons go
+// out from the listening port and advertise only a port that is held (#383).
+builder.Services.AddSingleton<UdpListenerSocket>();
 builder.Services.AddHostedService<UdpDatagramListener>();
 
 // B6.1 - connected-mode probe-and-map. NodeProber is stateless and

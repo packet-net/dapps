@@ -36,7 +36,8 @@ public sealed class DiscoveryService(
     TransmissionAuditService? transmissionAudit = null,
     IAgwLinkSource? agwLinks = null,
     IUiFrameSender? listenOnlyUiSender = null,
-    INodePortMaps? portMaps = null) : BackgroundService
+    INodePortMaps? portMaps = null,
+    UdpListenerSocket? udpListenerSocket = null) : BackgroundService
 {
     private static readonly TimeSpan SweepInterval = TimeSpan.FromMinutes(1);
 
@@ -243,18 +244,18 @@ public sealed class DiscoveryService(
     }
 
     /// <summary>The port to put in a beacon sent over <paramref name="bearerName"/>:
-    /// our UDP listener's, on the UDP bearer only, and only when we listen (#299).</summary>
-    private int? UdpPortToAdvertise(string bearerName)
-        => bearerName == "udp" && options.CurrentValue.UdpListenPort > 0
-            ? options.CurrentValue.UdpListenPort
-            : null;
+    /// our UDP listener's, on the UDP bearer only, and only the port the listener
+    /// actually holds (#299, #383): not the configured one, which may have changed
+    /// since start-up or failed to bind.</summary>
+    internal int? UdpPortToAdvertise(string bearerName)
+        => bearerName == "udp" ? udpListenerSocket?.BoundPort : null;
 
     private IDiscoveryBearer? TryConstructBearer(string bearerName, SystemOptions opts)
     {
         return bearerName switch
         {
             "agw" when agwLinks is not null => new AgwUiDiscoveryBearer(agwLinks, loggerFactory, listenOnlyUiSender, portMaps: portMaps),
-            "udp" => new UdpMulticastDiscoveryBearer(opts.Callsign, loggerFactory),
+            "udp" => new UdpMulticastDiscoveryBearer(opts.Callsign, loggerFactory, udpListenerSocket),
             _ => null,
         };
     }

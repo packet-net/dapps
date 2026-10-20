@@ -22,6 +22,7 @@ public sealed class UdpMulticastDiscoveryBearer : IDiscoveryBearer
 
     private readonly string _ourCallsign;
     private readonly ILogger _logger;
+    private readonly UdpListenerSocket? _listenerSocket;
 
     private readonly Dictionary<string, GroupBinding> _groups = new(StringComparer.Ordinal);
 
@@ -32,9 +33,15 @@ public sealed class UdpMulticastDiscoveryBearer : IDiscoveryBearer
             SingleWriter = true,
         });
 
-    public UdpMulticastDiscoveryBearer(string ourCallsign, ILoggerFactory loggerFactory)
+    /// <param name="listenerSocket">The UDP datagram listener's socket. While
+    /// it is bound, beacons and solicits are sent from it, so their source
+    /// port is our listening port (#383); otherwise from this bearer's own
+    /// socket.</param>
+    public UdpMulticastDiscoveryBearer(string ourCallsign, ILoggerFactory loggerFactory,
+        UdpListenerSocket? listenerSocket = null)
     {
         _ourCallsign = ourCallsign;
+        _listenerSocket = listenerSocket;
         _logger = loggerFactory.CreateLogger<UdpMulticastDiscoveryBearer>();
     }
 
@@ -98,8 +105,7 @@ public sealed class UdpMulticastDiscoveryBearer : IDiscoveryBearer
             throw new InvalidOperationException(
                 $"No UDP multicast group bound for channel-key '{channelKey}'");
         }
-        var bytes = BeaconCodec.Encode(beacon);
-        await binding.Send.SendAsync(bytes, binding.Endpoint, ct);
+        await SendAsync(BeaconCodec.Encode(beacon), binding, ct);
     }
 
     public async Task SolicitAsync(SolicitFrame solicit, string channelKey, CancellationToken ct)
@@ -109,7 +115,16 @@ public sealed class UdpMulticastDiscoveryBearer : IDiscoveryBearer
             throw new InvalidOperationException(
                 $"No UDP multicast group bound for channel-key '{channelKey}'");
         }
-        var bytes = SolicitCodec.Encode(solicit);
+        await SendAsync(SolicitCodec.Encode(solicit), binding, ct);
+    }
+
+    /// <summary>From the listener's socket when it is bound, so an older
+    /// node that records our source port learns the one we listen on;
+    /// else from this group's own send socket.</summary>
+    private async Task SendAsync(byte[] bytes, GroupBinding binding, CancellationToken ct)
+    {
+        if (_listenerSocket is not null && await _listenerSocket.TrySendAsync(bytes, binding.Endpoint, ct))
+            return;
         await binding.Send.SendAsync(bytes, binding.Endpoint, ct);
     }
 
@@ -155,8 +170,8 @@ public sealed class UdpMulticastDiscoveryBearer : IDiscoveryBearer
                     continue;
                 }
 
-                // The beacon came from an ephemeral socket, so its source
-                // port is useless for replies (#299). Where the sender
+                // The beacon's source port may be an ephemeral socket's
+                // (#299; a node whose listener is off, or an older node). Where the sender
                 // listens is in the beacon (udpport); the address is the
                 // one the datagram came from.
                 var provisional = new UdpBearerHint($"{dgram.RemoteEndPoint.Address}:{dgram.RemoteEndPoint.Port}");

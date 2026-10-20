@@ -125,7 +125,39 @@ public sealed class UdpBackhaulEndToEndTests
         result.Error.Should().NotBeNull();
     }
 
-    private static UdpDatagramListener StartListener(int port, IBackhaulInbox inbox)
+    [Fact]
+    public async Task Listener_SharesItsSocketWhileBound_AndIgnoresDiscoveryFrames()
+    {
+        // #383: discovery sends from the listener's socket and advertises its port
+        // only while the listener holds it. A beacon reaching the listener is not mail.
+        var port = PickFreeUdpPort();
+        var inbox = new RecordingInbox();
+        var shared = new dapps.client.Discovery.UdpListenerSocket();
+
+        var listener = StartListener(port, inbox, shared);
+        await WaitForUdpListenerReady(port);
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+        while (shared.BoundPort is null && DateTime.UtcNow < deadline) await Task.Delay(20);
+        shared.BoundPort.Should().Be(port);
+
+        using (var probe = new UdpClient())
+        {
+            await probe.SendAsync("DAPPS v1 callsign=M0X hops=0 ttl=60 udpport=1 end"u8.ToArray(), new IPEndPoint(IPAddress.Loopback, port));
+        }
+        using var sender = new UdpDatagramBackhaul(NullLoggerFactory.Instance);
+        var input = new BackhaulMessage("abc1234", "app@N0DEST", null, null, "after beacon"u8.ToArray());
+        (await sender.SendAsync(input, new BackhaulRoute("N0DEST", UdpEndpoint: $"127.0.0.1:{port}"), "N0SRC",
+            TestContext.Current.CancellationToken)).Accepted.Should().BeTrue();
+        var (received, _) = await inbox.WaitForOne(TimeSpan.FromSeconds(5));
+        received.Id.Should().Be("abc1234", "the beacon was dropped, not delivered");
+
+        await listener.StopAsync(CancellationToken.None);
+        listener.Dispose();
+        shared.BoundPort.Should().BeNull("nothing listens once the listener has stopped");
+    }
+
+    private static UdpDatagramListener StartListener(int port, IBackhaulInbox inbox,
+        dapps.client.Discovery.UdpListenerSocket? shared = null)
     {
         var optionsMonitor = new TestOptionsMonitor<SystemOptions>(new SystemOptions
         {
@@ -147,7 +179,7 @@ public sealed class UdpBackhaulEndToEndTests
         }
         var database = new Database(NullLogger<Database>.Instance, optionsMonitor);
         var listener = new UdpDatagramListener(
-            optionsMonitor, inbox, database, TimeProvider.System, NullLogger<UdpDatagramListener>.Instance);
+            optionsMonitor, inbox, database, TimeProvider.System, NullLogger<UdpDatagramListener>.Instance, shared);
         // Fire-and-forget: BackgroundService.StartAsync returns once the
         // execute task is scheduled. The listener begins receiving on its
         // own task. Disposal cancels.
