@@ -493,9 +493,12 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
         // for them (#389, #398). If that moves the cursor, deliver what
         // is parked behind it first: the drop that should have released
         // it may not have got that far (a crash, or a failed drain).
+        // The same if a message parked at the cursor is still waiting: a
+        // crash part way through a drain can leave one there (#290).
         var cursorBefore = recv.NextExpectedSeq;
         await SkipDroppedSeqsAsync(recv, streamSender, streamId);
-        if (recv.NextExpectedSeq != cursorBefore)
+        if (recv.NextExpectedSeq != cursorBefore
+            || await database.HasPendingInOrderUpToAsync(streamSender, streamId, recv.NextExpectedSeq))
         {
             await DrainConsecutivePendingAsync(recv, streamSender, streamId, ct);
         }
@@ -596,6 +599,9 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
         await mqtt.InjectInboundMessage(dbMessage);
         recv.NextExpectedSeq = sn + 1;
         recv.LastReceivedAt = now;
+        // Saved before draining what follows, so the cursor on disk
+        // never trails what the app has had (#290).
+        await database.UpsertStreamRecvStateAsync(recv);
 
         await DrainConsecutivePendingAsync(recv, streamSender, streamId, ct);
         events.Publish(new InboundEvent(now, message.Id, FromOf(message, sourceCallsign), message.Destination, message.Payload.Length, message.Ttl, sourceCallsign));
@@ -642,9 +648,13 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
                 StreamGapTimeoutSeconds = p.StreamGapTimeoutSeconds,
             };
             await mqtt.InjectInboundMessage(inject);
-            await database.ClearPendingInOrderAsync(p.Id);
+            // Handed over: un-park it and move the cursor in one go, so a
+            // crash part way through the drain can't leave the cursor
+            // behind what the app has had (#290).
             recv.NextExpectedSeq = p.StreamSeq.Value + 1;
+            await database.CommitDrainStepAsync(p.Id, recv);
             byteOffset += p.Payload.Length;
+            if (AfterDrainStep is { } hook) await hook(p);
         }
 
         await SkipDroppedSeqsAsync(recv, streamSender, streamId);
@@ -673,6 +683,62 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
             logger.LogInformation(
                 "Stream {0}|{1}: drained pending up to sn={2}",
                 streamSender, streamId, recv.NextExpectedSeq - 1);
+        }
+    }
+
+    /// <summary>Test seam: runs after each message a drain hands over,
+    /// so a test can stop a drain part way, as a crash would.</summary>
+    internal Func<DbMessage, Task>? AfterDrainStep { get; set; }
+
+    /// <summary>
+    /// The operator's "skip to next waiting" on the Streams page (#290),
+    /// for a stream stalled on a message that will never come. Moves the
+    /// cursor of the stream with this key up to its lowest waiting
+    /// message and delivers that and whatever follows it without a gap.
+    /// The skipped seqs are recorded in the dropped messages as skipped
+    /// by the operator, so the skip is visible there. Under the stream's
+    /// lock, as a delivery is.
+    /// </summary>
+    public async Task<StreamSkipOutcome> SkipToNextWaitingByOperatorAsync(string key, CancellationToken ct = default)
+    {
+        if (await database.GetStreamRecvStateByKeyAsync(key) is not { } found) return StreamSkipOutcome.NotFound;
+        using (await LockStreamAsync(found.SenderCallsign + "|" + found.StreamId, ct))
+        {
+            var recv = await database.GetStreamRecvStateByKeyAsync(key);
+            if (recv is null) return StreamSkipOutcome.NotFound;
+            var pending = await database.GetPendingInOrderAsync(recv.SenderCallsign, recv.StreamId);
+            var next = pending.FirstOrDefault(p => p.StreamSeq is { } s && s >= recv.NextExpectedSeq);
+            if (next?.StreamSeq is not { } toSn) return StreamSkipOutcome.NothingWaiting;
+
+            var fromSn = recv.NextExpectedSeq;
+            if (toSn > fromSn)
+            {
+                var skipped = toSn - 1 == fromSn ? $"sn={fromSn}" : $"sn={fromSn} to sn={toSn - 1}";
+                var now = timeProvider.GetUtcNow().UtcDateTime;
+                recv.NextExpectedSeq = toSn;
+                await database.CommitOperatorSkipAsync(new DbDroppedMessage
+                {
+                    // Not a message id (those are 7 hex digits), so it
+                    // can't replace the record of a real message.
+                    Id = "skip-" + Guid.NewGuid().ToString("N")[..8],
+                    Payload = System.Text.Encoding.UTF8.GetBytes(
+                        $"Stream {recv.StreamId} from {recv.SenderCallsign}: {skipped} never arrived; the operator skipped on to sn={toSn}."),
+                    Destination = next.Destination,
+                    SourceCallsign = next.SourceCallsign,
+                    OriginatorCallsign = next.OriginatorCallsign,
+                    AdditionalProperties = "{}",
+                    CreatedAt = now,
+                    DroppedAt = now,
+                    Reason = Database.SkippedByOperatorReason,
+                    StreamId = recv.StreamId,
+                    StreamSeq = fromSn,
+                    StreamGapTimeoutSeconds = next.StreamGapTimeoutSeconds,
+                }, recv);
+                logger.LogWarning("Stream {0}|{1}: skipped {2} by the operator, on to sn={3}",
+                    recv.SenderCallsign, recv.StreamId, skipped, toSn);
+            }
+            await DrainConsecutivePendingAsync(recv, recv.SenderCallsign, recv.StreamId, ct);
+            return StreamSkipOutcome.Skipped;
         }
     }
 
@@ -987,4 +1053,15 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
     /// originator, else the neighbour that handed it to us.</summary>
     private static string FromOf(BackhaulMessage message, string linkSource) =>
         string.IsNullOrEmpty(message.Originator) ? linkSource : message.Originator;
+}
+
+/// <summary>What the operator's skip on the Streams page did.</summary>
+public enum StreamSkipOutcome
+{
+    /// <summary>The stream moved on to its next waiting message.</summary>
+    Skipped,
+    /// <summary>Nothing is waiting on the stream, so there is nothing to skip to.</summary>
+    NothingWaiting,
+    /// <summary>No such stream.</summary>
+    NotFound,
 }

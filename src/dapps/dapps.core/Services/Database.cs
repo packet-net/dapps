@@ -65,7 +65,15 @@ public class Database(
         return rows;
     }
 
-    /// <summary>Messages destined for a local app that haven't been ack'd yet.</summary>
+    /// <summary>
+    /// Messages destined for a local app that haven't been ack'd yet: what
+    /// the MQTT replay and REST inbound hand the app. A message parked on
+    /// an ordered stream behind a missing earlier one isn't the app's yet,
+    /// so it is left out (#287). Oldest first, except that the messages of
+    /// one stream come in seq order, taking the places in that order that
+    /// the stream's messages hold, so a stream is never handed over out of
+    /// order however its messages arrived.
+    /// </summary>
     public async Task<ICollection<DbMessage>> GetUnacknowledgedLocalMessagesForApp(string appName)
     {
         var connection = DbInfo.GetAsyncConnection();
@@ -73,9 +81,38 @@ public class Database(
         // callsign, SSID included.
         var (local, local0) = DestinationParser.LocalLikePatterns(options.CurrentValue.Callsign, appName);
         var rows = await connection.QueryAsync<DbMessage>(
-            "select * from messages where locallydelivered=0 and (destination like ? escape '\\' or destination like ? escape '\\');",
+            "select * from messages where locallydelivered=0 and PendingInOrder=0 and (destination like ? escape '\\' or destination like ? escape '\\') order by CreatedAt asc, rowid asc;",
             local, local0);
-        return rows;
+        return InStreamOrder(rows);
+    }
+
+    /// <summary>Keeps <paramref name="rows"/> in their order, but puts each
+    /// stream's messages (same sender, same stream id) in seq order within
+    /// the places they take.</summary>
+    internal static List<DbMessage> InStreamOrder(IReadOnlyList<DbMessage> rows)
+    {
+        var result = rows.ToList();
+        var streams = rows
+            .Select((m, i) => (m, i))
+            .Where(x => !string.IsNullOrEmpty(x.m.StreamId) && x.m.StreamSeq is not null)
+            .GroupBy(x => (x.m.FromCallsign, x.m.StreamId), StreamKeyComparer.Instance);
+        foreach (var stream in streams)
+        {
+            var places = stream.Select(x => x.i).ToList();
+            var bySeq = stream.Select(x => x.m).OrderBy(m => m.StreamSeq).ToList();
+            for (var k = 0; k < places.Count; k++) result[places[k]] = bySeq[k];
+        }
+        return result;
+    }
+
+    private sealed class StreamKeyComparer : IEqualityComparer<(string, string?)>
+    {
+        public static readonly StreamKeyComparer Instance = new();
+        public bool Equals((string, string?) a, (string, string?) b) =>
+            string.Equals(a.Item1, b.Item1, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(a.Item2, b.Item2, StringComparison.Ordinal);
+        public int GetHashCode((string, string?) k) =>
+            HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(k.Item1), k.Item2);
     }
 
     public async Task MarkLocallyDelivered(string id)
@@ -521,6 +558,11 @@ public class Database(
     /// <summary>The drop reason recorded when the operator drops a message
     /// from the local inbox on the dashboard (#389).</summary>
     public const string DroppedByOperatorReason = "dropped by operator";
+
+    /// <summary>The reason recorded when the operator skips a stalled
+    /// stream on to its next waiting message on the Streams page (#290).
+    /// The record stands for the seqs skipped, which never arrived.</summary>
+    public const string SkippedByOperatorReason = "skipped by operator";
 
     /// <summary>Test seam: runs between writing the drop record and
     /// deleting the message, so a test can land an ack in that gap.</summary>
@@ -1382,18 +1424,56 @@ public class Database(
     internal async Task<IReadOnlyList<DbMessage>> GetPendingInOrderAsync(string senderCallsign, string streamId)
     {
         var connection = DbInfo.GetAsyncConnection();
+        // A peer that sends no src= (older nodes) has its stream keyed on
+        // the neighbour it came from, and its rows are stored with no
+        // originator, so match those on the neighbour (#290).
         return await connection.QueryAsync<DbMessage>(
-            "select * from messages where PendingInOrder=1 and OriginatorCallsign=? and StreamId=? order by StreamSeq asc",
-            senderCallsign, streamId);
+            "select * from messages where PendingInOrder=1 and StreamId=? " +
+            "and (OriginatorCallsign=? or (coalesce(OriginatorCallsign, '')='' and SourceCallsign=?)) order by StreamSeq asc",
+            streamId, senderCallsign, senderCallsign);
     }
 
-    /// <summary>Mark a parked row as no-longer-pending. Used when the
-    /// inbox drains it to MQTT or the sweeper skips past it.</summary>
-    internal async Task ClearPendingInOrderAsync(string id)
+    /// <summary>True when a message parked on this (sender, stream) has a
+    /// seq at or below <paramref name="seq"/>: the cursor has reached it,
+    /// so it should go now. Only after a crash part way through a drain.</summary>
+    internal async Task<bool> HasPendingInOrderUpToAsync(string senderCallsign, string streamId, uint seq)
     {
-        await DbInfo.GetAsyncConnection().ExecuteAsync(
-            "update messages set PendingInOrder=0 where Id=?", id);
+        var n = await DbInfo.GetAsyncConnection().ExecuteScalarAsync<int>(
+            "select count(*) from messages where PendingInOrder=1 and StreamId=? and StreamSeq<=? " +
+            "and (OriginatorCallsign=? or (coalesce(OriginatorCallsign, '')='' and SourceCallsign=?))",
+            streamId, (long)seq, senderCallsign, senderCallsign);
+        return n > 0;
     }
+
+    /// <summary>One step of draining a stream (#290): the parked row is
+    /// no longer pending and the cursor moves past it, together, so a
+    /// crash between steps leaves the cursor saying exactly what the app
+    /// has been handed.</summary>
+    internal async Task CommitDrainStepAsync(string id, DbStreamRecvState recv)
+    {
+        recv.Key = DbStreamRecvState.MakeKey(recv.LocalCallsign, recv.SenderCallsign, recv.StreamId);
+        await DbInfo.GetAsyncConnection().RunInTransactionAsync(conn =>
+        {
+            conn.Execute("update messages set PendingInOrder=0 where Id=?", id);
+            conn.InsertOrReplace(recv);
+        });
+    }
+
+    /// <summary>The operator's skip on the Streams page (#290): the record
+    /// of what was skipped and the moved cursor, together.</summary>
+    internal async Task CommitOperatorSkipAsync(DbDroppedMessage record, DbStreamRecvState recv)
+    {
+        recv.Key = DbStreamRecvState.MakeKey(recv.LocalCallsign, recv.SenderCallsign, recv.StreamId);
+        await DbInfo.GetAsyncConnection().RunInTransactionAsync(conn =>
+        {
+            conn.InsertOrReplace(record);
+            conn.InsertOrReplace(recv);
+        });
+    }
+
+    /// <summary>A receive cursor by its key, as the Streams page lists it.</summary>
+    internal async Task<DbStreamRecvState?> GetStreamRecvStateByKeyAsync(string key)
+        => await DbInfo.GetAsyncConnection().FindAsync<DbStreamRecvState>(key);
 
     /// <summary>Recv cursors that have a non-MinValue gap deadline at or
     /// before <paramref name="cutoff"/>. The sweeper advances these.</summary>

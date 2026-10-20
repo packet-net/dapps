@@ -44,7 +44,10 @@
     <h3>Receive state</h3>
     <p class="panel-sub">
         Highlighted rows are waiting for an earlier message. Gap deadline is when DAPPS stops waiting; strict streams never do.
+        If the missing message will never come, Skip to next hands the app the next one waiting; the skip is listed under Dropped on the Messages page.
     </p>
+    @Html.AntiForgeryToken()
+    <div class="err-banner" id="streams-error" hidden></div>
     @if (Model.RecvStates.Count == 0)
     {
         <div class="empty">No inbound streams have been seen yet.</div>
@@ -56,14 +59,14 @@
                 <tr>
                     <th>Sender</th><th>Stream id</th>
                     <th class="numeric">Next sn</th><th class="numeric">Pending</th>
-                    <th>Oldest pending</th><th>Gap deadline</th><th>Last seen</th>
+                    <th>Oldest pending</th><th>Gap deadline</th><th>Last seen</th><th></th>
                 </tr>
             </thead>
-            <tbody>
+            <tbody id="recv-body">
                 @foreach (var row in Model.RecvStates)
                 {
                     var stalled = row.PendingCount > 0;
-                    <tr class="@(stalled ? "warn" : "")">
+                    <tr class="@(stalled ? "warn" : "")" data-key="@row.State.Key" data-stream="@row.State.StreamId" data-sender="@row.State.SenderCallsign" data-next="@row.State.NextExpectedSeq">
                         <td><code>@row.State.SenderCallsign</code></td>
                         <td><code>@row.State.StreamId</code></td>
                         <td class="numeric">@row.State.NextExpectedSeq</td>
@@ -90,9 +93,56 @@
                             }
                         </td>
                         <td>@row.State.LastReceivedAt.ToString("yyyy-MM-dd HH:mm:ss")Z</td>
+                        <td>
+                            @if (stalled)
+                            {
+                                <button type="button" class="btn ghost sm skip-btn" title="stop waiting for the missing message and hand the app the next one waiting">Skip to next</button>
+                            }
+                        </td>
                     </tr>
                 }
             </tbody>
         </table>
     }
 </div>
+
+<script>
+(function () {
+    // Skip to next (#290). One delegated listener; the stream is read from
+    // the row's data- attributes, never from a handler built out of
+    // stream data (#317).
+    const body = document.getElementById('recv-body');
+    if (!body) return;
+    body.addEventListener('click', async (e) => {
+        const btn = e.target.closest('button.skip-btn');
+        if (!btn) return;
+        const row = btn.closest('tr');
+        const key = row?.dataset.key;
+        if (!key) return;
+        const label = `stream ${row.dataset.stream} from ${row.dataset.sender}`;
+        if (!confirm(`Skip ${label} on to the next waiting message? The app will never get sn=${row.dataset.next} or anything else missing before it, even if it arrives later.`)) return;
+        const errBox = document.getElementById('streams-error');
+        errBox.hidden = true;
+        btn.disabled = true;
+        const form = new FormData();
+        form.append('key', key);
+        form.append('__RequestVerificationToken',
+            document.querySelector('input[name="__RequestVerificationToken"]')?.value ?? '');
+        try {
+            const res = await fetch('@Url.Page("/Streams", "Skip")', {
+                method: 'POST', body: form, credentials: 'same-origin',
+            });
+            if (res.ok || res.status === 409) {
+                location.reload();
+                return;
+            }
+            errBox.textContent = `Could not skip ${label}: ` + (await res.text() || `HTTP ${res.status}`);
+            errBox.hidden = false;
+        } catch (err) {
+            errBox.textContent = `Could not skip ${label}: ${err.message ?? err}`;
+            errBox.hidden = false;
+        }
+        btn.disabled = false;
+    });
+})();
+</script>

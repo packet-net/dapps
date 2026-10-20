@@ -884,10 +884,188 @@ public sealed class StreamOrderingTests : IAsyncLifetime
         rows.Single().StreamGapTimeoutSeconds.Should().BeNull();
     }
 
+    // -- #290: a peer that sends no src= ------------------------------
+
+    [Fact]
+    public async Task Inbox_StreamWithoutOriginator_DrainsWhatWasParked()
+    {
+        // An older peer sends no src=, so the stream is keyed on the link
+        // source. sn=2 parks, then sn=1 arrives: both must go, in order.
+        var ct = TestContext.Current.CancellationToken;
+        var (client, received) = await SubscribeCollecting("dapps/in/chat");
+
+        await inbox.DeliverAsync(MakeStreamMessage("nos0002", null, "c1", 2, 0, "two"), "G0OLD", ct);
+        await inbox.DeliverAsync(MakeStreamMessage("nos0001", null, "c1", 1, 0, "one"), "G0OLD", ct);
+
+        await WaitForCount(received, 2, ct);
+        received.Select(r => r.Sn).Should().Equal(1u, 2u);
+        var state = await database.GetStreamRecvStateAsync("N0SELF", "G0OLD", "c1");
+        state!.NextExpectedSeq.Should().Be(3u);
+        (await database.GetPendingInOrderAsync("G0OLD", "c1")).Should().BeEmpty();
+
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
+    // -- #290: a crash part way through a drain -------------------------
+
+    [Fact]
+    public async Task Inbox_CrashPartWayThroughADrain_KeepsTheCursorWithWhatWasDelivered()
+    {
+        // sn=2 and sn=3 park, then sn=1 arrives and the drain dies right
+        // after handing over sn=2. The cursor on disk must say sn=3 is
+        // next, and the next arrival must carry on from there.
+        var ct = TestContext.Current.CancellationToken;
+        var (client, received) = await SubscribeCollecting("dapps/in/chat");
+
+        await inbox.DeliverAsync(MakeStreamMessage("crs0002", "G0FROM", "c1", 2, 0, "two"), "G0HOP", ct);
+        await inbox.DeliverAsync(MakeStreamMessage("crs0003", "G0FROM", "c1", 3, 0, "three"), "G0HOP", ct);
+        inbox.AfterDrainStep = _ => throw new IOException("power cut");
+        var act = () => inbox.DeliverAsync(MakeStreamMessage("crs0001", "G0FROM", "c1", 1, 0, "one"), "G0HOP", ct);
+        await act.Should().ThrowAsync<IOException>();
+        inbox.AfterDrainStep = null;
+
+        var state = await database.GetStreamRecvStateAsync("N0SELF", "G0FROM", "c1");
+        state!.NextExpectedSeq.Should().Be(3u, "sn=1 and sn=2 were handed over");
+        (await database.GetPendingInOrderAsync("G0FROM", "c1")).Select(p => p.StreamSeq).Should().Equal(3u);
+
+        await inbox.DeliverAsync(MakeStreamMessage("crs0004", "G0FROM", "c1", 4, 0, "four"), "G0HOP", ct);
+        await WaitForCount(received, 4, ct);
+        received.Select(r => r.Sn).Should().Equal(1u, 2u, 3u, 4u);
+        (await database.GetStreamRecvStateAsync("N0SELF", "G0FROM", "c1"))!.NextExpectedSeq.Should().Be(5u);
+
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
+    // -- #290: the operator's skip on the Streams page ------------------
+
+    [Fact]
+    public async Task OperatorSkip_StrictStream_DeliversTheNextWaitingAndRecordsTheSkip()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (client, received) = await SubscribeCollecting("dapps/in/chat");
+
+        await inbox.DeliverAsync(MakeStreamMessage("skp0003", "G0FROM", "s1", 3, 0, "three"), "G0HOP", ct);
+        await inbox.DeliverAsync(MakeStreamMessage("skp0004", "G0FROM", "s1", 4, 0, "four"), "G0HOP", ct);
+        await inbox.DeliverAsync(MakeStreamMessage("skp0006", "G0FROM", "s1", 6, 0, "six"), "G0HOP", ct);
+        var key = DbStreamRecvState.MakeKey("N0SELF", "G0FROM", "s1");
+
+        (await inbox.SkipToNextWaitingByOperatorAsync(key, ct)).Should().Be(StreamSkipOutcome.Skipped);
+
+        await WaitForCount(received, 2, ct);
+        received.Select(r => r.Sn).Should().Equal(3u, 4u);
+        var state = await database.GetStreamRecvStateAsync("N0SELF", "G0FROM", "s1");
+        state!.NextExpectedSeq.Should().Be(5u, "sn=6 still waits for sn=5");
+
+        var record = (await database.GetRecentDroppedMessages()).Should()
+            .ContainSingle(d => d.Reason == Database.SkippedByOperatorReason).Subject;
+        record.StreamId.Should().Be("s1");
+        record.StreamSeq.Should().Be(1u);
+        record.FromCallsign.Should().Be("G0FROM");
+        record.Destination.Should().Be("chat@N0SELF");
+        System.Text.Encoding.UTF8.GetString(record.Payload).Should().Contain("1").And.Contain("2");
+
+        // A second press moves on to sn=6.
+        (await inbox.SkipToNextWaitingByOperatorAsync(key, ct)).Should().Be(StreamSkipOutcome.Skipped);
+        await WaitForCount(received, 3, ct);
+        received.Select(r => r.Sn).Should().Equal(3u, 4u, 6u);
+
+        (await inbox.SkipToNextWaitingByOperatorAsync(key, ct)).Should().Be(StreamSkipOutcome.NothingWaiting);
+        (await inbox.SkipToNextWaitingByOperatorAsync("N0SELF|G0NONE|x", ct)).Should().Be(StreamSkipOutcome.NotFound);
+        (await database.GetStreamRecvStateAsync("N0SELF", "G0FROM", "s1"))!.NextExpectedSeq.Should().Be(7u);
+
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
+    [Fact]
+    public async Task OperatorSkip_StreamWithoutOriginator_Works()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (client, received) = await SubscribeCollecting("dapps/in/chat");
+        await inbox.DeliverAsync(MakeStreamMessage("skn0002", null, "s1", 2, 0, "two"), "G0OLD", ct);
+
+        (await inbox.SkipToNextWaitingByOperatorAsync(DbStreamRecvState.MakeKey("N0SELF", "G0OLD", "s1"), ct))
+            .Should().Be(StreamSkipOutcome.Skipped);
+
+        await WaitForCount(received, 1, ct);
+        received.Single().Sn.Should().Be(2u);
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
+    // -- #287: what the app is handed again ------------------------------
+
+    [Fact]
+    public async Task Unacked_LeavesOutParkedRows_AndKeepsStreamOrderWithinArrivalOrder()
+    {
+        // No app connected. sn=2 parks, an unordered message comes, then
+        // sn=1 releases sn=2. Another stream's sn=2 stays parked.
+        var ct = TestContext.Current.CancellationToken;
+        await inbox.DeliverAsync(MakeStreamMessage("ord0002", "G0FROM", "c1", 2, 0, "two"), "G0HOP", ct);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await inbox.DeliverAsync(new BackhaulMessage("plain01", "chat@N0SELF", 1L, 600, "plain"u8.ToArray(), Originator: "G0OTH"), "G0HOP", ct);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await inbox.DeliverAsync(MakeStreamMessage("par0002", "G0FROM", "c2", 2, 0, "parked"), "G0HOP", ct);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await inbox.DeliverAsync(MakeStreamMessage("ord0001", "G0FROM", "c1", 1, 0, "one"), "G0HOP", ct);
+
+        (await database.GetUnacknowledgedLocalMessagesForApp("chat")).Select(m => m.Id)
+            .Should().Equal("ord0001", "plain01", "ord0002");
+
+        // The replay on subscribe hands over the same, in the same order.
+        var (client, received) = await SubscribeCollecting("dapps/in/chat");
+        await WaitForCount(received, 3, ct);
+        await Task.Delay(150, ct);
+        received.Select(r => r.Id).Should().Equal("ord0001", "plain01", "ord0002");
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
+    [Fact]
+    public async Task Replay_GoesOnlyToTheClientThatSubscribed()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (first, firstGot) = await SubscribeCollecting("dapps/in/chat");
+        await inbox.DeliverAsync(new BackhaulMessage("rpl0001", "chat@N0SELF", 1L, 600, "hello"u8.ToArray(), Originator: "G0OTH"), "G0HOP", ct);
+        await WaitForCount(firstGot, 1, ct);
+
+        var (second, secondGot) = await SubscribeCollecting("dapps/in/chat");
+        await WaitForCount(secondGot, 1, ct);
+        await Task.Delay(200, ct);
+
+        secondGot.Single().Id.Should().Be("rpl0001");
+        firstGot.Should().ContainSingle("a second client subscribing must not hand the backlog to the first again");
+
+        await first.DisconnectAsync(cancellationToken: ct);
+        await second.DisconnectAsync(cancellationToken: ct);
+    }
+
+    private async Task<(IMqttClient Client, List<(string Id, string Body, uint? Sn)> Received)> SubscribeCollecting(string topic)
+    {
+        var client = await ConnectClient();
+        var received = new List<(string Id, string Body, uint? Sn)>();
+        client.ApplicationMessageReceivedAsync += e =>
+        {
+            lock (received) received.Add(Describe(e));
+            return Task.CompletedTask;
+        };
+        await client.SubscribeAsync(topic, MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce,
+            TestContext.Current.CancellationToken);
+        return (client, received);
+    }
+
+    private static async Task WaitForCount<T>(List<T> list, int count, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            lock (list) if (list.Count >= count) return;
+            await Task.Delay(20, ct);
+        }
+        lock (list) list.Count.Should().BeGreaterThanOrEqualTo(count, "messages should have arrived by now");
+    }
+
     // ── helpers ────────────────────────────────────────────────────
 
     private static BackhaulMessage MakeStreamMessage(
-        string id, string originator, string sid, uint sn, uint gt, string body)
+        string id, string? originator, string sid, uint sn, uint gt, string body)
         => new(
             Id: id,
             Destination: "chat@N0SELF",

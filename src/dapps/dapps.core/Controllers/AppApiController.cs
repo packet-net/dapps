@@ -50,6 +50,8 @@ public class AppApiController(Database database) : ControllerBase
     /// <summary>
     /// List currently unacknowledged inbound messages for the given app.
     /// Equivalent to subscribing to `dapps/in/{app}` - but pull-based.
+    /// Oldest first, each stream in seq order; a message waiting on its
+    /// stream for an earlier one isn't listed until that one comes.
     /// </summary>
     [HttpGet("inbound/{app}")]
     public async Task<ActionResult<List<InboundMessage>>> GetInbound(string app)
@@ -61,7 +63,9 @@ public class AppApiController(Database database) : ControllerBase
             m.Id, m.FromCallsign, m.Payload,
             TtlMath.Residual(m.Ttl, m.CreatedAt, now),
             string.IsNullOrEmpty(m.OriginatorCallsign) ? null : m.OriginatorCallsign,
-            string.IsNullOrEmpty(m.SourceCallsign) ? null : m.SourceCallsign)).ToList());
+            string.IsNullOrEmpty(m.SourceCallsign) ? null : m.SourceCallsign,
+            string.IsNullOrEmpty(m.StreamId) ? null : m.StreamId,
+            string.IsNullOrEmpty(m.StreamId) ? null : m.StreamSeq)).ToList());
     }
 
     /// <summary>
@@ -118,8 +122,12 @@ public sealed record OutboundResponse(string Id);
 /// to reply to: the originator, or the last hop when the originator is
 /// unknown. <see cref="OriginatorCallsign"/> is the originator alone,
 /// null when unknown. <see cref="ViaCallsign"/> is the last hop, the
-/// neighbour that handed it to us.
+/// neighbour that handed it to us. <see cref="StreamId"/> and
+/// <see cref="StreamSeq"/> are the stream and seq a message on an ordered
+/// stream came on, as the MQTT <c>dapps-stream</c> and
+/// <c>dapps-stream-seq</c> properties; null on other messages.
 /// </summary>
 public sealed record InboundMessage(
     string Id, string SourceCallsign, byte[] Payload, int? Ttl = null,
-    string? OriginatorCallsign = null, string? ViaCallsign = null);
+    string? OriginatorCallsign = null, string? ViaCallsign = null,
+    string? StreamId = null, uint? StreamSeq = null);

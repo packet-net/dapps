@@ -38,7 +38,7 @@ A worked browser example is in [`examples/file-transfer/`](https://github.com/pa
 
 DAPPS publishes one message here for each pending delivery to `<app>` on this node. Subscribe with QoS 1.
 
-**Replay on subscribe**: every pending message arrives the moment you subscribe - even ones submitted while the app was offline. There is no separate "fetch backlog" call.
+**Replay on subscribe**: every pending message arrives the moment you subscribe - even ones submitted while the app was offline. There is no separate "fetch backlog" call. The replay goes only to the client that just subscribed, oldest first, with each [stream](#message-ordering-opt-in) in order.
 
 **Payload**: the raw bytes the sender submitted. No envelope, no length prefix, no encoding imposed by DAPPS.
 
@@ -150,7 +150,7 @@ curl -X POST http://localhost:5000/AppApi/outbound \
 
 ### `GET /AppApi/inbound/{app}`
 
-List currently unacknowledged messages for `{app}`.
+List currently unacknowledged messages for `{app}`, oldest first, with each [stream](#message-ordering-opt-in) in order. A message still waiting on its stream for an earlier one isn't listed until that one arrives.
 
 **Response**: `200 OK` with a JSON array. If nothing is waiting, the array is empty (`[]`). DAPPS keeps no list of apps, so an app name it has never seen also gets `[]` rather than `404`. Each entry:
 
@@ -161,7 +161,9 @@ List currently unacknowledged messages for `{app}`.
   "payload": "<base64-encoded bytes>",
   "ttl": 287,
   "originatorCallsign": "G7XYZ",
-  "viaCallsign": "G4ABC"
+  "viaCallsign": "G4ABC",
+  "streamId": null,
+  "streamSeq": null
 }
 ```
 
@@ -173,10 +175,12 @@ List currently unacknowledged messages for `{app}`.
 | `ttl`            | int seconds, nullable | **Residual** lifetime - initial TTL minus dwell time on this node. `null` if no TTL.    |
 | `originatorCallsign` | string, nullable  | Same as `dapps-origin` on MQTT. `null` if the sender's DAPPS didn't say.               |
 | `viaCallsign`    | string, nullable      | Same as `dapps-via` on MQTT: the last hop.                                             |
+| `streamId`       | string, nullable      | Same as `dapps-stream` on MQTT. `null` if the message isn't on an ordered stream.      |
+| `streamSeq`      | int, nullable         | Same as `dapps-stream-seq` on MQTT. `null` if the message isn't on an ordered stream.  |
 
 ```bash
 curl -H 'Authorization: Bearer <chat token>' http://localhost:5000/AppApi/inbound/chat
-# [{"id":"abc1234","sourceCallsign":"G7XYZ","payload":"aGVsbG8=","ttl":287,"originatorCallsign":"G7XYZ","viaCallsign":"G4ABC"}]
+# [{"id":"abc1234","sourceCallsign":"G7XYZ","payload":"aGVsbG8=","ttl":287,"originatorCallsign":"G7XYZ","viaCallsign":"G4ABC","streamId":null,"streamSeq":null}]
 ```
 
 ### `POST /AppApi/inbound/{app}/{id}/ack`
@@ -252,7 +256,7 @@ DAPPS does not impose a hard payload-size limit at the app interface - submit an
 | Set TTL on submit              | `dapps-ttl` user property                         | `ttl` field                                         |
 | Opt into ordered delivery      | `dapps-stream` user property                      | `streamId` field                                    |
 | Set ordering gap policy (required with a stream) | `dapps-stream-gap-timeout` user property | `streamGapTimeoutSeconds` field            |
-| Read delivered stream / seq    | `dapps-stream`, `dapps-stream-seq` properties     | (not surfaced on REST inbound today)                |
+| Read delivered stream / seq    | `dapps-stream`, `dapps-stream-seq` properties     | `streamId`, `streamSeq` fields                      |
 
 ## DAPPSv1 wire format (summary)
 
@@ -328,10 +332,12 @@ A message that reaches the receiving node but runs out of TTL there before it ca
 
 ### What the receiver sees
 
-Inbound messages tagged with a stream show two extra MQTT user properties:
+Inbound messages tagged with a stream show two extra MQTT user properties (`streamId` and `streamSeq` on REST):
 
 - `dapps-stream` - the stream id the sender chose.
 - `dapps-stream-seq` - the seq within that stream, ascending.
+
+A message waiting for an earlier one on its stream isn't handed to the app at all, by MQTT or REST, until it's its turn.
 
 Apps that don't care can ignore them; apps that opted in can use them to detect stream id changes (the sender rotated to a fresh stream after a reset) or to assert seq monotonicity for their own bookkeeping.
 
@@ -343,7 +349,7 @@ Apps that don't care can ignore them; apps that opted in can use them to detect 
 - **End-to-end semantics**. Ordering is enforced at the receiving daemon, not at intermediate forwarders. Hops can reorder, retry, and flood freely - the trio rides the envelope verbatim.
 - **Forward compatibility**. A daemon that doesn't understand `sid`/`sn`/`gt` ignores the keys and delivers each message immediately. Apps subscribed to a partially-ordering-aware mesh see ordered delivery only between aware nodes.
 
-The dashboard's `/Streams` page surfaces both sender-side counters and receiver-side cursors plus pending row counts; a stalled stream shows up as a non-empty pending column.
+The dashboard's `/Streams` page surfaces both sender-side counters and receiver-side cursors plus pending row counts; a stalled stream shows up as a non-empty pending column. If the missing message will never come, the operator can press **Skip to next** on that row: the app gets the next waiting message, and the skip is listed under Dropped on the Messages page.
 
 ## See also
 

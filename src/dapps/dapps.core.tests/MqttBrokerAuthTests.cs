@@ -334,6 +334,36 @@ public sealed class MqttBrokerAuthTests : IAsyncLifetime
     // ---- Ack scoping (#311) ----
 
     [Fact]
+    public async Task SubscribeToOtherAppsInTopic_GetsNoReplay_OwnAppDoes()
+    {
+        // #287: the replay goes straight to the subscribing client, so a
+        // refused subscription must not get another app's backlog.
+        var chatToken = await tokens.CreateOrRotateAsync("chat");
+        var evilToken = await tokens.CreateOrRotateAsync("evil");
+        await SaveInbound("abc1234", "chat@N0CALL");
+        var ct = TestContext.Current.CancellationToken;
+
+        var evil = await ConnectAsync("evil", evilToken, ct);
+        var evilGot = 0;
+        evil.ApplicationMessageReceivedAsync += _ => { Interlocked.Increment(ref evilGot); return Task.CompletedTask; };
+        var refused = await evil.SubscribeAsync("dapps/in/chat", cancellationToken: ct);
+        refused.Items.Single().ResultCode.Should().Be(MqttClientSubscribeResultCode.NotAuthorized);
+
+        var chat = await ConnectAsync("chat", chatToken, ct);
+        var chatGot = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        chat.ApplicationMessageReceivedAsync += e =>
+        {
+            chatGot.TrySetResult(e.ApplicationMessage.UserProperties!.Single(p => p.Name == "dapps-id").Value);
+            return Task.CompletedTask;
+        };
+        await chat.SubscribeAsync("dapps/in/chat", cancellationToken: ct);
+
+        (await chatGot.Task.WaitAsync(TimeSpan.FromSeconds(5), ct)).Should().Be("abc1234");
+        await Task.Delay(200, ct);
+        evilGot.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Ack_OtherAppsMessage_Refused_AndLeftPending()
     {
         await tokens.CreateOrRotateAsync("chat");

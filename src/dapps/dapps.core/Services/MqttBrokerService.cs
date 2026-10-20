@@ -215,11 +215,29 @@ public sealed class MqttBrokerService(
 
     public async Task InjectInboundMessage(DbMessage message)
     {
+        if (BuildInboundMessage(message) is not { } msg) return;
+        var topic = msg.Topic;
+        try
+        {
+            await server.InjectApplicationMessage(new InjectedMqttApplicationMessage(msg));
+            logger.LogDebug("MQTT: injected message {0} onto {1}", message.Id, topic);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "MQTT: failed to inject {0} onto {1}", message.Id, topic);
+        }
+    }
+
+    /// <summary>The publish on <c>dapps/in/&lt;app&gt;</c> that hands
+    /// <paramref name="message"/> to its app, or null when its
+    /// destination names no app.</summary>
+    private static MqttApplicationMessage? BuildInboundMessage(DbMessage message)
+    {
         // The app is everything before the last '@', the same split the
         // ack and replay queries use (app@CALL patterns), so whatever is
         // delivered on dapps/in/<app> can be acked on dapps/ack/<app>.
         var at = message.Destination.LastIndexOf('@');
-        if (at <= 0) return;
+        if (at <= 0) return null;
         var app = message.Destination[..at];
 
         var topic = InTopicPrefix + app;
@@ -271,17 +289,7 @@ public sealed class MqttBrokerService(
                     "dapps-stream-seq", sn.ToString(System.Globalization.CultureInfo.InvariantCulture));
             }
         }
-        var msg = builder.Build();
-
-        try
-        {
-            await server.InjectApplicationMessage(new InjectedMqttApplicationMessage(msg));
-            logger.LogDebug("MQTT: injected message {0} onto {1}", message.Id, topic);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "MQTT: failed to inject {0} onto {1}", message.Id, topic);
-        }
+        return builder.Build();
     }
 
     /// <summary>
@@ -718,15 +726,39 @@ public sealed class MqttBrokerService(
         var app = topic[InTopicPrefix.Length..];
         if (app.Length == 0 || app.Contains('+') || app.Contains('#')) return; // wildcard, skip replay
 
+        // The replay goes straight to the client's session, past the
+        // subscription checks, so make sure this client may have this
+        // app's messages, as OnInterceptingSubscription does.
+        if (options.CurrentValue.AuthRequired
+            && !string.Equals(Lookup(e.ClientId)?.App, app, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         try
         {
             var pending = await database.GetUnacknowledgedLocalMessagesForApp(app);
             logger.LogInformation("MQTT: replaying {0} unacked message(s) to {1} for app {2}",
-                pending.Count, e.ClientId, app);
+                pending.Count, Printable(e.ClientId), app);
+            if (pending.Count == 0) return;
 
+            // Only to the client that subscribed (#287): published on the
+            // topic, the backlog would go again to every client of the app
+            // already connected, each time any of them (re)subscribed.
+            var session = (await server.GetSessionsAsync())
+                .FirstOrDefault(s => string.Equals(s.Id, e.ClientId, StringComparison.Ordinal));
             foreach (var m in pending)
             {
-                await InjectInboundMessage(m);
+                if (session is null)
+                {
+                    // Not expected: the client is subscribing, so its
+                    // session exists. Better a repeat to others than none.
+                    await InjectInboundMessage(m);
+                }
+                else if (BuildInboundMessage(m) is { } msg)
+                {
+                    await session.EnqueueApplicationMessageAsync(msg);
+                }
             }
         }
         catch (Exception ex)

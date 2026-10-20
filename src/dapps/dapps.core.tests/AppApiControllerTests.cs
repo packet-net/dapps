@@ -194,6 +194,31 @@ public sealed class AppApiControllerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetInbound_LeavesOutParkedMessages_AndShowsStreamAndSeq()
+    {
+        // #287: a message parked behind a missing earlier one isn't the
+        // app's yet; a delivered one on a stream carries its stream and seq.
+        await database.SaveMessage("strm002", "two"u8.ToArray(), salt: 1L,
+            destination: "myapp@N0CALL", sourceCallsign: "G0SRC", additionalProperties: "{}", ttl: null,
+            originatorCallsign: "G0SRC", streamId: "c1", streamSeq: 3, streamGapTimeoutSeconds: 0, pendingInOrder: true);
+        await database.SaveMessage("strm001", "one"u8.ToArray(), salt: 1L,
+            destination: "myapp@N0CALL", sourceCallsign: "G0SRC", additionalProperties: "{}", ttl: null,
+            originatorCallsign: "G0SRC", streamId: "c1", streamSeq: 1, streamGapTimeoutSeconds: 0);
+        await database.SaveMessage("plain01", "plain"u8.ToArray(), salt: 1L,
+            destination: "myapp@N0CALL", sourceCallsign: "G0SRC", additionalProperties: "{}", ttl: null);
+
+        var list = (await controller.GetInbound("myapp")).Result.Should().BeOfType<OkObjectResult>().Subject
+            .Value.Should().BeOfType<List<InboundMessage>>().Subject;
+        list.Select(m => m.Id).Should().BeEquivalentTo(["strm001", "plain01"]);
+        var streamed = list.Single(m => m.Id == "strm001");
+        streamed.StreamId.Should().Be("c1");
+        streamed.StreamSeq.Should().Be(1u);
+        var plain = list.Single(m => m.Id == "plain01");
+        plain.StreamId.Should().BeNull();
+        plain.StreamSeq.Should().BeNull();
+    }
+
+    [Fact]
     public async Task GetInbound_OriginatorUnknown_SourceIsTheLastHop()
     {
         await database.SaveMessage("inbx003", "direct"u8.ToArray(), salt: 1L,
