@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.Http.Json;
 using AwesomeAssertions;
 
 namespace dapps.core.tests.Integration;
@@ -50,6 +51,30 @@ public sealed class ResetAdminPasswordTests
         (await browser.SendAsync(HttpMethod.Post, "/Login", Form(("password", "new-password-2")), ct))
             .StatusCode.Should().Be(HttpStatusCode.Found);
         (await browser.SendAsync(HttpMethod.Get, "/Config", ct: ct)).StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task ChangeInSettings_KeepsThatBrowser_AndSignsOutAnother()
+    {
+        await using var app = await GatewayPathBaseTests.DappsSubprocess.StartAsync();
+        var ct = TestContext.Current.CancellationToken;
+        var changer = new CookieBrowser(app.BaseUrl);
+        var other = new CookieBrowser(app.BaseUrl);
+
+        (await changer.SendAsync(HttpMethod.Post, "/Setup?handler=Password", Form(("password", "old-password-1"), ("confirm", "old-password-1")), ct))
+            .StatusCode.Should().Be(HttpStatusCode.Found);
+        (await other.SendAsync(HttpMethod.Post, "/Login", Form(("password", "old-password-1")), ct))
+            .StatusCode.Should().Be(HttpStatusCode.Found);
+        (await other.SendAsync(HttpMethod.Get, "/Config", ct: ct)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await Task.Delay(TimeSpan.FromSeconds(1.1), ct);
+
+        var change = await changer.SendAsync(HttpMethod.Post, "/Config/admin-password",
+            JsonContent.Create(new { password = "new-password-2", currentPassword = "old-password-1" }), ct);
+        change.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        (await changer.SendAsync(HttpMethod.Get, "/Config", ct: ct)).StatusCode.Should().Be(HttpStatusCode.OK, "the browser that changed it stays signed in");
+        (await other.SendAsync(HttpMethod.Get, "/Config", ct: ct)).StatusCode.Should().Be(HttpStatusCode.Unauthorized, "every other login is signed out");
     }
 
     private static FormUrlEncodedContent Form(params (string Key, string Value)[] fields) =>

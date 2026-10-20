@@ -59,13 +59,15 @@ Send and receive state for apps that use opt-in message ordering.
 
 The operator-tunable knobs (see [Configure](configure.md)), plus changing the admin password. Changing it needs the current password, and the new one must be at least 8 characters. The dashboard always has a password; there's no way to turn the login off. Restart-required fields are flagged in each section's blurb.
 
-Forgotten the password? On the node, run:
+Forgotten the password? Reset it from a shell on the node. How you run `dapps` depends on how you installed it:
 
-```bash
-sudo dapps reset-admin-password
-```
+- **apt**: `sudo dapps reset-admin-password`
+- **packet.net node app**: `sudo /usr/share/packetnet/apps/dapps/dapps reset-admin-password` (or `/var/lib/packetnet/apps/dapps/dapps` if you installed the app yourself)
+- **Install script or manual install (Linux, macOS)**: `sudo /opt/dapps/dapps reset-admin-password`
+- **Windows**, in an elevated PowerShell: `cd C:\ProgramData\dapps; & "C:\Program Files\dapps\dapps.exe" reset-admin-password` (`cd` to wherever your service's working folder is)
+- **Docker**: `docker exec -it dapps dotnet dapps.core.dll reset-admin-password`
 
-It asks for a new password twice (at least 8 characters) and signs every browser out, so log in again with the new one. dapps can be running or stopped; it doesn't need a restart. To script it, pipe the password in on one line instead. It finds the database in the folder you run it in, or the apt install's `/var/lib/dapps`; anywhere else, `cd` to the folder dapps runs in first, or add `--db <that folder>`. In Docker, it's `docker exec -it dapps dotnet dapps.core.dll reset-admin-password`.
+It asks for a new password twice (at least 8 characters), says which database it changed, and signs every browser out, so log in again with the new one. dapps can be running or stopped; no restart needed. On Linux and macOS it finds the database in `/var/lib/dapps` or the packet.net app folder; anywhere else, run it in the folder dapps runs in or add `--db <that folder>`. To script it, feed the password from a file: `sudo dapps reset-admin-password < newpass.txt`.
 
 Changing the password in Settings also signs out every other browser.
 

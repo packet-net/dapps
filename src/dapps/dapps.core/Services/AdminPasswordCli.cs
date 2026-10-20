@@ -20,25 +20,26 @@ namespace dapps.core.Services;
 /// state folders. It never creates a database.
 ///
 /// On a TTY it asks twice without echo; otherwise it reads one line
-/// from stdin, so a script can pipe the password in.
+/// from stdin, so a script can feed it from a file.
 /// </summary>
 public static class AdminPasswordCli
 {
     public const string Command = "reset-admin-password";
 
-    /// <summary>Where the packaged installs run dapps: the .deb's
-    /// systemd unit, and a packet.net node's app state folder.</summary>
-    internal static readonly string[] InstalledDirectories =
-    [
-        "/var/lib/dapps",
-        "/var/lib/packetnet/apps/dapps",
-    ];
+    /// <summary>Where installs on Linux and macOS run dapps: the .deb's
+    /// and the install script's systemd unit (and the macOS launchd
+    /// example), and a packet.net node's app state folder. Windows has
+    /// no standard place, so it searches only the current folder.</summary>
+    internal static IReadOnlyList<string> InstalledDirectories =>
+        OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()
+            ? ["/var/lib/dapps", "/var/lib/packetnet/apps/dapps"]
+            : [];
 
     private const string Usage =
         "Usage: dapps reset-admin-password [--db PATH]\n" +
         "Sets a new dashboard admin password and signs out every dashboard login.\n" +
         "Run it on the node, as root or the user dapps runs as. It finds the database\n" +
-        "in the current folder or the packaged install's; --db names the database\n" +
+        "in the current folder or the install's state folder; --db names the database\n" +
         "file, or the folder dapps runs in. It asks for the password twice, or reads\n" +
         "one line from stdin when that isn't a terminal.";
 
@@ -149,7 +150,7 @@ public static class AdminPasswordCli
 
         MatchSideFileOwnership(dbPath, term);
 
-        term.Out.WriteLine("Admin password set. Every dashboard login is signed out; log in again with the new password.");
+        term.Out.WriteLine($"Admin password set in {dbPath}. Every dashboard login is signed out; log in again with the new password.");
         return 0;
     }
 
@@ -167,20 +168,25 @@ public static class AdminPasswordCli
             return null;
         }
 
+        // Every candidate that exists: the current folder by the
+        // daemon's rule, then the install folders. More than one, and
+        // which is meant is a guess, so ask.
         var here = DbInfo.PathIn(currentDirectory);
-        if (File.Exists(here)) return here;
-
-        var installed = installedDirectories.Select(DbInfo.PathIn).Where(File.Exists).ToList();
-        switch (installed.Count)
+        var found = new[] { here }.Concat(installedDirectories.Select(DbInfo.PathIn))
+            .Where(File.Exists)
+            .Select(p => Path.GetFullPath(p))
+            .Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal)
+            .ToList();
+        switch (found.Count)
         {
             case 1:
-                return installed[0];
+                return found[0];
             case 0:
                 error = $"No DAPPS database found in {currentDirectory} or the usual install folders. " +
                     "Run this in the folder dapps runs in, or name the database with --db PATH.";
                 return null;
             default:
-                error = $"Found more than one DAPPS database ({string.Join(", ", installed)}). " +
+                error = $"Found more than one DAPPS database ({string.Join(", ", found)}). " +
                     "Name the one to change with --db PATH.";
                 return null;
         }

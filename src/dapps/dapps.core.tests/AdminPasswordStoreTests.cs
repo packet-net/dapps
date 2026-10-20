@@ -183,6 +183,25 @@ public sealed class AdminPasswordStoreTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SetWhileTheClockWasAhead_DoesNotLockOutNewLogins()
+    {
+        // Set while the clock ran an hour fast, then the clock was put
+        // right: new logins must work, older ones stay signed out.
+        var store = new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance);
+        await store.SetAsync("original-password");
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Execute("update systemoptions set value=? where option='AdminPasswordSetAt'",
+                DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds().ToString());
+        }
+
+        (await store.IsSessionCurrentAsync(DateTimeOffset.UtcNow)).Should().BeTrue();
+        (await store.IsSessionCurrentAsync(DateTimeOffset.UtcNow.AddMinutes(-5))).Should().BeFalse();
+        await Task.Delay(TimeSpan.FromSeconds(1.1), TestContext.Current.CancellationToken);
+        (await store.IsSessionCurrentAsync(DateTimeOffset.UtcNow)).Should().BeTrue("the future set time was saved back as the present");
+    }
+
+    [Fact]
     public async Task CookieValidation_RejectsAStaleLogin_AndKeepsACurrentOne()
     {
         var store = new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance);

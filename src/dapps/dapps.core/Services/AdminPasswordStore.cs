@@ -95,14 +95,28 @@ public sealed class AdminPasswordStore(ILogger<AdminPasswordStore> logger)
     /// browser that just made the change signed in. Nodes whose
     /// password predates this check have no set time, and their
     /// logins all stay valid until the next change.
+    ///
+    /// A set time in the future means the clock was running ahead when
+    /// the password was set and has since been put right. Left alone,
+    /// every new login would count as older than it until the clock
+    /// caught up, so it is pulled back to now and saved: logins from
+    /// before this moment are still signed out, later ones work.
     /// </summary>
     public async Task<bool> IsSessionCurrentAsync(DateTimeOffset? issuedUtc)
     {
-        var row = await DbInfo.GetAsyncConnection().FindAsync<DbSystemOption>(SetAtOption);
+        var connection = DbInfo.GetAsyncConnection();
+        var row = await connection.FindAsync<DbSystemOption>(SetAtOption);
         if (row is null || !long.TryParse(row.Value, System.Globalization.NumberStyles.Integer,
                 System.Globalization.CultureInfo.InvariantCulture, out var setAt))
         {
             return true;
+        }
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        if (setAt > now)
+        {
+            setAt = now;
+            await Upsert(connection, SetAtOption, now.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            logger.LogWarning("Admin password was set while the clock was ahead; dashboard logins from before now are signed out");
         }
         return issuedUtc is { } issued && issued.ToUnixTimeSeconds() >= setAt;
     }

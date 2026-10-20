@@ -40,6 +40,7 @@ public sealed class AdminPasswordCliTests : IDisposable
         var exit = await Run(term, [], nodeDir);
 
         exit.Should().Be(0, term.Error.ToString());
+        term.Out.ToString().Should().Contain(dbPath, "it says which database it changed");
         Verify("new-password-123").Should().BeTrue("the trailing CR from a Windows pipe is not part of it");
         Verify("original-password").Should().BeFalse();
         DbInfo.OverridePath.Should().BeNull("the command puts the test override back");
@@ -143,6 +144,33 @@ public sealed class AdminPasswordCliTests : IDisposable
         term.Error.ToString().Should().Contain("--db");
         Verify("original-password", Path.Combine(a, "dapps.db")).Should().BeTrue();
         Verify("original-password", Path.Combine(b, "dapps.db")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task CurrentFolderAndInstalledDatabases_AsksWhichOne()
+    {
+        // A stray dapps.db where you happen to be mustn't quietly win
+        // over the one the service uses.
+        var installedDir = Path.Combine(root, "var-lib-dapps");
+        Directory.CreateDirectory(installedDir);
+        CreateDappsDb(Path.Combine(installedDir, "dapps.db"), "original-password");
+        var term = new FakeTerminal(false, "new-password-123");
+
+        var exit = await Run(term, [], nodeDir, installed: [installedDir]);
+
+        exit.Should().Be(2);
+        term.Error.ToString().Should().Contain("--db");
+        Verify("original-password").Should().BeTrue();
+        Verify("original-password", Path.Combine(installedDir, "dapps.db")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RunInTheInstallFolder_IsOneDatabaseNotTwo()
+    {
+        var exit = await Run(new FakeTerminal(false, "new-password-123"), [], nodeDir, installed: [nodeDir]);
+
+        exit.Should().Be(0);
+        Verify("new-password-123").Should().BeTrue();
     }
 
     [Fact]
