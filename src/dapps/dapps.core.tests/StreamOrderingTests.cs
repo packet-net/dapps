@@ -806,15 +806,43 @@ public sealed class StreamOrderingTests : IAsyncLifetime
             StreamSendStateUpgrade.MergeSpellings(c, null);
         }
 
+        // Only the destination's spelling merges. A different spelling of
+        // our own callsign is a different originator to the receiver, so
+        // its counter stays apart.
         var states = await database.GetStreamSendStatesAsync();
-        states.Should().HaveCount(3);
-        states.Single(s => s.StreamId == "c1" && s.RemoteCallsign == "G0DEST").NextSeq.Should().Be(9u);
+        states.Should().HaveCount(4);
+        states.Single(s => s.StreamId == "c1" && s.LocalCallsign == "N0SELF" && s.RemoteCallsign == "G0DEST").NextSeq.Should().Be(9u);
+        states.Single(s => s.LocalCallsign == "n0self-0").RemoteCallsign.Should().Be("G0DEST");
+        states.Single(s => s.LocalCallsign == "n0self-0").NextSeq.Should().Be(2u);
         states.Single(s => s.RemoteCallsign == "G0DEST-1").NextSeq.Should().Be(3u);
         states.Single(s => s.StreamId == "c2").NextSeq.Should().Be(6u);
-        states.Should().AllSatisfy(s => s.LocalCallsign.Should().Be("N0SELF"));
 
         await database.SubmitOutboundMessage("chat", "g0dest-0", "next"u8.ToArray(), streamId: "c1");
         (await database.GetRecentMessages(10)).Single().StreamSeq.Should().Be(9u);
+    }
+
+    [Fact]
+    public async Task Sender_MergingTwice_ChangesNothing()
+    {
+        using var c = DbInfo.GetConnection();
+        void Add(string remote, uint next) => c.Insert(new DbStreamSendState
+        {
+            Key = $"N0SELF|{remote}|c1",
+            LocalCallsign = "N0SELF", RemoteCallsign = remote, StreamId = "c1",
+            NextSeq = next, UpdatedAt = DateTime.UtcNow,
+        });
+        Add("G0DEST", 4);
+        Add("g0dest-0", 7);
+
+        StreamSendStateUpgrade.MergeSpellings(c, null);
+        var once = c.Query<DbStreamSendState>("select * from streamsendstate");
+        StreamSendStateUpgrade.MergeSpellings(c, null);
+        var twice = c.Query<DbStreamSendState>("select * from streamsendstate");
+
+        once.Should().ContainSingle();
+        twice.Should().BeEquivalentTo(once);
+        twice.Single().Key.Should().Be("N0SELF|G0DEST|c1");
+        twice.Single().NextSeq.Should().Be(7u);
     }
 
     [Fact]

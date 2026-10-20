@@ -1197,9 +1197,9 @@ public class Database(
     /// </summary>
     private uint AllocateStreamSeq(SQLiteConnection conn, string localCallsign, string remoteCallsign, string streamId)
     {
-        // Stored in station form, so every spelling of a station shares
-        // one counter (#390).
-        localCallsign = DestinationParser.StationKey(localCallsign);
+        // The destination is stored in station form, so every spelling of
+        // it shares one counter (#390). Our own callsign is not: see
+        // DbStreamSendState.Key.
         remoteCallsign = DestinationParser.StationKey(remoteCallsign);
         var key = DbStreamSendState.MakeKey(localCallsign, remoteCallsign, streamId);
         // UpdatedAt is stored as ticks, sqlite-net's default for DateTime.

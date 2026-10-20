@@ -5,13 +5,15 @@ namespace dapps.core.Services;
 
 /// <summary>
 /// Merges stream send counters saved under different spellings of one
-/// station (#390).
+/// destination (#390).
 ///
-/// Up to 0.53 the counter was keyed on the callsigns as written, so
+/// Up to 0.53 the counter was keyed on the destination as written, so
 /// <c>app@G0DEST</c>, <c>app@g0dest</c> and <c>app@G0DEST-0</c> each had
-/// their own counter for the same stream. They are now keyed on the
-/// station form (<see cref="DestinationParser.StationKey"/>). Rows under
-/// any other spelling become one row in that form, carrying on from the
+/// their own counter for the same stream. The destination is now keyed on
+/// its station form (<see cref="DestinationParser.StationKey"/>); our own
+/// callsign is left as it was (see <see cref="DbStreamSendState.Key"/>).
+/// Rows that differ only by the destination's spelling become one row,
+/// carrying on from the
 /// highest seq any of them reached, so no seq the receiver has already
 /// seen is minted again. Runs at every start; once merged there is
 /// nothing left to do.
@@ -36,7 +38,7 @@ public static class StreamSendStateUpgrade
                 db.Insert(new DbStreamSendState
                 {
                     Key = g.Key,
-                    LocalCallsign = DestinationParser.StationKey(first.LocalCallsign),
+                    LocalCallsign = first.LocalCallsign,
                     RemoteCallsign = DestinationParser.StationKey(first.RemoteCallsign),
                     StreamId = first.StreamId,
                     NextSeq = g.Max(r => r.NextSeq),

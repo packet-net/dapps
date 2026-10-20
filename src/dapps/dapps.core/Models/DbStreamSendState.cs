@@ -18,8 +18,11 @@ namespace dapps.core.Models;
 public sealed class DbStreamSendState
 {
     /// <summary>Composite key <c>{LocalCallsign}|{RemoteCallsign}|{StreamId}</c>,
-    /// with both callsigns in their station form (upper case, no "-0"), so
-    /// every spelling of a station shares one counter (#390). Built by
+    /// with the remote callsign in its station form (upper case, no "-0"),
+    /// so every spelling of a destination shares one counter (#390). Our
+    /// own callsign stays as configured: the receiver keys its cursor on
+    /// the originator as sent, so a new spelling of ours starts a fresh
+    /// cursor there and must start a fresh counter here. Built by
     /// <see cref="MakeKey"/> on insert.</summary>
     [PrimaryKey, NotNull]
     public string Key { get; set; } = "";
@@ -37,5 +40,5 @@ public sealed class DbStreamSendState
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
     public static string MakeKey(string localCallsign, string remoteCallsign, string streamId)
-        => $"{DestinationParser.StationKey(localCallsign)}|{DestinationParser.StationKey(remoteCallsign)}|{streamId}";
+        => $"{localCallsign}|{DestinationParser.StationKey(remoteCallsign)}|{streamId}";
 }

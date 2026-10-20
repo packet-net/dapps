@@ -576,6 +576,36 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
         await client.DisconnectAsync(cancellationToken: ct);
     }
 
+    [Fact]
+    public async Task SubmitOutbound_ToThisNode_UnderEachSpelling_OnOneStream_AllDelivered()
+    {
+        // #390: app@N0CALL, app@n0call and app@N0CALL-0 are all this node.
+        // On one ordered stream they share one counter, so none of them is
+        // dropped as stream-stale.
+        var ct = TestContext.Current.CancellationToken;
+        var client = await ConnectClient();
+        var got = new List<string>();
+        client.ApplicationMessageReceivedAsync += e =>
+        {
+            lock (got) got.Add(Encoding.UTF8.GetString(e.ApplicationMessage.PayloadSegment));
+            return Task.CompletedTask;
+        };
+        await client.SubscribeAsync("dapps/in/hello",
+            MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, ct);
+
+        var ids = new List<string>
+        {
+            await database.SubmitOutboundMessage("hello", "N0CALL", "upper"u8.ToArray(), 600, streamId: "mixed"),
+            await database.SubmitOutboundMessage("hello", "n0call", "lower"u8.ToArray(), 600, streamId: "mixed"),
+            await database.SubmitOutboundMessage("hello", "N0CALL-0", "ssid0"u8.ToArray(), 600, streamId: "mixed"),
+        };
+
+        for (var i = 0; i < 50 && got.Count < 3; i++) await Task.Delay(100, ct);
+        got.Should().Equal("upper", "lower", "ssid0");
+        foreach (var id in ids) (await database.GetDroppedMessage(id)).Should().BeNull();
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
     private static int PickFreeTcpPort()
     {
         var l = new TcpListener(IPAddress.Loopback, 0);
