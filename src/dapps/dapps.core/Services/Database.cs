@@ -574,18 +574,29 @@ public class Database(
         return (InboxDropOutcome.Dropped, row);
     }
 
-    /// <summary>True when the operator dropped seq <paramref name="seq"/>
-    /// of this (sender, stream) from the inbox before it was delivered, so
-    /// the ordering cursor can step over it rather than wait for it (#389).
-    /// Matches the sender the way <see cref="GetPendingInOrderAsync"/>
-    /// does.</summary>
-    internal async Task<bool> WasDroppedByOperatorAsync(string senderCallsign, string streamId, uint seq)
+    /// <summary>The reason a message dropped here because its TTL ran out
+    /// is recorded with.</summary>
+    public const string TtlExpiredReason = "ttl-expired";
+
+    /// <summary>Why seq <paramref name="seq"/> of this (sender, stream) was
+    /// dropped from this node's inbox before it was delivered (by the
+    /// operator, #389, or because its TTL ran out, #398), or null if it
+    /// wasn't. Such a seq will never be delivered, so the ordering cursor
+    /// steps over it rather than wait for it. Only messages for this node
+    /// count: seqs are per destination, so a relayed message's seq says
+    /// nothing about this node's. Matches the sender the way
+    /// <see cref="GetPendingInOrderAsync"/> does.</summary>
+    internal async Task<string?> DroppedUndeliveredReasonAsync(string senderCallsign, string streamId, uint seq)
     {
-        var n = await DbInfo.GetAsyncConnection().ExecuteScalarAsync<int>(
-            "select count(*) from dropped_messages where Reason=? and StreamId=? and StreamSeq=? " +
-            "and (OriginatorCallsign=? or (OriginatorCallsign='' and SourceCallsign=?))",
-            DroppedByOperatorReason, streamId, (long)seq, senderCallsign, senderCallsign);
-        return n > 0;
+        var (local, local0) = DestinationParser.LocalLikePatterns(options.CurrentValue.Callsign);
+        var rows = await DbInfo.GetAsyncConnection().QueryScalarsAsync<string>(
+            "select Reason from dropped_messages where StreamId=? and StreamSeq=? " +
+            "and (OriginatorCallsign=? or (OriginatorCallsign='' and SourceCallsign=?)) " +
+            "and (Reason=? or (Reason=? and LocallyDelivered=0 " +
+            "and (Destination like ? escape '\\' or Destination like ? escape '\\'))) limit 1",
+            streamId, (long)seq, senderCallsign, senderCallsign,
+            DroppedByOperatorReason, TtlExpiredReason, local, local0);
+        return rows.FirstOrDefault();
     }
 
     /// <summary>Messages for apps on this node not yet acked, newest first,
@@ -605,6 +616,19 @@ public class Database(
     /// soft-deleted as <c>ttl-expired</c>; ones already forwarded or
     /// delivered locally are simply deleted. Returns how many went.
     /// </summary>
+    /// <summary>
+    /// Set by the inbox: drops an expired message for an app here that is
+    /// on an ordered stream, under the stream's lock, and moves the stream
+    /// on past it (#398). Without one, such a message is dropped like any
+    /// other.
+    /// </summary>
+    internal Func<DbMessage, Task>? ExpiredStreamMessageHandler { get; set; }
+
+    /// <summary>Drop one message whose TTL ran out, recording it as
+    /// <see cref="TtlExpiredReason"/>, unless it was forwarded or acked by
+    /// its app since, when it just goes (#285).</summary>
+    internal Task DropExpiredAsync(string id) => DropAsync(id, TtlExpiredReason, onlyIfStillQueued: true);
+
     internal async Task<int> DeleteExpired(DateTime now)
     {
         var connection = DbInfo.GetAsyncConnection();
@@ -628,7 +652,20 @@ public class Database(
                 // were read): it did not expire, its job is done. It goes
                 // without a ttl-expired record, which would tell the
                 // operator it never went (#285).
-                await DropAsync(message.Id, "ttl-expired", onlyIfStillQueued: true);
+                // A message for an app here on an ordered stream goes
+                // through the inbox, which holds the stream's lock and
+                // steps the stream over its seq so later messages aren't
+                // held for it (#398).
+                if (ExpiredStreamMessageHandler is { } handler
+                    && message.StreamSeq is not null && !string.IsNullOrEmpty(message.StreamId)
+                    && DestinationParser.IsLocal(message.Destination, options.CurrentValue.Callsign))
+                {
+                    await handler(message);
+                }
+                else
+                {
+                    await DropExpiredAsync(message.Id);
+                }
                 actioned++;
             }
             catch (Exception ex)

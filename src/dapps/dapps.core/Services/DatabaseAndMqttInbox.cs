@@ -50,6 +50,7 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
         // the same storing and publishing as an arrival (#288). There is
         // one inbox per node.
         database.LocalSubmissionHandler = AcceptLocalSubmissionAsync;
+        database.ExpiredStreamMessageHandler = ExpireStreamMessageAsync;
     }
 
     /// <summary>
@@ -487,9 +488,10 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
                        GapDeadline = DateTime.MinValue,
                    };
 
-        // Seqs the operator dropped before the app had them never come:
-        // step over them so what follows isn't held for them (#389).
-        await SkipOperatorDropsAsync(recv, streamSender, streamId);
+        // Seqs dropped before the app had them (by the operator, or
+        // expired) never come: step over them so what follows isn't held
+        // for them (#389, #398).
+        await SkipDroppedSeqsAsync(recv, streamSender, streamId);
 
         // This node's own stream: a seq below this one that isn't being
         // sent right now never will be (its send failed, or it was sent
@@ -618,7 +620,7 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
             }
             if (p.StreamSeq.Value > recv.NextExpectedSeq)
             {
-                await SkipOperatorDropsAsync(recv, streamSender, streamId);
+                await SkipDroppedSeqsAsync(recv, streamSender, streamId);
             }
             if (p.StreamSeq.Value != recv.NextExpectedSeq) break;
 
@@ -638,7 +640,7 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
             byteOffset += p.Payload.Length;
         }
 
-        await SkipOperatorDropsAsync(recv, streamSender, streamId);
+        await SkipDroppedSeqsAsync(recv, streamSender, streamId);
 
         // Recompute deadline: if anything still pending above the new
         // cursor, use the head's stored gt as the new gap budget; else
@@ -668,19 +670,44 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
     }
 
     /// <summary>
-    /// Move the cursor past every seq the operator dropped from the inbox
-    /// before it was delivered (#389): it will never be delivered, so on a
-    /// strict stream waiting for it would stall everything after it.
+    /// Move the cursor past every seq dropped from the inbox before it was
+    /// delivered, by the operator (#389) or because its TTL ran out (#398):
+    /// it will never be delivered, so on a strict stream waiting for it
+    /// would stall everything after it.
     /// </summary>
-    private async Task SkipOperatorDropsAsync(DbStreamRecvState recv, string streamSender, string streamId)
+    private async Task SkipDroppedSeqsAsync(DbStreamRecvState recv, string streamSender, string streamId)
     {
         while (recv.NextExpectedSeq < uint.MaxValue
-               && await database.WasDroppedByOperatorAsync(streamSender, streamId, recv.NextExpectedSeq))
+               && await database.DroppedUndeliveredReasonAsync(streamSender, streamId, recv.NextExpectedSeq) is { } reason)
         {
             logger.LogInformation(
-                "Stream {0}|{1}: stepping over sn={2}, dropped by the operator",
-                streamSender, streamId, recv.NextExpectedSeq);
+                "Stream {0}|{1}: stepping over sn={2}, dropped ({3})",
+                streamSender, streamId, recv.NextExpectedSeq, reason);
             recv.NextExpectedSeq++;
+        }
+    }
+
+    /// <summary>
+    /// The TTL sweep's drop of an expired message for an app here on an
+    /// ordered stream (#398). Done under the stream's lock, as an operator
+    /// drop is, so it can't cross a delivery; it is recorded as ttl-expired,
+    /// and the stream then steps over its seq if the app hadn't had it,
+    /// releasing anything parked behind it that can now go.
+    /// </summary>
+    private async Task ExpireStreamMessageAsync(DbMessage message)
+    {
+        var streamId = message.StreamId!;
+        var streamSender = string.IsNullOrEmpty(message.OriginatorCallsign) ? message.SourceCallsign : message.OriginatorCallsign;
+        using (await LockStreamAsync(streamSender + "|" + streamId, CancellationToken.None))
+        {
+            await database.DropExpiredAsync(message.Id);
+            var recv = await database.GetStreamRecvStateAsync(options.CurrentValue.Callsign, streamSender, streamId);
+            if (recv is not null && message.StreamSeq >= recv.NextExpectedSeq)
+            {
+                logger.LogInformation("Inbox: {0} (stream {1}|{2} sn={3}) expired before it could be delivered",
+                    message.Id, streamSender, streamId, message.StreamSeq);
+                await DrainConsecutivePendingAsync(recv, streamSender, streamId, CancellationToken.None);
+            }
         }
     }
 

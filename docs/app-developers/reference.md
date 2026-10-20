@@ -324,6 +324,8 @@ A stream id is at most 255 bytes of UTF-8 with no spaces, other whitespace, cont
 - **`0` (default, "strict")**: stall forever waiting for the missing seq. Later messages park until the gap fills. Use when you'd rather wait than skip.
 - **`>0` ("timeout")**: stall for that many seconds, then skip past the gap and deliver waiting messages. Use when stale data is worse than missing data.
 
+A message that reaches the receiving node but runs out of TTL there before it can be delivered, or that the operator drops from the inbox, is skipped, so later messages don't wait for it. A message that expires somewhere on the way never arrives, and the receiver can't tell that from one still coming, so a strict stream waits for it forever. If your messages carry a TTL, a gap timeout is usually the better choice.
+
 ### What the receiver sees
 
 Inbound messages tagged with a stream show two extra MQTT user properties:
