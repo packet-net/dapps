@@ -101,6 +101,8 @@ public abstract class CrossedCallScenarioTests(IDappsScenarioBed fixture) : IAsy
         var report = Report(results, RoundLimit, duplicates, channel?.Summarise(started, DateTime.UtcNow),
             $"Both nodes submit {MessagesEach} messages to each other within {StaggerMs.From / 1000.0:0.###} to {(StaggerMs.To - 1) / 1000.0:0.###} s, so both dial. {Rounds} rounds, each from no link.");
         WriteReport(report, "crossed-");
+        // Both daemons' whole logs, not just the tails a failure shows (#397).
+        WriteLogs("crossed-", a, b);
 
         await fixture.ThrowIfDiedAsync($"{report}\n{Diagnostics()}");
         results.Should().AllSatisfy(r => r.Complete.Should().BeTrue($"{ScenarioTiming.OverCeilingTag} round {r.Round}'s messages should all arrive within {ScenarioTiming.Ceiling(RoundLimit).TotalSeconds:F0}s (target {RoundLimit.TotalSeconds:F0}s)\n{report}\n{Diagnostics()}"));

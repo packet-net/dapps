@@ -282,6 +282,62 @@ public abstract class BpqCrossedCallExperiments(NetSimTwoBpqFixture fixture) : I
         WriteOneSocket("one-socket-around-sabm", runs);
     }
 
+    [Fact]
+    public async Task OneSocket_UnansweredDial_ThenHangUpAndRedial()
+    {
+        // #397: A dials at the edge of B's SABM arriving. When either
+        // node's dial gets nothing at all (no confirmation, no 'd', no
+        // inbound call), the other sends its exchange on the call it has,
+        // and the stuck one does what DAPPS does: a 'd' 15 s after its
+        // dial, a fresh call 12 s later, and then a routes line, which
+        // should reach the other node. Up to 60 runs, stopping after 3
+        // stuck dials.
+        Assert.SkipUnless(Wanted, "Set DAPPS_BPQ_EXPERIMENTS to run the BPQ experiments.");
+        var ct = TestContext.Current.CancellationToken;
+        var runs = new List<OneSocketRun>();
+        var arrivals = await MeasureArrivalsAsync(runs, 3, ct);
+        var middle = arrivals.Count > 0 ? (int)arrivals.Order().ElementAt(arrivals.Count / 2) : 1000;
+        var (low, high) = (middle - 250, middle + 30);
+        var random = Random.Shared;
+        var unanswered = 0;
+        for (var i = 1; i <= 60 && unanswered < 3; i++)
+        {
+            var lead = TimeSpan.FromMilliseconds(random.Next(Math.Max(0, low), high));
+            runs.Add(await OneSocketRunAsync("A dials around B's SABM; a stuck dial hangs up and redials", i, async (a, b) =>
+            {
+                Note($"A will dial {lead.TotalMilliseconds:F0} ms after B");
+                await b.DialAsync(ct);
+                await Task.Delay(lead, ct);
+                var dialled = DateTime.UtcNow;
+                await a.DialAsync(ct);
+                await Task.Delay(TimeSpan.FromSeconds(8), ct);
+                static bool Stuck(NodeSocket n) => !n.Got('C', "") && !n.Got('d', "");
+                var (x, y) = Stuck(a) ? (a, b) : Stuck(b) ? (b, a) : (null, null);
+                if (x is null || y is null) return;
+                unanswered++;
+                Note($"{x.Name}'s dial unanswered, no inbound either; {y.Name} sends its exchange on what it has");
+                await y.SendAsync("exchange id=test\r", ct);
+                var wait = dialled + TimeSpan.FromSeconds(15) - DateTime.UtcNow;
+                if (wait > TimeSpan.Zero) await Task.Delay(wait, ct);
+                await x.HangUpAsync(ct);
+                await Task.Delay(TimeSpan.FromSeconds(12), ct);
+                Note($"{x.Name} redials");
+                await x.DialAsync(ct);
+                await WaitForAsync(() => x.CountText('C', "CONNECTED With") >= 1 || x.CountText('d', "") >= 3, TimeSpan.FromSeconds(30), ct);
+                await Task.Delay(TimeSpan.FromSeconds(1), ct);
+                Note($"{y.Name} sends a prompt line");
+                await y.SendAsync("DAPPSv1>\r", ct);
+                await Task.Delay(TimeSpan.FromSeconds(4), ct);
+                Note($"{x.Name} sends routes");
+                await x.SendAsync("routes\r", ct);
+                await WaitForAsync(() => y.Got('D', "routes"), TimeSpan.FromSeconds(10), ct);
+                Note($"{y.Name} {(y.Got('D', "routes") ? "got" : "never got")} {x.Name}'s routes line");
+                await Task.Delay(TimeSpan.FromSeconds(5), ct);
+            }, ct, exchangeData: false));
+        }
+        WriteOneSocket("one-socket-unanswered-redial", runs);
+    }
+
     /// <summary>
     /// Plain B-calls-A runs on one-socket nodes (A does not dial), each a
     /// baseline run of its own, measuring how long B's SABM takes from B's
@@ -687,6 +743,11 @@ public abstract class BpqCrossedCallExperiments(NetSimTwoBpqFixture fixture) : I
         public bool Got(char kind, string contains)
         {
             lock (frames) return frames.Any(f => f.Kind == kind && f.Text.Contains(contains, StringComparison.Ordinal));
+        }
+
+        public int CountText(char kind, string contains)
+        {
+            lock (frames) return frames.Count(f => f.Kind == kind && f.Text.Contains(contains, StringComparison.Ordinal));
         }
 
         public int Count(char kind)
