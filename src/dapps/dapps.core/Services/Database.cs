@@ -479,6 +479,88 @@ public class Database(
     public async Task<DbDroppedMessage?> GetDroppedMessage(string id)
         => await DbInfo.GetAsyncConnection().FindAsync<DbDroppedMessage>(id);
 
+    /// <summary>The drop reason recorded when the operator drops a message
+    /// from the local inbox on the dashboard (#389).</summary>
+    public const string DroppedByOperatorReason = "dropped by operator";
+
+    /// <summary>
+    /// The operator's Drop on the dashboard's local inbox (#389): moves a
+    /// message for an app on this node, not yet acked by it, to
+    /// <c>dropped_messages</c> with <see cref="DroppedByOperatorReason"/>,
+    /// and clears any fragments left under its id. A message that isn't in
+    /// the local inbox (unknown, already gone, or for another node) is
+    /// <see cref="InboxDropOutcome.NotFound"/>; one its app has acked is
+    /// <see cref="InboxDropOutcome.AlreadyAcked"/> and is left alone.
+    /// Stream ordering is the inbox's job: see
+    /// <see cref="DatabaseAndMqttInbox.DropByOperatorAsync"/>.
+    /// </summary>
+    internal async Task<(InboxDropOutcome Outcome, DbMessage? Row)> DropFromLocalInboxAsync(string id)
+    {
+        var c = DbInfo.GetAsyncConnection();
+        var row = await c.FindAsync<DbMessage>(id);
+        if (row is null || !DestinationParser.IsLocal(row.Destination, options.CurrentValue.Callsign))
+        {
+            return (InboxDropOutcome.NotFound, null);
+        }
+        if (row.LocallyDelivered) return (InboxDropOutcome.AlreadyAcked, row);
+
+        // Only while still unacked, so an ack landing since the read wins.
+        var deleted = await c.ExecuteAsync("delete from messages where Id=? and LocallyDelivered=0", id);
+        if (deleted == 0)
+        {
+            return await c.FindAsync<DbMessage>(id) is { } acked
+                ? (InboxDropOutcome.AlreadyAcked, acked)
+                : (InboxDropOutcome.NotFound, null);
+        }
+        await c.InsertOrReplaceAsync(new DbDroppedMessage
+        {
+            Id = row.Id,
+            Payload = row.Payload,
+            Salt = row.Salt,
+            Destination = row.Destination,
+            SourceCallsign = row.SourceCallsign,
+            OriginatorCallsign = row.OriginatorCallsign,
+            AdditionalProperties = row.AdditionalProperties,
+            Forwarded = row.Forwarded,
+            LocallyDelivered = false,
+            Ttl = row.Ttl,
+            CreatedAt = row.CreatedAt,
+            DroppedAt = timeProvider.GetUtcNow().UtcDateTime,
+            Reason = DroppedByOperatorReason,
+            StreamId = row.StreamId,
+            StreamSeq = row.StreamSeq,
+            StreamGapTimeoutSeconds = row.StreamGapTimeoutSeconds,
+        });
+        await DeleteFragmentsForMaster(id);
+        return (InboxDropOutcome.Dropped, row);
+    }
+
+    /// <summary>True when the operator dropped seq <paramref name="seq"/>
+    /// of this (sender, stream) from the inbox before it was delivered, so
+    /// the ordering cursor can step over it rather than wait for it (#389).
+    /// Matches the sender the way <see cref="GetPendingInOrderAsync"/>
+    /// does.</summary>
+    internal async Task<bool> WasDroppedByOperatorAsync(string senderCallsign, string streamId, uint seq)
+    {
+        var n = await DbInfo.GetAsyncConnection().ExecuteScalarAsync<int>(
+            "select count(*) from dropped_messages where Reason=? and StreamId=? and StreamSeq=? " +
+            "and (OriginatorCallsign=? or (OriginatorCallsign='' and SourceCallsign=?))",
+            DroppedByOperatorReason, streamId, (long)seq, senderCallsign, senderCallsign);
+        return n > 0;
+    }
+
+    /// <summary>Messages for apps on this node not yet acked, newest first,
+    /// at most <paramref name="limit"/>: the dashboard's local inbox. Read
+    /// on their own rather than picked out of the most recent messages, so
+    /// an old unacked one still shows however much has arrived since.</summary>
+    public async Task<IReadOnlyList<DbMessage>> GetUndeliveredLocalMessages(int limit)
+    {
+        var (local, local0) = DestinationParser.LocalLikePatterns(options.CurrentValue.Callsign);
+        return await DbInfo.GetAsyncConnection().QueryAsync<DbMessage>(
+            "select * from messages where locallydelivered=0 and (destination like ? escape '\\' or destination like ? escape '\\') order by CreatedAt desc limit ?",
+            local, local0, limit);
+    }
+
     /// <summary>
     /// Remove every message whose TTL has elapsed. Ones still queued are
     /// soft-deleted as <c>ttl-expired</c>; ones already forwarded or
@@ -1336,4 +1418,14 @@ public class Database(
         existing.Source = "gossip";
         await connection.UpdateAsync(existing);
     }
+}
+/// <summary>What the operator's Drop on the local inbox did (#389).</summary>
+public enum InboxDropOutcome
+{
+    /// <summary>Moved to the dropped messages.</summary>
+    Dropped,
+    /// <summary>No such message waiting for an app on this node.</summary>
+    NotFound,
+    /// <summary>Its app has already acked it; left alone.</summary>
+    AlreadyAcked,
 }

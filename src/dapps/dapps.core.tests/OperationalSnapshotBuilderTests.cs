@@ -160,6 +160,51 @@ public sealed class OperationalSnapshotBuilderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task BuildFullAsync_LocalInbox_ShowsTimeLeft_AndOldUnackedMessages()
+    {
+        // #389: each inbox row carries the residual TTL the app API would
+        // give for it, and an old unacked message is listed however many
+        // messages have arrived since.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.CreateTable<DbDroppedMessage>();
+            c.CreateTable<DbProbedNode>();
+            c.CreateTable<DbPolledNode>();
+        }
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-01T12:00:00Z"));
+        var opts = new TestOptionsMonitor<SystemOptions>(new SystemOptions
+        {
+            Callsign = "G7TST-9",
+            NodeHost = "127.0.0.1",
+            AgwPort = 1,
+            MqttPort = 1,
+        });
+        var db = new Database(NullLogger<Database>.Instance, opts, clock);
+        await db.SaveMessage("old0001", "x"u8.ToArray(), 1L, "chat@G7TST-9", "G7FROM", "", ttl: 6 * 86400);
+        await db.SaveMessage("old0002", "x"u8.ToArray(), 2L, "chat@G7TST-9", "G7FROM", "", ttl: null);
+        clock.Advance(TimeSpan.FromSeconds(1000));
+        for (var i = 0; i < 60; i++)
+        {
+            await db.SaveMessage($"new{i:D4}", "y"u8.ToArray(), 10L + i, "chat@G7DEST", "G7FROM", "", ttl: 600);
+        }
+
+        var builder = new OperationalSnapshotBuilder(
+            opts, new OperationalMetrics(clock), new AirtimeAccountant(opts, clock, NullLogger<AirtimeAccountant>.Instance), db,
+            updateChecker: BuildUpdateChecker(),
+            updaterFs: new FakeUpdaterFs(),
+            timeProvider: clock);
+        var full = await builder.BuildFullAsync(TestContext.Current.CancellationToken);
+
+        var inbox = full.Tables!.LocalInbox;
+        inbox.Select(r => r.Id).Should().BeEquivalentTo(["old0001", "old0002"]);
+        var now = clock.GetUtcNow().UtcDateTime;
+        var withTtl = inbox.Single(r => r.Id == "old0001");
+        withTtl.TtlRemaining.Should().Be(6 * 86400 - 1000);
+        withTtl.TtlRemaining.Should().Be(TtlMath.Residual(6 * 86400, now.AddSeconds(-1000), now));
+        inbox.Single(r => r.Id == "old0002").TtlRemaining.Should().BeNull("no TTL means no expiry");
+    }
+
+    [Fact]
     public async Task BuildFullAsync_PopulatesPerRowTables()
     {
         // Schema for the per-row tables BuildFullAsync queries.

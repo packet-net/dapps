@@ -43,7 +43,9 @@ else if (tab == "inbox")
 {
     <div class="panel">
         <h3>Local inbox</h3>
-        <p class="panel-sub">Arrived for an app here, not yet acknowledged by it. A growing inbox means the app isn't acknowledging.</p>
+        <p class="panel-sub">Arrived for an app here, not yet acknowledged by it. A growing inbox means the app isn't acknowledging. Drop one you no longer want and the app never gets it.</p>
+        @Html.AntiForgeryToken()
+        <div class="err-banner" id="inbox-error" hidden></div>
         <table>
             <thead>
                 <tr>
@@ -52,10 +54,12 @@ else if (tab == "inbox")
                     <th>From</th>
                     <th class="numeric">Bytes</th>
                     <th>Age</th>
+                    <th>Expires</th>
                     <th>State</th>
+                    <th></th>
                 </tr>
             </thead>
-            <tbody id="inbox-body"><tr><td colspan="6" class="muted" style="text-align:center;">loading</td></tr></tbody>
+            <tbody id="inbox-body"><tr><td colspan="8" class="muted" style="text-align:center;">loading</td></tr></tbody>
         </table>
     </div>
 }
@@ -270,7 +274,61 @@ else
         });
     }
     wireIdClicks(document.getElementById('outbound-body'), 6, 'outbound');
-    wireIdClicks(document.getElementById('inbox-body'), 6, 'inbox');
+    wireIdClicks(document.getElementById('inbox-body'), 8, 'inbox');
+
+    // How long a message has left, from the residual TTL the snapshot
+    // works out the same way the app API does (#389).
+    const expiresStr = (s) => {
+        if (s == null) return 'no expiry';
+        if (s <= 0) return 'expiring now';
+        const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600),
+              m = Math.floor((s % 3600) / 60);
+        if (d > 0) return `in ${d} d ${h} h`;
+        if (h > 0) return `in ${h} h ${m} m`;
+        if (m > 0) return `in ${m} m ${s % 60} s`;
+        return `in ${s} s`;
+    };
+
+    // Drop button on the inbox (#389). One delegated listener, the id
+    // read from the row's data- attribute, never from a handler built
+    // out of message data (#317).
+    const inboxBody = document.getElementById('inbox-body');
+    if (inboxBody) {
+        inboxBody.addEventListener('click', async (e) => {
+            const btn = e.target.closest('button.drop-btn');
+            if (!btn) return;
+            const row = btn.closest('tr');
+            const id = row?.dataset.id;
+            if (!id) return;
+            if (!confirm(`Drop message ${id}? Its app will never get it. It will be listed under Dropped.`)) return;
+            const errBox = document.getElementById('inbox-error');
+            errBox.hidden = true;
+            btn.disabled = true;
+            const form = new FormData();
+            form.append('id', id);
+            form.append('__RequestVerificationToken',
+                document.querySelector('input[name="__RequestVerificationToken"]')?.value ?? '');
+            try {
+                const res = await fetch('@Url.Page("/Messages", "Drop")', {
+                    method: 'POST', body: form, credentials: 'same-origin',
+                });
+                if (res.ok || res.status === 404) {
+                    // Gone either way: dropped now, or already gone.
+                    const next = row.nextElementSibling;
+                    if (next && next.classList.contains('payload-row') && next.dataset.id === id) next.remove();
+                    if (expandedIds.inbox === id) expandedIds.inbox = null;
+                    row.remove();
+                    return;
+                }
+                errBox.textContent = `Could not drop ${id}: ` + (await res.text() || `HTTP ${res.status}`);
+                errBox.hidden = false;
+            } catch (err) {
+                errBox.textContent = `Could not drop ${id}: ${err.message ?? err}`;
+                errBox.hidden = false;
+            }
+            btn.disabled = false;
+        });
+    }
     wireIdClicks(document.getElementById('dropped-body'), 5, 'dropped');
 
     function applyTabSnap(s) {
@@ -307,7 +365,7 @@ else
             const body = document.getElementById('inbox-body');
             if (!body) return;
             if (inb.length === 0) {
-                body.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center;">inbox is empty</td></tr>';
+                body.innerHTML = '<tr><td colspan="8" class="muted" style="text-align:center;">inbox is empty</td></tr>';
                 return;
             }
             const openRow = detachExpanded(body);
@@ -318,7 +376,9 @@ else
                 + `<td>${fromCell(m)}</td>`
                 + `<td class="numeric">${m.bytes ?? '-'}</td>`
                 + `<td>${ageStr(m.ageSeconds)}</td>`
+                + `<td class="ttl-left">${escape(expiresStr(m.ttlRemaining))}</td>`
                 + '<td><span class="pill warn">awaiting ack</span></td>'
+                + '<td><button type="button" class="btn ghost sm drop-btn" title="drop this message; its app will never get it">Drop</button></td>'
                 + '</tr>'
             ).join('');
             reattachExpanded(body, 'inbox', openRow);

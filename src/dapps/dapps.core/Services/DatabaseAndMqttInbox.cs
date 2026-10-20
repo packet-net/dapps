@@ -487,6 +487,10 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
                        GapDeadline = DateTime.MinValue,
                    };
 
+        // Seqs the operator dropped before the app had them never come:
+        // step over them so what follows isn't held for them (#389).
+        await SkipOperatorDropsAsync(recv, streamSender, streamId);
+
         // This node's own stream: a seq below this one that isn't being
         // sent right now never will be (its send failed, or it was sent
         // before this node delivered its own streams in order), so don't
@@ -612,6 +616,10 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
                 await database.SoftDeleteMessage(p.Id, "stream-stale");
                 continue;
             }
+            if (p.StreamSeq.Value > recv.NextExpectedSeq)
+            {
+                await SkipOperatorDropsAsync(recv, streamSender, streamId);
+            }
             if (p.StreamSeq.Value != recv.NextExpectedSeq) break;
 
             var inject = new DbMessage
@@ -629,6 +637,8 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
             recv.NextExpectedSeq = p.StreamSeq.Value + 1;
             byteOffset += p.Payload.Length;
         }
+
+        await SkipOperatorDropsAsync(recv, streamSender, streamId);
 
         // Recompute deadline: if anything still pending above the new
         // cursor, use the head's stored gt as the new gap budget; else
@@ -654,6 +664,57 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
             logger.LogInformation(
                 "Stream {0}|{1}: drained pending up to sn={2}",
                 streamSender, streamId, recv.NextExpectedSeq - 1);
+        }
+    }
+
+    /// <summary>
+    /// Move the cursor past every seq the operator dropped from the inbox
+    /// before it was delivered (#389): it will never be delivered, so on a
+    /// strict stream waiting for it would stall everything after it.
+    /// </summary>
+    private async Task SkipOperatorDropsAsync(DbStreamRecvState recv, string streamSender, string streamId)
+    {
+        while (recv.NextExpectedSeq < uint.MaxValue
+               && await database.WasDroppedByOperatorAsync(streamSender, streamId, recv.NextExpectedSeq))
+        {
+            logger.LogInformation(
+                "Stream {0}|{1}: stepping over sn={2}, dropped by the operator",
+                streamSender, streamId, recv.NextExpectedSeq);
+            recv.NextExpectedSeq++;
+        }
+    }
+
+    /// <summary>
+    /// The operator's Drop on the dashboard's local inbox (#389). The
+    /// message goes to the dropped messages as dropped by the operator, so
+    /// neither MQTT replay nor the REST inbox hands it to the app again,
+    /// and any fragments under its id go with it. On an ordered stream it
+    /// is done under the stream's lock, and the cursor steps over its seq
+    /// if the app hadn't had it yet, so later messages are not held for it.
+    /// </summary>
+    public async Task<InboxDropOutcome> DropByOperatorAsync(string id, CancellationToken ct = default)
+    {
+        var row = await database.GetMessage(id);
+        if (row?.StreamId is not { Length: > 0 } streamId || row.StreamSeq is null)
+        {
+            var (outcome, _) = await database.DropFromLocalInboxAsync(id);
+            if (outcome == InboxDropOutcome.Dropped) logger.LogInformation("Inbox: {0} dropped by the operator", id);
+            return outcome;
+        }
+
+        var streamSender = string.IsNullOrEmpty(row.OriginatorCallsign) ? row.SourceCallsign : row.OriginatorCallsign;
+        using (await LockStreamAsync(streamSender + "|" + streamId, ct))
+        {
+            var (outcome, dropped) = await database.DropFromLocalInboxAsync(id);
+            if (outcome != InboxDropOutcome.Dropped) return outcome;
+            logger.LogInformation("Inbox: {0} (stream {1}|{2} sn={3}) dropped by the operator",
+                id, streamSender, streamId, dropped!.StreamSeq);
+            var recv = await database.GetStreamRecvStateAsync(options.CurrentValue.Callsign, streamSender, streamId);
+            if (recv is not null)
+            {
+                await DrainConsecutivePendingAsync(recv, streamSender, streamId, ct);
+            }
+            return outcome;
         }
     }
 

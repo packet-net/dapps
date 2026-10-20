@@ -25,8 +25,8 @@ The decision-events ring is also mirrored into the systemd journal as log lines,
 Four tabs:
 
 - **Outbound queue** - messages waiting to be forwarded. Updates without a page reload as messages are sent.
-- **Local inbox** - messages that arrived for apps on this node and are waiting for the app to ack them via MQTT (`dapps/ack/<app>`) or REST. If this is growing, the app isn't acking - typically a misconfigured subscriber.
-- **Dropped** - messages soft-deleted because TTL expired, hash mismatch, or another drop reason. Useful when you're investigating "where did message X go" - if it's here, you have the reason. Drop records are kept for 90 days.
+- **Local inbox** - messages that arrived for apps on this node and are waiting for the app to ack them via MQTT (`dapps/ack/<app>`) or REST. If this is growing, the app isn't acking - typically a misconfigured subscriber. Each message shows how long it has left before its TTL runs out (or "no expiry"). To get rid of one you no longer want, press **Drop**: it moves to the Dropped tab as "dropped by operator" and the app never gets it. On an ordered stream, later messages don't wait for it.
+- **Dropped** - messages soft-deleted because TTL expired, hash mismatch, you dropped them, or another drop reason. Useful when you're investigating "where did message X go" - if it's here, you have the reason. Drop records are kept for 90 days.
 - **Live arrivals** - every message as it arrives, with filters (app, source callsign, destination substring) and click-to-expand payload preview. `/Inbound` redirects here.
 
 A message that has been forwarded, or acked by its app, is kept for 30 days and then deleted. A message with a TTL still goes when its TTL runs out, if that comes first.

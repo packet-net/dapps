@@ -150,4 +150,48 @@ public sealed class MessagesTests(LoggedInWebAppFixture app, PlaywrightFixture p
         (await payloadRow.Locator("pre[data-mode='hex']").IsVisibleAsync()).Should().BeTrue(
             "the hex view chosen before the redraw should still be showing");
     }
+    /// <summary>
+    /// #389: the local inbox shows how long each message has left and has
+    /// a Drop button. Sends a message to an app on this node via Compose
+    /// (so it lands in the inbox), checks its time left, drops it after
+    /// the confirm prompt, and finds it under Dropped as dropped by the
+    /// operator.
+    /// </summary>
+    [Fact]
+    public async Task Messages_Inbox_Shows_Time_Left_And_Drop_Removes_It()
+    {
+        await using var ctx = await pw.Browser.NewLoggedInContextAsync(app);
+        var page = await ctx.NewPageAsync();
+        await page.GotoAsync($"{app.BaseUrl}/Compose");
+
+        await page.FillAsync("input#App", "uitestdrop");
+        await page.FillAsync("input#Destination", LoggedInWebAppFixture.Callsign);
+        await page.FillAsync("input#Payload", $"drop-me-{Guid.NewGuid():N}");
+        await page.FillAsync("input#Ttl", "7200");
+        await page.ClickAsync("form.panel button[type='submit']");
+        await page.WaitForSelectorAsync(".ok-banner",
+            new PageWaitForSelectorOptions { Timeout = 5_000 });
+        var id = await page.Locator(".card:has(.label:has-text('Message id')) .value.mono code").InnerTextAsync();
+
+        await page.GotoAsync($"{app.BaseUrl}/Messages?tab=inbox");
+        var row = page.Locator($"#inbox-body tr[data-id='{id}']");
+        await row.WaitForAsync(new LocatorWaitForOptions { Timeout = 15_000 });
+        (await row.Locator("td.ttl-left").InnerTextAsync()).Should().MatchRegex(@"^in (1 h \d+ m|2 h 0 m)$",
+            "a 2 h TTL a moment ago has about 2 h left");
+
+        string? prompt = null;
+        page.Dialog += async (_, dialog) =>
+        {
+            prompt = dialog.Message;
+            await dialog.AcceptAsync();
+        };
+        await row.Locator("button.drop-btn").ClickAsync();
+        await row.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Detached, Timeout = 10_000 });
+        prompt.Should().Contain(id);
+
+        await page.GotoAsync($"{app.BaseUrl}/Messages?tab=dropped");
+        var droppedRow = page.Locator($"#dropped-body tr[data-id='{id}']");
+        await droppedRow.WaitForAsync(new LocatorWaitForOptions { Timeout = 15_000 });
+        (await droppedRow.InnerTextAsync()).Should().Contain("dropped by operator");
+    }
 }

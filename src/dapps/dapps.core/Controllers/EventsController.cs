@@ -84,6 +84,9 @@ public sealed class EventsController(
     /// summary counts. Returned as JSON so the dashboard can
     /// rerender the tables in place without a full reload.
     /// </summary>
+    /// <summary>Most rows the dashboard's local inbox lists.</summary>
+    internal const int LocalInboxRows = 200;
+
     [HttpGet("queue")]
     public async Task<QueueSnapshot> GetQueueSnapshot()
     {
@@ -92,6 +95,7 @@ public sealed class EventsController(
 
         bool IsLocal(DbMessage m) => DestinationParser.IsLocal(m.Destination, local);
 
+        var now = DateTime.UtcNow;
         QueueRow Row(DbMessage m, string? appOverride = null) => new(
             Id: m.Id,
             Destination: m.Destination,
@@ -100,10 +104,11 @@ public sealed class EventsController(
             ViaCallsign: m.SourceCallsign,
             Bytes: m.Payload.Length,
             Ttl: m.Ttl,
-            AgeSeconds: (int)Math.Max(0, (DateTime.UtcNow - m.CreatedAt).TotalSeconds));
+            AgeSeconds: (int)Math.Max(0, (now - m.CreatedAt).TotalSeconds),
+            TtlRemaining: TtlMath.Residual(m.Ttl, m.CreatedAt, now));
 
         var outbound = recent.Where(m => !m.Forwarded && !m.LocallyDelivered && !IsLocal(m)).Select(m => Row(m)).ToList();
-        var inbox = recent.Where(m => !m.LocallyDelivered && IsLocal(m))
+        var inbox = (await database.GetUndeliveredLocalMessages(LocalInboxRows))
             .Select(m => Row(m, m.Destination.Split('@')[0]))
             .ToList();
 
@@ -244,7 +249,10 @@ public sealed record QueueRow(
     string ViaCallsign,
     int Bytes,
     int? Ttl,
-    int AgeSeconds);
+    int AgeSeconds,
+    // Seconds of life left, worked out as the app API does for ttl and
+    // dapps-ttl (TtlMath.Residual); null when the message has no TTL (#389).
+    int? TtlRemaining = null);
 
 public sealed record QueueSnapshot(
     int TotalMessages,
