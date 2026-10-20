@@ -44,8 +44,13 @@ public class DbDroppedMessage
 
     /// <summary>Opt-in ordering: stream id, seq, and gap-timeout
     /// preserved from the live row so the dropped-messages dashboard
-    /// can show why a stream stalled. Null on non-stream rows.</summary>
+    /// can show why a stream stalled. Null on non-stream rows.
+    /// <c>dropped_messages_stream</c> serves the ordering cursor's check
+    /// for seqs the operator dropped (#389); sqlite-net creates it on
+    /// start-up, and an older version simply ignores it.</summary>
+    [Indexed(Name = "dropped_messages_stream", Order = 1)]
     public string? StreamId { get; init; }
+    [Indexed(Name = "dropped_messages_stream", Order = 2)]
     public uint? StreamSeq { get; init; }
     public uint? StreamGapTimeoutSeconds { get; init; }
 }

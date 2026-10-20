@@ -129,6 +129,41 @@ public sealed class InboxOperatorDropTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Drop_WhenTheAppAcksPartWay_TheAckWins_AndNoDropRecordIsLeft()
+    {
+        await inbox.DeliverAsync(Plain("race0001", "hi"), "G0HOP", Ct);
+        database.BeforeInboxDropDelete = async () =>
+        {
+            (await database.GetDroppedMessage("race0001")).Should().NotBeNull("the record is written before the delete");
+            await database.MarkLocallyDeliveredForApp("chat", "race0001");
+        };
+
+        (await inbox.DropByOperatorAsync("race0001", Ct)).Should().Be(InboxDropOutcome.AlreadyAcked);
+
+        (await database.GetMessage("race0001"))!.LocallyDelivered.Should().BeTrue();
+        (await database.GetDroppedMessage("race0001")).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Drop_AfterACrashLeftTheRecordAndTheMessage_FinishesTheJob()
+    {
+        // A crash between writing the record and deleting the message
+        // leaves both; the operator's next Drop completes it.
+        await inbox.DeliverAsync(Plain("crash001", "hi"), "G0HOP", Ct);
+        database.BeforeInboxDropDelete = () => throw new IOException("crash");
+        var act = () => inbox.DropByOperatorAsync("crash001", Ct);
+        await act.Should().ThrowAsync<IOException>();
+        (await database.GetMessage("crash001")).Should().NotBeNull();
+        (await database.GetDroppedMessage("crash001")).Should().NotBeNull();
+
+        database.BeforeInboxDropDelete = null;
+        (await inbox.DropByOperatorAsync("crash001", Ct)).Should().Be(InboxDropOutcome.Dropped);
+
+        (await database.GetMessage("crash001")).Should().BeNull();
+        (await database.GetDroppedMessage("crash001"))!.Reason.Should().Be(Database.DroppedByOperatorReason);
+    }
+
+    [Fact]
     public async Task Drop_AMessageForAnotherNode_IsNotFound_AndStaysQueued()
     {
         await database.SaveMessage("relay001", "x"u8.ToArray(), 1L, "chat@G0ELSE", "G0HOP", "", ttl: 600);

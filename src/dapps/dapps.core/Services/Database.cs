@@ -525,6 +525,10 @@ public class Database(
     /// Stream ordering is the inbox's job: see
     /// <see cref="DatabaseAndMqttInbox.DropByOperatorAsync"/>.
     /// </summary>
+    /// <summary>Test seam: runs between writing the drop record and
+    /// deleting the message, so a test can land an ack in that gap.</summary>
+    internal Func<Task>? BeforeInboxDropDelete { get; set; }
+
     internal async Task<(InboxDropOutcome Outcome, DbMessage? Row)> DropFromLocalInboxAsync(string id)
     {
         var c = DbInfo.GetAsyncConnection();
@@ -535,14 +539,10 @@ public class Database(
         }
         if (row.LocallyDelivered) return (InboxDropOutcome.AlreadyAcked, row);
 
-        // Only while still unacked, so an ack landing since the read wins.
-        var deleted = await c.ExecuteAsync("delete from messages where Id=? and LocallyDelivered=0", id);
-        if (deleted == 0)
-        {
-            return await c.FindAsync<DbMessage>(id) is { } acked
-                ? (InboxDropOutcome.AlreadyAcked, acked)
-                : (InboxDropOutcome.NotFound, null);
-        }
+        // The drop record first, so a crash part way leaves the message
+        // both still queued and recorded, which the next drop finishes
+        // (as DropAsync does). Then delete only while still unacked: if an
+        // ack landed since the read, the ack wins and the record goes.
         await c.InsertOrReplaceAsync(new DbDroppedMessage
         {
             Id = row.Id,
@@ -562,6 +562,14 @@ public class Database(
             StreamSeq = row.StreamSeq,
             StreamGapTimeoutSeconds = row.StreamGapTimeoutSeconds,
         });
+        if (BeforeInboxDropDelete is { } hook) await hook();
+        if (await c.ExecuteAsync("delete from messages where Id=? and LocallyDelivered=0", id) == 0)
+        {
+            await c.ExecuteAsync("delete from dropped_messages where Id=? and Reason=?", id, DroppedByOperatorReason);
+            return await c.FindAsync<DbMessage>(id) is { } acked
+                ? (InboxDropOutcome.AlreadyAcked, acked)
+                : (InboxDropOutcome.NotFound, null);
+        }
         await DeleteFragmentsForMaster(id);
         return (InboxDropOutcome.Dropped, row);
     }

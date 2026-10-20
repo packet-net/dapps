@@ -277,6 +277,7 @@ public sealed class RetentionSweepTests : IAsyncLifetime
         "messages_CompletedAt",
         "messages_stream",
         "dropped_messages_DroppedAt",
+        "dropped_messages_stream",
     ];
 
     private static List<string> IndexNames()
@@ -303,6 +304,7 @@ public sealed class RetentionSweepTests : IAsyncLifetime
             c.CreateTable<LegacyDbMessage>();
             c.CreateTable<DbDroppedMessage>();
             c.Execute("drop index dropped_messages_DroppedAt");
+            c.Execute("drop index dropped_messages_stream");
             c.Insert(new LegacyDbMessage { Id = "oldfwd1", Destination = "app@N0FAR", Payload = new byte[64], Forwarded = true, CreatedAt = T0.AddDays(-45) });
             c.Insert(new LegacyDbMessage { Id = "oldque1", Destination = "app@N0FAR", Payload = new byte[64], CreatedAt = T0.AddDays(-45) });
         }

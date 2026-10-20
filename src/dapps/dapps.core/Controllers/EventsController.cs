@@ -78,15 +78,15 @@ public sealed class EventsController(
             Reason: d.Reason)).ToList();
     }
 
+    /// <summary>Most rows the dashboard's local inbox lists.</summary>
+    internal const int LocalInboxRows = 200;
+
     /// <summary>
     /// Snapshot of the two operational queues (outbound forwards
     /// pending; messages for local apps not yet ack'd) plus
     /// summary counts. Returned as JSON so the dashboard can
     /// rerender the tables in place without a full reload.
     /// </summary>
-    /// <summary>Most rows the dashboard's local inbox lists.</summary>
-    internal const int LocalInboxRows = 200;
-
     [HttpGet("queue")]
     public async Task<QueueSnapshot> GetQueueSnapshot()
     {
