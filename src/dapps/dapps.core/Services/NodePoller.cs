@@ -53,6 +53,11 @@ public sealed class NodePoller(
         string? connectVia = null)
     {
         var at = timeProvider.GetUtcNow().UtcDateTime;
+        // Refused before dialling, so nothing goes on the air (#309).
+        if (ConnectScriptRunner.Refusal(connectScript, logger) is { } refused)
+        {
+            return new PollResult(remoteCallsign, false, 0, $"connect-script: {refused}", at);
+        }
         try
         {
             await using var connection = await transport.ConnectAsync(

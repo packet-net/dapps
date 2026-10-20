@@ -42,12 +42,9 @@ public static class ConnectScriptRunner
         // node prompt. A script saved by an older DAPPS wasn't checked, so it can
         // still hold a CR that would make the node run a second command
         // (#309): refuse it, loudly, rather than send any of it.
-        if (script.SendError() is { } refused)
+        if (Refusal(script, logger) is { } refused)
         {
-            logger?.LogWarning(
-                "Connect-script refused, nothing sent: {0}. Fix the neighbour's connect script on the Topology page.",
-                refused);
-            throw new ConnectScriptException($"refused, nothing sent: {refused}");
+            throw new ConnectScriptException(refused);
         }
 
         var transcript = new StringBuilder();
@@ -73,6 +70,25 @@ public static class ConnectScriptRunner
             logger?.LogDebug("connect-script step {0}/{1}: matched '{2}'", i + 1, script.Steps.Count, step.Expect);
         }
         return transcript.ToString();
+    }
+
+    /// <summary>
+    /// Why <paramref name="script"/> must not be played, or null when it
+    /// can be (or there is none). Callers check this before dialling, so
+    /// a refused script puts nothing on the air, not even the connect
+    /// (#309). The warning is logged once per script, not every cycle.
+    /// </summary>
+    public static string? Refusal(ConnectScript? script, ILogger? logger)
+    {
+        if (script?.SendError() is not { } error) return null;
+        if (NodePromptText.FirstTime("script:" + error))
+        {
+            logger?.LogWarning(
+                "Connect-script refused, nothing sent: {0}. Fix the neighbour's connect script on the Topology page. " +
+                "(Logged once; every use of it is refused until then.)",
+                error);
+        }
+        return $"refused, nothing sent: {error}";
     }
 
     /// <summary>

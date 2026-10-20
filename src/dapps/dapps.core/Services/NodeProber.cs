@@ -87,6 +87,11 @@ public sealed class NodeProber(
         {
             return await PingOpenSessionAsync(open, remoteCallsign, bearerPort, at, ct);
         }
+        // Refused before dialling, so nothing goes on the air (#309).
+        if (ConnectScriptRunner.Refusal(connectScript, logger) is { } refused)
+        {
+            return new ProbeResult(remoteCallsign, bearerPort, false, $"connect-script: {refused}", at, peers);
+        }
         try
         {
             await using var connection = await transport.ConnectAsync(
@@ -218,9 +223,13 @@ public sealed class NodeProber(
         // would make that node run a second command (#309): don't dial.
         if (NodePromptText.ApplicationCommandError(applicationCommand) is { } commandError)
         {
-            logger.LogWarning(
-                "Node-prompt probe of {0} refused, nothing sent: the application command '{1}' is not valid. {2} Fix it on the Settings page.",
-                remoteNodeCall, NodePromptText.Printable(applicationCommand), commandError);
+            if (NodePromptText.FirstTime("command:" + applicationCommand))
+            {
+                logger.LogWarning(
+                    "Node-prompt probe of {0} refused, nothing sent: the application command '{1}' is not valid. {2} Fix it on the Settings page. " +
+                    "(Logged once; every node-prompt probe is refused until then.)",
+                    remoteNodeCall, NodePromptText.Printable(applicationCommand), commandError);
+            }
             return new ProbeResult(remoteNodeCall, bearerPort, false,
                 $"application command refused: {commandError}", at, peers);
         }

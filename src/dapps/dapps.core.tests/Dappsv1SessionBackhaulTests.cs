@@ -95,6 +95,26 @@ public sealed class Dappsv1SessionBackhaulTests
     }
 
     [Fact]
+    public async Task SendAsync_StoredConnectScriptWithACr_FailsWithoutDialling()
+    {
+        // #309: a script saved by an older DAPPS isn't checked by the
+        // API; it is refused before the connect, so nothing goes on air.
+        var transport = new FakeOutboundTransport(Encoding.UTF8.GetBytes(Hello));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
+        var script = new ConnectScript([new ConnectScriptStep("DAPPS\rC G0EVIL", "DAPPSv1>")]);
+
+        var result = await sb.SendAsync(
+            new BackhaulMessage("mid0001", "app@N0DEST", Salt: 1L, Ttl: 60, Payload: "hi"u8.ToArray()),
+            new BackhaulRoute("N0DEST-3", BearerPort: 1, ConnectScript: script, ConnectVia: "N0DEST"),
+            "N0SRC",
+            CancellationToken.None);
+
+        result.Accepted.Should().BeFalse();
+        result.Error.Should().Contain("refused, nothing sent");
+        transport.Connects.Should().Be(0);
+    }
+
+    [Fact]
     public async Task SendAsync_TheLastLinkStillClosing_DefersWithoutAFailure()
     {
         // The node refused the dial because its last link to the peer is

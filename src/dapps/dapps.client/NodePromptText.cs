@@ -47,6 +47,13 @@ public static class NodePromptText
         return null;
     }
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> warned = new(StringComparer.Ordinal);
+
+    /// <summary>True the first time this process sees <paramref name="key"/>,
+    /// false after: a refused value is logged once, not on every poll,
+    /// probe or forwarder run that refuses it again.</summary>
+    public static bool FirstTime(string key) => warned.TryAdd(key, 0);
+
     /// <summary><paramref name="text"/> with control characters written
     /// out as <c>\xNN</c>, for a log line: a raw CR would hide the rest of
     /// the line, and journalctl shows the whole line as blob data.</summary>

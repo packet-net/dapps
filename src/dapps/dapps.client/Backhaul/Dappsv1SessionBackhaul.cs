@@ -168,6 +168,13 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         if (first is null) return;
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
+        // A stored script that isn't safe to type at a node prompt is
+        // refused before dialling, so nothing goes on the air (#309).
+        if (ConnectScriptRunner.Refusal(route.ConnectScript, logger) is { } refused)
+        {
+            await batch.CompleteAsync(first, BackhaulSendResult.Fail($"connect-script {refused}"), sw.Elapsed, ct);
+            return;
+        }
         IDappsConnection connection;
         try
         {

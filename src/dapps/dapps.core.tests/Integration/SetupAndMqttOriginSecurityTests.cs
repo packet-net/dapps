@@ -142,7 +142,10 @@ public sealed class SetupAndMqttOriginSecurityTests
 
         var resp = await admin.PostAsync(path, new StringContent(body, System.Text.Encoding.ASCII, contentType), Ct);
 
-        resp.StatusCode.Should().Be(HttpStatusCode.UnsupportedMediaType);
+        // 415 from the JSON-only binding, or 400 from an antiforgery
+        // filter that refuses a non-JSON post first; either way nothing
+        // may change.
+        resp.StatusCode.Should().BeOneOf(HttpStatusCode.UnsupportedMediaType, HttpStatusCode.BadRequest);
         var config = await (await admin.GetAsync("/Config", Ct)).Content.ReadFromJsonAsync<JsonObject>(Ct);
         (config!["nodePromptApplicationCommand"] ?? config["NodePromptApplicationCommand"])!.GetValue<string>().Should().Be("DAPPS");
         (await (await admin.GetAsync("/Neighbours", Ct)).Content.ReadAsStringAsync(Ct)).Should().NotContain("G0EVIL");

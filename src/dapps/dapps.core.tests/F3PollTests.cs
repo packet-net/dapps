@@ -110,6 +110,33 @@ public sealed class F3PollTests
     }
 
     [Fact]
+    public async Task StoredConnectScriptWithACr_IsRefusedWithoutDialling()
+    {
+        // #309: refused before the connect, so nothing goes on the air.
+        var transport = new DialRecordingTransport();
+        var poller = new NodePoller(transport, new RecordingInbox(), TimeProvider.System, NullLoggerFactory.Instance,
+            NullLogger<NodePoller>.Instance);
+        var script = new ConnectScript([new ConnectScriptStep("DAPPS\rC G0EVIL", "DAPPSv1>")]);
+
+        var result = await poller.PollAsync(Us, Them, 1, TestContext.Current.CancellationToken, script, connectVia: "N0NODE");
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().StartWith("connect-script: refused, nothing sent:");
+        transport.Dialled.Should().BeEmpty();
+    }
+
+    private sealed class DialRecordingTransport : dapps.client.Transport.IDappsOutboundTransport
+    {
+        public List<string> Dialled { get; } = [];
+
+        public Task<dapps.client.Transport.IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken)
+        {
+            Dialled.Add(remoteCallsign);
+            throw new InvalidOperationException("dialled");
+        }
+    }
+
+    [Fact]
     public async Task WhileAPollIsOpen_ItTakesOurMailForThatNeighbourToo()
     {
         var ct = TestContext.Current.CancellationToken;

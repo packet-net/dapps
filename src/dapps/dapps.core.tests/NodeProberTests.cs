@@ -248,6 +248,22 @@ public sealed class NodeProberTests
         transport.Dialled.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task ProbeAsync_StoredConnectScriptWithACr_DoesNotDial()
+    {
+        // #309: refused before the connect, so nothing goes on the air.
+        var transport = new FakeOutboundTransport("DAPPSv1>\n"u8.ToArray());
+        var prober = new NodeProber(transport, TimeProvider.System, NullLoggerFactory.Instance, NullLogger<NodeProber>.Instance);
+        var script = new dapps.client.ConnectScript([new dapps.client.ConnectScriptStep("DAPPS\rC G0EVIL", "DAPPSv1>")]);
+
+        var result = await prober.ProbeAsync("N0US", "N0THEM-3", bearerPort: 1, CancellationToken.None,
+            connectScript: script, connectVia: "N0NODE");
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().StartWith("connect-script: refused, nothing sent:");
+        transport.Dialled.Should().BeEmpty();
+    }
+
     [Theory]
     [InlineData(2.4, "2.4s")]
     [InlineData(42, "42s")]
