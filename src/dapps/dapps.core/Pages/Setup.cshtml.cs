@@ -1,10 +1,7 @@
 using dapps.client;
-using System.Security.Claims;
 using dapps.core.Models;
 using dapps.core.Services;
 using Microsoft.AspNetCore.Antiforgery;
-using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
@@ -159,17 +156,7 @@ public sealed class SetupModel(
 
         // Sign the operator in immediately so they don't need to
         // enter the password they just set on the very next page.
-        var identity = new ClaimsIdentity(
-            new[] { new Claim(ClaimTypes.Name, "sysop") },
-            CookieAuthenticationDefaults.AuthenticationScheme);
-        await HttpContext.SignInAsync(
-            CookieAuthenticationDefaults.AuthenticationScheme,
-            new ClaimsPrincipal(identity),
-            new AuthenticationProperties
-            {
-                IsPersistent = true,
-                ExpiresUtc = DateTimeOffset.UtcNow.AddDays(90),
-            });
+        await AdminSession.SignInAsync(HttpContext);
 
         // Re-enter /Setup; OnGetAsync will route to the bearer step.
         return LocalRedirect("~/Setup");

@@ -186,6 +186,10 @@ public sealed class GatewayPathBaseTests
 
         public string BaseUrl { get; private set; } = null!;
 
+        /// <summary>The daemon's working directory; its database is
+        /// <c>data/dapps.db</c> under it.</summary>
+        public string WorkDir => _workDir!;
+
         public static async Task<DappsSubprocess> StartAsync()
         {
             var self = new DappsSubprocess
@@ -269,7 +273,7 @@ public sealed class GatewayPathBaseTests
         /// as the test assembly first (CI runs Release, local dev
         /// usually Debug), then the other as a fallback - mirrors
         /// uitests' LocateDappsBinary.</summary>
-        private static string LocateDappsDll()
+        internal static string LocateDappsDll()
         {
             var here = AppContext.BaseDirectory; // …/dapps.core.tests/bin/<Cfg>/net10.0
             var primaryCfg = new DirectoryInfo(here).Parent?.Name ?? "Debug";

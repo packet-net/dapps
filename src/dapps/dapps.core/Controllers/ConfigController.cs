@@ -217,6 +217,7 @@ public class ConfigController(SystemOptionsStore options, AdminPasswordStore adm
     /// node with no password yet sets its first one on <c>/Setup</c>,
     /// since the auth middleware sends every other request there; the
     /// current-password check is skipped only in that no-password case.
+    /// A change signs out every other dashboard login.
     /// </summary>
     [HttpPost("admin-password")]
     public async Task<IActionResult> SetAdminPassword([FromBody] AdminPasswordRequest req)
@@ -230,6 +231,9 @@ public class ConfigController(SystemOptionsStore options, AdminPasswordStore adm
             return BadRequest(error);
         }
         await adminPassword.SetAsync(req.Password);
+        // The change signs out every other browser (#385); sign this
+        // one straight back in so the sysop who made it stays put.
+        await AdminSession.SignInAsync(HttpContext);
         return NoContent();
     }
 }

@@ -59,7 +59,15 @@ Send and receive state for apps that use opt-in message ordering.
 
 The operator-tunable knobs (see [Configure](configure.md)), plus changing the admin password. Changing it needs the current password, and the new one must be at least 8 characters. The dashboard always has a password; there's no way to turn the login off. Restart-required fields are flagged in each section's blurb.
 
-Forgotten the password? Stop dapps, run `sqlite3 /var/lib/dapps/dapps.db "delete from systemoptions where option like 'AdminPassword%';"` (the database path on an apt or systemd install), and start it again. Your next visit lands on `/Setup` to set a new one; finish that straight away, because until you do the dashboard is as open as on a fresh install.
+Forgotten the password? On the node, run:
+
+```bash
+sudo dapps reset-admin-password
+```
+
+It asks for a new password twice (at least 8 characters) and signs every browser out, so log in again with the new one. dapps can be running or stopped; it doesn't need a restart. To script it, pipe the password in on one line instead. It finds the database in the folder you run it in, or the apt install's `/var/lib/dapps`; anywhere else, `cd` to the folder dapps runs in first, or add `--db <that folder>`. In Docker, it's `docker exec -it dapps dotnet dapps.core.dll reset-admin-password`.
+
+Changing the password in Settings also signs out every other browser.
 
 ## /Health - for watchdogs
 

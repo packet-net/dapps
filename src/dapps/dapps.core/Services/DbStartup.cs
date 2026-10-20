@@ -11,12 +11,17 @@ public static class DbInfo
     /// default `data/dapps.db` (or `dapps.db` if no `data/` dir).</summary>
     public static string? OverridePath { get; set; }
 
-    private static string GetPath()
-    {
-        if (!string.IsNullOrEmpty(OverridePath)) return OverridePath;
-        if (Directory.Exists("data")) return "data/dapps.db";
-        return "dapps.db";
-    }
+    private static string GetPath() =>
+        !string.IsNullOrEmpty(OverridePath) ? OverridePath : PathIn("");
+
+    /// <summary>Where the daemon keeps its database when it runs in
+    /// <paramref name="directory"/>: <c>data/dapps.db</c> if there's a
+    /// <c>data</c> folder there, otherwise <c>dapps.db</c>. An empty
+    /// <paramref name="directory"/> means the working directory.</summary>
+    public static string PathIn(string directory) =>
+        Directory.Exists(Path.Combine(directory, "data"))
+            ? Path.Combine(directory, "data", "dapps.db")
+            : Path.Combine(directory, "dapps.db");
 
     public static SQLiteConnection GetConnection() => new(GetPath());
 

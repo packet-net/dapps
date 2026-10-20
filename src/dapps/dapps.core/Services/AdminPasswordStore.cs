@@ -17,6 +17,12 @@ namespace dapps.core.Services;
 /// clears the password, and every new one needs at least
 /// <see cref="MinLength"/> characters. Passwords stored by older
 /// versions, which had no server-side minimum, still verify.
+///
+/// Every set also records when it happened, and a dashboard login
+/// issued before that stops working (<see cref="IsSessionCurrentAsync"/>),
+/// so a new password signs out every browser that knew the old one.
+/// <c>dapps reset-admin-password</c> (<see cref="AdminPasswordCli"/>)
+/// sets it from a shell for a sysop who has forgotten it (#385).
 /// </summary>
 public sealed class AdminPasswordStore(ILogger<AdminPasswordStore> logger)
 {
@@ -25,6 +31,9 @@ public sealed class AdminPasswordStore(ILogger<AdminPasswordStore> logger)
 
     private const string HashOption = "AdminPasswordHash";
     private const string SaltOption = "AdminPasswordSalt";
+    /// <summary>Unix seconds of the last set; logins issued before it
+    /// are signed out.</summary>
+    private const string SetAtOption = "AdminPasswordSetAt";
 
     private const int SaltBytes = 16;
     private const int HashBytes = 32;
@@ -73,7 +82,29 @@ public sealed class AdminPasswordStore(ILogger<AdminPasswordStore> logger)
         var hash = Pbkdf2(plaintext!, salt);
         await Upsert(connection, HashOption, Convert.ToHexString(hash));
         await Upsert(connection, SaltOption, Convert.ToHexString(salt));
+        await Upsert(connection, SetAtOption, DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture));
         logger.LogInformation("Admin password updated");
+    }
+
+    /// <summary>
+    /// Whether a dashboard login issued at <paramref name="issuedUtc"/>
+    /// still counts: false once the password has been set since. A
+    /// login cookie carries its issue time to the second, so the
+    /// comparison is in whole seconds; a login issued in the same
+    /// second as the change survives it, which is what keeps the
+    /// browser that just made the change signed in. Nodes whose
+    /// password predates this check have no set time, and their
+    /// logins all stay valid until the next change.
+    /// </summary>
+    public async Task<bool> IsSessionCurrentAsync(DateTimeOffset? issuedUtc)
+    {
+        var row = await DbInfo.GetAsyncConnection().FindAsync<DbSystemOption>(SetAtOption);
+        if (row is null || !long.TryParse(row.Value, System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out var setAt))
+        {
+            return true;
+        }
+        return issuedUtc is { } issued && issued.ToUnixTimeSeconds() >= setAt;
     }
 
     private static async Task Upsert(SQLite.SQLiteAsyncConnection c, string option, string value)

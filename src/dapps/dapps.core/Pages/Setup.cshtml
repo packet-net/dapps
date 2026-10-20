@@ -180,9 +180,8 @@
             </form>
             <div class="hint">
                 At least 8 characters. You can change it later in Settings, but not remove it.
-                Forgotten it? Stop dapps, run
-                <code>sqlite3 /var/lib/dapps/dapps.db "delete from systemoptions where option like 'AdminPassword%';"</code>
-                (the database path on an apt or systemd install), restart, and you'll land back here to set a new one.
+                Forgotten it later? On the node, run
+                <code>sudo dapps reset-admin-password</code> to set a new one.
             </div>
         }
         else

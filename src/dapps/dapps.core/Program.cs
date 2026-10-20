@@ -23,6 +23,9 @@ using System.Net.Sockets;
 // on-disk dapps.db is incompatible / a port is wedged / the callsign
 // is unset, which is exactly when --rollback is most useful.
 if (UpdaterCli.TryHandle(args, out var cliExitCode)) return cliExitCode;
+// #385: set a forgotten admin password from a shell on the node,
+// against the same database, without starting the daemon.
+if (AdminPasswordCli.TryHandle(args, out var resetExitCode)) return resetExitCode;
 
 // Seed the systemoptions table BEFORE host build. The
 // SystemOptions Configure callback (just below) fires during eager
@@ -208,13 +211,15 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
         // #248: reissue a login sealed with a pre-GCM key, so an
         // existing operator's cookie shrinks on their next request
         // rather than at the 45-day sliding renewal.
-        options.Events.OnValidatePrincipal = ctx =>
+        options.Events.OnValidatePrincipal = async ctx =>
         {
-            if (ctx.Properties.IssuedUtc < CookieEncryption.GcmKeySince)
+            // #385: a login from before the password was last set is
+            // signed out.
+            await AdminSession.ValidateAsync(ctx);
+            if (ctx.Principal is not null && ctx.Properties.IssuedUtc < CookieEncryption.GcmKeySince)
             {
                 ctx.ShouldRenew = true;
             }
-            return Task.CompletedTask;
         };
     });
 // #248: keep our cookies small, because other web apps on the node
