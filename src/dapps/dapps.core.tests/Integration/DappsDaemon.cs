@@ -233,10 +233,10 @@ internal sealed class DappsDaemon : IAsyncDisposable
     }
 
     /// <summary>Queue a message for <paramref name="destCallsign"/>'s <paramref name="app"/>.</summary>
-    public async Task<string> SubmitAsync(string app, string destCallsign, byte[] payload, CancellationToken ct, int? ttl = 600, string? streamId = null)
+    public async Task<string> SubmitAsync(string app, string destCallsign, byte[] payload, CancellationToken ct, int? ttl = 600, string? streamId = null, uint? streamGapTimeoutSeconds = null)
     {
         var response = await Http.PostAsJsonAsync("AppApi/outbound",
-            new { App = app, DestCallsign = destCallsign, Payload = payload, Ttl = ttl, StreamId = streamId }, ct);
+            new { App = app, DestCallsign = destCallsign, Payload = payload, Ttl = ttl, StreamId = streamId, StreamGapTimeoutSeconds = streamGapTimeoutSeconds }, ct);
         var body = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"{Name}: submit failed {(int)response.StatusCode}: {body}");
         return JsonDocument.Parse(body).RootElement.GetProperty("id").GetString()!;

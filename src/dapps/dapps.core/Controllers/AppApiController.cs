@@ -34,6 +34,10 @@ public class AppApiController(Database database) : ControllerBase
         {
             return BadRequest($"StreamId: {sidError}");
         }
+        if (request.StreamId is not null && request.StreamGapTimeoutSeconds is null)
+        {
+            return BadRequest($"StreamGapTimeoutSeconds: {MessageFields.StreamGapTimeoutRequired}");
+        }
         if (!HttpContext.IsAuthorisedForApp(request.App)) return Forbid();
 
         var id = await database.SubmitOutboundMessage(
@@ -88,8 +92,10 @@ public class AppApiController(Database database) : ControllerBase
 /// delivery: messages with the same StreamId destined for the same
 /// recipient deliver in submit order at the receiver, gated by the
 /// receiver's reorder cursor. <see cref="StreamGapTimeoutSeconds"/>
-/// chooses the gap policy: 0 (default) = strict (stall forever for
-/// the missing seq); &gt;0 = skip the gap after that many seconds.
+/// chooses the gap policy and is required whenever StreamId is set
+/// (#401): 0 = strict (stall forever for the missing seq); &gt;0 =
+/// skip the gap after that many seconds. Without a StreamId it is
+/// ignored.
 /// Both fields ride on the wire as the <c>sid=</c>, <c>sn=</c>,
 /// <c>gt=</c> ihave keys; the daemon mints <c>sn</c> automatically
 /// from the persisted send-state counter.

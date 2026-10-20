@@ -714,7 +714,7 @@ public sealed class StreamOrderingTests : IAsyncLifetime
         var expected = seedFirst ? burst + 1 : burst;
         if (seedFirst)
         {
-            await database.SubmitOutboundMessage("chat", "G0DEST", "seed"u8.ToArray(), streamId: "c1");
+            await database.SubmitOutboundMessage("chat", "G0DEST", "seed"u8.ToArray(), streamId: "c1", streamGapTimeoutSeconds: 0);
         }
 
         var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -722,7 +722,7 @@ public sealed class StreamOrderingTests : IAsyncLifetime
         {
             await start.Task;
             await database.SubmitOutboundMessage("chat", "G0DEST",
-                System.Text.Encoding.UTF8.GetBytes($"msg-{i}"), streamId: "c1");
+                System.Text.Encoding.UTF8.GetBytes($"msg-{i}"), streamId: "c1", streamGapTimeoutSeconds: 0);
         })).ToList();
         start.SetResult();
         await Task.WhenAll(tasks);
@@ -741,11 +741,11 @@ public sealed class StreamOrderingTests : IAsyncLifetime
     public async Task Sender_CounterPersistsAcrossSubmissions()
     {
         await database.SubmitOutboundMessage("chat", "G0DEST", "one"u8.ToArray(),
-            streamId: "c1");
+            streamId: "c1", streamGapTimeoutSeconds: 0);
         await database.SubmitOutboundMessage("chat", "G0DEST", "two"u8.ToArray(),
-            streamId: "c1");
+            streamId: "c1", streamGapTimeoutSeconds: 0);
         await database.SubmitOutboundMessage("chat", "G0DEST", "three"u8.ToArray(),
-            streamId: "c1");
+            streamId: "c1", streamGapTimeoutSeconds: 0);
 
         var states = await database.GetStreamSendStatesAsync();
         states.Should().ContainSingle();
@@ -762,9 +762,9 @@ public sealed class StreamOrderingTests : IAsyncLifetime
     {
         // #390: G0DEST, g0dest and G0DEST-0 are one station, so one stream
         // to it has one counter however the destination is written.
-        await database.SubmitOutboundMessage("chat", "G0DEST", "a"u8.ToArray(), streamId: "c1");
-        await database.SubmitOutboundMessage("chat", "g0dest", "b"u8.ToArray(), streamId: "c1");
-        await database.SubmitOutboundMessage("chat", "G0DEST-0", "c"u8.ToArray(), streamId: "c1");
+        await database.SubmitOutboundMessage("chat", "G0DEST", "a"u8.ToArray(), streamId: "c1", streamGapTimeoutSeconds: 0);
+        await database.SubmitOutboundMessage("chat", "g0dest", "b"u8.ToArray(), streamId: "c1", streamGapTimeoutSeconds: 0);
+        await database.SubmitOutboundMessage("chat", "G0DEST-0", "c"u8.ToArray(), streamId: "c1", streamGapTimeoutSeconds: 0);
 
         var rows = await database.GetRecentMessages(10);
         rows.Select(r => r.StreamSeq).OrderBy(s => s).Should().Equal(1u, 2u, 3u);
@@ -777,8 +777,8 @@ public sealed class StreamOrderingTests : IAsyncLifetime
     [Fact]
     public async Task Sender_DifferentSsids_KeepTheirOwnCounters()
     {
-        await database.SubmitOutboundMessage("chat", "G0DEST", "a"u8.ToArray(), streamId: "c1");
-        await database.SubmitOutboundMessage("chat", "G0DEST-1", "b"u8.ToArray(), streamId: "c1");
+        await database.SubmitOutboundMessage("chat", "G0DEST", "a"u8.ToArray(), streamId: "c1", streamGapTimeoutSeconds: 0);
+        await database.SubmitOutboundMessage("chat", "G0DEST-1", "b"u8.ToArray(), streamId: "c1", streamGapTimeoutSeconds: 0);
 
         (await database.GetStreamSendStatesAsync()).Should().HaveCount(2);
         (await database.GetRecentMessages(10)).Select(r => r.StreamSeq).Should().Equal(1u, 1u);
@@ -817,7 +817,7 @@ public sealed class StreamOrderingTests : IAsyncLifetime
         states.Single(s => s.RemoteCallsign == "G0DEST-1").NextSeq.Should().Be(3u);
         states.Single(s => s.StreamId == "c2").NextSeq.Should().Be(6u);
 
-        await database.SubmitOutboundMessage("chat", "g0dest-0", "next"u8.ToArray(), streamId: "c1");
+        await database.SubmitOutboundMessage("chat", "g0dest-0", "next"u8.ToArray(), streamId: "c1", streamGapTimeoutSeconds: 0);
         (await database.GetRecentMessages(10)).Single().StreamSeq.Should().Be(9u);
     }
 
@@ -848,13 +848,26 @@ public sealed class StreamOrderingTests : IAsyncLifetime
     [Fact]
     public async Task Sender_DifferentStreamIds_GetIndependentCounters()
     {
-        await database.SubmitOutboundMessage("chat", "G0DEST", "a"u8.ToArray(), streamId: "c1");
-        await database.SubmitOutboundMessage("chat", "G0DEST", "b"u8.ToArray(), streamId: "c2");
-        await database.SubmitOutboundMessage("chat", "G0DEST", "c"u8.ToArray(), streamId: "c1");
+        await database.SubmitOutboundMessage("chat", "G0DEST", "a"u8.ToArray(), streamId: "c1", streamGapTimeoutSeconds: 0);
+        await database.SubmitOutboundMessage("chat", "G0DEST", "b"u8.ToArray(), streamId: "c2", streamGapTimeoutSeconds: 0);
+        await database.SubmitOutboundMessage("chat", "G0DEST", "c"u8.ToArray(), streamId: "c1", streamGapTimeoutSeconds: 0);
 
         var rows = await database.GetRecentMessages(10);
         rows.Where(r => r.StreamId == "c1").Select(r => r.StreamSeq).OrderBy(s => s).Should().Equal(1u, 2u);
         rows.Where(r => r.StreamId == "c2").Select(r => r.StreamSeq).OrderBy(s => s).Should().Equal(1u);
+    }
+
+    [Fact]
+    public async Task Sender_StreamIdWithoutGapTimeout_ThrowsBeforeStoringOrMinting()
+    {
+        // #401: there is no default gap policy. The app entry points
+        // refuse this first; the queue refuses it too, so no path can
+        // fall into one by accident.
+        var act = () => database.SubmitOutboundMessage("chat", "G0DEST", "a"u8.ToArray(), streamId: "c1");
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        (await database.GetStreamSendStatesAsync()).Should().BeEmpty();
+        (await database.GetRecentMessages(10)).Should().BeEmpty();
     }
 
     [Fact]

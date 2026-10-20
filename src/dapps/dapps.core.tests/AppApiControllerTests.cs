@@ -39,6 +39,7 @@ public sealed class AppApiControllerTests : IAsyncLifetime
             c.CreateTable<DbMessage>();
             c.CreateTable<DbReceived>();
             c.CreateTable<DbDroppedMessage>();
+            c.CreateTable<DbStreamSendState>();
         }
         var optionsMonitor = new TestOptionsMonitor<SystemOptions>(new SystemOptions { Callsign = "N0CALL" });
         database = new Database(NullLogger<Database>.Instance, optionsMonitor);
@@ -85,6 +86,46 @@ public sealed class AppApiControllerTests : IAsyncLifetime
         var bad = result.Result.Should().BeOfType<BadRequestObjectResult>().Subject;
         bad.Value.Should().BeOfType<string>().Which.Should().StartWith(field + ":");
         (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    // #401: the app must choose the gap policy whenever it sets a stream
+    // id; there is no default.
+    [Fact]
+    public async Task SubmitOutbound_StreamIdWithoutGapTimeout_RefusedAndNothingStoredOrMinted()
+    {
+        var result = await controller.SubmitOutbound(new OutboundRequest("myapp", "G1AAA", [1], StreamId: "c1"));
+
+        var bad = result.Result.Should().BeOfType<BadRequestObjectResult>().Subject;
+        bad.Value.Should().BeOfType<string>().Which.Should().StartWith("StreamGapTimeoutSeconds:");
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+        (await database.GetStreamSendStatesAsync()).Should().BeEmpty("no seq may be minted for a refused submission");
+    }
+
+    [Theory]
+    [InlineData(0u)]
+    [InlineData(600u)]
+    public async Task SubmitOutbound_StreamIdWithGapTimeout_Queued(uint gapTimeout)
+    {
+        var result = await controller.SubmitOutbound(new OutboundRequest("myapp", "G1AAA", [1],
+            StreamId: "c1", StreamGapTimeoutSeconds: gapTimeout));
+
+        result.Result.Should().BeOfType<OkObjectResult>();
+        var queued = (await database.GetPendingOutboundMessages()).Single();
+        queued.StreamId.Should().Be("c1");
+        queued.StreamSeq.Should().Be(1u);
+        queued.StreamGapTimeoutSeconds.Should().Be(gapTimeout);
+    }
+
+    [Fact]
+    public async Task SubmitOutbound_GapTimeoutWithoutStreamId_IgnoredAndSentUnordered()
+    {
+        var result = await controller.SubmitOutbound(new OutboundRequest("myapp", "G1AAA", [1],
+            StreamGapTimeoutSeconds: 600));
+
+        result.Result.Should().BeOfType<OkObjectResult>();
+        var queued = (await database.GetPendingOutboundMessages()).Single();
+        queued.StreamId.Should().BeNull();
+        queued.StreamGapTimeoutSeconds.Should().BeNull();
     }
 
     [Fact]

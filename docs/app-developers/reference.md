@@ -251,7 +251,7 @@ DAPPS does not impose a hard payload-size limit at the app interface - submit an
 | Read residual TTL              | `dapps-ttl` user property (absent if no TTL)      | `ttl` field (`null` if no TTL)                      |
 | Set TTL on submit              | `dapps-ttl` user property                         | `ttl` field                                         |
 | Opt into ordered delivery      | `dapps-stream` user property                      | `streamId` field                                    |
-| Set ordering gap policy        | `dapps-stream-gap-timeout` user property          | `streamGapTimeoutSeconds` field                     |
+| Set ordering gap policy (required with a stream) | `dapps-stream-gap-timeout` user property | `streamGapTimeoutSeconds` field            |
 | Read delivered stream / seq    | `dapps-stream`, `dapps-stream-seq` properties     | (not surfaced on REST inbound today)                |
 
 ## DAPPSv1 wire format (summary)
@@ -287,7 +287,7 @@ The full wire spec - prompt protocol, every line format, the binary datagram cod
 
 DAPPS doesn't order messages by default. Each submission is independent; under retries and routing reconvergence the receiver can see them in any order. For most apps this is correct: idempotent or content-addressed work doesn't care.
 
-When an app does care - chat transcripts, telemetry sequences, change-log streams - opt-in ordering is available. Setting `streamId` on a submission tags the message as part of a per-sender ordered stream; the daemon mints a monotonic sequence number and the receiving daemon delivers messages on that stream in submit order.
+When an app does care - chat transcripts, telemetry sequences, change-log streams - opt-in ordering is available. Setting `streamId` on a submission tags the message as part of a per-sender ordered stream; the daemon mints a monotonic sequence number and the receiving daemon delivers messages on that stream in submit order. Whenever you set a stream id you must also set the gap policy, `streamGapTimeoutSeconds` (below).
 
 ### Opting in
 
@@ -319,12 +319,12 @@ A stream id is at most 255 bytes of UTF-8 with no spaces, other whitespace, cont
 
 `streamId` is sender-scoped: two senders can pick the same id without colliding because the receiver keys its cursor on `(originator-callsign, streamId)`. Pick something short (it travels on every wire frame for that stream).
 
-`streamGapTimeoutSeconds` chooses the policy when a message is missing:
+`streamGapTimeoutSeconds` (`dapps-stream-gap-timeout` on MQTT) says what to do when a message is missing. There is no default: only your app knows which is right, so you choose it on every message with a stream id. REST answers `400` and MQTT 5 refuses the publish if it's missing or isn't a whole number. On a message without a stream id it's ignored.
 
-- **`0` (default, "strict")**: stall forever waiting for the missing seq. Later messages park until the gap fills. Use when you'd rather wait than skip.
-- **`>0` ("timeout")**: stall for that many seconds, then skip past the gap and deliver waiting messages. Use when stale data is worse than missing data.
+- **`0` ("strict")**: wait for the missing message however long it takes; later messages wait behind it. Pick this when you'd rather wait than skip.
+- **`>0` ("timeout")**: wait that many seconds, then skip the gap and deliver what's waiting. Pick this when stale data is worse than missing data, or when your messages carry a TTL: a message that expires on the way never arrives, and the receiver can't tell it from one still coming, so a strict stream would wait for it forever.
 
-A message that reaches the receiving node but runs out of TTL there before it can be delivered, or that the operator drops from the inbox, is skipped, so later messages don't wait for it. A message that expires somewhere on the way never arrives, and the receiver can't tell that from one still coming, so a strict stream waits for it forever. If your messages carry a TTL, a gap timeout is usually the better choice.
+A message that reaches the receiving node but runs out of TTL there before it can be delivered, or that the operator drops from the inbox, is skipped either way, so later messages don't wait for it.
 
 ### What the receiver sees
 
@@ -337,7 +337,7 @@ Apps that don't care can ignore them; apps that opted in can use them to detect 
 
 ### Tradeoffs
 
-- **Latency cost**. One missing message stalls the whole stream until it arrives or the timeout fires. On lossy radio links this is real - opt-in is the right default.
+- **Latency cost**. One missing message stalls the whole stream until it arrives or the timeout fires. On lossy radio links this is real, which is why ordering is opt-in.
 - **Sender resets**. The sender persists its counter to disk; a fresh install / wiped database starts back at `sn=1`. Re-using the same `streamId` after a reset will cause receivers to drop the new messages as `stream-stale` (their cursor is well past `sn=1`). Mitigate by appending a short epoch suffix to the stream id when you reset (e.g. `chat:tom.2`).
 - **Streams to an app on the same node**. If a message can't be handed over (say the database hiccups), it stays listed for the app and later messages on the stream go straight through rather than waiting for it.
 - **End-to-end semantics**. Ordering is enforced at the receiving daemon, not at intermediate forwarders. Hops can reorder, retry, and flood freely - the trio rides the envelope verbatim.

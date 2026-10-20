@@ -137,12 +137,20 @@ public class Database(
         var ourCall = options.CurrentValue.Callsign;
         var threshold = options.CurrentValue.FragmentThresholdBytes;
 
-        // Opt-in ordering: gap timeout 0 (= strict) is the default when
-        // streamId is set without an explicit value.
+        // Opt-in ordering: there is no default gap policy, the app must
+        // choose one with its stream id (#401). The app entry points
+        // refuse it with a reason first; this stops anything else
+        // falling into one before a row is stored or a seq minted. A
+        // gap policy without a stream id means nothing and is dropped.
         var hasStream = !string.IsNullOrEmpty(streamId);
-        if (hasStream && (streamGapTimeoutSeconds is null))
+        if (hasStream && streamGapTimeoutSeconds is null)
         {
-            streamGapTimeoutSeconds = 0;
+            throw new ArgumentException(
+                $"Stream gap timeout is {MessageFields.StreamGapTimeoutRequired}", nameof(streamGapTimeoutSeconds));
+        }
+        if (!hasStream)
+        {
+            streamGapTimeoutSeconds = null;
         }
 
         // F2 multi-part: split payloads above the threshold into N

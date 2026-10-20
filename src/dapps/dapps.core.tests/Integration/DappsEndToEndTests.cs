@@ -189,7 +189,7 @@ public abstract class DappsExchangeTests(IDappsNodePair pair) : IAsyncLifetime
 
         for (var i = 1; i <= 3; i++)
         {
-            await a.SubmitAsync("chat", b.Callsign, Encoding.UTF8.GetBytes($"part {i}"), ct, streamId: "conv1");
+            await a.SubmitAsync("chat", b.Callsign, Encoding.UTF8.GetBytes($"part {i}"), ct, streamId: "conv1", streamGapTimeoutSeconds: 0);
         }
 
         var inbox = await b.WaitForInboundAsync("chat", 3, Delivery, ct);

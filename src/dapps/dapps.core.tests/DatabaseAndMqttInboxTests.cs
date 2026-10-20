@@ -471,8 +471,8 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
         await client.SubscribeAsync("dapps/in/hello",
             MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, ct);
 
-        await database.SubmitOutboundMessage("hello", "N0CALL", "one"u8.ToArray(), 600, streamId: "s1");
-        await database.SubmitOutboundMessage("hello", "N0CALL", "two"u8.ToArray(), 600, streamId: "s1");
+        await database.SubmitOutboundMessage("hello", "N0CALL", "one"u8.ToArray(), 600, streamId: "s1", streamGapTimeoutSeconds: 0);
+        await database.SubmitOutboundMessage("hello", "N0CALL", "two"u8.ToArray(), 600, streamId: "s1", streamGapTimeoutSeconds: 0);
 
         for (var i = 0; i < 50 && got.Count < 2; i++) await Task.Delay(100, ct);
         got.Should().Equal("one", "two");
@@ -496,7 +496,7 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
         // Strict stream (no gap timeout): a lost or reordered message
         // would stall the rest, so 20 in order means no clobbered cursor.
         var ids = await Task.WhenAll(Enumerable.Range(0, 20).Select(i =>
-            Task.Run(() => database.SubmitOutboundMessage("hello", "N0CALL", Encoding.UTF8.GetBytes($"m{i}"), 600, streamId: "par"), ct)));
+            Task.Run(() => database.SubmitOutboundMessage("hello", "N0CALL", Encoding.UTF8.GetBytes($"m{i}"), 600, streamId: "par", streamGapTimeoutSeconds: 0), ct)));
 
         for (var i = 0; i < 100 && got.Count < 20; i++) await Task.Delay(100, ct);
         ids.Distinct().Should().HaveCount(20);
@@ -528,11 +528,11 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
             MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, ct);
 
         using (var c = DbInfo.GetConnection()) c.DropTable<DbStreamRecvState>();
-        await database.SubmitOutboundMessage("hello", "N0CALL", "one"u8.ToArray(), 600, streamId: "s1");
+        await database.SubmitOutboundMessage("hello", "N0CALL", "one"u8.ToArray(), 600, streamId: "s1", streamGapTimeoutSeconds: 0);
         using (var c = DbInfo.GetConnection()) c.CreateTable<DbStreamRecvState>();
 
-        await database.SubmitOutboundMessage("hello", "N0CALL", "two"u8.ToArray(), 600, streamId: "s1");
-        await database.SubmitOutboundMessage("hello", "N0CALL", "three"u8.ToArray(), 600, streamId: "s1");
+        await database.SubmitOutboundMessage("hello", "N0CALL", "two"u8.ToArray(), 600, streamId: "s1", streamGapTimeoutSeconds: 0);
+        await database.SubmitOutboundMessage("hello", "N0CALL", "three"u8.ToArray(), 600, streamId: "s1", streamGapTimeoutSeconds: 0);
 
         for (var i = 0; i < 50 && got.Count < 2; i++) await Task.Delay(100, ct);
         got.Should().Equal("two", "three");
@@ -568,8 +568,8 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
             });
         }
 
-        await database.SubmitOutboundMessage("hello", "N0CALL", "five"u8.ToArray(), 600, streamId: "old");
-        await database.SubmitOutboundMessage("hello", "N0CALL", "six"u8.ToArray(), 600, streamId: "old");
+        await database.SubmitOutboundMessage("hello", "N0CALL", "five"u8.ToArray(), 600, streamId: "old", streamGapTimeoutSeconds: 0);
+        await database.SubmitOutboundMessage("hello", "N0CALL", "six"u8.ToArray(), 600, streamId: "old", streamGapTimeoutSeconds: 0);
 
         for (var i = 0; i < 50 && got.Count < 2; i++) await Task.Delay(100, ct);
         got.Should().Equal("five", "six");
@@ -595,9 +595,9 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
 
         var ids = new List<string>
         {
-            await database.SubmitOutboundMessage("hello", "N0CALL", "upper"u8.ToArray(), 600, streamId: "mixed"),
-            await database.SubmitOutboundMessage("hello", "n0call", "lower"u8.ToArray(), 600, streamId: "mixed"),
-            await database.SubmitOutboundMessage("hello", "N0CALL-0", "ssid0"u8.ToArray(), 600, streamId: "mixed"),
+            await database.SubmitOutboundMessage("hello", "N0CALL", "upper"u8.ToArray(), 600, streamId: "mixed", streamGapTimeoutSeconds: 0),
+            await database.SubmitOutboundMessage("hello", "n0call", "lower"u8.ToArray(), 600, streamId: "mixed", streamGapTimeoutSeconds: 0),
+            await database.SubmitOutboundMessage("hello", "N0CALL-0", "ssid0"u8.ToArray(), 600, streamId: "mixed", streamGapTimeoutSeconds: 0),
         };
 
         for (var i = 0; i < 50 && got.Count < 3; i++) await Task.Delay(100, ct);

@@ -76,6 +76,12 @@ public static class MessageFields
         return AppNameError(destination[..at]) ?? CallsignError(destination[(at + 1)..]);
     }
 
+    /// <summary>Why a stream id without a gap policy is refused: only the
+    /// app knows whether waiting or skipping is right, so there is no
+    /// default (#401).</summary>
+    public const string StreamGapTimeoutRequired =
+        "required with a stream id: 0 to wait for a missing message however long it takes, or the number of seconds to wait before skipping it.";
+
     /// <summary>A stream id: UTF-8, with no whitespace, control
     /// characters or '=', and at most <see cref="MaxStreamIdBytes"/>
     /// bytes.</summary>

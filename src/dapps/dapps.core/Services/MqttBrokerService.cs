@@ -566,8 +566,9 @@ public sealed class MqttBrokerService(
             }
 
             // Optional opt-in ordering: dapps-stream is the stream id;
-            // dapps-stream-gap-timeout is the policy in seconds (0 or
-            // missing = strict). The daemon allocates the seq.
+            // dapps-stream-gap-timeout is the policy in seconds (0 =
+            // strict), required with dapps-stream and ignored without it
+            // (#401). The daemon allocates the seq.
             string? streamId = null;
             uint? streamGap = null;
             var sidProp = e.ApplicationMessage.UserProperties?
@@ -586,12 +587,22 @@ public sealed class MqttBrokerService(
                 streamId = sidProp.Value;
                 var gtProp = e.ApplicationMessage.UserProperties?
                     .FirstOrDefault(p => string.Equals(p.Name, "dapps-stream-gap-timeout", StringComparison.OrdinalIgnoreCase));
-                if (gtProp is not null
-                    && uint.TryParse(gtProp.Value, System.Globalization.NumberStyles.None,
-                        System.Globalization.CultureInfo.InvariantCulture, out var parsedGap))
+                uint parsedGap = 0;
+                var gapError = gtProp is null ? MessageFields.StreamGapTimeoutRequired
+                    : !uint.TryParse(gtProp.Value, System.Globalization.NumberStyles.None,
+                        System.Globalization.CultureInfo.InvariantCulture, out parsedGap)
+                        ? "must be 0 or a whole number of seconds."
+                        : null;
+                if (gapError is not null)
                 {
-                    streamGap = parsedGap;
+                    // Refused rather than given a policy the app didn't
+                    // choose.
+                    logger.LogWarning("MQTT: refused publish from client {0} on {1}: dapps-stream-gap-timeout: {2}",
+                        Printable(e.ClientId), Printable(topic), gapError);
+                    Refuse(e, MqttPubAckReasonCode.ImplementationSpecificError, $"dapps-stream-gap-timeout: {gapError}");
+                    return;
                 }
+                streamGap = parsedGap;
             }
 
             try

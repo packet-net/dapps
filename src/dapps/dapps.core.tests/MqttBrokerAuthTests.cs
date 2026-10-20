@@ -471,6 +471,7 @@ public sealed class MqttBrokerAuthTests : IAsyncLifetime
             .WithPayload("x"u8.ToArray())
             .WithQualityOfServiceLevel(MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce)
             .WithUserProperty("dapps-stream", "chat:tom.2")
+            .WithUserProperty("dapps-stream-gap-timeout", "0")
             .Build();
 
         var result = await chat.PublishAsync(message, ct);
@@ -480,6 +481,84 @@ public sealed class MqttBrokerAuthTests : IAsyncLifetime
         var queued = (await database.GetPendingOutboundMessages()).Single();
         queued.Destination.Should().Be("chat@G1AAA-3");
         queued.StreamId.Should().Be("chat:tom.2");
+    }
+
+    // #401: the app must choose the gap policy whenever it sets a stream
+    // id; there is no default. A value that isn't 0 or a whole number of
+    // seconds is refused too, rather than read as missing.
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("-1")]
+    [InlineData("ten")]
+    [InlineData("1.5")]
+    public async Task Publish_StreamIdWithoutValidGapTimeout_RefusedAndNothingStoredOrMinted(string? gapTimeout)
+    {
+        var token = await tokens.CreateOrRotateAsync("chat");
+        var ct = TestContext.Current.CancellationToken;
+        var chat = await ConnectAsync("chat", token, ct);
+        var builder = new MqttApplicationMessageBuilder()
+            .WithTopic("dapps/out/chat/G1AAA")
+            .WithPayload("x"u8.ToArray())
+            .WithQualityOfServiceLevel(MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce)
+            .WithUserProperty("dapps-stream", "c1");
+        if (gapTimeout is not null) builder = builder.WithUserProperty("dapps-stream-gap-timeout", gapTimeout);
+
+        var result = await chat.PublishAsync(builder.Build(), ct);
+
+        result.ReasonCode.Should().Be(MqttClientPublishReasonCode.ImplementationSpecificError);
+        result.ReasonString.Should().StartWith("dapps-stream-gap-timeout:");
+        await Task.Delay(200, ct);
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+        (await database.GetStreamSendStatesAsync()).Should().BeEmpty("no seq may be minted for a refused publish");
+    }
+
+    [Theory]
+    [InlineData("0", 0u)]
+    [InlineData("600", 600u)]
+    public async Task Publish_StreamIdWithGapTimeout_Queued(string gapTimeout, uint expected)
+    {
+        var token = await tokens.CreateOrRotateAsync("chat");
+        var ct = TestContext.Current.CancellationToken;
+        var chat = await ConnectAsync("chat", token, ct);
+        var message = new MqttApplicationMessageBuilder()
+            .WithTopic("dapps/out/chat/G1AAA")
+            .WithPayload("x"u8.ToArray())
+            .WithQualityOfServiceLevel(MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce)
+            .WithUserProperty("dapps-stream", "c1")
+            .WithUserProperty("dapps-stream-gap-timeout", gapTimeout)
+            .Build();
+
+        var result = await chat.PublishAsync(message, ct);
+
+        result.ReasonCode.Should().Be(MqttClientPublishReasonCode.Success);
+        await Eventually(async () => (await database.GetPendingOutboundMessages()).Count == 1);
+        var queued = (await database.GetPendingOutboundMessages()).Single();
+        queued.StreamId.Should().Be("c1");
+        queued.StreamSeq.Should().Be(1u);
+        queued.StreamGapTimeoutSeconds.Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task Publish_GapTimeoutWithoutStreamId_IgnoredAndSentUnordered()
+    {
+        var token = await tokens.CreateOrRotateAsync("chat");
+        var ct = TestContext.Current.CancellationToken;
+        var chat = await ConnectAsync("chat", token, ct);
+        var message = new MqttApplicationMessageBuilder()
+            .WithTopic("dapps/out/chat/G1AAA")
+            .WithPayload("x"u8.ToArray())
+            .WithQualityOfServiceLevel(MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce)
+            .WithUserProperty("dapps-stream-gap-timeout", "600")
+            .Build();
+
+        var result = await chat.PublishAsync(message, ct);
+
+        result.ReasonCode.Should().Be(MqttClientPublishReasonCode.Success);
+        await Eventually(async () => (await database.GetPendingOutboundMessages()).Count == 1);
+        var queued = (await database.GetPendingOutboundMessages()).Single();
+        queued.StreamId.Should().BeNull();
+        queued.StreamGapTimeoutSeconds.Should().BeNull();
     }
 
     // ---- Session takeover (#312) ----
