@@ -147,6 +147,10 @@ Look at the dashboard:
 - Messages > Dropped: did it get dropped? If yes, reason will be there (usually TTL too short, or no route to destination).
 - Link state: is the link to the destination's first-hop neighbour actually working? `neighbourLinks` in `GET /Operational` has the last success and error per neighbour, and Topology > Probed nodes has the probe history.
 
+### "Too many wrong passwords" / HTTP 429 / MQTT connect refused
+
+After five wrong dashboard passwords or app tokens in a row from one address, DAPPS makes that address wait: 2 seconds, doubling up to a minute. It clears by itself, and other addresses are not affected. Wait it out and use the right password or token. Connections from the node's own machine (loopback) are never held back.
+
 ### "TTL expired" drops
 
 The default TTL on a submit is open-ended (no expiry). If you're seeing TTL drops, you're explicitly setting one. Either raise it on submit, or accept that mail-style multi-day delivery won't work with a sub-hour TTL.

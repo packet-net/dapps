@@ -21,8 +21,11 @@ public sealed class BearerAuthMiddleware(
     RequestDelegate next,
     AppTokenStore tokens,
     IOptionsMonitor<SystemOptions> options,
-    ILogger<BearerAuthMiddleware> logger)
+    ILogger<BearerAuthMiddleware> logger,
+    AuthThrottle? throttleOrNull = null)
 {
+    private readonly AuthThrottle throttle = throttleOrNull ?? new AuthThrottle(TimeProvider.System);
+
     /// <summary>Path prefix the middleware enforces against. Other
     /// surfaces (/Config, /Neighbours, /AppTokens) are admin-flavoured
     /// and intentionally not covered - those need the operator-level
@@ -54,16 +57,27 @@ public sealed class BearerAuthMiddleware(
             return;
         }
 
+        var address = context.Connection.RemoteIpAddress;
+        if (throttle.LockedFor("rest", address) is { } wait)
+        {
+            logger.LogInformation("AppApi request to {0} from {1} rejected: too many invalid tokens", path, address);
+            context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+            context.Response.Headers["Retry-After"] = ((int)Math.Ceiling(wait.TotalSeconds)).ToString();
+            return;
+        }
+
         var token = auth["Bearer ".Length..].Trim();
         var appName = await tokens.VerifyAsync(token);
         if (appName is null)
         {
+            throttle.Failed("rest", address);
             logger.LogInformation("AppApi request to {0} rejected: invalid bearer token", path);
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             context.Response.Headers["WWW-Authenticate"] = "Bearer error=\"invalid_token\"";
             return;
         }
 
+        throttle.Succeeded("rest", address);
         context.Items[AuthenticatedAppKey] = appName;
         await next(context);
     }

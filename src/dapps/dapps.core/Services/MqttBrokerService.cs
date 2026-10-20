@@ -37,8 +37,11 @@ public sealed class MqttBrokerService(
     IOptionsMonitor<SystemOptions> options,
     Database database,
     AppTokenStore tokens,
-    MqttServer server) : IHostedService
+    MqttServer server,
+    AuthThrottle? throttleOrNull = null) : IHostedService
 {
+    private readonly AuthThrottle throttle = throttleOrNull ?? new AuthThrottle(TimeProvider.System);
+
     private const string OutTopicPrefix = "dapps/out/";
     private const string InTopicPrefix = "dapps/in/";
     private const string AckTopicPrefix = "dapps/ack/";
@@ -323,12 +326,23 @@ public sealed class MqttBrokerService(
         // Captured before the token check, which can take a while (one
         // PBKDF2 per stored token): if the app's token changes meanwhile,
         // this connection must not go through on the old one.
+        var address = AuthThrottle.AddressOf(e.Endpoint);
+        if (throttle.LockedFor("mqtt", address) is { } wait)
+        {
+            // Not checked at all while locked out, so guessing costs the
+            // attacker time and us no hashing. Looks like any bad login.
+            e.ReasonCode = MQTTnet.Protocol.MqttConnectReasonCode.BadUserNameOrPassword;
+            logger.LogInformation("MQTT: rejected client {0} from {1} - too many wrong passwords; try again in {2} s", e.ClientId, address, (int)Math.Ceiling(wait.TotalSeconds));
+            return;
+        }
+
         var generation = TokenGeneration(e.UserName!);
         var app = await tokens.VerifyAsync(e.Password!);
         if (app is null
             || !string.Equals(app, e.UserName, StringComparison.OrdinalIgnoreCase)
             || TokenGeneration(app) != generation)
         {
+            if (app is null) throttle.Failed("mqtt", address);
             if (authRequired)
             {
                 e.ReasonCode = MQTTnet.Protocol.MqttConnectReasonCode.BadUserNameOrPassword;
@@ -339,6 +353,7 @@ public sealed class MqttBrokerService(
             return;
         }
 
+        throttle.Succeeded("mqtt", address);
         Remember(e, app, generation);
         logger.LogInformation("MQTT: client {0} authenticated as {1}", e.ClientId, app);
     }

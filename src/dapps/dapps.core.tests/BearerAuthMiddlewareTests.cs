@@ -130,8 +130,61 @@ public sealed class BearerAuthMiddlewareTests : IAsyncLifetime
             "an authed app must not be allowed to scope into another app's resources");
     }
 
+    [Fact]
+    public async Task RepeatedBadTokens_FromOneAddress_AreLockedOutWith429_ButOtherAddressesAreNot()
+    {
+        var token = await store.CreateOrRotateAsync("myapp");
+        var throttle = new AuthThrottle(TimeProvider.System);
+        var bad = System.Net.IPAddress.Parse("203.0.113.7");
+        var other = System.Net.IPAddress.Parse("203.0.113.8");
+
+        for (var i = 0; i < AuthThrottle.FreeFailures + 1; i++)
+        {
+            var (mw, c, _) = Build(true, "/AppApi/inbound/myapp", throttle);
+            c.Connection.RemoteIpAddress = bad;
+            c.Request.Headers["Authorization"] = "Bearer wrong";
+            await mw.InvokeAsync(c);
+            c.Response.StatusCode.Should().Be(StatusCodes.Status401Unauthorized);
+        }
+
+        // Locked: even the right token is refused for that address, without a hash.
+        var (mw2, locked, nextLocked) = Build(true, "/AppApi/inbound/myapp", throttle);
+        locked.Connection.RemoteIpAddress = bad;
+        locked.Request.Headers["Authorization"] = $"Bearer {token}";
+        await mw2.InvokeAsync(locked);
+        locked.Response.StatusCode.Should().Be(StatusCodes.Status429TooManyRequests);
+        locked.Response.Headers["Retry-After"].ToString().Should().NotBeEmpty();
+        nextLocked().Should().BeFalse();
+
+        // A different client is unaffected.
+        var (mw3, fine, nextFine) = Build(true, "/AppApi/inbound/myapp", throttle);
+        fine.Connection.RemoteIpAddress = other;
+        fine.Request.Headers["Authorization"] = $"Bearer {token}";
+        await mw3.InvokeAsync(fine);
+        nextFine().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task LoopbackIsNeverLockedOut()
+    {
+        var token = await store.CreateOrRotateAsync("myapp");
+        var throttle = new AuthThrottle(TimeProvider.System);
+        for (var i = 0; i < AuthThrottle.FreeFailures + 5; i++)
+        {
+            var (mw, c, _) = Build(true, "/AppApi/inbound/myapp", throttle);
+            c.Connection.RemoteIpAddress = System.Net.IPAddress.Loopback;
+            c.Request.Headers["Authorization"] = "Bearer wrong";
+            await mw.InvokeAsync(c);
+        }
+        var (mw2, ok, next) = Build(true, "/AppApi/inbound/myapp", throttle);
+        ok.Connection.RemoteIpAddress = System.Net.IPAddress.Loopback;
+        ok.Request.Headers["Authorization"] = $"Bearer {token}";
+        await mw2.InvokeAsync(ok);
+        next().Should().BeTrue("one bad client behind a local gateway must not lock out the rest");
+    }
+
     private (BearerAuthMiddleware mw, DefaultHttpContext ctx, Func<bool> nextCalled) Build(
-        bool authRequired, string path)
+        bool authRequired, string path, AuthThrottle? throttle = null)
     {
         var called = false;
         RequestDelegate next = _ =>
@@ -144,7 +197,7 @@ public sealed class BearerAuthMiddlewareTests : IAsyncLifetime
         {
             AuthRequired = authRequired,
         });
-        var mw = new BearerAuthMiddleware(next, store, optionsMonitor, NullLogger<BearerAuthMiddleware>.Instance);
+        var mw = new BearerAuthMiddleware(next, store, optionsMonitor, NullLogger<BearerAuthMiddleware>.Instance, throttle);
 
         var ctx = new DefaultHttpContext();
         ctx.Request.Path = path;

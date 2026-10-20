@@ -57,6 +57,43 @@ public sealed class AppTokenStoreTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task NewToken_HasALookupIdAndVerifiesRepeatedly()
+    {
+        var token = await store.CreateOrRotateAsync("myapp");
+        var row = (await DbInfo.GetAsyncConnection().Table<DbAppToken>().ToListAsync()).Single();
+        row.TokenId.Should().NotBeNullOrEmpty();
+        row.TokenId.Should().NotContain(token, "the id is a hash, not the token");
+
+        for (var i = 0; i < 3; i++) (await store.VerifyAsync(token)).Should().Be("myapp");
+    }
+
+    [Fact]
+    public async Task RevokeInAnotherStoreInstance_StopsAVerifiedTokenAtOnce()
+    {
+        var token = await store.CreateOrRotateAsync("myapp");
+        (await store.VerifyAsync(token)).Should().Be("myapp"); // now remembered
+        var other = new AppTokenStore(NullLogger<AppTokenStore>.Instance);
+        await other.RevokeAsync("myapp");
+        (await store.VerifyAsync(token)).Should().BeNull("the remembered success must not outlive the row");
+    }
+
+    [Fact]
+    public async Task RowsFromBeforeTheIdColumn_StillVerifyAndGetAnIdWithoutReissue()
+    {
+        var token = await store.CreateOrRotateAsync("old");
+        var other = await store.CreateOrRotateAsync("other");
+        await DbInfo.GetAsyncConnection().ExecuteAsync("update apptokens set TokenId = null");
+
+        (await store.VerifyAsync(token)).Should().Be("old");
+        var rows = await DbInfo.GetAsyncConnection().Table<DbAppToken>().ToListAsync();
+        rows.Single(r => r.AppName == "old").TokenId.Should().NotBeNullOrEmpty("filled in on first use");
+        rows.Single(r => r.AppName == "other").TokenId.Should().BeNullOrEmpty();
+
+        (await store.VerifyAsync(other)).Should().Be("other");
+        (await store.VerifyAsync("not-a-token")).Should().BeNull();
+    }
+
+    [Fact]
     public async Task VerifyAsync_UnknownToken_ReturnsNull()
     {
         await store.CreateOrRotateAsync("a");

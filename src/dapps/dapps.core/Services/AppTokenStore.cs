@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
+using System.Text;
 using dapps.client;
 using dapps.core.Models;
 using SQLite;
@@ -62,6 +64,7 @@ public sealed class AppTokenStore(ILogger<AppTokenStore> logger)
             AppName = appName,
             TokenHash = Convert.ToHexString(hash),
             Salt = Convert.ToHexString(salt),
+            TokenId = TokenIdOf(plaintext),
             CreatedAt = DateTime.UtcNow,
         });
 
@@ -71,31 +74,67 @@ public sealed class AppTokenStore(ILogger<AppTokenStore> logger)
     }
 
     /// <summary>
-    /// Returns the app name the token belongs to, or null if no row's
-    /// hash matches. Iterates the table because tokens aren't indexed
-    /// (and shouldn't be - knowing a hash maps to an app would be a
-    /// downgrade). For the expected scale (a few apps per node) this is
-    /// fine; if it ever isn't, store the plaintext-prefix as a
-    /// non-secret index column.
+    /// Returns the app name the token belongs to, or null. Costs at most
+    /// one PBKDF2 per call, and none once a token has been verified: a
+    /// presented token's SHA-256 (<see cref="DbAppToken.TokenId"/>)
+    /// selects its one row, and a success is remembered (keyed by id, and
+    /// only valid while the row still holds the same hash, so revoking or
+    /// rotating - even from another store instance - takes effect on the
+    /// next call).
+    ///
+    /// Rows minted before the id column existed have none. Their
+    /// plaintext is not stored, so they cannot be filled in up front;
+    /// instead a token that matches no id is checked against just those
+    /// legacy rows with PBKDF2, and the matching row gets its id then.
+    /// Existing tokens therefore keep working with no reissue, and each
+    /// pays the slow path once.
     /// </summary>
     public async Task<string?> VerifyAsync(string plaintext)
     {
         if (string.IsNullOrWhiteSpace(plaintext)) return null;
 
         var connection = DbInfo.GetAsyncConnection();
-        var rows = await connection.QueryAsync<DbAppToken>("select * from apptokens");
-        foreach (var row in rows)
+        var id = TokenIdOf(plaintext);
+
+        var row = (await connection.QueryAsync<DbAppToken>(
+            "select * from apptokens where TokenId = ? limit 1", id)).FirstOrDefault();
+        if (row is not null)
         {
-            var salt = Convert.FromHexString(row.Salt);
-            var stored = Convert.FromHexString(row.TokenHash);
-            var attempt = Pbkdf2(plaintext, salt);
-            if (CryptographicOperations.FixedTimeEquals(stored, attempt))
+            var fingerprint = row.TokenHash + row.Salt;
+            if (verified.TryGetValue(id, out var known) && known == fingerprint)
+                return row.AppName;
+            if (Matches(plaintext, row))
             {
+                verified[id] = fingerprint;
                 return row.AppName;
             }
+            return null;
+        }
+
+        var legacy = await connection.QueryAsync<DbAppToken>(
+            "select * from apptokens where TokenId is null or TokenId = ''");
+        foreach (var candidate in legacy)
+        {
+            if (!Matches(plaintext, candidate)) continue;
+            await connection.ExecuteAsync(
+                "update apptokens set TokenId = ? where AppName = ? and TokenHash = ?",
+                id, candidate.AppName, candidate.TokenHash);
+            verified[id] = candidate.TokenHash + candidate.Salt;
+            return candidate.AppName;
         }
         return null;
     }
+
+    private readonly ConcurrentDictionary<string, string> verified = new();
+
+    private static bool Matches(string plaintext, DbAppToken row)
+    {
+        var attempt = Pbkdf2(plaintext, Convert.FromHexString(row.Salt));
+        return CryptographicOperations.FixedTimeEquals(Convert.FromHexString(row.TokenHash), attempt);
+    }
+
+    private static string TokenIdOf(string plaintext) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(plaintext)));
 
     /// <summary>Remove a token, matching <paramref name="appName"/>
     /// case-insensitively against whatever's stored (see

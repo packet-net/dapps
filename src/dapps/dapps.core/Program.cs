@@ -188,6 +188,7 @@ builder.Services.AddSingleton<ForwarderWakeup>();
 builder.Services.AddSingleton<Database>();
 builder.Services.AddSingleton<AppTokenStore>();
 builder.Services.AddSingleton<AdminPasswordStore>();
+builder.Services.AddSingleton<AuthThrottle>();
 builder.Services.AddSingleton<InboundEventBus>();
 builder.Services.AddSingleton<OperationalMetrics>();
 builder.Services.AddSingleton<TransmissionAuditService>();
