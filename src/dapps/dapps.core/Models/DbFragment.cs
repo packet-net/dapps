@@ -62,6 +62,16 @@ public sealed class DbFragment
     /// happens to land.</summary>
     public DateTime FirstSeenAt { get; set; }
 
+    /// <summary>The stream fields the fragment carried, if any (#384).
+    /// Every fragment of an ordered message carries them, but one that
+    /// came through a forwarder older than #122 has lost them, so the
+    /// assembled message takes them from whichever fragment has them.
+    /// New columns go on the end of the table, where an older version
+    /// ignores them.</summary>
+    public string? StreamId { get; set; }
+    public uint? StreamSeq { get; set; }
+    public uint? StreamGapTimeoutSeconds { get; set; }
+
     public static string MakeKey(string masterId, int fragmentIndex)
         => $"{masterId}:{fragmentIndex}";
 }

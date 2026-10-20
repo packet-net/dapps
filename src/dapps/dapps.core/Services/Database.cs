@@ -201,14 +201,30 @@ public class Database(
             // Concurrent submissions on one stream (REST requests, two
             // MQTT clients) each get their own seq, and a failure while
             // storing can't burn a seq the receiver would wait for.
-            await DbInfo.GetAsyncConnection().RunInTransactionAsync(conn =>
+            //
+            // A seq for an app on this node is marked as being sent before
+            // the transaction commits, so a later submission on the stream
+            // can't take it for one that will never arrive (#384).
+            try
             {
-                seq = AllocateStreamSeq(conn, ourCall, destCallsign, streamId!);
-                foreach (var row in rows)
+                await DbInfo.GetAsyncConnection().RunInTransactionAsync(conn =>
                 {
-                    conn.InsertOrReplace(OutboundRow(row.Id, row.Body, row.Salt, row.MasterId, row.Index, row.Total, seq.Value));
-                }
-            });
+                    seq = AllocateStreamSeq(conn, ourCall, destCallsign, streamId!);
+                    if (isLocal && LocalSubmissionHandler is not null)
+                    {
+                        BeginLocalStreamSend(streamId!, seq.Value);
+                    }
+                    foreach (var row in rows)
+                    {
+                        conn.InsertOrReplace(OutboundRow(row.Id, row.Body, row.Salt, row.MasterId, row.Index, row.Total, seq.Value));
+                    }
+                });
+            }
+            catch
+            {
+                if (seq is { } burnt) EndLocalStreamSend(streamId!, burnt);
+                throw;
+            }
             forwarderWakeup?.Wake();
         }
         else if (!inboxStores)
@@ -227,10 +243,8 @@ public class Database(
             // would be (stream ordering included). Once the row is stored
             // the submit has succeeded: if publishing fails the message is
             // still listed for the app, so don't report a failure. On an
-            // ordered stream a failure here leaves the receive position
-            // behind this seq and later local sends park until the gap
-            // timeout (for ever on a strict stream); they are still listed
-            // for the app and come back when it resubscribes.
+            // ordered stream the inbox then moves the receive position on
+            // past this seq, so later local sends don't wait for it.
             var first = rows[0];
             try
             {
@@ -252,6 +266,10 @@ public class Database(
                     await SaveMessage(first.Id, first.Body, first.Salt, destination, sourceCallsign: ourCall, "{}", ttl: ttlSeconds,
                         originatorCallsign: ourCall);
                 }
+            }
+            finally
+            {
+                if (seq is { } sent) EndLocalStreamSend(streamId!, sent);
             }
         }
         return returnedId;
@@ -277,6 +295,45 @@ public class Database(
             StreamSeq = seq,
             StreamGapTimeoutSeconds = streamGapTimeoutSeconds,
         };
+    }
+
+    /// <summary>Seqs on this node's own streams (to apps here) minted
+    /// and not yet taken by the inbox, by stream id.</summary>
+    private readonly Dictionary<string, SortedSet<uint>> localStreamSendsInFlight = new(StringComparer.Ordinal);
+
+    private void BeginLocalStreamSend(string streamId, uint seq)
+    {
+        lock (localStreamSendsInFlight)
+        {
+            if (!localStreamSendsInFlight.TryGetValue(streamId, out var seqs))
+            {
+                localStreamSendsInFlight[streamId] = seqs = [];
+            }
+            seqs.Add(seq);
+        }
+    }
+
+    internal void EndLocalStreamSend(string streamId, uint seq)
+    {
+        lock (localStreamSendsInFlight)
+        {
+            if (localStreamSendsInFlight.TryGetValue(streamId, out var seqs) && seqs.Remove(seq) && seqs.Count == 0)
+            {
+                localStreamSendsInFlight.Remove(streamId);
+            }
+        }
+    }
+
+    /// <summary>The lowest seq at or above <paramref name="from"/> on this
+    /// node's own stream that is being sent right now, if any.</summary>
+    internal uint? LowestLocalStreamSeqInFlight(string streamId, uint from)
+    {
+        lock (localStreamSendsInFlight)
+        {
+            if (!localStreamSendsInFlight.TryGetValue(streamId, out var seqs)) return null;
+            foreach (var s in seqs.GetViewBetween(from, uint.MaxValue)) return s;
+            return null;
+        }
     }
 
     internal async Task SaveMessage(string id, byte[] buffer, long? salt, string destination, string sourceCallsign, string additionalProperties, int? ttl, string originatorCallsign = "", byte? floodHopsRemaining = null, string? sourceRouteCsv = null, string? traversedHopsCsv = null, string? masterId = null, int? fragmentIndex = null, int? fragmentTotal = null, string? streamId = null, uint? streamSeq = null, uint? streamGapTimeoutSeconds = null, bool pendingInOrder = false)
@@ -997,15 +1054,29 @@ public class Database(
     {
         fragment.Key = DbFragment.MakeKey(fragment.MasterId, fragment.FragmentIndex);
         var connection = DbInfo.GetAsyncConnection();
+        // Two copies of one fragment can arrive at once by different
+        // neighbours (#384): the second finds the first's row, not a
+        // constraint failure.
+        if (await connection.InsertAsync(fragment, "OR IGNORE") == 1)
+        {
+            return;
+        }
         var existing = await connection.FindAsync<DbFragment>(fragment.Key);
         if (existing is null)
         {
-            await connection.InsertAsync(fragment);
+            await connection.InsertOrReplaceAsync(fragment);
             return;
         }
         // Re-arrival of an already-stored fragment. Preserve the
-        // original FirstSeenAt so the sweep deadline doesn't drift.
+        // original FirstSeenAt so the sweep deadline doesn't drift, and
+        // the stream fields if this copy lost them on the way (#384).
         fragment.FirstSeenAt = existing.FirstSeenAt;
+        if (fragment.StreamSeq is null || string.IsNullOrEmpty(fragment.StreamId))
+        {
+            fragment.StreamId = existing.StreamId;
+            fragment.StreamSeq = existing.StreamSeq;
+            fragment.StreamGapTimeoutSeconds = existing.StreamGapTimeoutSeconds;
+        }
         await connection.UpdateAsync(fragment);
     }
 

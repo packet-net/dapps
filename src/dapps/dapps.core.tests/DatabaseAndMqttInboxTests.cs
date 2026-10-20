@@ -510,6 +510,72 @@ public sealed class DatabaseAndMqttInboxTests : IAsyncLifetime
         await client.DisconnectAsync(cancellationToken: ct);
     }
 
+    [Fact]
+    public async Task SubmitOutbound_ToAnAppOnThisNode_OrderedDeliveryFails_LaterSendsStillArrive()
+    {
+        // #384 item 3: the seq was minted but taking it into the inbox
+        // failed. That seq can never arrive, so the next one mustn't wait
+        // for it (for ever, on a strict stream).
+        var ct = TestContext.Current.CancellationToken;
+        var client = await ConnectClient();
+        var got = new List<string>();
+        client.ApplicationMessageReceivedAsync += e =>
+        {
+            lock (got) got.Add(Encoding.UTF8.GetString(e.ApplicationMessage.PayloadSegment));
+            return Task.CompletedTask;
+        };
+        await client.SubscribeAsync("dapps/in/hello",
+            MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, ct);
+
+        using (var c = DbInfo.GetConnection()) c.DropTable<DbStreamRecvState>();
+        await database.SubmitOutboundMessage("hello", "N0CALL", "one"u8.ToArray(), 600, streamId: "s1");
+        using (var c = DbInfo.GetConnection()) c.CreateTable<DbStreamRecvState>();
+
+        await database.SubmitOutboundMessage("hello", "N0CALL", "two"u8.ToArray(), 600, streamId: "s1");
+        await database.SubmitOutboundMessage("hello", "N0CALL", "three"u8.ToArray(), 600, streamId: "s1");
+
+        for (var i = 0; i < 50 && got.Count < 2; i++) await Task.Delay(100, ct);
+        got.Should().Equal("two", "three");
+        (await database.GetUnacknowledgedLocalMessagesForApp("hello")).Select(m => Encoding.UTF8.GetString(m.Payload))
+            .Should().Contain("one", "the one that failed is still listed for the app");
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
+    [Fact]
+    public async Task SubmitOutbound_ToAnAppOnThisNode_ExistingStreamWithNoReceivePosition_IsDelivered()
+    {
+        // #384 item 3, after upgrade: a self-addressed stream whose send
+        // counter is already past 1, but which never had a receive
+        // position, mustn't wait for seqs from before the upgrade.
+        var ct = TestContext.Current.CancellationToken;
+        var client = await ConnectClient();
+        var got = new List<string>();
+        client.ApplicationMessageReceivedAsync += e =>
+        {
+            lock (got) got.Add(Encoding.UTF8.GetString(e.ApplicationMessage.PayloadSegment));
+            return Task.CompletedTask;
+        };
+        await client.SubscribeAsync("dapps/in/hello",
+            MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, ct);
+
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbStreamSendState
+            {
+                Key = DbStreamSendState.MakeKey("N0CALL", "N0CALL", "old"),
+                LocalCallsign = "N0CALL", RemoteCallsign = "N0CALL", StreamId = "old",
+                NextSeq = 5, UpdatedAt = DateTime.UtcNow,
+            });
+        }
+
+        await database.SubmitOutboundMessage("hello", "N0CALL", "five"u8.ToArray(), 600, streamId: "old");
+        await database.SubmitOutboundMessage("hello", "N0CALL", "six"u8.ToArray(), 600, streamId: "old");
+
+        for (var i = 0; i < 50 && got.Count < 2; i++) await Task.Delay(100, ct);
+        got.Should().Equal("five", "six");
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
     private static int PickFreeTcpPort()
     {
         var l = new TcpListener(IPAddress.Loopback, 0);

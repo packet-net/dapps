@@ -490,6 +490,137 @@ public sealed class StreamOrderingTests : IAsyncLifetime
         await client.DisconnectAsync(cancellationToken: ct);
     }
 
+    // -- Remaining gaps (#384) -----------------------------------------
+
+    [Fact]
+    public async Task Inbox_FragmentedOrderedMessage_CompletingFragmentStripped_StillOrdered()
+    {
+        // #384 item 1: the fragment that completes the set came through a
+        // forwarder that strips the stream fields. The other fragment had
+        // them, so the assembled message is still sn=1 and the cursor
+        // moves on; sn=2 then follows instead of parking for ever.
+        var ct = TestContext.Current.CancellationToken;
+        var client = await ConnectClient();
+        var received = new List<(string Id, string Body, uint? Sn)>();
+        var both = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.ApplicationMessageReceivedAsync += e =>
+        {
+            lock (received)
+            {
+                received.Add(Describe(e));
+                if (received.Count == 2) both.TrySetResult();
+            }
+            return Task.CompletedTask;
+        };
+        await client.SubscribeAsync("dapps/in/chat",
+            MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, ct);
+
+        await inbox.DeliverAsync(MakeFragment("frg0001", "mas0001", 1, 2, "G0FROM", "c1", 1, 0, "big-"), "G0HOP", ct);
+        var stripped = MakeFragment("frg0002", "mas0001", 2, 2, "G0FROM", "c1", 1, 0, "one") with
+        {
+            StreamId = null, StreamSeq = null, StreamGapTimeoutSeconds = null,
+        };
+        await inbox.DeliverAsync(stripped, "G0OLD", ct);
+        await inbox.DeliverAsync(MakeStreamMessage("ord0002", "G0FROM", "c1", 2, 0, "msg-two"), "G0HOP", ct);
+
+        await both.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        received.Select(r => r.Body).Should().Equal("big-one", "msg-two");
+        received.Select(r => r.Sn).Should().Equal(1u, 2u);
+        (await database.GetStreamRecvStateAsync("N0SELF", "G0FROM", "c1"))!.NextExpectedSeq.Should().Be(3u);
+
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
+    [Fact]
+    public async Task Inbox_FragmentedOrderedMessage_EarlierFragmentStrippedThenAgainWithFields_KeepsFields()
+    {
+        // A fragment stored with stream fields keeps them when a stripped
+        // copy of the same fragment arrives by another path.
+        var ct = TestContext.Current.CancellationToken;
+        await inbox.DeliverAsync(MakeFragment("frg0001", "mas0001", 1, 2, "G0FROM", "c1", 1, 0, "big-"), "G0HOP", ct);
+        var strippedCopy = MakeFragment("frg0001", "mas0001", 1, 2, "G0FROM", "c1", 1, 0, "big-") with
+        {
+            Salt = 2L, StreamId = null, StreamSeq = null, StreamGapTimeoutSeconds = null,
+        };
+        await inbox.DeliverAsync(strippedCopy, "G0OLD", ct);
+        var stripped2 = MakeFragment("frg0002", "mas0001", 2, 2, "G0FROM", "c1", 1, 0, "one") with
+        {
+            StreamId = null, StreamSeq = null, StreamGapTimeoutSeconds = null,
+        };
+        await inbox.DeliverAsync(stripped2, "G0OLD", ct);
+
+        var assembled = await database.GetMessage("mas0001");
+        assembled!.StreamSeq.Should().Be(1u);
+        (await database.GetStreamRecvStateAsync("N0SELF", "G0FROM", "c1"))!.NextExpectedSeq.Should().Be(2u);
+    }
+
+    [Fact]
+    public async Task Inbox_FragmentedOrderedMessage_FullSetAgain_LeavesTheDeliveredRowAlone()
+    {
+        // #384 item 2: the same message reassembled a second time (a full
+        // set repeated after the duplicate window, or two last fragments
+        // at once) is stale, but it is the message already delivered: the
+        // delivered row must stay, not move to the dropped list.
+        var ct = TestContext.Current.CancellationToken;
+        var client = await ConnectClient();
+        var deliveries = 0;
+        client.ApplicationMessageReceivedAsync += e =>
+        {
+            Interlocked.Increment(ref deliveries);
+            return Task.CompletedTask;
+        };
+        await client.SubscribeAsync("dapps/in/chat",
+            MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, ct);
+
+        await inbox.DeliverAsync(MakeFragment("frg0001", "mas0001", 1, 2, "G0FROM", "c1", 1, 0, "big-"), "G0HOP", ct);
+        await inbox.DeliverAsync(MakeFragment("frg0002", "mas0001", 2, 2, "G0FROM", "c1", 1, 0, "one"), "G0HOP", ct);
+        // Again, with salts the duplicate memory doesn't know.
+        await inbox.DeliverAsync(MakeFragment("frg0001", "mas0001", 1, 2, "G0FROM", "c1", 1, 0, "big-") with { Salt = 9L }, "G0HOP2", ct);
+        await inbox.DeliverAsync(MakeFragment("frg0002", "mas0001", 2, 2, "G0FROM", "c1", 1, 0, "one") with { Salt = 9L }, "G0HOP2", ct);
+        await Task.Delay(150, ct);
+
+        deliveries.Should().Be(1);
+        var row = await database.GetMessage("mas0001");
+        row.Should().NotBeNull("the delivered message stays where the app can still ack it");
+        row!.SourceCallsign.Should().Be("G0HOP", "the delivered row is untouched");
+        (await database.GetDroppedMessage("mas0001")).Should().BeNull();
+
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
+    [Fact]
+    public async Task Inbox_TwoLastFragmentsAtOnce_DeliverOnce_AndKeepTheRow()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await inbox.DeliverAsync(MakeFragment("frg0001", "mas0001", 1, 2, "G0FROM", "c1", 1, 0, "big-"), "G0HOP", ct);
+        await Task.WhenAll(
+            inbox.DeliverAsync(MakeFragment("frg0002", "mas0001", 2, 2, "G0FROM", "c1", 1, 0, "one"), "G0HOP", ct),
+            inbox.DeliverAsync(MakeFragment("frg0002", "mas0001", 2, 2, "G0FROM", "c1", 1, 0, "one") with { Salt = 9L }, "G0HOP2", ct));
+
+        (await database.GetMessage("mas0001")).Should().NotBeNull();
+        (await database.GetDroppedMessage("mas0001")).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Inbox_StreamLocks_ArePrunedWhenIdle()
+    {
+        // #384 item 4: one lock per (sender, stream) only while in use, so
+        // a station inventing stream ids can't grow the table for ever.
+        var ct = TestContext.Current.CancellationToken;
+        for (var i = 0; i < 20; i++)
+        {
+            await inbox.DeliverAsync(MakeStreamMessage($"lck{i:D4}", "G0FROM", $"s{i}", 1, 0, $"m{i}"), "G0HOP", ct);
+        }
+        await inbox.DeliverAsync(MakeStreamMessage("lckgap2", "G0FROM", "g", 2, 60, "gap"), "G0HOP", ct);
+        clock.Advance(TimeSpan.FromSeconds(61));
+        foreach (var stale in await database.GetStaleStreamGapsAsync(clock.GetUtcNow().UtcDateTime))
+        {
+            await inbox.SkipGapAsync(stale, ct);
+        }
+
+        inbox.StreamLockCount.Should().Be(0);
+    }
+
     // -- Concurrent submissions on one stream (#282) -------------------
 
     [Theory]

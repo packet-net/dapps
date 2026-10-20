@@ -337,6 +337,7 @@ Apps that don't care can ignore them; apps that opted in can use them to detect 
 
 - **Latency cost**. One missing message stalls the whole stream until it arrives or the timeout fires. On lossy radio links this is real - opt-in is the right default.
 - **Sender resets**. The sender persists its counter to disk; a fresh install / wiped database starts back at `sn=1`. Re-using the same `streamId` after a reset will cause receivers to drop the new messages as `stream-stale` (their cursor is well past `sn=1`). Mitigate by appending a short epoch suffix to the stream id when you reset (e.g. `chat:tom.2`).
+- **Streams to an app on the same node**. If a message can't be handed over (say the database hiccups), it stays listed for the app and later messages on the stream go straight through rather than waiting for it.
 - **End-to-end semantics**. Ordering is enforced at the receiving daemon, not at intermediate forwarders. Hops can reorder, retry, and flood freely - the trio rides the envelope verbatim.
 - **Forward compatibility**. A daemon that doesn't understand `sid`/`sn`/`gt` ignores the keys and delivers each message immediately. Apps subscribed to a partially-ordering-aware mesh see ordered delivery only between aware nodes.
 

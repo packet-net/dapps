@@ -336,6 +336,63 @@ public sealed class RetentionSweepTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Fragments_GainStreamColumnsOnUpgrade_AndAnOlderVersionStillWorks()
+    {
+        // #384: fragments keep their stream fields now. A database from an
+        // older version gets the columns on the end, its waiting fragments
+        // survive, and the older version can still use the table.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.CreateTable<LegacyDbFragment>();
+            c.Insert(new LegacyDbFragment { Key = "m1:1", MasterId = "m1", FragmentIndex = 1, FragmentTotal = 2, Payload = new byte[4], FirstSeenAt = T0 });
+        }
+
+        DbStartup.EnsureSchemaAndSeed();
+
+        using (var c = DbInfo.GetConnection())
+        {
+            var columns = c.GetTableInfo("fragments").Select(col => col.Name).ToList();
+            columns.Should().StartWith(new[] { "Key", "MasterId" }, "existing columns keep their order");
+            columns.TakeLast(3).Should().Equal("StreamId", "StreamSeq", "StreamGapTimeoutSeconds");
+        }
+        await database.UpsertFragment(new DbFragment { MasterId = "m1", FragmentIndex = 2, FragmentTotal = 2, Payload = new byte[4], FirstSeenAt = T0, StreamId = "s", StreamSeq = 3, StreamGapTimeoutSeconds = 0 });
+        var both = await database.GetFragmentsForMaster("m1");
+        both.Should().HaveCount(2);
+        both[0].StreamSeq.Should().BeNull();
+        both[1].StreamSeq.Should().Be(3u);
+
+        // Downgrade: the older version's start-up, reads and writes.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.CreateTable<LegacyDbFragment>();
+            c.Insert(new LegacyDbFragment { Key = "m2:1", MasterId = "m2", FragmentIndex = 1, FragmentTotal = 1, Payload = new byte[4], FirstSeenAt = T0 });
+            c.Find<LegacyDbFragment>("m1:2")!.FragmentTotal.Should().Be(2);
+            c.Table<LegacyDbFragment>().Count().Should().Be(3);
+            c.Execute("delete from fragments where MasterId=?", "m1");
+            c.Table<LegacyDbFragment>().Count().Should().Be(1);
+        }
+    }
+
+    /// <summary>The fragments table as releases before #384 define it.</summary>
+    [Table("fragments")]
+    private sealed class LegacyDbFragment
+    {
+        [PrimaryKey]
+        public string Key { get; set; } = "";
+        [Indexed]
+        public string MasterId { get; set; } = "";
+        public int FragmentIndex { get; set; }
+        public int FragmentTotal { get; set; }
+        public byte[] Payload { get; set; } = [];
+        public string Destination { get; set; } = "";
+        public string SourceCallsign { get; set; } = "";
+        public string OriginatorCallsign { get; set; } = "";
+        public string AdditionalProperties { get; set; } = "{}";
+        public int? Ttl { get; set; }
+        public DateTime FirstSeenAt { get; set; }
+    }
+
+    [Fact]
     public void HotQueries_UseTheIndexes()
     {
         CreateTables();

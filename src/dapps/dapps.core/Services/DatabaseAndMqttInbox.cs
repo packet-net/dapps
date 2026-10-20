@@ -49,8 +49,37 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
         // Messages an app here sends to an app on this node come through
         // the same storing and publishing as an arrival (#288). There is
         // one inbox per node.
-        database.LocalSubmissionHandler = message =>
-            AcceptAsync(ToBackhaul(message), message.SourceCallsign, CancellationToken.None);
+        database.LocalSubmissionHandler = AcceptLocalSubmissionAsync;
+    }
+
+    /// <summary>
+    /// Take a message an app here sent to an app on this node. On an
+    /// ordered stream its seq is already minted, so if taking it fails
+    /// that seq can never arrive: messages behind it must not wait for it
+    /// (#384). The message itself is stored and listed for the app.
+    /// </summary>
+    private async Task AcceptLocalSubmissionAsync(DbMessage message)
+    {
+        try
+        {
+            await AcceptAsync(ToBackhaul(message), message.SourceCallsign, CancellationToken.None, localSubmission: true);
+        }
+        catch
+        {
+            if (message.StreamSeq is { } seq && !string.IsNullOrEmpty(message.StreamId))
+            {
+                database.EndLocalStreamSend(message.StreamId, seq);
+                try
+                {
+                    await ReleaseLocalStreamAsync(message.OriginatorCallsign, message.StreamId, CancellationToken.None);
+                }
+                catch (Exception e)
+                {
+                    logger.LogWarning(e, "Couldn't move stream {0} on past {1}, which failed", message.StreamId, seq);
+                }
+            }
+            throw;
+        }
     }
 
     private static BackhaulMessage ToBackhaul(DbMessage m) => new(
@@ -219,7 +248,7 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
     }
 
     /// <summary>Store a message arriving for the first time, and hand it to its app or leave it queued to pass on.</summary>
-    private async Task AcceptAsync(BackhaulMessage message, string sourceCallsign, CancellationToken ct)
+    private async Task AcceptAsync(BackhaulMessage message, string sourceCallsign, CancellationToken ct, bool localSubmission = false)
     {
         var headersJson = message.Headers is null
             ? "{}"
@@ -264,7 +293,7 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
         // verbatim; only the final destination reorders.
         if (isLocal && message.StreamSeq.HasValue && !string.IsNullOrEmpty(message.StreamId))
         {
-            await DeliverOrderedAsync(message, sourceCallsign, originator, headersJson, ct);
+            await DeliverOrderedAsync(message, sourceCallsign, originator, headersJson, localSubmission, ct);
             return;
         }
 
@@ -357,26 +386,82 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
     /// <item><description>seq &lt; expected -&gt; persist + soft-delete with reason "stream-stale" (already delivered or already skipped past)</description></item>
     /// </list>
     /// </summary>
-    private async Task DeliverOrderedAsync(BackhaulMessage message, string sourceCallsign, string originator, string headersJson, CancellationToken ct)
+    private async Task DeliverOrderedAsync(BackhaulMessage message, string sourceCallsign, string originator, string headersJson, bool localSubmission, CancellationToken ct)
     {
         // One at a time per (sender, stream): the cursor is read, then
         // written, so two at once would overwrite each other's advance.
         var lockKey = (!string.IsNullOrEmpty(message.Originator) ? message.Originator : sourceCallsign) + "|" + message.StreamId;
-        var gate = streamLocks.GetOrAdd(lockKey, _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(ct);
-        try
+        using (await LockStreamAsync(lockKey, ct))
         {
-            await DeliverOrderedLockedAsync(message, sourceCallsign, originator, headersJson, ct);
-        }
-        finally
-        {
-            gate.Release();
+            await DeliverOrderedLockedAsync(message, sourceCallsign, originator, headersJson, localSubmission, ct);
         }
     }
 
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> streamLocks = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Stream locks in use, by (sender, stream). An entry lives only while
+    /// someone holds or waits for it, so a station inventing stream ids
+    /// can't grow this for the life of the process (#384).
+    /// </summary>
+    private readonly Dictionary<string, StreamLock> streamLocks = new(StringComparer.Ordinal);
 
-    private async Task DeliverOrderedLockedAsync(BackhaulMessage message, string sourceCallsign, string originator, string headersJson, CancellationToken ct)
+    internal int StreamLockCount
+    {
+        get { lock (streamLocks) return streamLocks.Count; }
+    }
+
+    private sealed class StreamLock
+    {
+        public readonly SemaphoreSlim Semaphore = new(1, 1);
+        public int Users;
+    }
+
+    private async Task<IDisposable> LockStreamAsync(string key, CancellationToken ct)
+    {
+        StreamLock entry;
+        lock (streamLocks)
+        {
+            if (!streamLocks.TryGetValue(key, out entry!))
+            {
+                streamLocks[key] = entry = new StreamLock();
+            }
+            entry.Users++;
+        }
+        try
+        {
+            await entry.Semaphore.WaitAsync(ct);
+        }
+        catch
+        {
+            Leave(key, entry);
+            throw;
+        }
+        return new StreamLockRelease(this, key, entry);
+    }
+
+    private void Leave(string key, StreamLock entry)
+    {
+        lock (streamLocks)
+        {
+            if (--entry.Users == 0)
+            {
+                streamLocks.Remove(key);
+            }
+        }
+    }
+
+    private sealed class StreamLockRelease(DatabaseAndMqttInbox owner, string key, StreamLock entry) : IDisposable
+    {
+        private int released;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref released, 1) != 0) return;
+            entry.Semaphore.Release();
+            owner.Leave(key, entry);
+        }
+    }
+
+    private async Task DeliverOrderedLockedAsync(BackhaulMessage message, string sourceCallsign, string originator, string headersJson, bool localSubmission, CancellationToken ct)
     {
         var localCall = options.CurrentValue.Callsign;
         var streamId = message.StreamId!;
@@ -401,6 +486,30 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
                        LastReceivedAt = now,
                        GapDeadline = DateTime.MinValue,
                    };
+
+        // This node's own stream: a seq below this one that isn't being
+        // sent right now never will be (its send failed, or it was sent
+        // before this node delivered its own streams in order), so don't
+        // wait for it (#384).
+        if (localSubmission && sn > recv.NextExpectedSeq)
+        {
+            await SkipLocalGapsAsync(recv, streamSender, streamId, upTo: sn, ct);
+        }
+
+        if (sn < recv.NextExpectedSeq
+            && await database.GetMessage(message.Id) is { } held
+            && held.StreamId == streamId && held.StreamSeq == sn
+            && string.Equals(held.OriginatorCallsign, originator, StringComparison.OrdinalIgnoreCase))
+        {
+            // The very message already delivered (or parked and skipped),
+            // come again: two reassemblies of it at once, or its full set
+            // repeated after the duplicate memory forgot it. The row is
+            // the one the app sees and acks, so leave it alone (#384).
+            logger.LogInformation(
+                "Stream {0}|{1}: {2} (sn={3}) is one we already have; not delivering it again",
+                streamSender, streamId, message.Id, sn);
+            return;
+        }
 
         if (sn < recv.NextExpectedSeq)
         {
@@ -556,15 +665,59 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
     /// </summary>
     internal async Task SkipGapAsync(DbStreamRecvState recv, CancellationToken ct)
     {
-        var gate = streamLocks.GetOrAdd(recv.SenderCallsign + "|" + recv.StreamId, _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(ct);
-        try
+        using (await LockStreamAsync(recv.SenderCallsign + "|" + recv.StreamId, ct))
         {
             await SkipGapLockedAsync(recv, ct);
         }
-        finally
+    }
+
+    /// <summary>
+    /// After a message on this node's own stream failed to go in: release
+    /// any messages parked behind its seq (#384).
+    /// </summary>
+    private async Task ReleaseLocalStreamAsync(string streamSender, string streamId, CancellationToken ct)
+    {
+        using (await LockStreamAsync(streamSender + "|" + streamId, ct))
         {
-            gate.Release();
+            var recv = await database.GetStreamRecvStateAsync(options.CurrentValue.Callsign, streamSender, streamId);
+            if (recv is null) return;
+            var pending = await database.GetPendingInOrderAsync(streamSender, streamId);
+            if (pending.Where(p => p.StreamSeq is not null).Select(p => p.StreamSeq!.Value).DefaultIfEmpty().Max() is var last
+                && last >= recv.NextExpectedSeq && last > 0)
+            {
+                await SkipLocalGapsAsync(recv, streamSender, streamId, upTo: last + 1, ct);
+                await database.UpsertStreamRecvStateAsync(recv);
+            }
+        }
+    }
+
+    /// <summary>
+    /// On this node's own stream, move the cursor up to
+    /// <paramref name="upTo"/> past every seq that is neither parked nor
+    /// being sent right now: those were never delivered here and can't
+    /// arrive any more. Parked messages met on the way are delivered;
+    /// a seq still being sent stops it. Under the stream's lock.
+    /// </summary>
+    private async Task SkipLocalGapsAsync(DbStreamRecvState recv, string streamSender, string streamId, uint upTo, CancellationToken ct)
+    {
+        var pending = (await database.GetPendingInOrderAsync(streamSender, streamId))
+            .Where(p => p.StreamSeq is not null).Select(p => p.StreamSeq!.Value).ToList();
+        while (recv.NextExpectedSeq < upTo)
+        {
+            var k = recv.NextExpectedSeq;
+            if (pending.Contains(k))
+            {
+                await DrainConsecutivePendingAsync(recv, streamSender, streamId, ct);
+                if (recv.NextExpectedSeq == k) return;
+                continue;
+            }
+            var inFlight = database.LowestLocalStreamSeqInFlight(streamId, k);
+            if (inFlight == k) return;
+            var next = Math.Min(upTo, Math.Min(inFlight ?? upTo, pending.Where(p => p > k).DefaultIfEmpty(upTo).Min()));
+            logger.LogWarning(
+                "Stream {0}|{1}: skipped sn={2} to {3} on this node's own stream; they never reached the app here and can't arrive any more",
+                streamSender, streamId, k, next - 1);
+            recv.NextExpectedSeq = next;
         }
     }
 
@@ -621,6 +774,9 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
             AdditionalProperties = headersJson,
             Ttl = message.Ttl,
             FirstSeenAt = timeProvider.GetUtcNow().UtcDateTime,
+            StreamId = message.StreamId,
+            StreamSeq = message.StreamSeq,
+            StreamGapTimeoutSeconds = message.StreamGapTimeoutSeconds,
         });
 
         var fragments = await database.GetFragmentsForMaster(masterId);
@@ -656,11 +812,17 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
         var assembledTtl = message.Ttl;
 
         // Opt-in ordering (#283): the sender stamps the stream trio on
-        // every fragment, so the one that completed the set carries it.
-        // The assembled message goes through the ordered path like any
-        // other sn= arrival: delivered, parked or dropped as stale
+        // every fragment. A fragment that came through a forwarder older
+        // than #122 has lost it, so take it from any fragment that has it
+        // (#384). The assembled message goes through the ordered path like
+        // any other sn= arrival: delivered, parked or dropped as stale
         // against the cursor, which moves on past it.
-        if (message.StreamSeq.HasValue && !string.IsNullOrEmpty(message.StreamId))
+        var stream = message.StreamSeq.HasValue && !string.IsNullOrEmpty(message.StreamId)
+            ? (Id: message.StreamId, Seq: message.StreamSeq, Gt: message.StreamGapTimeoutSeconds)
+            : fragments.Where(f => f.StreamSeq.HasValue && !string.IsNullOrEmpty(f.StreamId))
+                .Select(f => (Id: f.StreamId, Seq: f.StreamSeq, Gt: f.StreamGapTimeoutSeconds))
+                .FirstOrDefault();
+        if (stream.Seq is { } streamSeq)
         {
             var assembledMessage = message with
             {
@@ -670,12 +832,15 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
                 MasterId = null,
                 FragmentIndex = null,
                 FragmentTotal = null,
+                StreamId = stream.Id,
+                StreamSeq = streamSeq,
+                StreamGapTimeoutSeconds = stream.Gt,
             };
-            await DeliverOrderedAsync(assembledMessage, sourceCallsign, originator, headersJson, ct);
+            await DeliverOrderedAsync(assembledMessage, sourceCallsign, originator, headersJson, localSubmission: false, ct);
             await database.DeleteFragmentsForMaster(masterId);
             logger.LogInformation(
                 "Reassembled master {0} ({1} fragments, {2} bytes) on stream {3} sn={4}",
-                masterId, fragTotal, totalLen, message.StreamId, message.StreamSeq.Value);
+                masterId, fragTotal, totalLen, stream.Id, streamSeq);
             return;
         }
 
