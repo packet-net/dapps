@@ -118,6 +118,31 @@ public sealed class MqttBrokerAuthTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task RepeatedWrongPasswords_FromOneAddress_LockThatAddressOut()
+    {
+        var token = await tokens.CreateOrRotateAsync("myapp");
+        var ct = TestContext.Current.CancellationToken;
+        broker.AddressResolver = _ => IPAddress.Parse("203.0.113.9");
+
+        for (var i = 0; i < AuthThrottle.FreeFailures + 1; i++)
+        {
+            var bad = new MqttFactory().CreateMqttClient();
+            var act = async () => await bad.ConnectAsync(BuildClientOpts("myapp", "wrong"), ct);
+            await act.Should().ThrowAsync<Exception>();
+        }
+
+        var locked = new MqttFactory().CreateMqttClient();
+        var lockedAct = async () => await locked.ConnectAsync(BuildClientOpts("myapp", token), ct);
+        await lockedAct.Should().ThrowAsync<Exception>("even the right token is refused while locked out");
+
+        broker.AddressResolver = _ => IPAddress.Parse("203.0.113.10");
+        var other = new MqttFactory().CreateMqttClient();
+        await other.ConnectAsync(BuildClientOpts("myapp", token), ct);
+        other.IsConnected.Should().BeTrue("another address is not affected");
+        await other.DisconnectAsync(cancellationToken: ct);
+    }
+
+    [Fact]
     public async Task Connect_WithValidCredentials_Accepted()
     {
         var token = await tokens.CreateOrRotateAsync("myapp");

@@ -32,7 +32,7 @@ public sealed class LoginModel(AdminPasswordStore store, AuthThrottle throttle) 
         ReturnUrl = returnUrl;
 
         var address = HttpContext.Connection.RemoteIpAddress;
-        if (throttle.LockedFor("login", address) is { } wait)
+        if (throttle.Begin("login", address) is { } wait)
         {
             Error = $"Too many wrong passwords. Try again in {(int)Math.Ceiling(wait.TotalSeconds)} seconds.";
             Response.StatusCode = StatusCodes.Status429TooManyRequests;
@@ -42,7 +42,6 @@ public sealed class LoginModel(AdminPasswordStore store, AuthThrottle throttle) 
 
         if (!await store.VerifyAsync(Password))
         {
-            throttle.Failed("login", address);
             Error = "Wrong password.";
             // Brief delay slows down brute-forcers without affecting
             // legitimate use. The PBKDF2 verification already takes
@@ -51,7 +50,7 @@ public sealed class LoginModel(AdminPasswordStore store, AuthThrottle throttle) 
             return Page();
         }
 
-        throttle.Succeeded("login", address);
+        throttle.Succeeded("login", address, clearAll: true);
 
         await AdminSession.SignInAsync(HttpContext);
 

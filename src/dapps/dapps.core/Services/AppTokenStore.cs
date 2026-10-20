@@ -125,6 +125,15 @@ public sealed class AppTokenStore(ILogger<AppTokenStore> logger)
         return null;
     }
 
+    /// <summary>Apps whose token row has no lookup id yet (issued before
+    /// the id existed and not presented since).</summary>
+    public async Task<IReadOnlyList<string>> LegacyAppNamesAsync()
+    {
+        var rows = await DbInfo.GetAsyncConnection().QueryAsync<DbAppToken>(
+            "select * from apptokens where TokenId is null or TokenId = ''");
+        return rows.Select(r => r.AppName).ToList();
+    }
+
     private readonly ConcurrentDictionary<string, string> verified = new();
 
     private static bool Matches(string plaintext, DbAppToken row)

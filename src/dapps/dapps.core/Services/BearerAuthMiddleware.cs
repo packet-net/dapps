@@ -58,7 +58,7 @@ public sealed class BearerAuthMiddleware(
         }
 
         var address = context.Connection.RemoteIpAddress;
-        if (throttle.LockedFor("rest", address) is { } wait)
+        if (throttle.Begin("rest", address) is { } wait)
         {
             logger.LogInformation("AppApi request to {0} from {1} rejected: too many invalid tokens", path, address);
             context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
@@ -70,7 +70,6 @@ public sealed class BearerAuthMiddleware(
         var appName = await tokens.VerifyAsync(token);
         if (appName is null)
         {
-            throttle.Failed("rest", address);
             logger.LogInformation("AppApi request to {0} rejected: invalid bearer token", path);
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             context.Response.Headers["WWW-Authenticate"] = "Bearer error=\"invalid_token\"";

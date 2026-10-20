@@ -70,6 +70,10 @@ public sealed class MqttBrokerService(
     /// <see cref="clientAppsLock"/>.</summary>
     private readonly Dictionary<string, long> tokenGenerations = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Maps a connection's endpoint text to the address the
+    /// throttle keys on. A seam for tests, whose clients are all loopback.</summary>
+    internal Func<string?, System.Net.IPAddress?> AddressResolver { get; set; } = AuthThrottle.AddressOf;
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         var opts = options.CurrentValue;
@@ -323,11 +327,10 @@ public sealed class MqttBrokerService(
             return;
         }
 
-        // Captured before the token check, which can take a while (one
-        // PBKDF2 per stored token): if the app's token changes meanwhile,
-        // this connection must not go through on the old one.
-        var address = AuthThrottle.AddressOf(e.Endpoint);
-        if (throttle.LockedFor("mqtt", address) is { } wait)
+        // Only while credentials are enforced: with auth off a bad password
+        // is accepted anyway, so there is nothing to protect or lock.
+        var address = AddressResolver(e.Endpoint);
+        if (authRequired && throttle.Begin("mqtt", address) is { } wait)
         {
             // Not checked at all while locked out, so guessing costs the
             // attacker time and us no hashing. Looks like any bad login.
@@ -336,13 +339,15 @@ public sealed class MqttBrokerService(
             return;
         }
 
+        // Captured before the token check, which can take a moment: if the
+        // app's token changes meanwhile, this connection must not go
+        // through on the old one.
         var generation = TokenGeneration(e.UserName!);
         var app = await tokens.VerifyAsync(e.Password!);
         if (app is null
             || !string.Equals(app, e.UserName, StringComparison.OrdinalIgnoreCase)
             || TokenGeneration(app) != generation)
         {
-            if (app is null) throttle.Failed("mqtt", address);
             if (authRequired)
             {
                 e.ReasonCode = MQTTnet.Protocol.MqttConnectReasonCode.BadUserNameOrPassword;
@@ -353,7 +358,7 @@ public sealed class MqttBrokerService(
             return;
         }
 
-        throttle.Succeeded("mqtt", address);
+        if (authRequired) throttle.Succeeded("mqtt", address);
         Remember(e, app, generation);
         logger.LogInformation("MQTT: client {0} authenticated as {1}", e.ClientId, app);
     }

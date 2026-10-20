@@ -290,4 +290,34 @@ public sealed class AdminPasswordStoreTests : IAsyncLifetime
         using var c = DbInfo.GetConnection();
         return c.Find<DbSystemOption>("AdminPasswordHash")!.Value;
     }
+
+    [Fact]
+    public async Task Login_AfterRepeatedWrongPasswords_Returns429ForThatAddressOnly()
+    {
+        var store = new AdminPasswordStore(NullLogger<AdminPasswordStore>.Instance);
+        await store.SetAsync("hunter2hunter2");
+        var throttle = new AuthThrottle(TimeProvider.System);
+
+        async Task<dapps.core.Pages.LoginModel> Post(string address, string password)
+        {
+            var http = new DefaultHttpContext();
+            http.Connection.RemoteIpAddress = System.Net.IPAddress.Parse(address);
+            var page = new dapps.core.Pages.LoginModel(store, throttle)
+            {
+                Password = password,
+                PageContext = new Microsoft.AspNetCore.Mvc.RazorPages.PageContext { HttpContext = http },
+            };
+            await page.OnPostAsync();
+            return page;
+        }
+
+        for (var i = 0; i < AuthThrottle.FreeFailures + 1; i++)
+            (await Post("203.0.113.20", "wrong-password")).Error.Should().Be("Wrong password.");
+
+        var locked = await Post("203.0.113.20", "hunter2hunter2");
+        locked.Error.Should().StartWith("Too many wrong passwords");
+        locked.Response.StatusCode.Should().Be(StatusCodes.Status429TooManyRequests);
+
+        (await Post("203.0.113.21", "wrong-password")).Error.Should().Be("Wrong password.");
+    }
 }

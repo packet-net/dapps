@@ -149,7 +149,7 @@ Look at the dashboard:
 
 ### "Too many wrong passwords" / HTTP 429 / MQTT connect refused
 
-After five wrong dashboard passwords or app tokens in a row from one address, DAPPS makes that address wait: 2 seconds, doubling up to a minute. It clears by itself, and other addresses are not affected. Wait it out and use the right password or token. Connections from the node's own machine (loopback) are never held back.
+After five wrong dashboard passwords or app tokens in a row from one address, DAPPS makes that address wait: 2 seconds, doubling up to a minute. It clears by itself, and other addresses are not affected. Wait it out and use the right password or token. The address is the one that connects to DAPPS. Connections from the node's own machine (loopback) are never held back, which includes everyone behind a reverse proxy on the same machine, until DAPPS learns to read the real client address from the proxy.
 
 ### "TTL expired" drops
 
