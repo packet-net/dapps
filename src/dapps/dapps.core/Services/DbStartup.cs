@@ -212,6 +212,7 @@ public static class DbStartup
         db.CreateTable<DbPolledNode>();
         db.CreateTable<DbTransmission>();
         db.CreateTable<DbStreamSendState>();
+        StreamSendStateUpgrade.MergeSpellings(db, logger);
         db.CreateTable<DbStreamRecvState>();
         db.CreateTable<DbRouteGossipState>();
 

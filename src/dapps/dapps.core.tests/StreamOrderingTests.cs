@@ -758,6 +758,66 @@ public sealed class StreamOrderingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Sender_DestinationSpellings_ShareOneCounter()
+    {
+        // #390: G0DEST, g0dest and G0DEST-0 are one station, so one stream
+        // to it has one counter however the destination is written.
+        await database.SubmitOutboundMessage("chat", "G0DEST", "a"u8.ToArray(), streamId: "c1");
+        await database.SubmitOutboundMessage("chat", "g0dest", "b"u8.ToArray(), streamId: "c1");
+        await database.SubmitOutboundMessage("chat", "G0DEST-0", "c"u8.ToArray(), streamId: "c1");
+
+        var rows = await database.GetRecentMessages(10);
+        rows.Select(r => r.StreamSeq).OrderBy(s => s).Should().Equal(1u, 2u, 3u);
+        var states = await database.GetStreamSendStatesAsync();
+        states.Should().ContainSingle();
+        states[0].NextSeq.Should().Be(4u);
+        states[0].RemoteCallsign.Should().Be("G0DEST");
+    }
+
+    [Fact]
+    public async Task Sender_DifferentSsids_KeepTheirOwnCounters()
+    {
+        await database.SubmitOutboundMessage("chat", "G0DEST", "a"u8.ToArray(), streamId: "c1");
+        await database.SubmitOutboundMessage("chat", "G0DEST-1", "b"u8.ToArray(), streamId: "c1");
+
+        (await database.GetStreamSendStatesAsync()).Should().HaveCount(2);
+        (await database.GetRecentMessages(10)).Select(r => r.StreamSeq).Should().Equal(1u, 1u);
+    }
+
+    [Fact]
+    public async Task Sender_CountersUnderOldSpellings_AreMergedAtStartup()
+    {
+        // #390 upgrade: rows saved under each spelling become one row that
+        // carries on from the highest seq any of them reached.
+        using (var c = DbInfo.GetConnection())
+        {
+            void Add(string local, string remote, string sid, uint next) => c.Insert(new DbStreamSendState
+            {
+                Key = $"{local}|{remote}|{sid}",
+                LocalCallsign = local, RemoteCallsign = remote, StreamId = sid,
+                NextSeq = next, UpdatedAt = DateTime.UtcNow,
+            });
+            Add("N0SELF", "G0DEST", "c1", 4);
+            Add("N0SELF", "g0dest", "c1", 9);
+            Add("n0self-0", "G0DEST-0", "c1", 2);
+            Add("N0SELF", "G0DEST-1", "c1", 3);
+            Add("N0SELF", "G0DEST", "c2", 6);
+
+            StreamSendStateUpgrade.MergeSpellings(c, null);
+        }
+
+        var states = await database.GetStreamSendStatesAsync();
+        states.Should().HaveCount(3);
+        states.Single(s => s.StreamId == "c1" && s.RemoteCallsign == "G0DEST").NextSeq.Should().Be(9u);
+        states.Single(s => s.RemoteCallsign == "G0DEST-1").NextSeq.Should().Be(3u);
+        states.Single(s => s.StreamId == "c2").NextSeq.Should().Be(6u);
+        states.Should().AllSatisfy(s => s.LocalCallsign.Should().Be("N0SELF"));
+
+        await database.SubmitOutboundMessage("chat", "g0dest-0", "next"u8.ToArray(), streamId: "c1");
+        (await database.GetRecentMessages(10)).Single().StreamSeq.Should().Be(9u);
+    }
+
+    [Fact]
     public async Task Sender_DifferentStreamIds_GetIndependentCounters()
     {
         await database.SubmitOutboundMessage("chat", "G0DEST", "a"u8.ToArray(), streamId: "c1");

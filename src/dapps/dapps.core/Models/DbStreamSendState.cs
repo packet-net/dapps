@@ -1,3 +1,4 @@
+using dapps.core.Services;
 using SQLite;
 
 namespace dapps.core.Models;
@@ -16,8 +17,10 @@ namespace dapps.core.Models;
 [Table("streamsendstate")]
 public sealed class DbStreamSendState
 {
-    /// <summary>Composite key <c>{LocalCallsign}|{RemoteCallsign}|{StreamId}</c>.
-    /// Built by <see cref="MakeKey"/> on insert.</summary>
+    /// <summary>Composite key <c>{LocalCallsign}|{RemoteCallsign}|{StreamId}</c>,
+    /// with both callsigns in their station form (upper case, no "-0"), so
+    /// every spelling of a station shares one counter (#390). Built by
+    /// <see cref="MakeKey"/> on insert.</summary>
     [PrimaryKey, NotNull]
     public string Key { get; set; } = "";
 
@@ -34,5 +37,5 @@ public sealed class DbStreamSendState
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
     public static string MakeKey(string localCallsign, string remoteCallsign, string streamId)
-        => $"{localCallsign}|{remoteCallsign}|{streamId}";
+        => $"{DestinationParser.StationKey(localCallsign)}|{DestinationParser.StationKey(remoteCallsign)}|{streamId}";
 }
