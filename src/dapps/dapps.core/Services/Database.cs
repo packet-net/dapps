@@ -389,10 +389,11 @@ public class Database(
                 logger.LogDebug("Message {0} already exists, overwriting", id);
             else
                 logger.LogWarning("Message {0} already exists, overwriting", id);
-            await connection.DeleteAsync<DbMessage>(id);
         }
 
-        await DbInfo.GetAsyncConnection().InsertAsync(new DbMessage
+        // Insert or replace in one statement: a find, delete and insert
+        // here could be raced by another save of the same id (#289).
+        await DbInfo.GetAsyncConnection().InsertOrReplaceAsync(new DbMessage
         {
             Id = id,
             Salt = salt,

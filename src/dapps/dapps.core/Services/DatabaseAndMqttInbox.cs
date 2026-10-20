@@ -122,16 +122,31 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
         // but possible if two senders salt-collide). Including the link
         // source means we'll dedup re-arrivals from the SAME upstream
         // without conflating them with arrivals from DIFFERENT upstreams.
+        //
+        // The copy is recorded as seen only once it has been stored (#293):
+        // if storing fails the sender's re-send must get another go. Copies
+        // with the same key take turns, so a second one that arrives while
+        // the first is being stored waits and then finds it seen.
         if (message.FloodHopsRemaining is { } _)
         {
-            if (await routingContext.HasSeenFloodAsync(message.Id, sourceCallsign, ct))
+            using (await LockStreamAsync("\u0001flood|" + message.Id + "|" + sourceCallsign, ct))
             {
-                logger.LogDebug("Flood {0} from {1} dropped - already seen", message.Id, sourceCallsign);
-                return;
+                if (await routingContext.HasSeenFloodAsync(message.Id, sourceCallsign, ct))
+                {
+                    logger.LogDebug("Flood {0} from {1} dropped - already seen", message.Id, sourceCallsign);
+                    return;
+                }
+                await DeliverNewAsync(message, sourceCallsign, ct);
+                await routingContext.RecordFloodSeenAsync(message.Id, sourceCallsign, ct);
             }
-            await routingContext.RecordFloodSeenAsync(message.Id, sourceCallsign, ct);
+            return;
         }
 
+        await DeliverNewAsync(message, sourceCallsign, ct);
+    }
+
+    private async Task DeliverNewAsync(BackhaulMessage message, string sourceCallsign, CancellationToken ct)
+    {
         // A message with no salt can't be told apart from a later one with
         // the same content (same id, same length), so it isn't remembered:
         // it's delivered every time it arrives, as before.
@@ -861,6 +876,21 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
     /// node.
     /// </summary>
     private async Task HandleLocalFragmentAsync(
+        BackhaulMessage message, string sourceCallsign, string originator, string headersJson, CancellationToken ct)
+    {
+        var masterId = message.MasterId!;
+
+        // One fragment of a master at a time (#289): the last two to arrive
+        // on different links would each see the full set, and both
+        // reassemble and deliver it. Whoever comes second finds the set
+        // incomplete or already assembled.
+        using (await LockStreamAsync("\u0001master|" + masterId, ct))
+        {
+            await HandleLocalFragmentLockedAsync(message, sourceCallsign, originator, headersJson, ct);
+        }
+    }
+
+    private async Task HandleLocalFragmentLockedAsync(
         BackhaulMessage message, string sourceCallsign, string originator, string headersJson, CancellationToken ct)
     {
         var masterId = message.MasterId!;
