@@ -32,9 +32,9 @@ public sealed class UdpBackhaulEndToEndTests
         var port = PickFreeUdpPort();
         var inbox = new RecordingInbox();
 
-        var listenerCts = new CancellationTokenSource();
-        using var listener = StartListener(port, inbox);
-        await WaitForUdpListenerReady(port);
+        var shared = new dapps.client.Discovery.UdpListenerSocket();
+        using var listener = StartListener(port, inbox, shared);
+        await WaitForUdpListenerReady(shared, port);
 
         using var sender = new UdpDatagramBackhaul(NullLoggerFactory.Instance);
         var input = new BackhaulMessage(
@@ -67,8 +67,9 @@ public sealed class UdpBackhaulEndToEndTests
         var port = PickFreeUdpPort();
         var inbox = new RecordingInbox();
 
-        using var listener = StartListener(port, inbox);
-        await WaitForUdpListenerReady(port);
+        var shared = new dapps.client.Discovery.UdpListenerSocket();
+        using var listener = StartListener(port, inbox, shared);
+        await WaitForUdpListenerReady(shared, port);
 
         // mtu=64 means each datagram carries at most 51 chunk bytes; a
         // 1 KB payload fragments across ~22 datagrams once the encoded
@@ -135,10 +136,7 @@ public sealed class UdpBackhaulEndToEndTests
         var shared = new dapps.client.Discovery.UdpListenerSocket();
 
         var listener = StartListener(port, inbox, shared);
-        await WaitForUdpListenerReady(port);
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
-        while (shared.BoundPort is null && DateTime.UtcNow < deadline) await Task.Delay(20);
-        shared.BoundPort.Should().Be(port);
+        await WaitForUdpListenerReady(shared, port);
 
         using (var probe = new UdpClient())
         {
@@ -187,28 +185,19 @@ public sealed class UdpBackhaulEndToEndTests
         return listener;
     }
 
-    private static async Task WaitForUdpListenerReady(int port)
+    private static async Task WaitForUdpListenerReady(dapps.client.Discovery.UdpListenerSocket shared, int port)
     {
-        // Poll until something is bound to the port (UDP doesn't have a
-        // listen-handshake the way TCP does; binding is the only signal).
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
-        while (DateTime.UtcNow < deadline)
-        {
-            try
-            {
-                using var probe = new UdpClient(new IPEndPoint(IPAddress.Loopback, port));
-                // We *succeeded* binding, which means the listener didn't
-                // - try again.
-            }
-            catch (SocketException)
-            {
-                // Couldn't bind because something else is on this port -
-                // that's the listener; we're ready.
-                return;
-            }
-            await Task.Delay(50);
-        }
-        throw new TimeoutException($"UDP listener did not bind on :{port} within 3s");
+        // Wait for the listener to report the port it bound. Never probe by
+        // binding the port ourselves: a probe that wins the race makes the
+        // listener's own bind fail (the host then drops the listener) and
+        // the test times out. The generous timeout is only a backstop for a
+        // starved thread pool; the wait ends the moment the listener binds.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+        while (shared.BoundPort is null && DateTime.UtcNow < deadline)
+            await Task.Delay(20);
+        if (shared.BoundPort is null)
+            throw new TimeoutException($"UDP listener did not bind on :{port} within 30s");
+        shared.BoundPort.Should().Be(port);
     }
 
     private static int PickFreeUdpPort()

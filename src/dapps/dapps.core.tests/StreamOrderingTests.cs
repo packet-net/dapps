@@ -621,6 +621,84 @@ public sealed class StreamOrderingTests : IAsyncLifetime
         inbox.StreamLockCount.Should().Be(0);
     }
 
+    // -- Local streams: seqs still being sent (#391) -------------------
+
+    [Fact]
+    public void LocalStreamSend_RolledBackDuplicateMark_DoesNotUnmarkTheLiveOne()
+    {
+        // #391 item 1: A minted sn=5 and marked it, then its transaction
+        // rolled back, so B minted sn=5 too and marked it. A's clean-up
+        // must not take B's mark away.
+        var a = database.BeginLocalStreamSend("r1", 5);
+        var b = database.BeginLocalStreamSend("r1", 5);
+        a.End();
+        a.End();
+
+        database.LowestLocalStreamSeqInFlight("r1", 1).Should().Be(5u, "B is still sending sn=5");
+        b.End();
+        database.LowestLocalStreamSeqInFlight("r1", 1).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Inbox_LocalStream_SweeperLeavesASeqStillBeingSent()
+    {
+        // #391 item 2: on this node's own stream with a gap timeout, sn=3
+        // parks behind sn=2, which is still being sent. The sweeper must
+        // not skip sn=2, or it is stored but never published.
+        var ct = TestContext.Current.CancellationToken;
+        var client = await ConnectClient();
+        var received = new List<uint?>();
+        var both = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.ApplicationMessageReceivedAsync += e =>
+        {
+            lock (received)
+            {
+                received.Add(Describe(e).Sn);
+                if (received.Count == 2) both.TrySetResult();
+            }
+            return Task.CompletedTask;
+        };
+        await client.SubscribeAsync("dapps/in/chat",
+            MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, ct);
+
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbStreamSendState
+            {
+                Key = DbStreamSendState.MakeKey("N0SELF", "N0SELF", "own"),
+                LocalCallsign = "N0SELF", RemoteCallsign = "N0SELF", StreamId = "own",
+                NextSeq = 3, UpdatedAt = clock.GetUtcNow().UtcDateTime,
+            });
+        }
+        // sn=1 never got anywhere; sn=2 is minted and on its way in.
+        var two = database.BeginLocalStreamSend("own", 2);
+        await database.SubmitOutboundMessage("chat", "N0SELF", "three"u8.ToArray(), 600, streamId: "own", streamGapTimeoutSeconds: 60);
+
+        var parked = await database.GetStreamRecvStateAsync("N0SELF", "N0SELF", "own");
+        parked!.NextExpectedSeq.Should().Be(2u, "sn=1 isn't being sent, sn=2 is");
+
+        clock.Advance(TimeSpan.FromSeconds(61));
+        foreach (var stale in await database.GetStaleStreamGapsAsync(clock.GetUtcNow().UtcDateTime))
+        {
+            await inbox.SkipGapAsync(stale, ct);
+        }
+        (await database.GetStreamRecvStateAsync("N0SELF", "N0SELF", "own"))!.NextExpectedSeq
+            .Should().Be(2u, "sn=2 is still being sent");
+
+        // sn=2 now goes in, then sn=3 follows it.
+        await database.LocalSubmissionHandler!(new DbMessage
+        {
+            Id = "own0002", Payload = "two"u8.ToArray(), Salt = 2L, Destination = "chat@N0SELF",
+            SourceCallsign = "N0SELF", OriginatorCallsign = "N0SELF", AdditionalProperties = "{}", Ttl = 600,
+            StreamId = "own", StreamSeq = 2, StreamGapTimeoutSeconds = 60,
+        }, two.End);
+        two.End();
+
+        await both.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        received.Should().Equal(2u, 3u);
+        await client.DisconnectAsync(cancellationToken: ct);
+    }
+
     // -- Concurrent submissions on one stream (#282) -------------------
 
     [Theory]

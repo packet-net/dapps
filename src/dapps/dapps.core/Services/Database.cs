@@ -108,9 +108,11 @@ public class Database(
     /// Set by the inbox: takes a message an app here addressed to an app
     /// on this same node, stores it and publishes it exactly as if it had
     /// arrived from another node (#288). Null in a bare Database, where
-    /// such a message is just stored.
+    /// such a message is just stored. The action says this submission's
+    /// seq is no longer being sent (#391); calling it more than once is
+    /// fine.
     /// </summary>
-    internal Func<DbMessage, Task>? LocalSubmissionHandler { get; set; }
+    internal Func<DbMessage, Action, Task>? LocalSubmissionHandler { get; set; }
 
     /// <summary>
     /// Persist a fresh outbound message submitted by a local app via the MQTT
@@ -195,6 +197,7 @@ public class Database(
         // it (below), so it isn't saved twice.
         var inboxStores = isLocal && !hasStream && LocalSubmissionHandler is not null;
         uint? seq = null;
+        LocalStreamSend? sending = null;
         if (hasStream)
         {
             // Mint the seq and store the rows in one transaction (#282).
@@ -212,7 +215,8 @@ public class Database(
                     seq = AllocateStreamSeq(conn, ourCall, destCallsign, streamId!);
                     if (isLocal && LocalSubmissionHandler is not null)
                     {
-                        BeginLocalStreamSend(streamId!, seq.Value);
+                        sending?.End();
+                        sending = BeginLocalStreamSend(streamId!, seq.Value);
                     }
                     foreach (var row in rows)
                     {
@@ -222,7 +226,9 @@ public class Database(
             }
             catch
             {
-                if (seq is { } burnt) EndLocalStreamSend(streamId!, burnt);
+                // Only this submission's mark: after the rollback another
+                // submission may have minted the same seq and marked it.
+                sending?.End();
                 throw;
             }
             forwarderWakeup?.Wake();
@@ -255,7 +261,7 @@ public class Database(
                     AdditionalProperties = "{}", Ttl = ttlSeconds,
                     StreamId = streamId, StreamSeq = seq,
                     StreamGapTimeoutSeconds = streamGapTimeoutSeconds,
-                });
+                }, () => sending?.End());
             }
             catch (Exception ex)
             {
@@ -269,7 +275,7 @@ public class Database(
             }
             finally
             {
-                if (seq is { } sent) EndLocalStreamSend(streamId!, sent);
+                sending?.End();
             }
         }
         return returnedId;
@@ -298,10 +304,26 @@ public class Database(
     }
 
     /// <summary>Seqs on this node's own streams (to apps here) minted
-    /// and not yet taken by the inbox, by stream id.</summary>
-    private readonly Dictionary<string, SortedSet<uint>> localStreamSendsInFlight = new(StringComparer.Ordinal);
+    /// and not yet taken by the inbox, by stream id, with how many
+    /// submissions hold each. A seq can be held twice: a submission whose
+    /// transaction rolled back gives its seq back to the counter, so
+    /// another can mint and mark it before the first lets go (#391).</summary>
+    private readonly Dictionary<string, SortedDictionary<uint, int>> localStreamSendsInFlight = new(StringComparer.Ordinal);
 
-    private void BeginLocalStreamSend(string streamId, uint seq)
+    /// <summary>One submission's mark on a seq being sent. Ending it
+    /// again does nothing, so it never takes another submission's mark
+    /// away.</summary>
+    internal sealed class LocalStreamSend(Database owner, string streamId, uint seq)
+    {
+        private int ended;
+
+        public void End()
+        {
+            if (Interlocked.Exchange(ref ended, 1) == 0) owner.EndLocalStreamSend(streamId, seq);
+        }
+    }
+
+    internal LocalStreamSend BeginLocalStreamSend(string streamId, uint seq)
     {
         lock (localStreamSendsInFlight)
         {
@@ -309,18 +331,24 @@ public class Database(
             {
                 localStreamSendsInFlight[streamId] = seqs = [];
             }
-            seqs.Add(seq);
+            seqs[seq] = seqs.GetValueOrDefault(seq) + 1;
         }
+        return new LocalStreamSend(this, streamId, seq);
     }
 
-    internal void EndLocalStreamSend(string streamId, uint seq)
+    private void EndLocalStreamSend(string streamId, uint seq)
     {
         lock (localStreamSendsInFlight)
         {
-            if (localStreamSendsInFlight.TryGetValue(streamId, out var seqs) && seqs.Remove(seq) && seqs.Count == 0)
+            if (!localStreamSendsInFlight.TryGetValue(streamId, out var seqs)
+                || !seqs.TryGetValue(seq, out var holders)) return;
+            if (holders > 1)
             {
-                localStreamSendsInFlight.Remove(streamId);
+                seqs[seq] = holders - 1;
+                return;
             }
+            seqs.Remove(seq);
+            if (seqs.Count == 0) localStreamSendsInFlight.Remove(streamId);
         }
     }
 
@@ -331,7 +359,10 @@ public class Database(
         lock (localStreamSendsInFlight)
         {
             if (!localStreamSendsInFlight.TryGetValue(streamId, out var seqs)) return null;
-            foreach (var s in seqs.GetViewBetween(from, uint.MaxValue)) return s;
+            foreach (var s in seqs.Keys)
+            {
+                if (s >= from) return s;
+            }
             return null;
         }
     }
