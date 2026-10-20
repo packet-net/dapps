@@ -1009,7 +1009,7 @@
                 <span class="reason">@TxGate.BlockReason</span>
                 @if (!TxGate.LocalAllowed)
                 {
-                    <form method="post" action="@Url.Content("~/TxControl/resume")" class="tx-stop-inline-form">
+                    <form method="post" action="@Url.Content("~/TxControl/resume")" class="tx-stop-inline-form">@Html.AntiForgeryToken()
                         <button type="submit">Resume TX</button>
                     </form>
                 }
@@ -1052,7 +1052,7 @@
             <div class="topbar-actions">
                 @if (TxGate.TxAllowed)
                 {
-                    <form method="post" action="@Url.Content("~/TxControl/stop")" class="tx-stop-inline-form">
+                    <form method="post" action="@Url.Content("~/TxControl/stop")" class="tx-stop-inline-form">@Html.AntiForgeryToken()
                         <button type="submit" class="tx-killbtn" title="Stop all transmissions immediately">
                             <span class="led"></span> Stop TX
                         </button>
