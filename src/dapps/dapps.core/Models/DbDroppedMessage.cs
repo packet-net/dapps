@@ -46,7 +46,8 @@ public class DbDroppedMessage
     /// preserved from the live row so the dropped-messages dashboard
     /// can show why a stream stalled. Null on non-stream rows.
     /// <c>dropped_messages_stream</c> serves the ordering cursor's check
-    /// for seqs the operator dropped (#389); sqlite-net creates it on
+    /// for seqs the operator dropped (#389) or that expired by TTL before
+    /// delivery (#398); sqlite-net creates it on
     /// start-up, and an older version simply ignores it.</summary>
     [Indexed(Name = "dropped_messages_stream", Order = 1)]
     public string? StreamId { get; init; }

@@ -188,6 +188,54 @@ public sealed class InboxTtlExpiryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task StrictStream_AnotherSendersStreamWithTheSameId_IsNotSteppedOver()
+    {
+        // The cursor is per (sender, stream): G0OTHR's sn=2 on "s1"
+        // expiring says nothing about G0FROM's sn=2 on "s1".
+        var (client, received) = await SubscribeAsync();
+        await inbox.DeliverAsync(Stream("ttlo0002", 2, "theirs", ttl: 60) with { Originator = "G0OTHR" }, "G0HOP", Ct);
+        await ExpireAsync(TimeSpan.FromMinutes(2));
+        (await database.GetDroppedMessage("ttlo0002"))!.Reason.Should().Be("ttl-expired");
+
+        await inbox.DeliverAsync(Stream("ttlo1003", 3, "three"), "G0HOP", Ct);
+        await inbox.DeliverAsync(Stream("ttlo1001", 1, "one"), "G0HOP", Ct);
+        await WaitForAsync(received, 1);
+
+        received.Should().Equal(1u);
+        (await database.GetMessage("ttlo1003"))!.PendingInOrder.Should().BeTrue();
+        (await database.GetStreamRecvStateAsync("N0SELF", "G0FROM", "s1"))!.NextExpectedSeq.Should().Be(2u);
+        await client.DisconnectAsync(cancellationToken: Ct);
+    }
+
+    [Fact]
+    public async Task StrictStream_AfterACrashBetweenTheDropAndTheDrain_TheNextArrivalReleasesWhatIsParked()
+    {
+        // Cursor at 5; sn=5 was recorded as expired but the drain never
+        // ran (a crash), so sn=6 is still parked. When sn=7 arrives, 6
+        // and 7 both go, in order.
+        var (client, received) = await SubscribeAsync();
+        await database.UpsertStreamRecvStateAsync(new DbStreamRecvState
+        {
+            LocalCallsign = "N0SELF", SenderCallsign = "G0FROM", StreamId = "s1",
+            NextExpectedSeq = 5, LastReceivedAt = clock.GetUtcNow().UtcDateTime, GapDeadline = DateTime.MinValue,
+        });
+        await database.SaveMessage("crsh0005", "five"u8.ToArray(), 1L, "chat@N0SELF", "G0HOP", "", ttl: 60,
+            originatorCallsign: "G0FROM", streamId: "s1", streamSeq: 5, streamGapTimeoutSeconds: 0, pendingInOrder: true);
+        await database.SaveMessage("crsh0006", "six"u8.ToArray(), 1L, "chat@N0SELF", "G0HOP", "", ttl: 3600,
+            originatorCallsign: "G0FROM", streamId: "s1", streamSeq: 6, streamGapTimeoutSeconds: 0, pendingInOrder: true);
+        clock.Advance(TimeSpan.FromMinutes(2));
+        await database.DropExpiredAsync("crsh0005");
+
+        await inbox.DeliverAsync(Stream("crsh0007", 7, "seven"), "G0HOP", Ct);
+        await WaitForAsync(received, 2);
+
+        received.Should().Equal(6u, 7u);
+        (await database.GetStreamRecvStateAsync("N0SELF", "G0FROM", "s1"))!.NextExpectedSeq.Should().Be(8u);
+        (await database.GetMessage("crsh0006"))!.PendingInOrder.Should().BeFalse();
+        await client.DisconnectAsync(cancellationToken: Ct);
+    }
+
+    [Fact]
     public async Task Stream_ADeliveredButUnackedMessageExpiring_LeavesTheCursorAlone()
     {
         await inbox.DeliverAsync(Stream("ttld0001", 1, "one", ttl: 60), "G0HOP", Ct);

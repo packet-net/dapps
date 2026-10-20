@@ -490,8 +490,15 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
 
         // Seqs dropped before the app had them (by the operator, or
         // expired) never come: step over them so what follows isn't held
-        // for them (#389, #398).
+        // for them (#389, #398). If that moves the cursor, deliver what
+        // is parked behind it first: the drop that should have released
+        // it may not have got that far (a crash, or a failed drain).
+        var cursorBefore = recv.NextExpectedSeq;
         await SkipDroppedSeqsAsync(recv, streamSender, streamId);
+        if (recv.NextExpectedSeq != cursorBefore)
+        {
+            await DrainConsecutivePendingAsync(recv, streamSender, streamId, ct);
+        }
 
         // This node's own stream: a seq below this one that isn't being
         // sent right now never will be (its send failed, or it was sent

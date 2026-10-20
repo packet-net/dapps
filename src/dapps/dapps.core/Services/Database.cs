@@ -514,6 +514,10 @@ public class Database(
     /// from the local inbox on the dashboard (#389).</summary>
     public const string DroppedByOperatorReason = "dropped by operator";
 
+    /// <summary>Test seam: runs between writing the drop record and
+    /// deleting the message, so a test can land an ack in that gap.</summary>
+    internal Func<Task>? BeforeInboxDropDelete { get; set; }
+
     /// <summary>
     /// The operator's Drop on the dashboard's local inbox (#389): moves a
     /// message for an app on this node, not yet acked by it, to
@@ -525,10 +529,6 @@ public class Database(
     /// Stream ordering is the inbox's job: see
     /// <see cref="DatabaseAndMqttInbox.DropByOperatorAsync"/>.
     /// </summary>
-    /// <summary>Test seam: runs between writing the drop record and
-    /// deleting the message, so a test can land an ack in that gap.</summary>
-    internal Func<Task>? BeforeInboxDropDelete { get; set; }
-
     internal async Task<(InboxDropOutcome Outcome, DbMessage? Row)> DropFromLocalInboxAsync(string id)
     {
         var c = DbInfo.GetAsyncConnection();
@@ -612,11 +612,6 @@ public class Database(
     }
 
     /// <summary>
-    /// Remove every message whose TTL has elapsed. Ones still queued are
-    /// soft-deleted as <c>ttl-expired</c>; ones already forwarded or
-    /// delivered locally are simply deleted. Returns how many went.
-    /// </summary>
-    /// <summary>
     /// Set by the inbox: drops an expired message for an app here that is
     /// on an ordered stream, under the stream's lock, and moves the stream
     /// on past it (#398). Without one, such a message is dropped like any
@@ -625,10 +620,18 @@ public class Database(
     internal Func<DbMessage, Task>? ExpiredStreamMessageHandler { get; set; }
 
     /// <summary>Drop one message whose TTL ran out, recording it as
-    /// <see cref="TtlExpiredReason"/>, unless it was forwarded or acked by
-    /// its app since, when it just goes (#285).</summary>
+    /// <see cref="TtlExpiredReason"/>.</summary>
+    // Already sent on or delivered to its app (checked again as it is
+    // dropped, in case that happened since the rows were read): it did not
+    // expire, its job is done. It goes without a ttl-expired record, which
+    // would tell the operator it never went (#285).
     internal Task DropExpiredAsync(string id) => DropAsync(id, TtlExpiredReason, onlyIfStillQueued: true);
 
+    /// <summary>
+    /// Remove every message whose TTL has elapsed. Ones still queued are
+    /// soft-deleted as <c>ttl-expired</c>; ones already forwarded or
+    /// delivered locally are simply deleted. Returns how many went.
+    /// </summary>
     internal async Task<int> DeleteExpired(DateTime now)
     {
         var connection = DbInfo.GetAsyncConnection();
@@ -647,11 +650,6 @@ public class Database(
             // on this sweep and every later one (#284).
             try
             {
-                // Already sent on or delivered to its app (checked again
-                // as it is dropped, in case that happened since the rows
-                // were read): it did not expire, its job is done. It goes
-                // without a ttl-expired record, which would tell the
-                // operator it never went (#285).
                 // A message for an app here on an ordered stream goes
                 // through the inbox, which holds the stream's lock and
                 // steps the stream over its seq so later messages aren't
