@@ -226,7 +226,11 @@ public class Database(
             // Published to the app exactly as a message from another node
             // would be (stream ordering included). Once the row is stored
             // the submit has succeeded: if publishing fails the message is
-            // still listed for the app, so don't report a failure.
+            // still listed for the app, so don't report a failure. On an
+            // ordered stream a failure here leaves the receive position
+            // behind this seq and later local sends park until the gap
+            // timeout (for ever on a strict stream); they are still listed
+            // for the app and come back when it resubscribes.
             var first = rows[0];
             try
             {
