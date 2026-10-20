@@ -548,18 +548,23 @@ public sealed class ExchangeSession
             return true;
         }
 
-        if (awaitingRoutes && now - routesAskedAt >= SilentPeerWait)
+        if (awaitingRoutes && now - RoutesQuietSince >= SilentPeerWait)
         {
-            // A DAPPS node that sent its prompt answers routes at once. No
-            // answer at all means what we send isn't reaching it: BPQ can
-            // hand it to a call of ours it still holds for this pair from
-            // before (one that crossed the peer's and never connected), and
-            // it then refuses the peer's calls while we wait (#397). Hanging
-            // up ends that call at our node, as the inactivity timeout
-            // would, but minutes sooner.
-            logger.LogWarning("No answer from {0} to our routes request in {1:F0}s: what we send isn't reaching it",
+            // Nothing at all has come since we asked for the peer's routes.
+            // A long answer on a slow link keeps coming line by line, and
+            // each line restarts this wait; silence this long means what we
+            // send isn't reaching the peer. BPQ can hand it to a call of
+            // ours it still holds for this pair from before (one that
+            // crossed the peer's and never connected), and it then refuses
+            // the peer's calls while we wait (#397). Hanging up ends that
+            // call at our node, as the inactivity timeout would, but
+            // minutes sooner. The attempt counts as a pull, so the next
+            // session doesn't ask again until the gossip gate allows it.
+            logger.LogWarning("Nothing from {0} for {1:F0}s after our routes request: what we send isn't reaching it",
                 peer, SilentPeerWait.TotalSeconds);
             Failure = $"no answer from {peer} to routes";
+            awaitingRoutes = false;
+            await RecordRoutesAttemptAsync();
             End();
             return true;
         }
@@ -594,6 +599,24 @@ public sealed class ExchangeSession
         return false;
     }
 
+    /// <summary>Since when nothing has come while we wait for the routes
+    /// answer: the request, or the last line heard after it.</summary>
+    private DateTimeOffset RoutesQuietSince => lastHeard > routesAskedAt ? lastHeard : routesAskedAt;
+
+    /// <summary>A routes request that went unanswered still counts as a
+    /// pull, so a link that swallows it isn't asked again every session.</summary>
+    private async Task RecordRoutesAttemptAsync()
+    {
+        try
+        {
+            await RouteGossip!.RecordPulledAsync(peer, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Recording the routes request to {0} failed", peer);
+        }
+    }
+
     private DateTimeOffset NextDeadline()
     {
         if (quitting) return quitDeadline;
@@ -601,7 +624,7 @@ public sealed class ExchangeSession
         foreach (var o in unanswered) next = Min(next, AnswerDeadline(o));
         if (!dialled) return next;
         if (!ownSent && !awaitingRoutes) next = Min(next, started + PromptWait);
-        if (awaitingRoutes) next = Min(next, routesAskedAt + SilentPeerWait);
+        if (awaitingRoutes) next = Min(next, RoutesQuietSince + SilentPeerWait);
         if (ownSent && !Established && noiseSinceOwn > 0 && !heardDapps) next = Min(next, ownSentAt + PromptWait);
         if (WaitingOnSilence) next = Min(next, ownSentAt + SilentPeerWait);
         if (Established)

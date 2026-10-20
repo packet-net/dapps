@@ -340,12 +340,60 @@ public sealed class ExchangeSessionTests : IDisposable
         gossip.Pulled.Should().Be(1);
     }
 
-    /// <summary>A route gossip gate that always wants the peer's routes.</summary>
+    [Fact]
+    public async Task ACallerWhoseRoutesAnswerKeepsComing_PastThreePromptWaits_CarriesOn()
+    {
+        // A long answer on a slow link: each line restarts the wait.
+        var clock = new WatchedClock();
+        var (session, peer, run, _) = await CallerAsync(clock: clock, gossip: new PullingGossip());
+        await clock.WaitForArmedAsync(1, Ct);
+        await peer.WriteLineAsync("DAPPSv1>", Ct);
+        (await peer.ReadLineAsync(Ct)).Should().Be("routes");
+        await clock.WaitForArmedAsync(2, Ct);
+
+        for (var i = 0; i < 4; i++)
+        {
+            var armed = clock.Armed;
+            clock.Advance(Short * 2);
+            await peer.WriteLineAsync($"route N0XY{i}-1 hops=2", Ct);
+            await clock.WaitForArmedAsync(armed + 1, Ct);
+        }
+        run.IsCompleted.Should().BeFalse("route lines kept coming, 8 prompt waits in all");
+        await peer.WriteLineAsync("end", Ct);
+
+        (await peer.ReadLineAsync(Ct)).Should().StartWith("exchange ");
+        await peer.WriteLineAsync(Rules(), Ct);
+        await WaitUntilAsync(() => session.Established || run.IsCompleted);
+        session.Established.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ARoutesRequestThatGotNoAnswer_IsNotMadeAgainOnTheNextSession()
+    {
+        var gossip = new PullingGossip();
+        var clock = new WatchedClock();
+        var (first, peer, run, _) = await CallerAsync(clock: clock, gossip: gossip);
+        await clock.WaitForArmedAsync(1, Ct);
+        await peer.WriteLineAsync("DAPPSv1>", Ct);
+        (await peer.ReadLineAsync(Ct)).Should().Be("routes");
+        await clock.WaitForArmedAsync(2, Ct);
+        clock.Advance(Short * 3);
+        await run.WaitAsync(Patience, Ct);
+        first.Failure.Should().Contain("routes");
+        gossip.Pulled.Should().Be(1, "the unanswered request counts as a pull");
+
+        var (second, nextPeer, _, _) = await CallerAsync(gossip: gossip);
+        await nextPeer.WriteLineAsync("DAPPSv1>", Ct);
+        (await nextPeer.ReadLineAsync(Ct)).Should().StartWith("exchange ", "the gossip gate holds the next pull back");
+        second.Failure.Should().BeNull();
+    }
+
+    /// <summary>A route gossip gate that wants the peer's routes until a pull is recorded.</summary>
     private sealed class PullingGossip : IRouteGossipPort
     {
         public int Pulled { get; private set; }
 
-        public Task<bool> ShouldPullAsync(string remoteCallsign, CancellationToken ct) => Task.FromResult(true);
+        public Task<bool> ShouldPullAsync(string remoteCallsign, CancellationToken ct) => Task.FromResult(Pulled == 0);
 
         public Task ImportAsync(string advertiserCallsign, IReadOnlyList<DappsProtocolClient.GossipedRoute> routes, CancellationToken ct) =>
             Task.CompletedTask;
