@@ -58,7 +58,7 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
     /// that seq can never arrive: messages behind it must not wait for it
     /// (#384). The message itself is stored and listed for the app.
     /// </summary>
-    private async Task AcceptLocalSubmissionAsync(DbMessage message)
+    private async Task AcceptLocalSubmissionAsync(DbMessage message, Action endSend)
     {
         try
         {
@@ -68,7 +68,7 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
         {
             if (message.StreamSeq is { } seq && !string.IsNullOrEmpty(message.StreamId))
             {
-                database.EndLocalStreamSend(message.StreamId, seq);
+                endSend();
                 try
                 {
                     await ReleaseLocalStreamAsync(message.OriginatorCallsign, message.StreamId, CancellationToken.None);
@@ -736,6 +736,16 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
         }
         var fromSn = recv.NextExpectedSeq;
         var toSn = firstAbove.StreamSeq.Value;
+        if (string.Equals(recv.SenderCallsign, options.CurrentValue.Callsign, StringComparison.OrdinalIgnoreCase)
+            && database.LowestLocalStreamSeqInFlight(recv.StreamId, fromSn) is { } sending
+            && sending < toSn)
+        {
+            // This node's own stream: a seq still being sent will arrive
+            // in a moment, so don't skip it or it would be stored but
+            // never published (#391). The next sweep looks again.
+            toSn = sending;
+            if (toSn == fromSn) return;
+        }
         for (var k = fromSn; k < toSn; k++)
         {
             logger.LogWarning(
