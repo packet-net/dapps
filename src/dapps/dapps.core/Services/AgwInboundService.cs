@@ -276,11 +276,7 @@ public sealed class AgwInboundService(
         }
         await using var opened = await AgwLink.OpenAsync(
             opts.NodeHost, opts.AgwPort, localCall, OnInbound, logger, txGate, timeProvider,
-            onRegisterSent: listenOnly ? null : () =>
-            {
-                metrics.RecordAgwReconnect();
-                metrics.RecordNodeLinkOpen("agw", true);
-            }, stopping: stoppingTokenSource.Token, ct: ct,
+            onRegisterSent: listenOnly ? null : metrics.RecordAgwReconnect, stopping: stoppingTokenSource.Token, ct: ct,
             listenOnly: listenOnly);
 
         // Reset the backoff only now, not on the raw connect and write:
@@ -292,6 +288,7 @@ public sealed class AgwInboundService(
         // connection is more than a TCP handshake.
         reconnect.RecordSuccess();
         PublishBackoffState();
+        if (!listenOnly) metrics.RecordNodeLinkOpen("agw", true);
         logger.LogDebug(listenOnly ? "AGW inbound: 'G' answered" : "AGW inbound: 'X' ack");
 
         // Before it is published, so a subscriber hears it from the start.

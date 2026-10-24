@@ -146,7 +146,7 @@ public sealed class MetricsController(
         text.Counter("dapps_forward_success_total", "Messages forwarded to a neighbour and accepted.", c.ForwardSuccess);
         text.Counter("dapps_forward_failure_total", "Forward attempts that failed.", c.ForwardFailure);
         text.Counter("dapps_forward_bytes_total", "Payload bytes of messages forwarded to a neighbour and accepted.", c.ForwardBytes);
-        text.Counter("dapps_inbound_messages_total", "Messages received, from a neighbour or from a local app to a local app. Each piece of a split message counts once; the reassembled whole does not count again. Repeats of a message already held are not counted.", c.InboundMessages);
+        text.Counter("dapps_inbound_messages_total", "Messages received, from a neighbour or from a local app to a local app. Each piece of a split message counts once; the reassembled whole does not count again.", c.InboundMessages);
         text.Counter("dapps_inbound_bytes_total", "Payload bytes of the messages counted by dapps_inbound_messages_total.", c.InboundBytes);
         text.Counter("dapps_inbound_connects_total", "Inbound DAPPS sessions the packet node handed to this node.", c.InboundConnects);
         text.Counter("dapps_ttl_expired_total", "Messages dropped because their time to live ran out.", c.TtlExpiredDrops);
