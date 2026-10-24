@@ -38,6 +38,7 @@ public sealed class StreamOrderingTests : IAsyncLifetime
     private MqttServer mqttServer = null!;
     private MqttBrokerService broker = null!;
     private DatabaseAndMqttInbox inbox = null!;
+    private OperationalMetrics metrics = null!;
 
     public async ValueTask InitializeAsync()
     {
@@ -72,7 +73,8 @@ public sealed class StreamOrderingTests : IAsyncLifetime
         broker = new MqttBrokerService(NullLogger<MqttBrokerService>.Instance, optionsMonitor, database, tokens, mqttServer);
         var routingContext = new DatabaseRoutingContext(database, optionsMonitor);
         var routingAlgorithm = new StaticRoutingAlgorithm(NullLogger<StaticRoutingAlgorithm>.Instance);
-        inbox = new DatabaseAndMqttInbox(database, broker, new InboundEventBus(),
+        metrics = new OperationalMetrics(clock);
+        inbox = new DatabaseAndMqttInbox(database, broker, new InboundEventBus(metrics),
             optionsMonitor, routingAlgorithm, routingContext, clock,
             NullLogger<DatabaseAndMqttInbox>.Instance);
 
@@ -414,6 +416,12 @@ public sealed class StreamOrderingTests : IAsyncLifetime
         assembled.StreamSeq.Should().Be(1u);
         assembled.PendingInOrder.Should().BeFalse();
         (await database.GetMessage("ord0002"))!.PendingInOrder.Should().BeFalse();
+
+        // The two pieces and sn=2 count once each; the reassembled whole
+        // does not count again.
+        var counts = metrics.Take();
+        counts.InboundMessages.Should().Be(3);
+        counts.InboundBytes.Should().Be("big-".Length + "one".Length + "msg-two".Length);
 
         await client.DisconnectAsync(cancellationToken: ct);
     }

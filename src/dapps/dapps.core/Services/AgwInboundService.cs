@@ -156,7 +156,14 @@ public sealed class AgwInboundService(
             var cycleCt = cycleTokenSource.Token;
             try
             {
-                await RunOnce(cycleCt);
+                try
+                {
+                    await RunOnce(cycleCt);
+                }
+                finally
+                {
+                    metrics.RecordNodeLinkOpen("agw", false);
+                }
 
                 // Reached here only via a clean return - idle-gated on
                 // missing config, or the cycle token's while-condition
@@ -269,7 +276,11 @@ public sealed class AgwInboundService(
         }
         await using var opened = await AgwLink.OpenAsync(
             opts.NodeHost, opts.AgwPort, localCall, OnInbound, logger, txGate, timeProvider,
-            onRegisterSent: listenOnly ? null : metrics.RecordAgwReconnect, stopping: stoppingTokenSource.Token, ct: ct,
+            onRegisterSent: listenOnly ? null : () =>
+            {
+                metrics.RecordAgwReconnect();
+                metrics.RecordNodeLinkOpen("agw", true);
+            }, stopping: stoppingTokenSource.Token, ct: ct,
             listenOnly: listenOnly);
 
         // Reset the backoff only now, not on the raw connect and write:

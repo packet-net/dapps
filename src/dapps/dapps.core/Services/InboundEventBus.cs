@@ -14,10 +14,11 @@ namespace dapps.core.Services;
 /// publishers - the inbox's job is to persist messages, not to wait
 /// for browser tabs to keep up.
 ///
-/// Every publish is one message the inbox accepted and stored, so the
-/// bus is also where <see cref="OperationalMetrics"/> counts inbound
-/// messages and bytes for <c>/metrics</c>. One place, instead of a
-/// call beside each of the inbox's publish sites.
+/// Every publish is one message the inbox received, so the bus is also
+/// where <see cref="OperationalMetrics"/> counts inbound messages and
+/// bytes for <c>/metrics</c>. One place, instead of a call beside each
+/// of the inbox's publish sites. The one event that is not a new
+/// arrival, a split message put back together, says so.
 /// </summary>
 public sealed class InboundEventBus(OperationalMetrics? metrics = null)
 {
@@ -37,9 +38,12 @@ public sealed class InboundEventBus(OperationalMetrics? metrics = null)
         return new Subscription(this, channel);
     }
 
-    public void Publish(InboundEvent ev)
+    /// <param name="countAsInbound">False for an event about a message
+    /// already counted: the whole of a split message, put back together
+    /// from pieces that were each counted as they arrived.</param>
+    public void Publish(InboundEvent ev, bool countAsInbound = true)
     {
-        metrics?.RecordInboundMessage(ev.PayloadLength);
+        if (countAsInbound) metrics?.RecordInboundMessage(ev.PayloadLength);
         Channel<InboundEvent>[] snapshot;
         lock (_lock) snapshot = _subscribers.ToArray();
         foreach (var sub in snapshot)

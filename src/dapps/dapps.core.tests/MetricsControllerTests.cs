@@ -63,6 +63,7 @@ public sealed class MetricsControllerTests : IAsyncLifetime
         // The node link came up ten minutes ago and has stayed up; a
         // session with G7PEER opened eight minutes later.
         metrics.RecordAgwReconnect();
+        metrics.RecordNodeLinkOpen("agw", true);
         metrics.RecordReconnectBackoff("agw", failureStreak: 0, nextRetryAtUtc: null);
         clock.Advance(TimeSpan.FromMinutes(8));
         var sessions = new PeerSessionRegistry(timeProvider: clock);
@@ -151,6 +152,8 @@ public sealed class MetricsControllerTests : IAsyncLifetime
         });
         var metrics = new OperationalMetrics(clock);
         metrics.RecordAgwReconnect();
+        metrics.RecordNodeLinkOpen("rhpv2", true);
+        metrics.RecordNodeLinkOpen("rhpv2", false);
         var retryAt = clock.GetUtcNow().UtcDateTime.AddSeconds(30);
         metrics.RecordReconnectBackoff("rhpv2", failureStreak: 2, nextRetryAtUtc: retryAt);
 
@@ -172,6 +175,49 @@ public sealed class MetricsControllerTests : IAsyncLifetime
         lines.Should().Contain("dapps_node_link_next_retry_timestamp_seconds{bearer=\"rhpv2\"} " + PrometheusText.UnixSeconds(retryAt).ToString(System.Globalization.CultureInfo.InvariantCulture));
         lines.Should().Contain("dapps_meshcore_enabled 0");
         lines.Should().NotContain(l => l.StartsWith("dapps_meshcore_link_state"), "MeshCore series are omitted while the bearer is off");
+    }
+
+    [Fact]
+    public async Task Get_AfterACleanClose_ReportsLinkDownEvenWithNoFailures()
+    {
+        // The connection closed without an error (an options change, or
+        // the node closing it cleanly): the failure streak stays 0, but
+        // the link is not up. The other bearer's service idling must not
+        // change that either way.
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-01T12:00:00Z"));
+        var opts = new TestOptionsMonitor<SystemOptions>(new SystemOptions
+        {
+            Callsign = "G7TST-9",
+            NodeHost = "127.0.0.1",
+            AgwPort = 1,
+            MqttPort = 1,
+        });
+        var metrics = new OperationalMetrics(clock);
+        metrics.RecordAgwReconnect();
+        metrics.RecordNodeLinkOpen("agw", true);
+        metrics.RecordNodeLinkOpen("rhpv2", false);
+
+        var controller = new MetricsController(
+            opts, metrics,
+            new Database(NullLogger<Database>.Instance, opts),
+            new AirtimeAccountant(opts, clock, NullLogger<AirtimeAccountant>.Instance),
+            new PeerSessionRegistry(timeProvider: clock),
+            new TcpReachabilityProbe(clock), clock)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+        };
+
+        clock.Advance(TimeSpan.FromMinutes(1));
+        (await controller.Get()).Content!.Split('\n')
+            .Should().Contain("dapps_node_link_up{bearer=\"agw\"} 1");
+
+        metrics.RecordNodeLinkOpen("agw", false);
+        metrics.RecordReconnectBackoff("agw", failureStreak: 0, nextRetryAtUtc: null);
+
+        var lines = (await controller.Get()).Content!.Split('\n');
+        lines.Should().Contain("dapps_node_link_up{bearer=\"agw\"} 0");
+        lines.Should().Contain("dapps_node_link_uptime_seconds{bearer=\"agw\"} 0");
+        lines.Should().Contain("dapps_node_link_reconnect_failures{bearer=\"agw\"} 0");
     }
 
     private sealed class TestOptionsMonitor<T>(T value) : IOptionsMonitor<T>

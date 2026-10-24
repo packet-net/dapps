@@ -62,6 +62,8 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
     private DateTime? _agwReconnectNextAtUtc;
     private int _rhpv2ReconnectAttempt;
     private DateTime? _rhpv2ReconnectNextAtUtc;
+    private volatile bool _agwLinkOpen;
+    private volatile bool _rhpv2LinkOpen;
     private readonly ConcurrentDictionary<string, NeighbourMetrics> _neighbours = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<OperationalEvent> _events = new();
 
@@ -145,6 +147,21 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
             _agwReconnectAttempt = failureStreak;
             _agwReconnectNextAtUtc = nextRetryAtUtc;
         }
+    }
+
+    /// <summary>
+    /// Whether the connection to the packet node is open right now, per
+    /// bearer: set when a connection is established, cleared whenever
+    /// that connection cycle ends, cleanly or not. Kept per bearer
+    /// because the inactive bearer's service keeps cycling through its
+    /// idle gate and must not clear the active one's state.
+    /// </summary>
+    public void RecordNodeLinkOpen(string bearer, bool open)
+    {
+        if (string.Equals(bearer, "rhpv2", StringComparison.OrdinalIgnoreCase))
+            _rhpv2LinkOpen = open;
+        else
+            _agwLinkOpen = open;
     }
 
     public void RecordInboundConnect(string remote)
@@ -238,6 +255,8 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
             PeersAgedOut: Interlocked.Read(ref _peersAgedOut),
             BudgetRefusals: Interlocked.Read(ref _budgetRefusals),
             LastForwardSuccessAt: _lastForwardSuccessAt,
+            AgwLinkOpen: _agwLinkOpen,
+            Rhpv2LinkOpen: _rhpv2LinkOpen,
             Neighbours: _neighbours
                 .Select(kv => new NeighbourSnapshot(
                     kv.Key,
@@ -325,6 +344,8 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
         long PeersAgedOut,
         long BudgetRefusals,
         DateTime? LastForwardSuccessAt,
+        bool AgwLinkOpen,
+        bool Rhpv2LinkOpen,
         IReadOnlyList<NeighbourSnapshot> Neighbours,
         IReadOnlyList<OperationalEvent> RecentEvents);
 }

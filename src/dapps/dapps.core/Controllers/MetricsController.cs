@@ -47,6 +47,14 @@ public sealed class MetricsController(
 {
     private const string PlaceholderCallsign = "N0CALL";
 
+    private static readonly DateTime ProcessStartedAt = GetProcessStartedAt();
+
+    private static DateTime GetProcessStartedAt()
+    {
+        using var process = Process.GetCurrentProcess();
+        return process.StartTime.ToUniversalTime();
+    }
+
     [HttpGet]
     [Produces("text/plain")]
     public async Task<ContentResult> Get()
@@ -77,7 +85,7 @@ public sealed class MetricsController(
         // Identity and process.
         text.Gauge("dapps_build_info", "DAPPS version and callsign; always 1.")
             .Sample("dapps_build_info", 1, ("version", AppVersion.Current()), ("callsign", opts.Callsign ?? ""), ("bearer", bearer));
-        var startedAt = Process.GetCurrentProcess().StartTime.ToUniversalTime();
+        var startedAt = ProcessStartedAt;
         text.Gauge("dapps_process_start_time_seconds", "When this DAPPS process started, as seconds since the Unix epoch.",
             PrometheusText.UnixSeconds(startedAt));
         text.Gauge("dapps_uptime_seconds", "Seconds since this DAPPS process started.",
@@ -99,10 +107,10 @@ public sealed class MetricsController(
         // failure streak is kept per bearer.
         var reconnectAttempt = isRhpv2 ? c.Rhpv2ReconnectAttempt : c.AgwReconnectAttempt;
         var reconnectNextAt = isRhpv2 ? c.Rhpv2ReconnectNextAtUtc : c.AgwReconnectNextAtUtc;
-        var linkUp = c.AgwLastReconnectAt is not null && reconnectAttempt == 0;
+        var linkUp = (isRhpv2 ? c.Rhpv2LinkOpen : c.AgwLinkOpen) && c.AgwLastReconnectAt is not null;
         text.Counter("dapps_node_link_connects_total", "Times the connection to the packet node was established (first connect and every reconnect).")
             .Sample("dapps_node_link_connects_total", c.AgwReconnects, ("bearer", bearer));
-        text.Gauge("dapps_node_link_up", "1 while the connection to the packet node is established and not in a reconnect wait.")
+        text.Gauge("dapps_node_link_up", "1 while the connection to the packet node is open; 0 from the moment it closes, for any reason, until it is open again.")
             .Sample("dapps_node_link_up", linkUp ? 1 : 0, ("bearer", bearer));
         text.Gauge("dapps_node_link_uptime_seconds", "Seconds since the connection to the packet node was last established; 0 while down or before the first connect.")
             .Sample("dapps_node_link_uptime_seconds",
@@ -138,8 +146,8 @@ public sealed class MetricsController(
         text.Counter("dapps_forward_success_total", "Messages forwarded to a neighbour and accepted.", c.ForwardSuccess);
         text.Counter("dapps_forward_failure_total", "Forward attempts that failed.", c.ForwardFailure);
         text.Counter("dapps_forward_bytes_total", "Payload bytes of messages forwarded to a neighbour and accepted.", c.ForwardBytes);
-        text.Counter("dapps_inbound_messages_total", "Messages taken in and stored (from a neighbour, or from a local app to a local app).", c.InboundMessages);
-        text.Counter("dapps_inbound_bytes_total", "Payload bytes of messages taken in and stored.", c.InboundBytes);
+        text.Counter("dapps_inbound_messages_total", "Messages received, from a neighbour or from a local app to a local app. Each piece of a split message counts once; the reassembled whole does not count again. Repeats of a message already held are not counted.", c.InboundMessages);
+        text.Counter("dapps_inbound_bytes_total", "Payload bytes of the messages counted by dapps_inbound_messages_total.", c.InboundBytes);
         text.Counter("dapps_inbound_connects_total", "Inbound DAPPS sessions the packet node handed to this node.", c.InboundConnects);
         text.Counter("dapps_ttl_expired_total", "Messages dropped because their time to live ran out.", c.TtlExpiredDrops);
         text.Counter("dapps_no_route_total", "Forwarding passes that found no route for a message.", c.NoRouteSkips);

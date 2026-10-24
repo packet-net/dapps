@@ -92,7 +92,14 @@ public sealed class Rhpv2InboundService(
                 var cycleCt = cycleTokenSource.Token;
                 try
                 {
-                    await RunOnce(cycleCt);
+                    try
+                    {
+                        await RunOnce(cycleCt);
+                    }
+                    finally
+                    {
+                        metrics.RecordNodeLinkOpen("rhpv2", false);
+                    }
 
                     // Clean return - idle-gated on missing config only
                     // (a genuine bind/listen failure now throws - see
@@ -182,6 +189,7 @@ public sealed class Rhpv2InboundService(
         logger.LogInformation("RHP inbound: connecting to {host}:{port}", host, port);
         await using var rhp = await RhpClient.ConnectAsync(host, port, stoppingToken);
         metrics.RecordAgwReconnect();  // re-using the AGW counter; same operator concept
+        metrics.RecordNodeLinkOpen("rhpv2", true);
 
         // Note: the backoff isn't reset here on the raw TCP connect - a
         // persistent bind/listen failure below (e.g. callsign already

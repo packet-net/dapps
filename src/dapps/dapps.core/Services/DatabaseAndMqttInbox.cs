@@ -402,14 +402,14 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
     /// <item><description>seq &lt; expected -&gt; persist + soft-delete with reason "stream-stale" (already delivered or already skipped past)</description></item>
     /// </list>
     /// </summary>
-    private async Task DeliverOrderedAsync(BackhaulMessage message, string sourceCallsign, string originator, string headersJson, bool localSubmission, CancellationToken ct)
+    private async Task DeliverOrderedAsync(BackhaulMessage message, string sourceCallsign, string originator, string headersJson, bool localSubmission, CancellationToken ct, bool reassembled = false)
     {
         // One at a time per (sender, stream): the cursor is read, then
         // written, so two at once would overwrite each other's advance.
         var lockKey = (!string.IsNullOrEmpty(message.Originator) ? message.Originator : sourceCallsign) + "|" + message.StreamId;
         using (await LockStreamAsync(lockKey, ct))
         {
-            await DeliverOrderedLockedAsync(message, sourceCallsign, originator, headersJson, localSubmission, ct);
+            await DeliverOrderedLockedAsync(message, sourceCallsign, originator, headersJson, localSubmission, ct, reassembled);
         }
     }
 
@@ -477,7 +477,7 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
         }
     }
 
-    private async Task DeliverOrderedLockedAsync(BackhaulMessage message, string sourceCallsign, string originator, string headersJson, bool localSubmission, CancellationToken ct)
+    private async Task DeliverOrderedLockedAsync(BackhaulMessage message, string sourceCallsign, string originator, string headersJson, bool localSubmission, CancellationToken ct, bool reassembled)
     {
         var localCall = options.CurrentValue.Callsign;
         var streamId = message.StreamId!;
@@ -560,7 +560,7 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
             logger.LogInformation(
                 "Stream {0}|{1}: dropping {2} (sn={3} < expected {4}) as stream-stale",
                 streamSender, streamId, message.Id, sn, recv.NextExpectedSeq);
-            events.Publish(new InboundEvent(now, message.Id, FromOf(message, sourceCallsign), message.Destination, message.Payload.Length, message.Ttl, sourceCallsign));
+            events.Publish(new InboundEvent(now, message.Id, FromOf(message, sourceCallsign), message.Destination, message.Payload.Length, message.Ttl, sourceCallsign), countAsInbound: !reassembled);
             return;
         }
 
@@ -590,7 +590,7 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
                 "Stream {0}|{1}: parking {2} (sn={3}, expected {4}, gt={5})",
                 streamSender, streamId, message.Id, sn, recv.NextExpectedSeq,
                 message.StreamGapTimeoutSeconds ?? 0);
-            events.Publish(new InboundEvent(now, message.Id, FromOf(message, sourceCallsign), message.Destination, message.Payload.Length, message.Ttl, sourceCallsign));
+            events.Publish(new InboundEvent(now, message.Id, FromOf(message, sourceCallsign), message.Destination, message.Payload.Length, message.Ttl, sourceCallsign), countAsInbound: !reassembled);
             return;
         }
 
@@ -619,7 +619,7 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
         await database.UpsertStreamRecvStateAsync(recv);
 
         await DrainConsecutivePendingAsync(recv, streamSender, streamId, ct);
-        events.Publish(new InboundEvent(now, message.Id, FromOf(message, sourceCallsign), message.Destination, message.Payload.Length, message.Ttl, sourceCallsign));
+        events.Publish(new InboundEvent(now, message.Id, FromOf(message, sourceCallsign), message.Destination, message.Payload.Length, message.Ttl, sourceCallsign), countAsInbound: !reassembled);
     }
 
     /// <summary>
@@ -1037,7 +1037,7 @@ public sealed class DatabaseAndMqttInbox : IBackhaulInbox
                 StreamSeq = streamSeq,
                 StreamGapTimeoutSeconds = stream.Gt,
             };
-            await DeliverOrderedAsync(assembledMessage, sourceCallsign, originator, headersJson, localSubmission: false, ct);
+            await DeliverOrderedAsync(assembledMessage, sourceCallsign, originator, headersJson, localSubmission: false, ct, reassembled: true);
             await database.DeleteFragmentsForMaster(masterId);
             logger.LogInformation(
                 "Reassembled master {0} ({1} fragments, {2} bytes) on stream {3} sn={4}",

@@ -127,14 +127,15 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null,
 
     /// <summary>
     /// Every session this node has open, with any peer, oldest first
-    /// within each peer: what <c>/metrics</c> reports as per-peer
+    /// within each peer, leaving out retired leases still waiting to be
+    /// released (they would count one live link twice): what <c>/metrics</c> reports as per-peer
     /// session counts and durations.
     /// </summary>
     public IReadOnlyList<(string Peer, OpenSessionInfo Session)> AllSessions()
     {
         lock (gate)
         {
-            return [.. open.SelectMany(kv => kv.Value.Select(l =>
+            return [.. open.SelectMany(kv => kv.Value.Where(l => !l.IsRetired).Select(l =>
                 (kv.Key, new OpenSessionInfo(l.Direction, l.IsConnected, l.Since))))];
         }
     }
