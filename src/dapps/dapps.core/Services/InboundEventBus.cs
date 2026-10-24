@@ -13,8 +13,13 @@ namespace dapps.core.Services;
 /// Slow subscribers are dropped on overflow rather than blocking
 /// publishers - the inbox's job is to persist messages, not to wait
 /// for browser tabs to keep up.
+///
+/// Every publish is one message the inbox accepted and stored, so the
+/// bus is also where <see cref="OperationalMetrics"/> counts inbound
+/// messages and bytes for <c>/metrics</c>. One place, instead of a
+/// call beside each of the inbox's publish sites.
 /// </summary>
-public sealed class InboundEventBus
+public sealed class InboundEventBus(OperationalMetrics? metrics = null)
 {
     private readonly object _lock = new();
     private readonly List<Channel<InboundEvent>> _subscribers = new();
@@ -34,6 +39,7 @@ public sealed class InboundEventBus
 
     public void Publish(InboundEvent ev)
     {
+        metrics?.RecordInboundMessage(ev.PayloadLength);
         Channel<InboundEvent>[] snapshot;
         lock (_lock) snapshot = _subscribers.ToArray();
         foreach (var sub in snapshot)

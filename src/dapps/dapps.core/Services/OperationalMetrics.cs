@@ -38,6 +38,9 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
     private long _forwardAttempts;
     private long _forwardSuccess;
     private long _forwardFailure;
+    private long _forwardBytes;
+    private long _inboundMessages;
+    private long _inboundBytes;
     private long _ttlExpired;
     private long _noRoute;
     private long _agwReconnects;
@@ -66,12 +69,14 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
     {
         Interlocked.Increment(ref _forwardAttempts);
         Interlocked.Increment(ref _forwardSuccess);
+        Interlocked.Add(ref _forwardBytes, bytes);
         var n = GetOrAdd(callsign);
         var now = timeProvider.GetUtcNow().UtcDateTime;
         n.LastSuccessAt = now;
         n.LastError = null;
         _lastForwardSuccessAt = now;
         Interlocked.Increment(ref n._successCount);
+        Interlocked.Add(ref n._bytesForwarded, bytes);
         Push("forward.ok", $"{id} -> {callsign} ({bytes} B)");
     }
 
@@ -84,6 +89,20 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
         n.LastError = error;
         Interlocked.Increment(ref n._failureCount);
         Push("forward.fail", $"{id} -> {callsign} ({bytes} B): {error}");
+    }
+
+    /// <summary>
+    /// One message taken in from a neighbour (or from a local app, for a
+    /// message to an app on this node) and stored. Counted only, not
+    /// pushed to the recent-events ring: the inbox logs each arrival
+    /// already, and the dashboard has its own inbound stream. Feeds the
+    /// <c>dapps_inbound_messages_total</c> and <c>dapps_inbound_bytes_total</c>
+    /// series on <c>/metrics</c>.
+    /// </summary>
+    public void RecordInboundMessage(int bytes)
+    {
+        Interlocked.Increment(ref _inboundMessages);
+        Interlocked.Add(ref _inboundBytes, bytes);
     }
 
     public void RecordTtlExpired(string id, string destination)
@@ -196,6 +215,9 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
             ForwardAttempts: Interlocked.Read(ref _forwardAttempts),
             ForwardSuccess: Interlocked.Read(ref _forwardSuccess),
             ForwardFailure: Interlocked.Read(ref _forwardFailure),
+            ForwardBytes: Interlocked.Read(ref _forwardBytes),
+            InboundMessages: Interlocked.Read(ref _inboundMessages),
+            InboundBytes: Interlocked.Read(ref _inboundBytes),
             TtlExpiredDrops: Interlocked.Read(ref _ttlExpired),
             NoRouteSkips: Interlocked.Read(ref _noRoute),
             AgwReconnects: Interlocked.Read(ref _agwReconnects),
@@ -223,7 +245,8 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
                     kv.Value.LastFailureAt,
                     kv.Value.LastError,
                     Interlocked.Read(ref kv.Value._successCount),
-                    Interlocked.Read(ref kv.Value._failureCount)))
+                    Interlocked.Read(ref kv.Value._failureCount),
+                    Interlocked.Read(ref kv.Value._bytesForwarded)))
                 .OrderBy(n => n.Callsign)
                 .ToList(),
             RecentEvents: _events.ToArray().Reverse().ToList());
@@ -258,6 +281,7 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
     {
         internal long _successCount;
         internal long _failureCount;
+        internal long _bytesForwarded;
         public DateTime? LastSuccessAt;
         public DateTime? LastFailureAt;
         public string? LastError;
@@ -271,12 +295,16 @@ public sealed class OperationalMetrics(TimeProvider? timeProviderOpt = null, ILo
         DateTime? LastFailureAt,
         string? LastError,
         long SuccessCount,
-        long FailureCount);
+        long FailureCount,
+        long BytesForwarded = 0);
 
     public sealed record Snapshot(
         long ForwardAttempts,
         long ForwardSuccess,
         long ForwardFailure,
+        long ForwardBytes,
+        long InboundMessages,
+        long InboundBytes,
         long TtlExpiredDrops,
         long NoRouteSkips,
         long AgwReconnects,

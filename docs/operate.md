@@ -98,6 +98,31 @@ HTTP 200 when healthy, 503 when the callsign isn't set or isn't valid, the packe
 
 Open access for the same reason as `/Health`, with the same 15 second memory for its node and MQTT checks.
 
+## /metrics - for Prometheus
+
+`GET http://<node>:5000/metrics`. The same statistics as `/Operational`, in the Prometheus text format. Point a Prometheus, VictoriaMetrics or Grafana Agent scrape job at it:
+
+```yaml
+scrape_configs:
+  - job_name: dapps
+    static_configs:
+      - targets: ["<node>:5000"]
+```
+
+Open access, like `/Health`. The node and MQTT checks are remembered for 15 seconds, so a 15 second scrape interval costs one TCP connect per check. Every series name starts with `dapps_`. Counters reset when the service restarts, as Prometheus expects; use `rate()` or `increase()` over them.
+
+Link state comes out three ways, because the node has three kinds of link:
+
+| Series | What it measures |
+|---|---|
+| `dapps_node_link_up{bearer}`, `dapps_node_link_uptime_seconds{bearer}` | The socket to the packet node (AGW or RHPv2). Uptime is seconds since the last connect, 0 while reconnecting. `dapps_node_link_connects_total` counts connects, `dapps_node_link_reconnect_failures` is the current failure streak, and `dapps_node_link_next_retry_timestamp_seconds` says when the next attempt is due. |
+| `dapps_peer_sessions_open{peer,direction}`, `dapps_peer_session_duration_seconds{peer,direction}` | DAPPS sessions open with a peer right now, and how long the oldest one has been open. A session exists only while an exchange runs, so these are often absent. |
+| `dapps_neighbour_link_ok{neighbour}`, `dapps_neighbour_last_success_timestamp_seconds{neighbour}`, `dapps_neighbour_last_failure_timestamp_seconds{neighbour}` | The forwarding record per neighbour: 1 when the last forward to it succeeded. `time() - dapps_neighbour_last_success_timestamp_seconds` is how long since a message last got through. |
+
+Messages passed: `dapps_forward_success_total`, `dapps_forward_failure_total` and `dapps_forward_bytes_total` count what left this node, in total and per neighbour (`dapps_neighbour_forward_*`). `dapps_inbound_messages_total` and `dapps_inbound_bytes_total` count what arrived and was stored. `dapps_ttl_expired_total`, `dapps_no_route_total` and `dapps_hash_mismatches_total` count drops by cause. `dapps_messages_pending_outbound` and `dapps_messages_undelivered_local` are the queue depths now.
+
+Also there: `dapps_healthy` and the three checks behind it, `dapps_probes_total{result}`, `dapps_polls_total{result}`, `dapps_routes_learned_total`, `dapps_discovery_airtime_used_seconds` against `dapps_discovery_airtime_budget_seconds`, `dapps_update_available`, and the `dapps_meshcore_*` series when that bearer is on. `dapps_build_info{version,callsign,bearer}` carries the version. Each series has a `# HELP` line that says what it measures; `curl http://<node>:5000/metrics` lists them all.
+
 ## Behind a reverse proxy
 
 A proxy on the same machine (the pdn app gateway, Caddy, nginx) can tell DAPPS what the browser used: `X-Forwarded-Proto: https` gets the login cookie the Secure flag, and `X-Forwarded-Prefix: /apps/dapps` puts the dashboard under that path. DAPPS believes these headers only from a proxy connecting from `127.0.0.1` or `::1`; from anywhere else they are ignored. A proxy on another machine or in another container isn't trusted, so run it on the node.
@@ -113,6 +138,7 @@ If you're already running an MQTT-shaped monitoring pipeline, this is the easies
 ## What to look at when
 
 - **"Is the node alive?"** - `/Health` (open access; quickest).
+- **"Graph it over time"** - `/metrics`, scraped by Prometheus.
 - **"Is anything wedged?"** - the dashboard's Overview. Recent decisions and Needs attention show the recent narrative.
 - **"Why didn't message X arrive?"** - the Dropped tab on the Messages page, or `journalctl --grep <message-id>` for older history.
 - **"Is the link to peer Y working?"** - Topology > Probed nodes, or trigger a probe via the dashboard / REST.

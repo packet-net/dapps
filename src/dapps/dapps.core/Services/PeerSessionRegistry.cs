@@ -125,6 +125,20 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null,
         }
     }
 
+    /// <summary>
+    /// Every session this node has open, with any peer, oldest first
+    /// within each peer: what <c>/metrics</c> reports as per-peer
+    /// session counts and durations.
+    /// </summary>
+    public IReadOnlyList<(string Peer, OpenSessionInfo Session)> AllSessions()
+    {
+        lock (gate)
+        {
+            return [.. open.SelectMany(kv => kv.Value.Select(l =>
+                (kv.Key, new OpenSessionInfo(l.Direction, l.IsConnected, l.Since))))];
+        }
+    }
+
     /// <summary>Atomically acquires a lease only if no session with the
     /// peer is open yet; otherwise returns null and reports the
     /// direction of whatever is already open. Unlike calling

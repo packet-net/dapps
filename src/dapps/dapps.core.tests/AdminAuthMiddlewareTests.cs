@@ -46,6 +46,7 @@ public sealed class AdminAuthMiddlewareTests : IAsyncLifetime
     [InlineData("/Health")]
     [InlineData("/Operational")]
     [InlineData("/Operational/recent")]
+    [InlineData("/metrics")]
     [InlineData("/AppApi/inbound/chat")]
     [InlineData("/Setup")]
     [InlineData("/Login")]
@@ -78,6 +79,19 @@ public sealed class AdminAuthMiddlewareTests : IAsyncLifetime
         // authentication service registered, so ChallengeAsync throws -
         // catch broadly because the relevant assertion is just that
         // next() didn't run for these gated paths.
+        try { await mw.InvokeAsync(ctx, store, BuildOptionsStore()); } catch { /* expected */ }
+
+        nextCalled().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task MetricsPost_NoCookie_DoesNotReachNextDelegate()
+    {
+        // /metrics is open for a GET from a scraper only. Nothing is
+        // mapped on POST today; keep the allowlist from widening if
+        // something ever is.
+        var (mw, ctx, nextCalled) = Build("/metrics", "POST");
+
         try { await mw.InvokeAsync(ctx, store, BuildOptionsStore()); } catch { /* expected */ }
 
         nextCalled().Should().BeFalse();
