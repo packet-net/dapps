@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fails unless every release artifact bundles the latest .NET 10 runtime patch.
+"""Fails if any release artifact bundles a .NET 10 runtime older than the latest patch.
 
 The binaries and .debs are self-contained, so each carries the runtime of whichever SDK built
 it, and an operating system update never patches it. A stale SDK on a build machine would ship
@@ -9,6 +9,11 @@ Microsoft lists.
 
 A single-file executable embeds its deps.json, and a .deb ships dapps.core.deps.json as a file;
 both name the runtime pack as runtimepack.<pack>.Runtime.<rid>/<version>.
+
+A runtime newer than the latest the index lists passes: SDK workloads can reach nuget.org a few
+days before the release index lists that patch (10.0.14 on 2026-10-25, which failed another
+packet-net release), and the point is to catch a stale build machine, not one ahead of the index.
+It fails when a program bundles an older runtime, or zero or several recognisable versions.
 
 Usage: scripts/check-bundled-runtime.py <dapps-binary|package.deb>...
 """
@@ -33,6 +38,10 @@ def latest_runtime():
         if channel["channel-version"] == CHANNEL:
             return channel["latest-runtime"]
     sys.exit(f"no .NET {CHANNEL} channel in {INDEX}")
+
+
+def version_key(version):
+    return tuple(int(part) for part in version.split("."))
 
 
 def program_bytes(artifact):
@@ -61,9 +70,13 @@ def main(artifacts):
             print(f"{artifact.name}: {name} bundles "
                   + ", ".join(f"{pack} {', '.join(v) or 'nothing recognisable'}" for pack, v in found.items()))
             for pack, versions in found.items():
-                if versions != [want]:
+                if len(versions) != 1:
                     print(f"::error::{artifact.name} bundles {pack} runtime {', '.join(versions) or 'unknown'}, "
-                          f"not {want}. Update the .NET 10 SDK on the machine that built it.")
+                          "not one recognisable version. Check how it was built.")
+                    bad = True
+                elif version_key(versions[0]) < version_key(want):
+                    print(f"::error::{artifact.name} bundles {pack} runtime {versions[0]}, older than {want}. "
+                          "Update the .NET 10 SDK on the machine that built it.")
                     bad = True
     return 1 if bad else 0
 
