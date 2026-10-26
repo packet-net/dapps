@@ -18,7 +18,7 @@ APPLICATION 1,DAPPS,,M0LTE-7,DAPPS,0
 
 Field-by-field:
 
-- `1` - application slot number. Bump this if slot 1 is already in use; the value doesn't matter beyond uniqueness.
+- `1` - application slot number. Bump this if slot 1 is already in use; the value doesn't matter beyond uniqueness, but `AGWAPPL` below must match it.
 - `DAPPS` - the command operators type at the BPQ node prompt to enter the DAPPS slot. If you'd rather use a different name (`MSG`, `APPS`, whatever), put it here and update **Node-prompt application command** on the dashboard's **Settings** page to match.
 - (empty third field) - the CMD field, empty on purpose. Older recipes used `C N HOST K TRANS S` here; for DAPPS, leave it empty so BPQ doesn't run any node command on inbound - it just dispatches the L2 'C' frame to the registered AGW client.
 - `M0LTE-7` - the **APPLCALL**: the DAPPS callsign. This is the field that makes BPQ accept inbound L2 connects addressed to the DAPPS callsign. DAPPS registering the same callsign over AGW at runtime tells BPQ *which AGW client* gets those sessions; the APPLCALL declaration is what makes BPQ accept them at all. Without it, BPQ ignores connects to the DAPPS callsign and the remote caller times out with RETRYOUT.
@@ -33,7 +33,7 @@ AGWSESSIONS=10
 AGWAPPL=1
 ```
 
-- `AGWAPPL=1` - the application number from the `APPLICATION` line (its first field). Without it, BPQ never gives AGW clients any inbound sessions: typing `DAPPS` at the node prompt says `Sorry, Application DAPPS is not running`, and a connect to the DAPPS callsign is refused as busy. Your own outbound calls still work, which makes this easy to miss. Older configs use `AGWMASK=1` for the same thing; either is fine.
+- `AGWAPPL=1` - the application number from the `APPLICATION` line (its first field). Without it, BPQ never gives AGW clients any inbound sessions: typing `DAPPS` at the node prompt says `Sorry, Application DAPPS is not running`, and a connect to the DAPPS callsign is refused as busy. Your own outbound calls still work, which makes this easy to miss. Older configs use `AGWMASK` instead, a bitmask where slot 1 is `1`, slot 2 is `2`, slot 3 is `4`; either is fine.
 - `AGWSESSIONS` - how many inbound sessions BPQ can hand to AGW clients at once. It defaults to 0, which has the same effect as leaving out `AGWAPPL`.
 
 Restart BPQ for the change to land.
