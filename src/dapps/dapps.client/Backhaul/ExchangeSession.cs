@@ -214,6 +214,10 @@ public sealed class ExchangeSession
     public Action<string>? HashMismatch { get; init; }
 
     public string Peer => peer;
+
+    /// <summary>True for the session this node dialled (a poll, or a
+    /// call for traffic); false for one the peer opened with us.</summary>
+    public bool Dialled => dialled;
     public ExchangeRules OwnRules { get; }
     public ExchangeRules? PeerRules { get; private set; }
 

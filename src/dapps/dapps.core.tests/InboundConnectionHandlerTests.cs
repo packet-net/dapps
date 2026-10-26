@@ -72,17 +72,17 @@ public sealed class InboundConnectionHandlerTests : IAsyncLifetime
         var peer = new LinePeer(theirs);
         await peer.ReadLineAsync(ct);
         await peer.ReadLineAsync(ct);
-        directory.TryHand("N0THEM", new RecordingBatch()).Should().BeFalse("no exchange yet: a probe's session takes no traffic");
+        directory.TryHand("N0THEM", new RecordingBatch(), "N0US").Should().BeFalse("no exchange yet: a probe's session takes no traffic");
 
         await peer.WriteLineAsync("exchange id=them01 hold=0 inline=256", ct);
         var message = Message("for you", "app@N0THEM");
         var deadline = DateTime.UtcNow + Patience;
-        while (!directory.TryHand("N0THEM", new RecordingBatch(message)) && DateTime.UtcNow < deadline) await Task.Delay(10, ct);
+        while (!directory.TryHand("N0THEM", new RecordingBatch(message), "N0US") && DateTime.UtcNow < deadline) await Task.Delay(10, ct);
         (await peer.ReadWithPayloadAsync(ct)).Line.Should().StartWith($"msg {message.Id} ");
 
         await peer.WriteLineAsync("quit", ct);
         (await peer.ReadLineAsync(ct)).Should().Be("bye");
         await run.WaitAsync(Patience, ct);
-        directory.TryHand("N0THEM", new RecordingBatch()).Should().BeFalse("the session has gone");
+        directory.TryHand("N0THEM", new RecordingBatch(), "N0US").Should().BeFalse("the session has gone");
     }
 }

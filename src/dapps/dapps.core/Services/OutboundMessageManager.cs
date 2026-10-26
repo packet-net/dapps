@@ -344,7 +344,7 @@ public class OutboundMessageManager(
             logger.LogInformation("Handed {0} message(s) for {1} to the session we have open with it", batch.Count, route.Callsign);
             return;
         }
-        if (RidesASession(route) && openSessions is not null && openSessions.TryHand(route.Callsign, batch))
+        if (RidesASession(route) && openSessions is not null && openSessions.TryHand(route.Callsign, batch, optionsValue.Callsign))
         {
             logger.LogInformation("Handed {0} message(s) for {1} to the session open with it", batch.Count, route.Callsign);
             return;
@@ -784,7 +784,7 @@ public class OutboundMessageManager(
             logger.LogInformation("Flood of {0}: handed to the session we have open with {1}", message.Id, route.Callsign);
             return null;
         }
-        if (RidesASession(route) && openSessions is not null && openSessions.TryHand(route.Callsign, copy))
+        if (RidesASession(route) && openSessions is not null && openSessions.TryHand(route.Callsign, copy, optionsValue.Callsign))
         {
             logger.LogInformation("Flood of {0}: handed to the session open with {1}", message.Id, route.Callsign);
             return null;
@@ -893,6 +893,10 @@ public class OutboundMessageManager(
     /// direction. UDP and MeshCore are datagram bearers with no link to
     /// collide on, so their routes are never deferred.
     ///
+    /// A call from the same station with another SSID counts too: there's
+    /// no link to collide on, but the station has called DAPPS here, so
+    /// its mail waits to go on that session once it's established.
+    ///
     /// #185: this check runs once, early - before the settle-gate wait
     /// and the AGW/RHP connect round trip that follow it, both of which
     /// take real time. It's a fast path that skips the whole pipeline in
@@ -906,7 +910,7 @@ public class OutboundMessageManager(
     {
         openDirection = null;
         if (peerSessions is null || !RidesASession(route)) return false;
-        return peerSessions.IsActive(route.Callsign, out openDirection);
+        return peerSessions.IsStationActive(route.Callsign, options.CurrentValue.Callsign, out openDirection);
     }
 
     /// <summary>AGW and RHP routes ride a connected-mode session; UDP and

@@ -103,7 +103,7 @@ public sealed class CompressedSessionTests : IAsyncLifetime
 
         await MakeForwarder(transport, compress: false, ourInbox).DoRun(ct).WaitAsync(Patience, ct);
         // The far end's forwarder would hand it to our session like this.
-        farDirectory.TryHand(Us, new ExchangeTestBatch(post)).Should().BeTrue("our session is established there");
+        farDirectory.TryHand(Us, new ExchangeTestBatch(post), Them).Should().BeTrue("our session is established there");
         await ourInbox.WaitForAsync(1, ct);
 
         ourInbox.Texts.Should().Equal(WpsPost);
