@@ -1,5 +1,3 @@
-using dapps.core.Routing;
-
 namespace dapps.core.Services;
 
 /// <summary>
@@ -139,28 +137,6 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null,
         {
             return [.. open.SelectMany(kv => kv.Value.Where(l => !l.IsRetired).Select(l =>
                 (kv.Key, new OpenSessionInfo(l.Direction, l.IsConnected, l.Since))))];
-        }
-    }
-
-    /// <summary>
-    /// True while a session with <paramref name="peerCallsign"/> is open
-    /// (as <see cref="IsActive"/>), or the same station has called us
-    /// with another SSID: the SSID can change in transit, and a station
-    /// that has called DAPPS here is one its mail can go to, so it is
-    /// let get that far rather than dialled past. Never a call from a
-    /// sibling of ours (<see cref="CallsignMatch.StandsIn"/>).
-    /// </summary>
-    public bool IsStationActive(string peerCallsign, string ourCallsign, out string? direction)
-    {
-        if (IsActive(peerCallsign, out direction)) return true;
-        lock (gate)
-        {
-            var inbound = open
-                .Where(kv => CallsignMatch.StandsIn(kv.Key, peerCallsign, ourCallsign))
-                .SelectMany(kv => kv.Value)
-                .FirstOrDefault(l => l.Direction == "inbound");
-            direction = inbound?.Direction;
-            return inbound is not null;
         }
     }
 

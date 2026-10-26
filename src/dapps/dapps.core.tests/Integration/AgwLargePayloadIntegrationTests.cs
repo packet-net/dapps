@@ -92,7 +92,7 @@ public sealed class AgwLargePayloadIntegrationTests(TwoInstanceLinbpqFixture fix
         var batch = new ListBatch(messages);
 
         await bearer.SendBatchAsync(new BackhaulRoute(fixture.ApplCallB, BearerPort: fixture.AxipPortIndex), fixture.ApplCallA, batch, ct);
-        while (!farSessions.TryHand(fixture.ApplCallA, reply, fixture.ApplCallB)) await Task.Delay(50, ct);
+        while (!farSessions.TryHand(fixture.ApplCallA, reply)) await Task.Delay(50, ct);
         while (ourInbox.Payloads.Count == 0) await Task.Delay(50, ct);
 
         batch.Outcomes.Select(o => (o.Id, o.Result.Accepted)).Should().Equal(messages.Select(m => (m.Id, true)),
