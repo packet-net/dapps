@@ -44,21 +44,11 @@ public sealed class SessionDirectory(ForwarderWakeup? forwarderWakeup = null)
     /// <summary>
     /// Give <paramref name="batch"/> to the established session with
     /// <paramref name="peer"/>, which sends it as the window allows.
-    /// A session from the same callsign with another SSID takes it when
-    /// there's none with this one, if that station called us (never our
-    /// poll of it, and never a sibling of ours): the SSID a
-    /// neighbour calls us from can change in transit over the network (a
-    /// node's own SSID, or a NET/ROM circuit's), so the neighbour table
-    /// can't know it. False
-    /// when no session from that station is established, or it is ending.
+    /// False when no session from that peer is established, or it is
+    /// ending.
     /// </summary>
-    public bool TryHand(string peer, IBackhaulBatch batch, string ourCallsign) =>
-        CallsignMatch.Best(
-            // Only a session the station opened with us stands in for it:
-            // our poll of another SSID is another neighbour's session.
-            sessions.Where(kv => DestinationParser.SameStation(kv.Key, peer) || !kv.Value.Dialled).Select(kv => kv.Key),
-            p => p, peer, ourCallsign) is { } caller
-        && sessions.TryGetValue(caller, out var session) && session.TryTake(batch);
+    public bool TryHand(string peer, IBackhaulBatch batch) =>
+        sessions.TryGetValue(peer, out var session) && session.TryTake(batch);
 
     /// <summary>The established session with <paramref name="peer"/>, or null.</summary>
     public ExchangeSession? Find(string peer) =>

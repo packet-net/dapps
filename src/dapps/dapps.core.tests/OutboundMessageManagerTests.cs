@@ -491,41 +491,6 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task DoRun_TheStationHasCalledFromAnotherSsid_WaitsForThatSession()
-    {
-        // N0DEST-6 has called and its session isn't established yet: the
-        // mail for N0DEST waits for it rather than dialling past it.
-        var peers = new PeerSessionRegistry();
-        var guarded = MakeManager(peers);
-        InsertMessage(id: "xsid002", ttl: null, createdAt: DateTime.UtcNow);
-
-        using (peers.Acquire("N0DEST-6", "inbound"))
-        {
-            await guarded.DoRun(TestContext.Current.CancellationToken);
-        }
-
-        backhaul.Sent.Should().BeEmpty();
-        (await database.GetPendingOutboundMessages()).Should().ContainSingle(m => m.Id == "xsid002");
-    }
-
-    [Fact]
-    public async Task DoRun_OurOwnCallToAnotherSsid_DoesNotHoldTheMailBack()
-    {
-        // Only a station's call to us stands in for it: our dial to
-        // N0DEST-6 is a different neighbour's session.
-        var peers = new PeerSessionRegistry();
-        var guarded = MakeManager(peers);
-        InsertMessage(id: "xsid003", ttl: null, createdAt: DateTime.UtcNow);
-
-        using (peers.Acquire("N0DEST-6", "outbound"))
-        {
-            await guarded.DoRun(TestContext.Current.CancellationToken);
-        }
-
-        backhaul.Sent.Should().ContainSingle(s => s.Message.Id == "xsid003");
-    }
-
-    [Fact]
     public async Task DoRun_ADeferralIsNotAFailure_SoNoCooldownStarts()
     {
         var peers = new PeerSessionRegistry();
@@ -1325,45 +1290,6 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         await m.DoRun(TestContext.Current.CancellationToken);
 
         (await peer.ReadLineAsync(TestContext.Current.CancellationToken)).Should().StartWith("msg cool002 ");
-        backhaul.Sent.Should().BeEmpty("nothing was dialled");
-    }
-
-    [Fact]
-    public async Task DoRun_TheNeighbourCallingFromAnotherSsid_TakesTheBatch()
-    {
-        // The neighbour is N0DEST in our table, but its call reached us as
-        // N0DEST-6: the SSID can change in transit. Its session takes the
-        // mail, even in a cooldown, rather than it waiting for a dial.
-        var backoff = new OutboundDestinationBackoff();
-        backoff.RecordFailure("N0DEST");
-        var peers = new PeerSessionRegistry();
-        using var lease = peers.Acquire("N0DEST-6", "inbound");
-        var directory = new SessionDirectory();
-        var peer = await EstablishedInboundSessionAsync("N0DEST-6", directory);
-        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
-            destinationBackoff: backoff, peerSessions: peers, openSessions: directory);
-        InsertMessage(id: "xsid001", ttl: null, createdAt: DateTime.UtcNow);
-
-        await m.DoRun(TestContext.Current.CancellationToken);
-
-        (await peer.ReadLineAsync(TestContext.Current.CancellationToken)).Should().StartWith("msg xsid001 ");
-        backhaul.Sent.Should().BeEmpty("nothing was dialled");
-    }
-
-    [Fact]
-    public async Task DoRun_TheExactSsidsCall_TakesTheBatch_OverAnotherSsids()
-    {
-        // N0DEST and N0DEST-6 have both called: the exact call+SSID wins.
-        var directory = new SessionDirectory();
-        var other = await EstablishedInboundSessionAsync("N0DEST-6", directory);
-        var exact = await EstablishedInboundSessionAsync("N0DEST", directory);
-        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
-            peerSessions: new PeerSessionRegistry(), openSessions: directory);
-        InsertMessage(id: "xsid004", ttl: null, createdAt: DateTime.UtcNow);
-
-        await m.DoRun(TestContext.Current.CancellationToken);
-
-        (await exact.ReadLineAsync(TestContext.Current.CancellationToken)).Should().StartWith("msg xsid004 ");
         backhaul.Sent.Should().BeEmpty("nothing was dialled");
     }
 

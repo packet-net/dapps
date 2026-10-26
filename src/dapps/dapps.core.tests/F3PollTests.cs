@@ -154,14 +154,14 @@ public sealed class F3PollTests
         await peer.WriteLineAsync("DAPPSv1>\nexchange id=far001 hold=0 inline=256", ct);
         (await peer.ReadLineAsync(ct)).Should().StartWith("exchange ");
         var deadline = DateTime.UtcNow + Patience;
-        while (!sessions.TryHand(Them, new RecordingBatch(ourMail), Us) && DateTime.UtcNow < deadline) await Task.Delay(10, ct);
+        while (!sessions.TryHand(Them, new RecordingBatch(ourMail)) && DateTime.UtcNow < deadline) await Task.Delay(10, ct);
 
         (await peer.ReadWithPayloadAsync(ct)).Line.Should().StartWith($"msg {ourMail.Id} ");
         await peer.WriteLineAsync($"ack {ourMail.Id}", ct);
         (await peer.ReadLineAsync(ct)).Should().Be("quit");
         await peer.WriteLineAsync("bye", ct);
         (await poll.WaitAsync(Patience, ct)).Success.Should().BeTrue();
-        sessions.TryHand(Them, new RecordingBatch(), Us).Should().BeFalse("the poll has ended");
+        sessions.TryHand(Them, new RecordingBatch()).Should().BeFalse("the poll has ended");
     }
 
     private static NodePoller MakePoller(Stream stream, IBackhaulInbox inbox, IRouteGossipPort? gossip = null) =>
