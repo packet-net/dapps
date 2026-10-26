@@ -58,6 +58,7 @@ A remote node can `c <your-callsign>` and lands at the BPQ node prompt, but not 
 - The CMD field on the `APPLICATION` line (the third field) is **empty**. Older recipes had `C N HOST K TRANS S` here - for DAPPS, leave it empty so BPQ doesn't run a node command on inbound, just dispatches the L2 'C' frame to the registered AGW client.
 - DAPPS is registering the right callsign. The startup log shows `AGW: registered <callsign> for inbound dispatch`. If the callsign there doesn't match what the remote is connecting to (and the APPLCALL), it won't route.
 - AGW exact-match is by call+SSID. `M0LTE-1` is different from `M0LTE-7`.
+- `bpq32.cfg` has `AGWAPPL=<n>` (the `APPLICATION` line's number) and `AGWSESSIONS` above 0. Without them, typing `DAPPS` at the node prompt says `Sorry, Application DAPPS is not running`, connects to the DAPPS callsign are refused as busy, and only your own outbound calls work. See [Connect via BPQ](connect/bpq.md#step-1-configure-bpq).
 
 ### A peer connects, gets no `DAPPSv1>` prompt, and has to redial (BPQ AGW)
 
@@ -119,6 +120,7 @@ Check, in order:
 The probed-nodes table shows the recent failure reason. Common ones:
 
 - **`RETRYOUT`**: the bearer retried the connect to the remote callsign but never got a response. Three common causes: the remote isn't reachable on the link; the radio port for that peer is wrong (the neighbour's **Radio port**, or `DAPPS_DEFAULT_PORT`; it's the node's own port number, as its `PORTS` command or `XROUTER.CFG` shows it); or the remote BPQ doesn't declare the DAPPS callsign in an `APPLICATION` line's APPLCALL field - in that case BPQ silently ignores connects to the callsign even though the remote DAPPS registered it over AGW.
+- **Refused straight away (busy)**, while the other node can still call you: if the remote is BPQ, its `bpq32.cfg` is probably missing `AGWAPPL` or `AGWSESSIONS`, so it has no AGW sessions to hand your call to. Messages may still flow, because whenever the remote calls you, traffic goes both ways on that session; but nothing reaches it until it next calls. See [Connect via BPQ](connect/bpq.md#step-1-configure-bpq).
 - **Connect accepted (UA) but then silence, ending in `timeout: ... no data from peer`**: the classic signature of probing the remote's **node call** instead of its DAPPS callsign. The node accepts the L2 connect and then sits at its (silent) command prompt waiting for input, while the probe waits for a `DAPPSv1>` banner that will never come. Check the neighbour row's callsign is the remote *DAPPS* callsign (e.g. `M0XYZ-7`), not the NODECALL.
 - **Connect timeout**: the connect went out but the protocol parser never saw the `DAPPSv1>` prompt. The peer either isn't running DAPPS, or you're connecting to the wrong application (their `APPLICATION` line might use a different command name).
 - **TIMEOUT after `DAPPSv1>`**: probe got the prompt but the session hung. Network is dropping packets mid-session, or one side has a serious clock skew.

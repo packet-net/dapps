@@ -25,6 +25,17 @@ Field-by-field:
 - `DAPPS` - the APPLALIAS. Lets stations connect to the alias as well as the callsign.
 - `0` - quality. Zero keeps the application callsign out of NODES broadcasts; raise it only if you want the DAPPS call advertised as a node.
 
+Then make sure the AGW settings in `bpq32.cfg` hand that application to AGW clients:
+
+```
+AGWPORT=8000
+AGWSESSIONS=10
+AGWAPPL=1
+```
+
+- `AGWAPPL=1` - the application number from the `APPLICATION` line (its first field). Without it, BPQ never gives AGW clients any inbound sessions: typing `DAPPS` at the node prompt says `Sorry, Application DAPPS is not running`, and a connect to the DAPPS callsign is refused as busy. Your own outbound calls still work, which makes this easy to miss. Older configs use `AGWMASK=1` for the same thing; either is fine.
+- `AGWSESSIONS` - how many inbound sessions BPQ can hand to AGW clients at once. It defaults to 0, which has the same effect as leaving out `AGWAPPL`.
+
 Restart BPQ for the change to land.
 
 The division of labour is worth spelling out, because it trips people up: an inbound connect to the **DAPPS callsign** (`M0LTE-7` above) goes straight to DAPPS and never sees the node menu; an inbound connect to your **node call** lands at the node menu, where typing `DAPPS` enters the application. Both paths end at the same place; the APPLCALL route is the one DAPPS itself uses for node-to-node sessions.
