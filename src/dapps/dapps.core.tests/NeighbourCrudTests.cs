@@ -100,6 +100,18 @@ public sealed class NeighbourCrudTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task UpsertNeighbour_PreviousCallsign_RenamesTheRow()
+    {
+        await database.UpsertNeighbour("N0BBB-9", bearerPort: 1, compressionEnabled: false);
+        await database.UpsertNeighbour("N0BBB-7", bearerPort: 2, previousCallsign: "N0BBB-9");
+
+        var rows = await database.GetNeighbours();
+        rows.Should().ContainSingle("a rename MUST NOT leave the old row behind");
+        rows.Single().Callsign.Should().Be("N0BBB-7");
+        rows.Single().BearerPort.Should().Be(2);
+    }
+
+    [Fact]
     public async Task RemoveNeighbour_Existing_ReturnsTrueAndDeletes()
     {
         await database.UpsertNeighbour("N0BBB-9", bearerPort: 1);

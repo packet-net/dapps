@@ -62,7 +62,7 @@ The actual forwarding partners. You add them on the dashboard's **Topology > Nei
 
 Each neighbour row carries: callsign, radio port (the node's own number for it, over AGW or RHPv2), UDP endpoint (for the datagram bearer), and optionally a connect-script plus per-neighbour compression and session-tail overrides.
 
-Enter a neighbour under its DAPPS callsign with the SSID. Mail goes to the neighbour with the exact call+SSID first. One entered under another SSID of the same callsign still works as a stand-in, and the Neighbours panel marks it so you can tidy it up.
+Enter a neighbour under its DAPPS callsign with the SSID. Mail goes to the neighbour with the exact call+SSID first. One entered under another SSID of the same callsign still works as a stand-in, and the Neighbours panel marks it so you can tidy it up: click **edit** on the row and change its callsign. Over REST, `POST /Neighbours` with `PreviousCallsign` set to the old callsign renames the row.
 
 ## The two routing algorithms
 

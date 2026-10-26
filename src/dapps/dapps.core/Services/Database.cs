@@ -922,13 +922,16 @@ public class Database(
     /// <summary>
     /// Insert a neighbour or update its bearer hints if one already
     /// exists for the same callsign. Idempotent: callers can re-POST
-    /// the same neighbour without checking for prior existence.
+    /// the same neighbour without checking for prior existence. With
+    /// <paramref name="previousCallsign"/>, the row with that callsign is
+    /// updated instead and takes <paramref name="callsign"/> as its new
+    /// one; the caller checks that no other row already has it.
     /// </summary>
-    internal async Task UpsertNeighbour(string callsign, int? bearerPort, string? udpEndpoint = null, string? connectScriptJson = null, bool? compressionEnabled = null, int? sessionTailSeconds = null, string? connectVia = null)
+    internal async Task UpsertNeighbour(string callsign, int? bearerPort, string? udpEndpoint = null, string? connectScriptJson = null, bool? compressionEnabled = null, int? sessionTailSeconds = null, string? connectVia = null, string? previousCallsign = null)
     {
         var connection = DbInfo.GetAsyncConnection();
         var existing = await connection.FindWithQueryAsync<DbNeighbour>(
-            "select * from neighbours where callsign=?", callsign);
+            "select * from neighbours where callsign=?", previousCallsign ?? callsign);
         if (existing is null)
         {
             await connection.InsertAsync(new DbNeighbour
@@ -948,6 +951,7 @@ public class Database(
             // number (#233), even while a port saved by an older DAPPS waits
             // to be converted: the row is no longer pending.
             existing.PortPending = null;
+            existing.Callsign = callsign;
             existing.BearerPort = bearerPort;
             existing.UdpEndpoint = udpEndpoint;
             existing.ConnectScriptJson = connectScriptJson;

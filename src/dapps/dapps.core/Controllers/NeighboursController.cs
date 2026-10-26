@@ -56,11 +56,25 @@ public class NeighboursController(Database database) : ControllerBase
             if (counted < 0) return BadRequest("BearerPort counts the node's ports from 0; it can't be negative. Send Port, the node's own port number, instead.");
             port = counted + 1;
         }
+        // An edit that changes the callsign names the row it started from.
+        var previous = string.IsNullOrWhiteSpace(neighbour.PreviousCallsign) ? null : neighbour.PreviousCallsign.Trim().ToUpperInvariant();
+        if (previous == callsign) previous = null;
+        if (previous is not null)
+        {
+            if (await database.GetNeighbour(previous) is null)
+            {
+                return NotFound($"There is no neighbour {previous} to rename.");
+            }
+            if (await database.GetNeighbour(callsign) is not null)
+            {
+                return Conflict($"{callsign} is already a neighbour; remove it first, or edit that one instead.");
+            }
+        }
         // While the row's port waits to be converted it is shown as null:
         // posting null, or the old count-from-0 value, back would store the
         // wrong port. Wait for the conversion (seconds after the node's AGW
         // connection answers) or send another value.
-        var existing = await database.GetNeighbour(callsign);
+        var existing = await database.GetNeighbour(previous ?? callsign);
         if (existing is { PortPending: true } && (port is null || port == existing.BearerPort))
         {
             return Conflict($"{callsign}'s radio port was saved by an older DAPPS, which counted from 0, and is waiting to be converted to the node's own number; send the port as your node numbers it once that is done (GET /Neighbours shows it then), or a different value now.");
@@ -110,7 +124,8 @@ public class NeighboursController(Database database) : ControllerBase
             connectScriptJson: scriptJson,
             compressionEnabled: neighbour.CompressionEnabled,
             sessionTailSeconds: neighbour.SessionTailSeconds is { } tail ? Math.Clamp(tail, 0, 600) : null,
-            connectVia: connectVia);
+            connectVia: connectVia,
+            previousCallsign: previous);
         return NoContent();
     }
 
@@ -171,6 +186,14 @@ public class NeighboursController(Database database) : ControllerBase
 /// blank, a script whose first step is a bare <c>C &lt;CALL&gt;</c> has
 /// that step taken off and <c>CALL</c> stored here instead.
 /// </para>
+///
+/// <para>
+/// <see cref="PreviousCallsign"/> (POST only) renames a neighbour: the
+/// row with that callsign is updated and takes <see cref="Callsign"/>.
+/// 404 if there is no such row, 409 if another row already has
+/// <see cref="Callsign"/>. Null, or the same as <see cref="Callsign"/>,
+/// is the plain upsert.
+/// </para>
 /// </summary>
 public sealed record NeighbourModel(
     string Callsign,
@@ -182,5 +205,7 @@ public sealed record NeighbourModel(
     int? SessionTailSeconds = null,
     string? ConnectVia = null,
     bool PortPending = false,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? PreviousCallsign = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     int? BearerPort = null);

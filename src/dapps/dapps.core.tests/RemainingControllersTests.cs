@@ -82,6 +82,156 @@ public sealed class RemainingControllersTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task NeighboursController_PreviousCallsign_RenamesTheNeighbour()
+    {
+        var ctrl = new NeighboursController(database);
+        await ctrl.Upsert(new NeighbourModel("g7xyz-9", Port: 1, ConnectScript: "DAPPS|DAPPSv1>", ConnectVia: "GB7BDH"));
+
+        (await ctrl.Upsert(new NeighbourModel("g7xyz-3", Port: 2, ConnectScript: "DAPPS|DAPPSv1>", ConnectVia: "GB7BDH", PreviousCallsign: "g7xyz-9")))
+            .Should().BeOfType<NoContentResult>();
+
+        var list = (await ctrl.List()).ToList();
+        list.Should().ContainSingle();
+        list[0].Callsign.Should().Be("G7XYZ-3");
+        list[0].Port.Should().Be(2);
+        list[0].ConnectVia.Should().Be("GB7BDH");
+    }
+
+    [Fact]
+    public async Task NeighboursController_RenameOntoAnotherNeighbour_IsRefused()
+    {
+        var ctrl = new NeighboursController(database);
+        await ctrl.Upsert(new NeighbourModel("G7XYZ-9", Port: 1));
+        await ctrl.Upsert(new NeighbourModel("G7XYZ-3", Port: 2));
+
+        (await ctrl.Upsert(new NeighbourModel("G7XYZ-3", Port: 1, PreviousCallsign: "G7XYZ-9")))
+            .Should().BeOfType<ConflictObjectResult>();
+
+        var list = (await ctrl.List()).ToList();
+        list.Should().HaveCount(2, "the refused rename changes neither row");
+        list.Single(n => n.Callsign == "G7XYZ-3").Port.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task NeighboursController_RenameOfAMissingNeighbour_IsNotFound()
+    {
+        var ctrl = new NeighboursController(database);
+
+        (await ctrl.Upsert(new NeighbourModel("G7XYZ-3", Port: 1, PreviousCallsign: "G7XYZ-9")))
+            .Should().BeOfType<NotFoundObjectResult>();
+        (await ctrl.List()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task NeighboursController_RenameOfAMissingNeighbour_LeavesTheOthersAlone()
+    {
+        var ctrl = new NeighboursController(database);
+        await ctrl.Upsert(new NeighbourModel("G7XYZ-3", Port: 2, CompressionEnabled: false));
+
+        (await ctrl.Upsert(new NeighbourModel("G7XYZ-3", Port: 5, PreviousCallsign: "G7XYZ-9")))
+            .Should().BeOfType<NotFoundObjectResult>("a 404 MUST NOT fall back to updating the row named by Callsign");
+
+        var row = (await ctrl.List()).Should().ContainSingle().Subject;
+        row.Callsign.Should().Be("G7XYZ-3");
+        row.Port.Should().Be(2);
+        row.CompressionEnabled.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task NeighboursController_RefusedRename_LeavesTheSourceRowAlone()
+    {
+        var ctrl = new NeighboursController(database);
+        await ctrl.Upsert(new NeighbourModel("G7XYZ-9", Port: 1, ConnectScript: "DAPPS|DAPPSv1>", ConnectVia: "GB7BDH", SessionTailSeconds: 30));
+        await ctrl.Upsert(new NeighbourModel("G7XYZ-3", Port: 2));
+
+        (await ctrl.Upsert(new NeighbourModel("g7xyz-3", Port: 7, PreviousCallsign: "g7xyz-9")))
+            .Should().BeOfType<ConflictObjectResult>();
+
+        var source = (await ctrl.List()).Single(n => n.Callsign == "G7XYZ-9");
+        source.Port.Should().Be(1);
+        source.ConnectVia.Should().Be("GB7BDH");
+        source.SessionTailSeconds.Should().Be(30);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("  ")]
+    [InlineData("g7xyz-9")]
+    [InlineData(" G7XYZ-9 ")]
+    public async Task NeighboursController_NoOrSamePreviousCallsign_IsThePlainUpsert(string? previous)
+    {
+        var ctrl = new NeighboursController(database);
+        await ctrl.Upsert(new NeighbourModel("G7XYZ-9", Port: 1));
+
+        (await ctrl.Upsert(new NeighbourModel("G7XYZ-9", Port: 4, PreviousCallsign: previous)))
+            .Should().BeOfType<NoContentResult>();
+
+        var row = (await ctrl.List()).Should().ContainSingle().Subject;
+        row.Callsign.Should().Be("G7XYZ-9");
+        row.Port.Should().Be(4);
+    }
+
+    [Fact]
+    public async Task NeighboursController_BlankPreviousCallsign_StillAddsANewNeighbour()
+    {
+        var ctrl = new NeighboursController(database);
+
+        (await ctrl.Upsert(new NeighbourModel("G7XYZ-9", Port: 1, PreviousCallsign: "")))
+            .Should().BeOfType<NoContentResult>();
+
+        (await ctrl.List()).Should().ContainSingle().Which.Callsign.Should().Be("G7XYZ-9");
+    }
+
+    [Fact]
+    public async Task NeighboursController_RenamedAwayCallsign_CanBeAddedAgain()
+    {
+        var ctrl = new NeighboursController(database);
+        await ctrl.Upsert(new NeighbourModel("G7XYZ-9", Port: 1));
+        await ctrl.Upsert(new NeighbourModel("G7XYZ-3", Port: 1, PreviousCallsign: "G7XYZ-9"));
+
+        (await ctrl.Upsert(new NeighbourModel("G7XYZ-9", Port: 3))).Should().BeOfType<NoContentResult>();
+
+        (await ctrl.List()).Select(n => n.Callsign).Should().BeEquivalentTo("G7XYZ-3", "G7XYZ-9");
+    }
+
+    [Fact]
+    public async Task NeighboursController_RenamingAPortPendingRow_ChecksThatRow()
+    {
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "G7XYZ-9", BearerPort = 0, PortPending = true });
+        }
+        var ctrl = new NeighboursController(database);
+
+        // The port shown as null, posted back under a new callsign, is
+        // still the pending row's port: refused, and nothing changes.
+        (await ctrl.Upsert(new NeighbourModel("G7XYZ-3", Port: null, PreviousCallsign: "G7XYZ-9")))
+            .Should().BeOfType<ConflictObjectResult>();
+        var row = (await ctrl.List()).Should().ContainSingle().Subject;
+        row.Callsign.Should().Be("G7XYZ-9");
+        row.PortPending.Should().BeTrue();
+
+        // A real port renames it and clears the pending flag.
+        (await ctrl.Upsert(new NeighbourModel("G7XYZ-3", Port: 2, PreviousCallsign: "G7XYZ-9")))
+            .Should().BeOfType<NoContentResult>();
+        row = (await ctrl.List()).Should().ContainSingle().Subject;
+        row.Callsign.Should().Be("G7XYZ-3");
+        row.Port.Should().Be(2);
+        row.PortPending.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task NeighboursController_List_DoesNotSendPreviousCallsign()
+    {
+        var ctrl = new NeighboursController(database);
+        await ctrl.Upsert(new NeighbourModel("G7XYZ-9", Port: 1));
+
+        System.Text.Json.JsonSerializer.Serialize((await ctrl.List()).Single(), System.Text.Json.JsonSerializerOptions.Web)
+            .Should().NotContain("previousCallsign", "older clients see the same GET shape as before");
+    }
+
+    [Fact]
     public async Task NeighboursController_EmptyCallsign_BadRequest()
     {
         var ctrl = new NeighboursController(database);

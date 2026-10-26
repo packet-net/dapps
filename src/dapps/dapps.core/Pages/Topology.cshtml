@@ -282,6 +282,8 @@ else
             ConnectVia: f.connectVia.value || null,
             CompressionEnabled: compression,
             SessionTailSeconds: f.sessionTail.value === '' ? null : parseInt(f.sessionTail.value, 10),
+            // Set while editing a row, so a changed callsign renames it.
+            PreviousCallsign: f.dataset.editing || null,
         };
         if (await dappsPostJson('@Url.Content("~/Neighbours")', body)) location.reload();
     };
@@ -301,8 +303,8 @@ else
         const f = document.getElementById('neigh-form');
         if (!n || !f) return;
         f.callsign.value = n.callsign;
-        // The same callsign is what makes the POST an update, so lock it.
-        f.callsign.readOnly = true;
+        // Sent as PreviousCallsign, so a changed callsign renames the row.
+        f.dataset.editing = n.callsign;
         f.udpEndpoint.value = n.udpEndpoint || '';
         f.compression.value = n.compressionEnabled == null ? '' : (n.compressionEnabled ? 'on' : 'off');
         f.sessionTail.value = n.sessionTailSeconds == null ? '' : String(n.sessionTailSeconds);
@@ -328,7 +330,7 @@ else
     window.dappsCancelEditNeighbour = () => {
         const f = document.getElementById('neigh-form');
         f.reset();
-        f.callsign.readOnly = false;
+        delete f.dataset.editing;
         f.querySelector('button[type="submit"]').textContent = 'Add / update';
         document.getElementById('neigh-cancel').style.display = 'none';
     };
