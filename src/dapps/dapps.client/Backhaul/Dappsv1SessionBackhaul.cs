@@ -242,7 +242,9 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             logger.LogError(ex, "Backhaul send failed for {0} to {1}", first.Id, route.Callsign);
-            await batch.CompleteAsync(first, BackhaulSendResult.Fail(ex.Message), sw.Elapsed, ct);
+            // The kill switch stopping the connect says nothing about
+            // the node we dial.
+            await batch.CompleteAsync(first, BackhaulSendResult.Fail(ex.Message) with { DialFailed = ex is not TxStoppedException }, sw.Elapsed, ct);
             return;
         }
 

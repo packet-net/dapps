@@ -30,6 +30,12 @@ public sealed record BackhaulSendResult(bool Accepted, string? Error, bool Defer
     /// short (a peer whose own call has taken the link, say).</summary>
     public TimeSpan? MinCooldown { get; init; }
 
+    /// <summary>For a failure: the node we dial never connected, so
+    /// nothing got as far as a connect-script or a prompt. When that node
+    /// is a <see cref="BackhaulRoute.ConnectVia"/> other neighbours share,
+    /// they are left alone too while it cools down.</summary>
+    public bool DialFailed { get; init; }
+
     /// <summary>Not sent, not failed: <paramref name="reason"/> says
     /// why, for the log.</summary>
     public static BackhaulSendResult Defer(string reason) => new(false, reason, Deferred: true);

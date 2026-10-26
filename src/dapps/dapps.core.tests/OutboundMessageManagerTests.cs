@@ -1699,6 +1699,394 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         backhaul.Sent.Should().ContainSingle().Which.Route.Callsign.Should().Be("N0FAR-7");
     }
 
+    [Fact]
+    public async Task DoRun_ADialThatHangs_DoesNotHoldUpTheOtherNeighbours_AndFinishesInTheBackground()
+    {
+        // Seen at MB7NPW: the oldest mail was for a neighbour whose first
+        // hop took 3 minutes to fail, and everything else waited behind it.
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection()) c.Insert(new DbNeighbour { Callsign = "N0TWO", BearerPort = 1 });
+        var bearer = new GatedBackhaul(holdFor: "N0DEST");
+        var wakeup = new ForwarderWakeup();
+        var clock = new FakeTimeProvider();
+        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [bearer], routingAlgorithm, routingContext,
+            wakeup: wakeup) { TimeProvider = clock };
+        InsertMessage(id: "slow001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10));
+        InsertMessage(id: "fast001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: "app@N0TWO");
+
+        await RunPastPatienceAsync(m, bearer, clock, ct);
+
+        (await database.GetPendingOutboundMessages()).Select(r => r.Id).Should().Equal(["slow001"],
+            "N0TWO's mail goes while N0DEST's dial is still going");
+
+        bearer.Gate.SetResult(BackhaulSendResult.Ok());
+        (await wakeup.WaitAsync(TimeSpan.FromSeconds(5), TimeProvider.System, ct)).Should().BeTrue(
+            "the forwarder is woken when the send it left behind ends");
+        await WaitUntilAsync(async () => (await database.GetPendingOutboundMessages()).Count == 0, ct);
+    }
+
+    [Fact]
+    public async Task DoRun_WhileASendIsStillGoing_NeighboursReachedThroughTheSameNodeWait()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA" });
+            c.Insert(new DbNeighbour { Callsign = "N0BBB", BearerPort = 1, ConnectVia = "N0VIA" });
+        }
+        var bearer = new GatedBackhaul(holdFor: "N0AAA");
+        var clock = new FakeTimeProvider();
+        var m = MakeManager(bearer);
+        m.TimeProvider = clock;
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+        InsertMessage(id: "bbb0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: "app@N0BBB");
+
+        await RunPastPatienceAsync(m, bearer, clock, ct);
+        await m.DoRun(ct);
+
+        bearer.Batches.Select(b => b.Route.Callsign).Should().Equal(["N0AAA"],
+            "N0VIA is still being dialled for N0AAA: neither a second call for it nor one for N0BBB through it");
+
+        bearer.Gate.SetResult(BackhaulSendResult.Ok());
+        // Once the send has ended and let go of the link, a run takes
+        // N0BBB's mail through it.
+        await WaitUntilAsync(async () =>
+        {
+            await m.DoRun(ct);
+            return (await database.GetPendingOutboundMessages()).Count == 0;
+        }, ct);
+        bearer.Batches.Select(b => b.Route.Callsign).Should().Equal(["N0AAA", "N0BBB"]);
+    }
+
+    [Fact]
+    public async Task DoRun_TheNodeANeighbourIsReachedThroughNeverAnswers_TheOthersReachedThroughItWaitOutTheCooldownToo()
+    {
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA" });
+            c.Insert(new DbNeighbour { Callsign = "N0BBB", BearerPort = 1, ConnectVia = "N0VIA" });
+        }
+        var backoff = new OutboundDestinationBackoff();
+        var bearer = new BatchingFakeBackhaul
+        {
+            ResultFor = m => m.Destination == "app@N0AAA"
+                ? BackhaulSendResult.Fail("AGW connect to N0VIA failed") with { DialFailed = true }
+                : BackhaulSendResult.Ok(),
+        };
+        var m = MakeManager(bearer, backoff: backoff);
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+        InsertMessage(id: "bbb0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: "app@N0BBB");
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        bearer.Batches.Select(b => b.Route.Callsign).Should().Equal(["N0AAA"], "N0BBB would only dial the same dead N0VIA");
+        backoff.IsInCooldown("N0VIA", out _).Should().BeTrue();
+        (await database.GetPendingOutboundMessages()).Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task DoRun_AConnectScriptFailingPastTheNodeItGoesThrough_DoesNotHoldUpTheOthersReachedThroughIt()
+    {
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA" });
+            c.Insert(new DbNeighbour { Callsign = "N0BBB", BearerPort = 1, ConnectVia = "N0VIA" });
+        }
+        var backoff = new OutboundDestinationBackoff();
+        var bearer = new BatchingFakeBackhaul
+        {
+            ResultFor = m => m.Destination == "app@N0AAA"
+                ? BackhaulSendResult.Fail("connect-script failed for N0AAA: step 2/3 timed out")
+                : BackhaulSendResult.Ok(),
+        };
+        var m = MakeManager(bearer, backoff: backoff);
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+        InsertMessage(id: "bbb0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: "app@N0BBB");
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        bearer.Batches.Select(b => b.Route.Callsign).Should().Equal(["N0AAA", "N0BBB"], "N0VIA itself answered");
+        backoff.IsInCooldown("N0VIA", out _).Should().BeFalse();
+        (await database.GetPendingOutboundMessages()).Select(r => r.Id).Should().Equal(["aaa0001"]);
+    }
+
+    /// <summary>
+    /// Runs the forwarder until the held send has outlasted its patience
+    /// and been left in the background. The patience wait is on
+    /// <paramref name="clock"/> and starts before the bearer does, so one
+    /// step of the clock once the bearer is holding ends exactly that
+    /// wait, and no other send is ever left behind by accident.
+    /// </summary>
+    private static async Task RunPastPatienceAsync(OutboundMessageManager m, GatedBackhaul bearer, FakeTimeProvider clock, CancellationToken ct)
+    {
+        var run = m.DoRun(ct);
+        await bearer.Holding.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        clock.Advance(m.SendPatience);
+        await run.WaitAsync(TimeSpan.FromSeconds(5), ct);
+    }
+
+    [Fact]
+    public async Task DoRun_ASendLeftInTheBackgroundFails_ItsMessageStaysQueued_InCooldown_AndCanGoAgainLater()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection()) c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA" });
+        var bearer = new GatedBackhaul(holdFor: "N0AAA");
+        var clock = new FakeTimeProvider();
+        var backoff = new OutboundDestinationBackoff();
+        var wakeup = new ForwarderWakeup();
+        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [bearer], routingAlgorithm, routingContext,
+            destinationBackoff: backoff, wakeup: wakeup) { TimeProvider = clock };
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+
+        await RunPastPatienceAsync(m, bearer, clock, ct);
+        bearer.Gate.SetResult(BackhaulSendResult.Fail("AGW connect to N0VIA timed out") with { DialFailed = true });
+        (await wakeup.WaitAsync(TimeSpan.FromSeconds(5), TimeProvider.System, ct)).Should().BeTrue();
+
+        (await database.GetPendingOutboundMessages()).Select(r => r.Id).Should().Equal(["aaa0001"], "a failed send loses nothing");
+        backoff.IsInCooldown("N0AAA", out _).Should().BeTrue();
+        backoff.IsInCooldown("N0VIA", out _).Should().BeTrue("the node it's reached through never answered");
+
+        await m.DoRun(ct);
+        bearer.Batches.Should().ContainSingle("both are in cooldown");
+
+        // Once the cooldowns are over, the message goes again: the link
+        // and the message were both let go when the send ended.
+        backoff.RecordSuccess("N0AAA");
+        backoff.RecordSuccess("N0VIA");
+        await m.DoRun(ct);
+        bearer.Batches.Select(b => string.Join(",", b.Ids)).Should().Equal(["aaa0001", "aaa0001"]);
+    }
+
+    [Fact]
+    public async Task DoRun_ASendLeftInTheBackgroundThrows_ItsMessageStaysQueued_AndTheLinkIsLetGo()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var bearer = new GatedBackhaul(holdFor: "N0DEST");
+        var clock = new FakeTimeProvider();
+        var backoff = new OutboundDestinationBackoff();
+        var wakeup = new ForwarderWakeup();
+        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [bearer], routingAlgorithm, routingContext,
+            destinationBackoff: backoff, wakeup: wakeup) { TimeProvider = clock };
+        InsertMessage(id: "slow001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10));
+
+        await RunPastPatienceAsync(m, bearer, clock, ct);
+        bearer.Gate.SetException(new IOException("AGW socket closed"));
+        (await wakeup.WaitAsync(TimeSpan.FromSeconds(5), TimeProvider.System, ct)).Should().BeTrue();
+
+        (await database.GetPendingOutboundMessages()).Select(r => r.Id).Should().Equal(["slow001"]);
+        backoff.IsInCooldown("N0DEST", out _).Should().BeTrue("the oldest unanswered message fails, as it did before");
+
+        backoff.RecordSuccess("N0DEST");
+        await m.DoRun(ct);
+        bearer.Batches.Should().HaveCount(2, "nothing was left claimed");
+    }
+
+    [Fact]
+    public async Task DoRun_ASendLeftInTheBackground_DoesNotPickUpMailQueuedSince_WhichGoesOnceOnALaterRun()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var bearer = new GatedBackhaul(holdFor: "N0DEST");
+        var clock = new FakeTimeProvider();
+        var wakeup = new ForwarderWakeup();
+        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [bearer], routingAlgorithm, routingContext,
+            wakeup: wakeup) { TimeProvider = clock };
+        InsertMessage(id: "old0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10));
+
+        await RunPastPatienceAsync(m, bearer, clock, ct);
+        InsertMessage(id: "new0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(1));
+        await m.DoRun(ct);
+        bearer.Batches.Should().ContainSingle("the link is still busy with the send left in the background");
+
+        bearer.Gate.SetResult(BackhaulSendResult.Ok());
+        (await wakeup.WaitAsync(TimeSpan.FromSeconds(5), TimeProvider.System, ct)).Should().BeTrue();
+        await m.DoRun(ct);
+
+        bearer.Batches.Select(b => string.Join(",", b.Ids)).Should().Equal(["old0001", "new0001"],
+            "the batch left in the background only sends what it had; the new one goes once, on its own run");
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task DoRun_WhileASendIsStillGoing_OnlyTheSameNodeOnTheSamePortWaits()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA" });
+            c.Insert(new DbNeighbour { Callsign = "N0BBB", BearerPort = 2, ConnectVia = "N0VIA" });
+            c.Insert(new DbNeighbour { Callsign = "N0VIA", BearerPort = 1 });
+        }
+        var bearer = new GatedBackhaul(holdFor: "N0AAA");
+        var clock = new FakeTimeProvider();
+        var m = MakeManager(bearer);
+        m.TimeProvider = clock;
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+        InsertMessage(id: "bbb0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-8), destination: "app@N0BBB");
+        InsertMessage(id: "via0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-6), destination: "app@N0VIA");
+
+        await RunPastPatienceAsync(m, bearer, clock, ct);
+
+        bearer.Batches.Select(b => b.Route.Callsign).Should().Equal(["N0AAA", "N0BBB"],
+            "N0VIA on port 2 is another link; N0VIA itself on port 1 is the link still being dialled");
+        (await database.GetPendingOutboundMessages()).Select(r => r.Id).Should().BeEquivalentTo(["aaa0001", "via0001"]);
+        bearer.Gate.SetResult(BackhaulSendResult.Ok());
+    }
+
+    [Fact]
+    public async Task DoRun_OnShutdown_ASendLeftInTheBackgroundLetsGoOfItsLink()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA" });
+            c.Insert(new DbNeighbour { Callsign = "N0BBB", BearerPort = 1, ConnectVia = "N0VIA" });
+        }
+        var bearer = new GatedBackhaul(holdFor: "N0AAA");
+        var clock = new FakeTimeProvider();
+        var wakeup = new ForwarderWakeup();
+        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [bearer], routingAlgorithm, routingContext,
+            wakeup: wakeup) { TimeProvider = clock };
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+        using var stopping = CancellationTokenSource.CreateLinkedTokenSource(ct);
+
+        await RunPastPatienceAsync(m, bearer, clock, stopping.Token);
+        await stopping.CancelAsync();
+        (await wakeup.WaitAsync(TimeSpan.FromSeconds(5), TimeProvider.System, ct)).Should().BeTrue();
+
+        InsertMessage(id: "bbb0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(1), destination: "app@N0BBB");
+        await m.DoRun(ct);
+        bearer.Batches.Select(b => b.Route.Callsign).Should().Equal(["N0AAA", "N0BBB"]);
+    }
+
+    [Fact]
+    public async Task DoRun_AnAcceptedMessageThroughANode_ClearsThatNodesFailureStreak()
+    {
+        using (var c = DbInfo.GetConnection()) c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA" });
+        var clock = new FakeTimeProvider();
+        var backoff = new OutboundDestinationBackoff(clock, spread: 0);
+        var first = backoff.RecordFailure("N0VIA") - clock.GetUtcNow();
+        // Up the ramp, past its first tier.
+        for (var i = 0; i < 5; i++) backoff.RecordFailure("N0VIA");
+        clock.Advance(TimeSpan.FromDays(1));
+        var bearer = new BatchingFakeBackhaul();
+        var m = MakeManager(bearer, backoff: backoff);
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        bearer.Batches.Should().ContainSingle();
+        (backoff.RecordFailure("N0VIA") - clock.GetUtcNow()).Should().Be(first, "the streak started again");
+    }
+
+    [Fact]
+    public async Task DoRun_AFloodCopyForALinkStillBusyInTheBackground_GoesWhenTheLinkIsFree()
+    {
+        // On master the run waited for the send to end before flooding,
+        // so the copy went. Sent now, it would be turned away and lost.
+        var ct = TestContext.Current.CancellationToken;
+        var busyRoute = new BackhaulRoute("N0AAA", BearerPort: 1);
+        var otherRoute = new BackhaulRoute("N0BBB", BearerPort: 1);
+        var algorithm = new ByDestinationAlgorithm(m => m.Destination == "app@N0AAA"
+            ? new RouteDecision.NextHop(busyRoute)
+            : new RouteDecision.FloodToNeighbours([busyRoute, otherRoute], HopBudget: 3));
+        var bearer = new GatedBackhaul(holdFor: "N0AAA");
+        var clock = new FakeTimeProvider();
+        var wakeup = new ForwarderWakeup();
+        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [bearer], algorithm, routingContext,
+            wakeup: wakeup) { TimeProvider = clock };
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+        InsertMessage(id: "fld0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: "app@N0FAR");
+
+        await RunPastPatienceAsync(m, bearer, clock, ct);
+
+        bearer.FloodCopies.Should().Equal([("fld0001", "N0BBB")], "N0AAA's link is still busy");
+        (await database.GetPendingOutboundMessages()).Select(r => r.Id).Should().Equal(["aaa0001"], "the flood is done with, as floods are");
+
+        // A run meanwhile leaves the link alone, flood copy and all.
+        await m.DoRun(ct);
+        bearer.FloodCopies.Should().ContainSingle();
+
+        bearer.Gate.SetResult(BackhaulSendResult.Ok());
+        await WaitUntilAsync(() => Task.FromResult(bearer.FloodCopies.Count == 2), ct);
+        bearer.FloodCopies.Should().Equal([("fld0001", "N0BBB"), ("fld0001", "N0AAA")]);
+        (await wakeup.WaitAsync(TimeSpan.FromSeconds(5), TimeProvider.System, ct)).Should().BeTrue();
+    }
+
+    /// <summary>Routes each message by a rule.</summary>
+    private sealed class ByDestinationAlgorithm(Func<DbMessage, RouteDecision> decide) : IRoutingAlgorithm
+    {
+        public Task<RouteDecision> ResolveAsync(DbMessage message, IRoutingContext ctx, CancellationToken ct) => Task.FromResult(decide(message));
+        public Task ObserveInboundAsync(BackhaulMessage message, string linkSourceCallsign, IRoutingContext ctx, CancellationToken ct) => Task.CompletedTask;
+        public Task ObserveForwardOutcomeAsync(DbMessage message, BackhaulRoute attemptedRoute, BackhaulSendResult result, IRoutingContext ctx, CancellationToken ct) => Task.CompletedTask;
+        public Task ObserveProbeOutcomeAsync(string askedPeerCallsign, IReadOnlyList<dapps.client.DappsProtocolClient.DiscoveredPeerInfo> peers, IRoutingContext ctx, CancellationToken ct) => Task.CompletedTask;
+        public Task RunAsync(IRoutingContext ctx, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private static async Task WaitUntilAsync(Func<Task<bool>> condition, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!await condition())
+        {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException("condition not met within 5s");
+            await Task.Delay(20, ct);
+        }
+    }
+
+    /// <summary>
+    /// A session bearer whose send for one neighbour doesn't finish until
+    /// the test opens <see cref="Gate"/>, as a dial to a dead link doesn't.
+    /// Every other neighbour's messages are accepted at once.
+    /// </summary>
+    private sealed class GatedBackhaul(string holdFor) : IDappsBackhaul
+    {
+        private readonly List<(BackhaulRoute Route, List<string> Ids)> batches = [];
+        public TaskCompletionSource<BackhaulSendResult> Gate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>Set once a send is waiting on <see cref="Gate"/>.</summary>
+        public TaskCompletionSource Holding { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IReadOnlyList<(BackhaulRoute Route, List<string> Ids)> Batches
+        {
+            get { lock (batches) return [.. batches]; }
+        }
+
+        public bool CanHandle(BackhaulRoute route) => true;
+
+        private readonly List<(string Id, string Callsign)> floodCopies = [];
+
+        /// <summary>Flood copies sent, one message at a time.</summary>
+        public IReadOnlyList<(string Id, string Callsign)> FloodCopies
+        {
+            get { lock (floodCopies) return [.. floodCopies]; }
+        }
+
+        public Task<BackhaulSendResult> SendAsync(
+            BackhaulMessage message, BackhaulRoute route, string localCallsign, CancellationToken ct)
+        {
+            lock (floodCopies) floodCopies.Add((message.Id, route.Callsign));
+            return Task.FromResult(BackhaulSendResult.Ok());
+        }
+
+        public async Task SendBatchAsync(BackhaulRoute route, string localCallsign, IBackhaulBatch batch, CancellationToken ct)
+        {
+            var ids = new List<string>();
+            lock (batches) batches.Add((route, ids));
+            while (await batch.NextAsync(ct) is { } message)
+            {
+                ids.Add(message.Id);
+                BackhaulSendResult result;
+                if (string.Equals(route.Callsign, holdFor, StringComparison.OrdinalIgnoreCase))
+                {
+                    Holding.TrySetResult();
+                    result = await Gate.Task.WaitAsync(ct);
+                }
+                else result = BackhaulSendResult.Ok();
+                await batch.CompleteAsync(message, result, TimeSpan.Zero, ct);
+                if (!result.Accepted) return;
+            }
+        }
+    }
+
     private static void InsertMessage(string id, int? ttl, DateTime createdAt, string destination = "app@N0DEST")
     {
         using var c = DbInfo.GetConnection();

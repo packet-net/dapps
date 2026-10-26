@@ -145,7 +145,7 @@ Check, in order:
 
 Look at the dashboard:
 
-- Messages > Outbound queue: is the message there? If yes, it's queued but the forwarder hasn't shipped it yet. It normally goes within a second; if it sits there, the neighbour is probably in reconnect cooldown or has a session open with us (see the journal). If no, the submit didn't actually write to the messages table - check the response body, it'll have an error.
+- Messages > Outbound queue: is the message there? If yes, it's queued but the forwarder hasn't shipped it yet. It normally goes within a second; if it sits there, the neighbour is probably in reconnect cooldown or has a session open with us (see the journal). A neighbour reached through another node (connect via) also waits while that node is in cooldown, or while a call to it is still in progress for another neighbour: a dial that doesn't answer within 10 seconds carries on in the background, and the forwarder moves on to the other neighbours. If no, the submit didn't actually write to the messages table - check the response body, it'll have an error.
 - Messages > Dropped: did it get dropped? If yes, reason will be there (usually TTL too short, or no route to destination).
 - Link state: is the link to the destination's first-hop neighbour actually working? `neighbourLinks` in `GET /Operational` has the last success and error per neighbour, and Topology > Probed nodes has the probe history.
 

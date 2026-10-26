@@ -192,6 +192,7 @@ public sealed class Dappsv1SessionBackhaulTests
         result.Accepted.Should().BeFalse();
         result.Deferred.Should().BeFalse();
         result.Error.Should().Contain("DAPPSv1>");
+        result.DialFailed.Should().BeFalse("the node we dialled answered; what answered wasn't DAPPS");
     }
 
     [Fact]
@@ -225,6 +226,25 @@ public sealed class Dappsv1SessionBackhaulTests
 
         result.Accepted.Should().BeFalse();
         result.Error.Should().Be("kaboom");
+        result.DialFailed.Should().BeTrue("the node we dial never connected");
+    }
+
+    [Fact]
+    public async Task SendAsync_TheKillSwitchStopsTheConnect_IsNotAFailedDial()
+    {
+        // Our own refusal to transmit says nothing about the node we dial:
+        // neighbours reached through it mustn't be put in its cooldown.
+        var transport = new ThrowingTransport(new dapps.client.Tx.TxStoppedException("operator stop"));
+        var sb = new Dappsv1SessionBackhaul(transport, NullLoggerFactory.Instance);
+
+        var result = await sb.SendAsync(
+            new BackhaulMessage("midstop", "app@N0DEST", null, null, "x"u8.ToArray()),
+            new BackhaulRoute("N0DEST", ConnectVia: "N0VIA"),
+            "N0SRC",
+            CancellationToken.None);
+
+        result.Accepted.Should().BeFalse();
+        result.DialFailed.Should().BeFalse();
     }
 
     [Fact]
@@ -295,6 +315,7 @@ public sealed class Dappsv1SessionBackhaulTests
         batch.Outcomes.Should().ContainSingle();
         batch.Outcomes[0].Id.Should().Be("msg0001");
         batch.Outcomes[0].Result.Error.Should().Be("kaboom");
+        batch.Outcomes[0].Result.DialFailed.Should().BeTrue();
         batch.Remaining.Should().Be(1);
     }
 
@@ -315,6 +336,7 @@ public sealed class Dappsv1SessionBackhaulTests
         batch.Outcomes[0].Result.Accepted.Should().BeFalse();
         batch.Outcomes[0].Result.Deferred.Should().BeFalse("a link that drops is a failed dial");
         batch.Outcomes[0].Result.Error.Should().Contain("socket closed");
+        batch.Outcomes[0].Result.DialFailed.Should().BeFalse("the dial connected; the script failed after it");
         batch.Remaining.Should().Be(1);
         connection.Disposed.Should().BeTrue();
     }
