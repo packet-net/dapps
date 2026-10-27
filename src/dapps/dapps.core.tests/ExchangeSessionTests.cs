@@ -103,6 +103,48 @@ public sealed class ExchangeSessionTests : IDisposable
     }
 
     [Fact]
+    public async Task AnInvalidOwnNode_IsOmitted_WithoutStoppingTheExchange()
+    {
+        var (ours, theirs) = await LoopbackPairAsync(Ct);
+        var inbox = new RecordingInbox();
+        var session = new ExchangeSession(ours, Them, dialled: false, new ExchangeSettings(), inbox,
+            NullLoggerFactory.Instance, nodeCallsign: "N0US-16");
+        var run = session.RunAsync(Ct);
+        var peer = new LinePeer(theirs);
+        try
+        {
+            (await peer.ReadLineAsync(Ct)).Should().Be("DAPPSv1>");
+            var rulesLine = await peer.ReadLineAsync(Ct);
+            rulesLine.Should().StartWith("exchange ").And.NotContain("node=");
+            var rules = ExchangeRules.Parse(rulesLine);
+            rules.Tag.Should().Be(session.OwnRules.Tag);
+            rules.Node.Should().BeNull();
+
+            await peer.WriteLineAsync(Rules(hold: 0) + "\nping alive", Ct);
+            (await peer.ReadLineAsync(Ct)).Should().Be("pong alive");
+            session.Established.Should().BeTrue();
+            session.Failure.Should().BeNull();
+            run.IsCompleted.Should().BeFalse();
+
+            var message = Message("still working", "app@N0US");
+            await peer.SendMessageAsync(message, Ct);
+            (await peer.ReadLineAsync(Ct)).Should().Be($"ack {message.Id}");
+            inbox.Texts.Should().Equal("still working");
+            inbox.Sources.Should().Equal(Them);
+
+            await peer.WriteLineAsync("quit", Ct);
+            (await peer.ReadLineAsync(Ct)).Should().Be("bye");
+            await run.WaitAsync(Patience, Ct);
+            session.Failure.Should().BeNull();
+        }
+        finally
+        {
+            peer.Close();
+            await run.WaitAsync(Patience, Ct);
+        }
+    }
+
+    [Fact]
     public async Task ACaller_SendsItsRulesAndFirstMessagesInOneWrite_OnceItHasThePeersRules()
     {
         var m1 = Message("one", $"app@{Them}", 1);

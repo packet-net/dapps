@@ -1311,8 +1311,8 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         lease.Peer.Should().Be("GB7LOX");
         peers.IsActive("GB7LOX", out _).Should().BeTrue();
         peers.IsActive("GB7LOX-6", out _).Should().BeFalse();
-        directory.CallerFor("app@GB7LOX").Should().Be("GB7LOX");
-        directory.CallerFor("app@GB7LOX-6").Should().BeNull();
+        directory.CallerFor("app@GB7LOX", "N0CALL").Should().Be("GB7LOX");
+        directory.CallerFor("app@GB7LOX-6", "N0CALL").Should().BeNull();
 
         await m.DoRun(ct);
 
@@ -1347,8 +1347,8 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         lease.Peer.Should().Be("G6FCI-8");
         peers.IsActive("G6FCI-7", out _).Should().BeFalse("rekeying must release the transport identity before the forwarder runs");
         peers.IsActive("G6FCI-8", out _).Should().BeTrue();
-        directory.CallerFor("app@G6FCI-7").Should().BeNull();
-        directory.CallerFor("app@G6FCI-8").Should().Be("G6FCI-8");
+        directory.CallerFor("app@G6FCI-7", "N0CALL").Should().BeNull();
+        directory.CallerFor("app@G6FCI-8", "N0CALL").Should().Be("G6FCI-8");
 
         await m.DoRun(ct);
 
@@ -1383,9 +1383,9 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         lease.Peer.Should().Be("GB7LOX-6");
         peers.IsActive("GB7LOX-6", out _).Should().BeTrue();
         peers.IsActive("GB7LOX", out _).Should().BeFalse();
-        directory.CallerFor("app@GB7LOX-6").Should().Be("GB7LOX-6");
-        directory.CallerFor("app@GB7LOX").Should().BeNull();
-        directory.CallerFor("app@G6FCI-8").Should().BeNull();
+        directory.CallerFor("app@GB7LOX-6", "N0CALL").Should().Be("GB7LOX-6");
+        directory.CallerFor("app@GB7LOX", "N0CALL").Should().Be(node is null ? "GB7LOX-6" : null);
+        directory.CallerFor("app@G6FCI-8", "N0CALL").Should().BeNull();
 
         await m.DoRun(ct);
 
@@ -1399,11 +1399,12 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
     }
 
     [Theory]
-    [InlineData(null, "app@N0FAR")]
-    [InlineData(null, "app@N0FAR-7")]
-    [InlineData("N0FAR-8", "app@N0FAR-7")]
-    [InlineData("G6FCI-8", "app@N0FAR")]
-    public async Task DoRun_WithNoRoute_ADifferentSsidCallerDoesNotTakeTheMail(string? node, string destination)
+    [InlineData(null, "app@N0FAR", true)]
+    [InlineData(null, "app@N0FAR-7", true)]
+    [InlineData("N0FAR-16", "app@N0FAR", true)]
+    [InlineData("N0FAR-8", "app@N0FAR-7", false)]
+    [InlineData("G6FCI-8", "app@N0FAR", false)]
+    public async Task DoRun_WithNoRoute_OnlyALegacyCallerCanStandInForAnotherSsid(string? node, string destination, bool legacyFallback)
     {
         var ct = TestContext.Current.CancellationToken;
         InsertMessage(id: "ssid004", ttl: null, createdAt: DateTime.UtcNow, destination: destination);
@@ -1414,28 +1415,40 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
             peerSessions: peers, openSessions: directory);
 
-        directory.CallerFor(destination).Should().BeNull("a session is not a route to another SSID of its base");
-        directory.TryHand(DestinationParser.StationOf(destination), new RecordingBatch()).Should().BeFalse();
+        directory.CallerFor(destination, "N0CALL").Should().Be(legacyFallback ? "N0FAR-2" : null);
+        directory.TryHand(DestinationParser.StationOf(destination), new RecordingBatch()).Should().BeFalse("neighbour hand-off remains exact");
+        peers.IsActive(DestinationParser.StationOf(destination), out _).Should().BeFalse("the dial guard remains exact");
 
         await m.DoRun(ct);
 
-        await inbound.Peer.WriteLineAsync("ping nohand01\nping nohand02", ct);
-        (await inbound.Peer.ReadLineAsync(ct)).Should().Be("pong nohand01");
-        (await inbound.Peer.ReadLineAsync(ct)).Should().Be("pong nohand02");
+        if (legacyFallback)
+        {
+            var sent = await inbound.Peer.ReadWithPayloadAsync(ct);
+            sent.Line.Should().StartWith("msg ssid004 ").And.Contain(destination);
+            await inbound.Peer.WriteLineAsync("ack ssid004\nping acked", ct);
+            (await inbound.Peer.ReadLineAsync(ct)).Should().Be("pong acked");
+            (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+        }
+        else
+        {
+            await inbound.Peer.WriteLineAsync("ping nohand01\nping nohand02", ct);
+            (await inbound.Peer.ReadLineAsync(ct)).Should().Be("pong nohand01");
+            (await inbound.Peer.ReadLineAsync(ct)).Should().Be("pong nohand02");
+            (await database.GetPendingOutboundMessages()).Should().ContainSingle(m => m.Id == "ssid004");
+        }
         backhaul.Sent.Should().BeEmpty("there is still no route to dial");
-        (await database.GetPendingOutboundMessages()).Should().ContainSingle(m => m.Id == "ssid004");
     }
 
     [Fact]
     public async Task DoRun_MailForANodeThatHasCalledUs_GoesOnItsSession_EvenWithNoRoute()
     {
-        // What `rev` used to collect: we have no route to N0FAR-2, but it's
+        // What `rev` used to collect: we have no route to N0FAR, but it's
         // on the line.
         var directory = new SessionDirectory();
         var peer = await EstablishedInboundSessionAsync("N0FAR-2", directory);
         var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
             openSessions: directory);
-        InsertMessage(id: "caller1", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR-2");
+        InsertMessage(id: "caller1", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR");
 
         await m.DoRun(TestContext.Current.CancellationToken);
 
@@ -1457,8 +1470,8 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         var peer = await EstablishedInboundSessionAsync("N0FAR-2", directory);
         var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
             destinationBackoff: backoff, openSessions: directory);
-        InsertMessage(id: "badline", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-1), destination: "bad app@N0FAR-2");
-        InsertMessage(id: "good001", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR-2");
+        InsertMessage(id: "badline", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-1), destination: "bad app@N0FAR");
+        InsertMessage(id: "good001", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR");
 
         await m.DoRun(ct);
 
@@ -1497,7 +1510,7 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         directory.Register("N0FAR-2", session);
         var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
             openSessions: directory);
-        InsertMessage(id: "gone001", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR-2");
+        InsertMessage(id: "gone001", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR");
 
         await m.DoRun(ct);
 

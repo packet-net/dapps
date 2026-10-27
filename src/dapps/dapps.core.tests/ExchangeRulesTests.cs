@@ -60,13 +60,16 @@ public sealed class ExchangeRulesTests
     [InlineData("GB7LOX\nquit")]
     [InlineData("GB7LOX node=G6FCI-8")]
     [InlineData("GB7LOX-16")]
-    public void AnInvalidOwnNodeIdentity_CannotBreakTheExchangeLine(string node)
+    [InlineData("")]
+    [InlineData(null)]
+    public void AnInvalidOwnNodeIdentity_IsOmittedWithoutFailingTheExchange(string? node)
     {
         var rules = new ExchangeRules("own01", 0, 256, null, [], node);
 
-        var write = () => rules.ToLine();
+        var line = rules.ToLine();
 
-        write.Should().Throw<ArgumentException>();
+        line.Should().Be("exchange id=own01 hold=0 inline=256\n");
+        ExchangeRules.Parse(line).Node.Should().BeNull();
     }
 
     [Fact]

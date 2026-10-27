@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using dapps.client.Backhaul;
+using dapps.core.Routing;
 
 namespace dapps.core.Services;
 
@@ -25,12 +26,14 @@ public sealed class SessionDirectory(ForwarderWakeup? forwarderWakeup = null)
     internal void Unregister(string peer, ExchangeSession session) =>
         sessions.TryRemove(new KeyValuePair<string, ExchangeSession>(DestinationParser.StationKey(peer), session));
 
-    public string? CallerFor(string destination)
+    public string? CallerFor(string destination, string ourCallsign)
     {
         var at = destination.LastIndexOf('@');
         if (at < 0 || at == destination.Length - 1) return null;
         var peer = DestinationParser.StationKey(destination[(at + 1)..]);
-        return sessions.ContainsKey(peer) ? peer : null;
+        if (sessions.ContainsKey(peer)) return peer;
+        return sessions.FirstOrDefault(s => !s.Value.PeerDeclaredNode
+            && CallsignMatch.StandsIn(s.Key, peer, ourCallsign)).Key;
     }
 
     /// <summary>

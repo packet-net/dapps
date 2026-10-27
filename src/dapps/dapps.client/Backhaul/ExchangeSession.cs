@@ -218,6 +218,7 @@ public sealed class ExchangeSession
     public string Peer => peer;
     public ExchangeRules OwnRules { get; }
     public ExchangeRules? PeerRules { get; private set; }
+    public bool PeerDeclaredNode { get; private set; }
 
     /// <summary>Both <c>exchange</c> lines have crossed.</summary>
     public bool Established { get; private set; }
@@ -954,6 +955,7 @@ public sealed class ExchangeSession
         var rules = ExchangeRules.Parse(line);
         if (PeerRules is null)
         {
+            PeerDeclaredNode = rules.Node is not null;
             if (rules.Node is { } node)
             {
                 if (!string.Equals(peer.Split('-')[0], node.Split('-')[0], StringComparison.OrdinalIgnoreCase))

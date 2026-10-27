@@ -45,11 +45,7 @@ public sealed record ExchangeRules(string Tag, int HoldSeconds, int Inline, int?
         sb.Append(" inline=").Append(Inline.ToString(CultureInfo.InvariantCulture));
         if (MaxBytes is { } max) sb.Append(" max=").Append(max.ToString(CultureInfo.InvariantCulture));
         if (Dictionaries.Count > 0) sb.Append(" z=").Append(string.Join(',', Dictionaries));
-        if (Node is not null)
-        {
-            if (MessageFields.CallsignError(Node) is { } error) throw new ArgumentException(error, nameof(Node));
-            sb.Append(" node=").Append(Node);
-        }
+        if (MessageFields.CallsignError(Node) is null) sb.Append(" node=").Append(Node);
         sb.Append('\n');
         return sb.ToString();
     }
