@@ -263,7 +263,7 @@ public sealed class Rhpv2InboundService(
             var handler = new InboundConnectionHandler(
                 stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics,
                 settingsFor: exchangePolicy is null ? null : exchangePolicy.ForPeerAsync,
-            directory: openSessions);
+                directory: openSessions, nodeCallsign: options.CurrentValue.Callsign, lease: lease);
 
             var acceptedAt = Environment.TickCount64;
             _ = Task.Run(async () =>

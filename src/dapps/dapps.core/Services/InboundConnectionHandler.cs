@@ -28,7 +28,9 @@ public class InboundConnectionHandler(
     IBackhaulInbox inbox,
     OperationalMetrics? metrics = null,
     Func<string, CancellationToken, Task<ExchangeSettings>>? settingsFor = null,
-    SessionDirectory? directory = null)
+    SessionDirectory? directory = null,
+    string? nodeCallsign = null,
+    PeerSessionLease? lease = null)
 {
     private readonly ILogger logger = loggerFactory.CreateLogger<InboundConnectionHandler>();
     private readonly OperationalMetrics metrics = metrics ?? new OperationalMetrics();
@@ -40,19 +42,21 @@ public class InboundConnectionHandler(
         {
             logger.LogInformation("Inbound session from {0}", sourceCallsign);
             session = new ExchangeSession(stream, sourceCallsign, dialled: false, await SettingsAsync(stoppingToken),
-                new ReceivedLedgerInbox(inbox, database), loggerFactory)
+                new ReceivedLedgerInbox(inbox, database), loggerFactory, nodeCallsign)
             {
                 Commands = CommandAsync,
-                // Established: the forwarder can hand this session our
-                // traffic for the caller from now on.
-                Opened = s => directory?.Register(sourceCallsign, s),
-                HashMismatch = id => metrics.RecordHashMismatch(id, sourceCallsign),
+                PeerIdentified = s => lease?.Rekey(s.Peer),
+                Opened = s =>
+                {
+                    if (lease?.Retired.IsCancellationRequested != true) directory?.Register(s.Peer, s);
+                },
+                HashMismatch = id => metrics.RecordHashMismatch(id, session!.Peer),
             };
             await session.RunAsync(stoppingToken);
         }
         finally
         {
-            if (session is not null) directory?.Unregister(sourceCallsign, session);
+            if (session is not null) directory?.Unregister(session.Peer, session);
             await stream.DisposeAsync();
         }
     }

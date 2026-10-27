@@ -64,7 +64,7 @@ public sealed class ExchangeSession
 
     private readonly PumpedReadStream link;
     private readonly bool ownsLink;
-    private readonly string peer;
+    private string peer;
     private readonly bool dialled;
     private readonly ExchangeSettings settings;
     private readonly IBackhaulInbox? inbox;
@@ -122,7 +122,7 @@ public sealed class ExchangeSession
     /// caller's <c>exchange</c> arrives.</param>
     /// <param name="inbox">Where messages from the peer go. Null refuses
     /// them with <c>no</c>.</param>
-    public ExchangeSession(Stream stream, string peer, bool dialled, ExchangeSettings settings, IBackhaulInbox? inbox, ILoggerFactory loggerFactory)
+    public ExchangeSession(Stream stream, string peer, bool dialled, ExchangeSettings settings, IBackhaulInbox? inbox, ILoggerFactory loggerFactory, string? nodeCallsign = null)
     {
         if (stream is PumpedReadStream pumped)
         {
@@ -140,7 +140,7 @@ public sealed class ExchangeSession
         logger = loggerFactory.CreateLogger<ExchangeSession>();
         OwnRules = new ExchangeRules(
             ExchangeRules.NewTag(), Math.Max(0, settings.HoldSeconds), Math.Max(0, settings.Inline), settings.MaxBytes,
-            [.. PayloadCompression.Versions.Order()]);
+            [.. PayloadCompression.Versions.Order()], Node: nodeCallsign);
     }
 
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
@@ -210,12 +210,15 @@ public sealed class ExchangeSession
     /// session can take work for the peer from now on.</summary>
     public Action<ExchangeSession>? Opened { get; init; }
 
+    public Action<ExchangeSession>? PeerIdentified { get; init; }
+
     /// <summary>Called with the id of a payload that didn't hash to it.</summary>
     public Action<string>? HashMismatch { get; init; }
 
     public string Peer => peer;
     public ExchangeRules OwnRules { get; }
     public ExchangeRules? PeerRules { get; private set; }
+    public bool PeerDeclaredNode { get; private set; }
 
     /// <summary>Both <c>exchange</c> lines have crossed.</summary>
     public bool Established { get; private set; }
@@ -950,6 +953,18 @@ public sealed class ExchangeSession
     private async Task OnExchangeAsync(string line)
     {
         var rules = ExchangeRules.Parse(line);
+        if (PeerRules is null)
+        {
+            PeerDeclaredNode = rules.Node is not null;
+            if (rules.Node is { } node)
+            {
+                if (!string.Equals(peer.Split('-')[0], node.Split('-')[0], StringComparison.OrdinalIgnoreCase))
+                    logger.LogInformation("Ignoring node={0} from {1}: the base callsign differs from the AX.25 source", node, peer);
+                else if (!dialled)
+                    peer = node;
+            }
+            PeerIdentified?.Invoke(this);
+        }
         var restarted = PeerRules is not null && !peerTags.Contains(rules.Tag);
         peerTags.Add(rules.Tag);
         PeerRules = rules;

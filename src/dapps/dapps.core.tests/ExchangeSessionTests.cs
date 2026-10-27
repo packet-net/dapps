@@ -87,7 +87,7 @@ public sealed class ExchangeSessionTests : IDisposable
     {
         var (ours, theirs) = await LoopbackPairAsync(Ct);
         var session = new ExchangeSession(ours, Them, dialled: false,
-            new ExchangeSettings(HoldSeconds: 120, MaxBytes: 4096), new RecordingInbox(), NullLoggerFactory.Instance);
+            new ExchangeSettings(HoldSeconds: 120, MaxBytes: 4096), new RecordingInbox(), NullLoggerFactory.Instance, nodeCallsign: Us);
         _ = session.RunAsync(Ct);
         var peer = new LinePeer(theirs);
 
@@ -99,6 +99,49 @@ public sealed class ExchangeSessionTests : IDisposable
         rules.Inline.Should().Be(ExchangeSettings.DefaultInline);
         rules.MaxBytes.Should().Be(4096);
         rules.Dictionaries.Should().Contain(dapps.client.Compression.PayloadCompression.CurrentDictionaryVersion);
+        rules.Node.Should().Be(Us);
+    }
+
+    [Fact]
+    public async Task AnInvalidOwnNode_IsOmitted_WithoutStoppingTheExchange()
+    {
+        var (ours, theirs) = await LoopbackPairAsync(Ct);
+        var inbox = new RecordingInbox();
+        var session = new ExchangeSession(ours, Them, dialled: false, new ExchangeSettings(), inbox,
+            NullLoggerFactory.Instance, nodeCallsign: "N0US-16");
+        var run = session.RunAsync(Ct);
+        var peer = new LinePeer(theirs);
+        try
+        {
+            (await peer.ReadLineAsync(Ct)).Should().Be("DAPPSv1>");
+            var rulesLine = await peer.ReadLineAsync(Ct);
+            rulesLine.Should().StartWith("exchange ").And.NotContain("node=");
+            var rules = ExchangeRules.Parse(rulesLine);
+            rules.Tag.Should().Be(session.OwnRules.Tag);
+            rules.Node.Should().BeNull();
+
+            await peer.WriteLineAsync(Rules(hold: 0) + "\nping alive", Ct);
+            (await peer.ReadLineAsync(Ct)).Should().Be("pong alive");
+            session.Established.Should().BeTrue();
+            session.Failure.Should().BeNull();
+            run.IsCompleted.Should().BeFalse();
+
+            var message = Message("still working", "app@N0US");
+            await peer.SendMessageAsync(message, Ct);
+            (await peer.ReadLineAsync(Ct)).Should().Be($"ack {message.Id}");
+            inbox.Texts.Should().Equal("still working");
+            inbox.Sources.Should().Equal(Them);
+
+            await peer.WriteLineAsync("quit", Ct);
+            (await peer.ReadLineAsync(Ct)).Should().Be("bye");
+            await run.WaitAsync(Patience, Ct);
+            session.Failure.Should().BeNull();
+        }
+        finally
+        {
+            peer.Close();
+            await run.WaitAsync(Patience, Ct);
+        }
     }
 
     [Fact]
@@ -125,6 +168,26 @@ public sealed class ExchangeSessionTests : IDisposable
         await peer.WriteLineAsync($"ack {m1.Id}\nack {m2.Id}", Ct);
         await batch.WaitForOutcomesAsync(2, Ct);
         batch.Outcomes.Should().AllSatisfy(o => o.Result.Accepted.Should().BeTrue());
+    }
+
+    [Fact]
+    public async Task ACaller_StatesItsOwnNodeCallsign_AndKeepsItsKnownNeighbourIdentity()
+    {
+        var (ours, theirs) = await LoopbackPairAsync(Ct);
+        var session = new ExchangeSession(ours, "G6FCI-7", dialled: true, new ExchangeSettings(), new RecordingInbox(),
+            NullLoggerFactory.Instance, nodeCallsign: Us);
+        var run = session.RunAsync(Ct);
+        var peer = new LinePeer(theirs);
+
+        await peer.WriteLineAsync("DAPPSv1>\nexchange id=old01 hold=0 inline=256", Ct);
+        ExchangeRules.Parse(await peer.ReadLineAsync(Ct)).Node.Should().Be(Us);
+        await peer.WriteLineAsync("exchange id=new01 hold=0 inline=256 node=G6FCI-8\nping identified", Ct);
+        ExchangeRules.Parse(await peer.ReadLineAsync(Ct)).Node.Should().Be(Us);
+        (await peer.ReadLineAsync(Ct)).Should().Be("pong identified");
+        session.Peer.Should().Be("G6FCI-7", "we dialled the neighbour row and never re-key our own outbound lease");
+        session.Established.Should().BeTrue();
+        peer.Close();
+        await run.WaitAsync(Patience, Ct);
     }
 
     [Fact]

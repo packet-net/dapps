@@ -80,7 +80,7 @@ public sealed class NodePoller(
             }
 
             var settings = exchangePolicy is null ? new ExchangeSettings() : await exchangePolicy.ForPeerAsync(remoteCallsign, ct);
-            var session = new ExchangeSession(stream, remoteCallsign, dialled: true, settings, inbox, loggerFactory)
+            var session = new ExchangeSession(stream, remoteCallsign, dialled: true, settings, inbox, loggerFactory, nodeCallsign: localCallsign)
             {
                 TimeProvider = timeProvider,
                 MinQuiet = MinQuiet,

@@ -36,6 +36,123 @@ public sealed class PeerSessionRegistryTests
     }
 
     [Fact]
+    public void Rekey_MovesTheInboundLeaseWithoutLeavingTheDeclaredPeerIdle()
+    {
+        var registry = new PeerSessionRegistry();
+        using var inbound = registry.Acquire("GB7LOX-6", "inbound", linkPort: 2);
+        using var newer = registry.Acquire("GB7LOX", "outbound", linkPort: 2);
+        using var retirement = inbound.Retired.Register(() =>
+            registry.TryAcquire("GB7LOX", "outbound", out _).Should().BeNull());
+
+        inbound.Rekey("gb7lox-0");
+
+        inbound.Peer.Should().Be("GB7LOX");
+        inbound.Retired.IsCancellationRequested.Should().BeTrue("the outbound session connected after the inbound one");
+        newer.Retired.IsCancellationRequested.Should().BeFalse();
+        registry.IsActive("GB7LOX-6", out _).Should().BeFalse();
+        registry.TryAcquire("GB7LOX", "outbound", out _).Should().BeNull();
+        inbound.Dispose();
+        newer.Dispose();
+        registry.IsActive("GB7LOX", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Rekey_RetiresAnOlderConnectedSessionForTheDeclaredPeer_ButNotAnotherPort()
+    {
+        var registry = new PeerSessionRegistry();
+        using var older = registry.Acquire("GB7LOX", "outbound", linkPort: 2);
+        using var otherPort = registry.Acquire("GB7LOX", "inbound", linkPort: 3);
+        using var inbound = registry.Acquire("GB7LOX-6", "inbound", linkPort: 2);
+
+        inbound.Rekey("GB7LOX");
+
+        older.Retired.IsCancellationRequested.Should().BeTrue();
+        otherPort.Retired.IsCancellationRequested.Should().BeFalse();
+        inbound.Retired.IsCancellationRequested.Should().BeFalse();
+        registry.AllSessions().Count(s => s.Peer == "GB7LOX").Should().Be(2);
+    }
+
+    [Fact]
+    public void Rekey_LeavesAPendingDialAlone_WhichRetiresTheInboundOnceConnected()
+    {
+        var registry = new PeerSessionRegistry();
+        using var dialling = registry.TryAcquire("GB7LOX", "outbound", out _, linkPort: 2)!;
+        using var inbound = registry.Acquire("GB7LOX-6", "inbound", linkPort: 2);
+
+        inbound.Rekey("GB7LOX");
+        dialling.Retired.IsCancellationRequested.Should().BeFalse();
+        inbound.Retired.IsCancellationRequested.Should().BeFalse();
+        registry.Connected(dialling).Should().BeTrue();
+
+        inbound.Retired.IsCancellationRequested.Should().BeTrue();
+        registry.AllSessions().Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Rekey_WakesWaitersForTheDeclaredInboundAndTheFormerSourceBecomingIdle()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var registry = new PeerSessionRegistry();
+        using var inbound = registry.Acquire("GB7LOX-6", "inbound");
+        var declared = registry.WaitForInboundAsync("GB7LOX", TimeSpan.FromSeconds(5), TimeProvider.System, ct);
+        var sourceIdle = registry.WaitUntilIdleAsync("GB7LOX-6", ct);
+        declared.IsCompleted.Should().BeFalse();
+        sourceIdle.IsCompleted.Should().BeFalse();
+
+        inbound.Rekey("GB7LOX");
+
+        (await declared.WaitAsync(TimeSpan.FromSeconds(5), ct)).Should().BeTrue();
+        await sourceIdle.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        inbound.Retired.CanBeCanceled.Should().BeFalse("RHP sessions still do not take part in retirement");
+    }
+
+    [Fact]
+    public void Rekey_AnOutboundOrReleasedLease_DoesNotChangeItsIdentityOrReopenIt()
+    {
+        var registry = new PeerSessionRegistry();
+        using var outbound = registry.Acquire("G6FCI-7", "outbound", linkPort: 2);
+        outbound.Rekey("G6FCI-8");
+        outbound.Peer.Should().Be("G6FCI-7");
+        var inbound = registry.Acquire("GB7LOX-6", "inbound");
+        inbound.Dispose();
+
+        inbound.Rekey("GB7LOX");
+
+        registry.IsActive("GB7LOX", out _).Should().BeFalse();
+        registry.IsActive("G6FCI-8", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Rekey_RacingAnOutboundDial_LeavesOnlyOneConnectedSession()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var registry = new PeerSessionRegistry();
+        for (var i = 0; i < 100; i++)
+        {
+            using var inbound = registry.Acquire("GB7LOX-6", "inbound", linkPort: 2);
+            using var start = new Barrier(2);
+            PeerSessionLease? outbound = null;
+            await Task.WhenAll(
+                Task.Run(() => { start.SignalAndWait(ct); inbound.Rekey("GB7LOX"); }, ct),
+                Task.Run(() =>
+                {
+                    start.SignalAndWait(ct);
+                    outbound = registry.TryAcquire("GB7LOX", "outbound", out _, linkPort: 2);
+                    if (outbound is not null) registry.Connected(outbound);
+                }, ct));
+            try
+            {
+                registry.AllSessions().Should().ContainSingle();
+                registry.IsActive("GB7LOX-6", out _).Should().BeFalse();
+                registry.TryAcquire("GB7LOX", "outbound", out _).Should().BeNull();
+                if (outbound is not null) inbound.Retired.IsCancellationRequested.Should().BeTrue();
+                else inbound.Retired.IsCancellationRequested.Should().BeFalse();
+            }
+            finally { outbound?.Dispose(); }
+        }
+    }
+
+    [Fact]
     public void OverlappingLeases_KeepThePeerActiveUntilTheLastOneGoes()
     {
         // AgwInboundService retires a stale entry for a pair while

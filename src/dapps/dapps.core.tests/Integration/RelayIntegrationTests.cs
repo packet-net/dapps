@@ -117,17 +117,8 @@ public sealed class RelayIntegrationTests(ThreeInstanceLinbpqFixture fixture) : 
         (await c.InboundAsync("relay", ct)).Should().ContainSingle(Transcript(a, b, c));
     }
 
-    /// <summary>
-    /// Who a link comes from, as the far end sees it, when the call goes
-    /// through a node rather than straight to the peer (#242): A dials
-    /// B's node and has it connect on to C's DAPPS. BPQ makes that
-    /// downlink under A's callsign with the SSID inverted (15 - 9 = 6),
-    /// so C sees N0AAA-6, not A's DAPPS callsign N0AAA-9. Routing maps a
-    /// link source like that to the neighbour row under the same
-    /// callsign rather than requiring the exact call+SSID.
-    /// </summary>
     [Fact]
-    public async Task AConnectScriptThroughANode_ArrivesUnderTheCallersCallsign_WithTheSsidInverted()
+    public async Task AConnectScriptThroughANode_UsesTheDeclaredIdentityDespiteTheInvertedSource()
     {
         var ct = TestContext.Current.CancellationToken;
         var script = new dapps.client.ConnectScript([new dapps.client.ConnectScriptStep($"C 2 {fixture.ApplCallC}", "DAPPSv1>", 30)]);
@@ -143,7 +134,8 @@ public sealed class RelayIntegrationTests(ThreeInstanceLinbpqFixture fixture) : 
         try { got = (await c.WaitForInboundAsync("relay", 1, Delivery, ct)).Single(); }
         catch (TimeoutException ex) { throw new TimeoutException(ex.Message + "\n" + a.Tail(60), ex); }
         got.Payload.Should().Equal(payload);
-        got.ViaCallsign.Should().Be("N0AAA-6", "BPQ's downlink inverts the SSID of the caller, " + fixture.ApplCallA);
+        c.Log.Should().Contain("Inbound session from N0AAA-6", "BPQ's downlink still inverts the caller's transport SSID");
+        got.ViaCallsign.Should().Be(a.Callsign, "the exchange declares the DAPPS node identity despite BPQ's SSID inversion");
         got.SourceCallsign.Should().Be(a.Callsign, "an app replies to who the message is from, not the link");
         got.OriginatorCallsign.Should().Be(a.Callsign);
     }

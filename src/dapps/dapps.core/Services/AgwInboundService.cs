@@ -386,7 +386,7 @@ public sealed class AgwInboundService(
             var handler = new InboundConnectionHandler(
                 stream, sourceCallsign: remote, loggerFactory, database, inbox, metrics,
                 settingsFor: exchangePolicy is null ? null : exchangePolicy.ForPeerAsync,
-                directory: openSessions);
+                directory: openSessions, nodeCallsign: options.CurrentValue.Callsign, lease: lease);
 
             // Not tied to the cycle token: a cancellation landing in the gap
             // after the 'C' was read would skip the handler, leaving the

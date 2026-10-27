@@ -1,5 +1,6 @@
 using System.Text;
 using AwesomeAssertions;
+using dapps.client;
 using dapps.client.Backhaul;
 using dapps.core.Models;
 using dapps.core.Services;
@@ -84,5 +85,162 @@ public sealed class InboundConnectionHandlerTests : IAsyncLifetime
         (await peer.ReadLineAsync(ct)).Should().Be("bye");
         await run.WaitAsync(Patience, ct);
         directory.TryHand("N0THEM", new RecordingBatch()).Should().BeFalse("the session has gone");
+    }
+
+    [Theory]
+    [InlineData("GB7LOX-6", "GB7LOX", "GB7LOX")]
+    [InlineData("G6FCI-7", "G6FCI-8", "G6FCI-8")]
+    [InlineData("GB7LOX-6", null, "GB7LOX-6")]
+    [InlineData("GB7LOX-6", "G6FCI-8", "GB7LOX-6")]
+    [InlineData("GB7LOX-6", "GB7LOX-16", "GB7LOX-6")]
+    [InlineData("GB7LOX-6", "GB7LOX-foo", "GB7LOX-6")]
+    [InlineData("GB7LOX-6", "GB7LOX-", "GB7LOX-6")]
+    [InlineData("GB7LOX-6", "GB7LOX--6", "GB7LOX-6")]
+    [InlineData("GB7LOX-6", "", "GB7LOX-6")]
+    public async Task NodeDeclaration_IdentifiesOnlyAValidSameBasePeer_OnTheFirstExchange_AndDeliveryUsesThatIdentity(
+        string source, string? node, string identity)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (ours, theirs) = await LoopbackPairAsync(ct);
+        var directory = new SessionDirectory();
+        var peers = new PeerSessionRegistry();
+        using var lease = peers.Acquire(source, "inbound");
+        using var logs = new CapturingLoggerFactory();
+        var inbox = new RecordingInbox();
+        var handler = new InboundConnectionHandler(ours, source, logs, database, inbox,
+            directory: directory, nodeCallsign: "N0US", lease: lease);
+        var run = handler.Handle(ct);
+        var peer = new LinePeer(theirs);
+        var unclaimed = identity == source ? source[..source.IndexOf('-')] : source;
+        var laterNode = source.StartsWith("GB7LOX", StringComparison.Ordinal) ? "GB7LOX-8" : "G6FCI-9";
+        var declaration = node is null ? "" : $" node={node}";
+        var declaredNode = MessageFields.CallsignError(node) is null;
+        try
+        {
+            (await peer.ReadLineAsync(ct)).Should().Be("DAPPSv1>");
+            ExchangeRules.Parse(await peer.ReadLineAsync(ct)).Node.Should().Be("N0US");
+            directory.CallerFor($"app@{identity}", "N0US").Should().BeNull("no exchange has identified the peer yet");
+            peers.IsActive(source, out _).Should().BeTrue();
+
+            await peer.WriteLineAsync($"exchange id=them01 hold=0 inline=256{declaration}\nping identified", ct);
+            (await peer.ReadLineAsync(ct)).Should().Be("pong identified");
+
+            var session = directory.Find(identity);
+            session.Should().NotBeNull();
+            session!.Peer.Should().Be(identity);
+            session.PeerDeclaredNode.Should().Be(declaredNode);
+            directory.CallerFor($"app@{identity}", "N0US").Should().Be(identity);
+            directory.CallerFor($"app@{unclaimed}", "N0US").Should().Be(declaredNode ? null : identity,
+                "only a caller without a valid first node declaration retains the legacy same-base fallback");
+            directory.TryHand(identity, new RecordingBatch()).Should().BeTrue();
+            directory.TryHand(unclaimed, new RecordingBatch()).Should().BeFalse("no sibling stands in for the identified peer");
+            lease.Peer.Should().Be(identity);
+            peers.IsActive(identity, out var direction).Should().BeTrue();
+            direction.Should().Be("inbound");
+            peers.IsActive(unclaimed, out _).Should().BeFalse();
+            if (identity == "GB7LOX")
+            {
+                directory.CallerFor("other@app@gb7lox-0", "N0US").Should().Be(identity);
+                directory.TryHand("gb7lox-0", new RecordingBatch()).Should().BeTrue("SSID zero is the bare callsign");
+            }
+
+            var first = Message("before restart", "app@N0US");
+            await peer.SendMessageAsync(first, ct);
+            (await peer.ReadLineAsync(ct)).Should().Be($"ack {first.Id}");
+            inbox.Sources.Should().Equal(identity);
+
+            await peer.WriteLineAsync($"exchange id=them01 hold=0 inline=256{declaration}\nping repeated", ct);
+            (await peer.ReadLineAsync(ct)).Should().Be("pong repeated");
+            await peer.WriteLineAsync($"exchange id=them02 hold=0 inline=256 node={laterNode}\nping restarted", ct);
+            ExchangeRules.Parse(await peer.ReadLineAsync(ct)).Node.Should().Be("N0US");
+            (await peer.ReadLineAsync(ct)).Should().Be("pong restarted");
+
+            directory.Find(identity).Should().BeSameAs(session);
+            session.Peer.Should().Be(identity, "a later exchange cannot change the first exchange's identity");
+            session.PeerDeclaredNode.Should().Be(declaredNode, "the first exchange pins the caller matching policy");
+            lease.Peer.Should().Be(identity);
+            directory.CallerFor($"app@{laterNode}", "N0US").Should().Be(declaredNode ? null : identity,
+                "a later valid node declaration cannot remove a legacy caller's same-base fallback");
+            directory.TryHand(laterNode, new RecordingBatch()).Should().BeFalse();
+            peers.IsActive(laterNode, out _).Should().BeFalse();
+            var second = Message("after restart", "app@N0US");
+            await peer.SendMessageAsync(second, ct);
+            (await peer.ReadLineAsync(ct)).Should().Be($"ack {second.Id}");
+            inbox.Sources.Should().Equal(identity, identity);
+            if (source == "GB7LOX-6" && node == "G6FCI-8")
+            {
+                logs.Entries.Where(e => e.Message.Contains(source, StringComparison.OrdinalIgnoreCase)
+                    && e.Message.Contains(node, StringComparison.OrdinalIgnoreCase)).Should().ContainSingle(
+                    "the other-base declaration is ignored and logged only once, even when repeated");
+            }
+
+            await peer.WriteLineAsync("quit", ct);
+            (await peer.ReadLineAsync(ct)).Should().Be("bye");
+            await run.WaitAsync(Patience, ct);
+        }
+        finally
+        {
+            peer.Close();
+            await run.WaitAsync(Patience, ct);
+        }
+
+        directory.Find(identity).Should().BeNull("teardown unregisters the identified peer");
+        directory.Find(source).Should().BeNull();
+        directory.CallerFor($"app@{identity}", "N0US").Should().BeNull();
+        directory.TryHand(identity, new RecordingBatch()).Should().BeFalse();
+        lease.Dispose();
+        peers.AllSessions().Should().BeEmpty("disposing the held lease releases its identified key");
+    }
+
+    [Fact]
+    public async Task ADeclaredFirstExchange_KeepsExactCallerMatching_WhenRepeatedAndNewExchangesOmitNode()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (ours, theirs) = await LoopbackPairAsync(ct);
+        var directory = new SessionDirectory();
+        var handler = new InboundConnectionHandler(ours, "GB7LOX-6", NullLoggerFactory.Instance, database, new RecordingInbox(),
+            directory: directory, nodeCallsign: "N0US");
+        var run = handler.Handle(ct);
+        var peer = new LinePeer(theirs);
+        try
+        {
+            (await peer.ReadLineAsync(ct)).Should().Be("DAPPSv1>");
+            ExchangeRules.Parse(await peer.ReadLineAsync(ct)).Node.Should().Be("N0US");
+            await peer.WriteLineAsync("exchange id=them01 hold=0 inline=256 node=GB7LOX\nping identified", ct);
+            (await peer.ReadLineAsync(ct)).Should().Be("pong identified");
+
+            var session = directory.Find("GB7LOX");
+            session.Should().NotBeNull();
+            session!.PeerDeclaredNode.Should().BeTrue();
+            directory.CallerFor("app@GB7LOX-6", "N0US").Should().BeNull();
+
+            foreach (var tag in new[] { "them01", "them02" })
+            {
+                await peer.WriteLineAsync($"exchange id={tag} hold=0 inline=256\nping {tag}", ct);
+                if (tag == "them02") ExchangeRules.Parse(await peer.ReadLineAsync(ct)).Node.Should().Be("N0US");
+                (await peer.ReadLineAsync(ct)).Should().Be($"pong {tag}");
+
+                directory.Find("GB7LOX").Should().BeSameAs(session);
+                session.Peer.Should().Be("GB7LOX");
+                session.PeerRules!.Node.Should().BeNull();
+                session.PeerDeclaredNode.Should().BeTrue("omitting node later cannot restore legacy matching");
+                directory.CallerFor("app@GB7LOX", "N0US").Should().Be("GB7LOX");
+                directory.CallerFor("app@GB7LOX-6", "N0US").Should().BeNull();
+                directory.CallerFor("app@GB7LOX-8", "N0US").Should().BeNull();
+                directory.TryHand("GB7LOX", new RecordingBatch()).Should().BeTrue();
+                directory.TryHand("GB7LOX-6", new RecordingBatch()).Should().BeFalse();
+            }
+
+            await peer.WriteLineAsync("quit", ct);
+            (await peer.ReadLineAsync(ct)).Should().Be("bye");
+            await run.WaitAsync(Patience, ct);
+        }
+        finally
+        {
+            peer.Close();
+            await run.WaitAsync(Patience, ct);
+        }
+
+        directory.Find("GB7LOX").Should().BeNull();
     }
 }
