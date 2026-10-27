@@ -1293,16 +1293,149 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         backhaul.Sent.Should().BeEmpty("nothing was dialled");
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DoRun_DeclaredInboundNode_TakesItsMailAndAck_WithoutDialling(bool hasNeighbour)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        if (hasNeighbour) await database.UpsertNeighbour("GB7LOX", bearerPort: 1);
+        InsertMessage(id: "decl001", ttl: null, createdAt: DateTime.UtcNow, destination: "app@GB7LOX");
+        var peers = new PeerSessionRegistry();
+        using var lease = peers.Acquire("GB7LOX-6", "inbound");
+        var directory = new SessionDirectory();
+        await using var inbound = await EstablishedInboundHandlerAsync("GB7LOX-6", "GB7LOX", directory, lease);
+        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
+            peerSessions: peers, openSessions: directory);
+
+        lease.Peer.Should().Be("GB7LOX");
+        peers.IsActive("GB7LOX", out _).Should().BeTrue();
+        peers.IsActive("GB7LOX-6", out _).Should().BeFalse();
+        directory.CallerFor("app@GB7LOX").Should().Be("GB7LOX");
+        directory.CallerFor("app@GB7LOX-6").Should().BeNull();
+
+        await m.DoRun(ct);
+
+        var sent = await inbound.Peer.ReadWithPayloadAsync(ct);
+        sent.Line.Should().StartWith("msg decl001 ").And.Contain("app@GB7LOX");
+        sent.Payload.Should().Equal(Encoding.UTF8.GetBytes("payload-decl001"));
+        await inbound.Peer.WriteLineAsync("ack decl001\nping acked", ct);
+        (await inbound.Peer.ReadLineAsync(ct)).Should().Be("pong acked");
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty("the inbound session's acknowledgement completes the queued message");
+        using var c = DbInfo.GetConnection();
+        c.Find<DbMessage>("decl001")!.Forwarded.Should().BeTrue();
+        backhaul.Sent.Should().BeEmpty("the caller's declared node has a live session, not a reason to dial");
+    }
+
+    [Theory]
+    [InlineData("G6FCI-8")]
+    [InlineData("G6FCI-7")]
+    public async Task DoRun_InboundSiblingDeclaringEight_TakesOnlyEightMail_AndSevenIsDialled(string source)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await database.UpsertNeighbour("G6FCI-7", bearerPort: 1);
+        await database.UpsertNeighbour("G6FCI-8", bearerPort: 1);
+        InsertMessage(id: "sibl007", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-1), destination: "app@G6FCI-7");
+        InsertMessage(id: "sibl008", ttl: null, createdAt: DateTime.UtcNow, destination: "app@G6FCI-8");
+        var peers = new PeerSessionRegistry();
+        using var lease = peers.Acquire(source, "inbound");
+        var directory = new SessionDirectory();
+        await using var inbound = await EstablishedInboundHandlerAsync(source, "G6FCI-8", directory, lease);
+        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
+            peerSessions: peers, openSessions: directory);
+
+        lease.Peer.Should().Be("G6FCI-8");
+        peers.IsActive("G6FCI-7", out _).Should().BeFalse("rekeying must release the transport identity before the forwarder runs");
+        peers.IsActive("G6FCI-8", out _).Should().BeTrue();
+        directory.CallerFor("app@G6FCI-7").Should().BeNull();
+        directory.CallerFor("app@G6FCI-8").Should().Be("G6FCI-8");
+
+        await m.DoRun(ct);
+
+        var sent = await inbound.Peer.ReadWithPayloadAsync(ct);
+        sent.Line.Should().StartWith("msg sibl008 ").And.Contain("app@G6FCI-8");
+        sent.Payload.Should().Equal(Encoding.UTF8.GetBytes("payload-sibl008"));
+        await inbound.Peer.WriteLineAsync("ack sibl008\nping acked\nping nohand", ct);
+        (await inbound.Peer.ReadLineAsync(ct)).Should().Be("pong acked");
+        (await inbound.Peer.ReadLineAsync(ct)).Should().Be("pong nohand", "seven's mail must never follow eight's onto this session");
+        var dialled = backhaul.Sent.Should().ContainSingle().Which;
+        dialled.Message.Id.Should().Be("sibl007");
+        dialled.Message.Destination.Should().Be("app@G6FCI-7");
+        dialled.Route.Callsign.Should().Be("G6FCI-7");
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("G6FCI-8")]
+    public async Task DoRun_InboundSourceWithoutASameBaseDeclaration_DoesNotTakeBaseMail_AndTheBaseIsDialled(string? node)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await database.UpsertNeighbour("GB7LOX", bearerPort: 1);
+        InsertMessage(id: "legacy1", ttl: null, createdAt: DateTime.UtcNow, destination: "app@GB7LOX");
+        var peers = new PeerSessionRegistry();
+        using var lease = peers.Acquire("GB7LOX-6", "inbound");
+        var directory = new SessionDirectory();
+        await using var inbound = await EstablishedInboundHandlerAsync("GB7LOX-6", node, directory, lease);
+        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
+            peerSessions: peers, openSessions: directory);
+
+        lease.Peer.Should().Be("GB7LOX-6");
+        peers.IsActive("GB7LOX-6", out _).Should().BeTrue();
+        peers.IsActive("GB7LOX", out _).Should().BeFalse();
+        directory.CallerFor("app@GB7LOX-6").Should().Be("GB7LOX-6");
+        directory.CallerFor("app@GB7LOX").Should().BeNull();
+        directory.CallerFor("app@G6FCI-8").Should().BeNull();
+
+        await m.DoRun(ct);
+
+        await inbound.Peer.WriteLineAsync("ping nohand01\nping nohand02", ct);
+        (await inbound.Peer.ReadLineAsync(ct)).Should().Be("pong nohand01");
+        (await inbound.Peer.ReadLineAsync(ct)).Should().Be("pong nohand02");
+        var dialled = backhaul.Sent.Should().ContainSingle().Which;
+        dialled.Message.Id.Should().Be("legacy1");
+        dialled.Route.Callsign.Should().Be("GB7LOX");
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(null, "app@N0FAR")]
+    [InlineData(null, "app@N0FAR-7")]
+    [InlineData("N0FAR-8", "app@N0FAR-7")]
+    [InlineData("G6FCI-8", "app@N0FAR")]
+    public async Task DoRun_WithNoRoute_ADifferentSsidCallerDoesNotTakeTheMail(string? node, string destination)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        InsertMessage(id: "ssid004", ttl: null, createdAt: DateTime.UtcNow, destination: destination);
+        var peers = new PeerSessionRegistry();
+        using var lease = peers.Acquire("N0FAR-2", "inbound");
+        var directory = new SessionDirectory();
+        await using var inbound = await EstablishedInboundHandlerAsync("N0FAR-2", node, directory, lease);
+        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
+            peerSessions: peers, openSessions: directory);
+
+        directory.CallerFor(destination).Should().BeNull("a session is not a route to another SSID of its base");
+        directory.TryHand(DestinationParser.StationOf(destination), new RecordingBatch()).Should().BeFalse();
+
+        await m.DoRun(ct);
+
+        await inbound.Peer.WriteLineAsync("ping nohand01\nping nohand02", ct);
+        (await inbound.Peer.ReadLineAsync(ct)).Should().Be("pong nohand01");
+        (await inbound.Peer.ReadLineAsync(ct)).Should().Be("pong nohand02");
+        backhaul.Sent.Should().BeEmpty("there is still no route to dial");
+        (await database.GetPendingOutboundMessages()).Should().ContainSingle(m => m.Id == "ssid004");
+    }
+
     [Fact]
     public async Task DoRun_MailForANodeThatHasCalledUs_GoesOnItsSession_EvenWithNoRoute()
     {
-        // What `rev` used to collect: we have no route to N0FAR, but it's
+        // What `rev` used to collect: we have no route to N0FAR-2, but it's
         // on the line.
         var directory = new SessionDirectory();
         var peer = await EstablishedInboundSessionAsync("N0FAR-2", directory);
         var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
             openSessions: directory);
-        InsertMessage(id: "caller1", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR");
+        InsertMessage(id: "caller1", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR-2");
 
         await m.DoRun(TestContext.Current.CancellationToken);
 
@@ -1324,8 +1457,8 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         var peer = await EstablishedInboundSessionAsync("N0FAR-2", directory);
         var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
             destinationBackoff: backoff, openSessions: directory);
-        InsertMessage(id: "badline", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-1), destination: "bad app@N0FAR");
-        InsertMessage(id: "good001", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR");
+        InsertMessage(id: "badline", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-1), destination: "bad app@N0FAR-2");
+        InsertMessage(id: "good001", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR-2");
 
         await m.DoRun(ct);
 
@@ -1364,7 +1497,7 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         directory.Register("N0FAR-2", session);
         var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [backhaul], routingAlgorithm, routingContext,
             openSessions: directory);
-        InsertMessage(id: "gone001", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR");
+        InsertMessage(id: "gone001", ttl: null, createdAt: DateTime.UtcNow, destination: "app@N0FAR-2");
 
         await m.DoRun(ct);
 
@@ -1398,6 +1531,53 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
 
         bearer.Batches.Should().HaveCount(2);
         (await database.GetPendingOutboundMessages()).Should().BeEmpty("the second was sent and acked, not dropped as refused");
+    }
+
+    private async Task<InboundHandlerSession> EstablishedInboundHandlerAsync(
+        string sourceCallsign, string? node, SessionDirectory directory, PeerSessionLease lease)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var (ours, theirs) = await ExchangeTestKit.LoopbackPairAsync(ct);
+        var handler = new InboundConnectionHandler(ours, sourceCallsign, NullLoggerFactory.Instance, database, new RecordingInbox(),
+            directory: directory, nodeCallsign: "N0CALL", lease: lease);
+        var inbound = new InboundHandlerSession(new LinePeer(theirs), handler.Handle(ct));
+        try
+        {
+            (await inbound.Peer.ReadLineAsync(ct)).Should().Be("DAPPSv1>");
+            ExchangeRules.Parse(await inbound.Peer.ReadLineAsync(ct)).Node.Should().Be("N0CALL");
+            var declaration = node is null ? "" : $" node={node}";
+            await inbound.Peer.WriteLineAsync($"exchange id=dest01 hold=0 inline=256{declaration}\nping ready", ct);
+            (await inbound.Peer.ReadLineAsync(ct)).Should().Be("pong ready");
+            return inbound;
+        }
+        catch
+        {
+            await inbound.DisposeAsync();
+            throw;
+        }
+    }
+
+    private sealed class InboundHandlerSession(LinePeer peer, Task run) : IAsyncDisposable
+    {
+        public LinePeer Peer { get; } = peer;
+
+        public async ValueTask DisposeAsync()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            try
+            {
+                if (!run.IsCompleted)
+                {
+                    await Peer.WriteLineAsync("quit", ct);
+                    (await Peer.ReadLineAsync(ct)).Should().Be("bye");
+                }
+            }
+            finally
+            {
+                Peer.Close();
+                await run.WaitAsync(ExchangeTestKit.Patience, ct);
+            }
+        }
     }
 
     /// <summary>A session <paramref name="peerCall"/> dialled, established

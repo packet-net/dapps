@@ -262,7 +262,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
                 await ConnectScriptRunner.RunAsync(stream, script, logger, ct);
             }
             var settings = await SettingsForAsync(route.Callsign, ct);
-            session = new ExchangeSession(stream, route.Callsign, dialled: true, settings, inbox, loggerFactory)
+            session = new ExchangeSession(stream, route.Callsign, dialled: true, settings, inbox, loggerFactory, nodeCallsign: localCallsign)
             {
                 TimeProvider = TimeProvider,
                 PromptWait = PromptWait,

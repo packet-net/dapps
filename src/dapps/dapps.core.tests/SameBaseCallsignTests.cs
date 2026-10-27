@@ -196,8 +196,13 @@ public sealed class SameBaseCallsignTests : IAsyncLifetime
         sessions.Register("G6FCI-9", Session("G6FCI-9"));
         sessions.Register(Sibling, Session(Sibling));
 
-        sessions.CallerFor($"chat@{Sibling}", Us).Should().Be(Sibling);
-        sessions.CallerFor("chat@G6FCI-5", Us).Should().BeNull();
+        sessions.CallerFor($"chat@{Sibling}").Should().Be(Sibling);
+        sessions.CallerFor("chat@G6FCI-5").Should().BeNull();
+        sessions.Register("M0ABC-1", Session("M0ABC-1"));
+        sessions.CallerFor("chat@M0ABC-7").Should().BeNull("another station's sibling is no stand-in either");
+        sessions.Register("GB7LOX-0", Session("GB7LOX-0"));
+        sessions.CallerFor("chat@gb7lox").Should().Be("GB7LOX");
+        sessions.Find("GB7LOX").Should().BeSameAs(sessions.Find("gb7lox-0"));
     }
 
     [Fact]

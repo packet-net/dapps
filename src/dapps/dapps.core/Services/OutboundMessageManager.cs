@@ -225,7 +225,7 @@ public class OutboundMessageManager(
                 // No route, but the node it's for may have a session open with
                 // us. Never the one it came from, though (#297).
                 var caller = decision is RouteDecision.Unreachable
-                    && openSessions?.CallerFor(message.Destination, options.CurrentValue.Callsign) is { } c
+                    && openSessions?.CallerFor(message.Destination) is { } c
                     && !SplitHorizon.Avoids(SplitHorizon.CameFrom(message, optionsValue.Callsign), await routingContext.GetNeighboursAsync(stoppingToken))(c)
                     ? c : null;
 

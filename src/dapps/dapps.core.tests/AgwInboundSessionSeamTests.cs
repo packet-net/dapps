@@ -193,6 +193,59 @@ public sealed class AgwInboundSessionSeamTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ADeclaredNodeIdentity_RekeysTheActualInboundBearerLease()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
+        var bpq = await h.StartAsync(ct);
+
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect("GB7LOX-6", Local, Port));
+        var prompt = await bpq.ReadTextAsync(ct);
+        prompt.Should().Contain($"node={Local}");
+        peers.IsActive("GB7LOX-6", out _).Should().BeTrue();
+        peers.IsActive("GB7LOX", out _).Should().BeFalse();
+        await bpq.WriteAsync(ct, FakeAgwSocket.Data("GB7LOX-6", Local, Port,
+            "exchange id=lox01 inline=256 node=GB7LOX\nping identified\n"));
+        (await bpq.ReadTextAsync(ct)).Should().Be("pong identified\n");
+
+        peers.IsActive("GB7LOX-6", out _).Should().BeFalse();
+        peers.TryAcquire("GB7LOX", "outbound", out var direction, Number).Should().BeNull();
+        direction.Should().Be("inbound");
+        await bpq.WriteAsync(ct, FakeAgwSocket.Disconnect("GB7LOX-6", Local, Port));
+        await peers.WaitUntilIdleAsync("GB7LOX", ct).WaitAsync(FakeAgwHost.FrameTimeout, ct);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ADeclarationCrossingOurDial_RetiresTheOlderLinkWithoutDisconnectingTheWinner(bool dialConnectsFirst)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var peers = new PeerSessionRegistry();
+        await using var h = new AgwInboundServiceHarness(Local, peerSessions: peers);
+        var bpq = await h.StartAsync(ct);
+        await bpq.WriteAsync(ct, FakeAgwSocket.Connect("GB7LOX-6", Local, Port));
+        (await bpq.ReadTextAsync(ct)).Should().StartWith(Prompt);
+        using var outbound = peers.TryAcquire("GB7LOX", "outbound", out _, Number)!;
+        if (dialConnectsFirst) peers.Connected(outbound);
+
+        await bpq.WriteAsync(ct, FakeAgwSocket.Data("GB7LOX-6", Local, Port,
+            "exchange id=lox01 inline=256 node=GB7LOX\nping identified\n"));
+        if (!dialConnectsFirst)
+        {
+            (await bpq.ReadTextAsync(ct)).Should().Be("pong identified\n");
+            peers.Connected(outbound).Should().BeTrue();
+        }
+        await h.Logs.WaitForAsync("retired: a newer session", ct);
+        await peers.WaitUntilIdleAsync("GB7LOX-6", ct).WaitAsync(FakeAgwHost.FrameTimeout, ct);
+
+        outbound.Retired.IsCancellationRequested.Should().BeFalse();
+        peers.AllSessions().Should().ContainSingle(s => s.Peer == "GB7LOX" && s.Session.Direction == "outbound");
+        (await bpq.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'd', "retiring the inbound must not disconnect the newer link");
+    }
+
+    [Fact]
     public async Task AfterAStaleEntryIsRetired_ThePeerIsStillBusyForTheLiveSession()
     {
         var ct = TestContext.Current.CancellationToken;

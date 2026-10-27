@@ -1,4 +1,3 @@
-using dapps.core.Routing;
 using System.Collections.Concurrent;
 using dapps.client.Backhaul;
 
@@ -18,27 +17,20 @@ public sealed class SessionDirectory(ForwarderWakeup? forwarderWakeup = null)
 
     internal void Register(string peer, ExchangeSession session)
     {
-        sessions[peer] = session;
+        sessions[DestinationParser.StationKey(peer)] = session;
         // Anything held back for this peer can go to its session now.
         forwarderWakeup?.Wake();
     }
 
     internal void Unregister(string peer, ExchangeSession session) =>
-        sessions.TryRemove(new KeyValuePair<string, ExchangeSession>(peer, session));
+        sessions.TryRemove(new KeyValuePair<string, ExchangeSession>(DestinationParser.StationKey(peer), session));
 
-    /// <summary>
-    /// The peer with an established session whose callsign is the one
-    /// <paramref name="destination"/> (<c>app@CALL</c>) is addressed to:
-    /// the exact call+SSID if it has a session, else one under the same
-    /// base callsign that isn't a sibling of ours (#239); null when there
-    /// is none. Mail for a node that has called us can go on its session
-    /// even when we have no route to it.
-    /// </summary>
-    public string? CallerFor(string destination, string ourCallsign)
+    public string? CallerFor(string destination)
     {
         var at = destination.LastIndexOf('@');
         if (at < 0 || at == destination.Length - 1) return null;
-        return CallsignMatch.Best(sessions.Keys, peer => peer, destination[(at + 1)..], ourCallsign);
+        var peer = DestinationParser.StationKey(destination[(at + 1)..]);
+        return sessions.ContainsKey(peer) ? peer : null;
     }
 
     /// <summary>
@@ -48,9 +40,9 @@ public sealed class SessionDirectory(ForwarderWakeup? forwarderWakeup = null)
     /// ending.
     /// </summary>
     public bool TryHand(string peer, IBackhaulBatch batch) =>
-        sessions.TryGetValue(peer, out var session) && session.TryTake(batch);
+        sessions.TryGetValue(DestinationParser.StationKey(peer), out var session) && session.TryTake(batch);
 
     /// <summary>The established session with <paramref name="peer"/>, or null.</summary>
     public ExchangeSession? Find(string peer) =>
-        sessions.TryGetValue(peer, out var session) ? session : null;
+        sessions.TryGetValue(DestinationParser.StationKey(peer), out var session) ? session : null;
 }

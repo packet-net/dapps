@@ -9,11 +9,11 @@ public sealed class ExchangeRulesTests
     [Fact]
     public void ALine_RoundTrips()
     {
-        var rules = new ExchangeRules("ab12cd", HoldSeconds: 120, Inline: 256, MaxBytes: 4096, Dictionaries: [1, 2]);
+        var rules = new ExchangeRules("ab12cd", HoldSeconds: 120, Inline: 256, MaxBytes: 4096, Dictionaries: [1, 2], Node: "G6FCI-8");
 
         var line = rules.ToLine();
 
-        line.Should().Be("exchange id=ab12cd hold=120 inline=256 max=4096 z=1,2\n");
+        line.Should().Be("exchange id=ab12cd hold=120 inline=256 max=4096 z=1,2 node=G6FCI-8\n");
         ExchangeRules.Parse(line.TrimEnd('\n')).Should().BeEquivalentTo(rules);
     }
 
@@ -27,6 +27,7 @@ public sealed class ExchangeRulesTests
         rules.Inline.Should().Be(0, "offer everything first");
         rules.MaxBytes.Should().BeNull("no limit");
         rules.Dictionaries.Should().BeEmpty("plain only");
+        rules.Node.Should().BeNull("an old peer is identified by the AX.25 source");
     }
 
     [Fact]
@@ -39,6 +40,43 @@ public sealed class ExchangeRulesTests
         rules.Inline.Should().Be(0);
         rules.MaxBytes.Should().BeNull();
         rules.Dictionaries.Should().Equal(1);
+    }
+
+    [Theory]
+    [InlineData("gb7lox", "GB7LOX")]
+    [InlineData("G6FCI-8", "G6FCI-8")]
+    [InlineData("GB7LOX-0", "GB7LOX-0")]
+    [InlineData("", null)]
+    [InlineData("GB7LOX-16", null)]
+    [InlineData("GB7LOX-06", null)]
+    [InlineData("GB7LOX-6-7", null)]
+    [InlineData("GB7LOX\tquit", null)]
+    public void NodeIdentity_RequiresAValidCallsign(string value, string? expected)
+    {
+        ExchangeRules.Parse($"exchange id=old01 node={value} inline=256").Node.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("GB7LOX\nquit")]
+    [InlineData("GB7LOX node=G6FCI-8")]
+    [InlineData("GB7LOX-16")]
+    public void AnInvalidOwnNodeIdentity_CannotBreakTheExchangeLine(string node)
+    {
+        var rules = new ExchangeRules("own01", 0, 256, null, [], node);
+
+        var write = () => rules.ToLine();
+
+        write.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void AnOldFormatLine_StillParsesAndSerialisesWithoutNodeIdentity()
+    {
+        const string line = "exchange id=old01 hold=60 inline=256 z=1";
+        var rules = ExchangeRules.Parse(line);
+
+        rules.Node.Should().BeNull();
+        rules.ToLine().Should().Be(line + "\n");
     }
 
     [Fact]

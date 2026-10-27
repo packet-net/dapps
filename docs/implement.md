@@ -165,10 +165,13 @@ This is how DAPPS nodes talk to each other. Every time a station transmits, it s
 | Key | Meaning | Left out |
 |---|---|---|
 | `id=<tag>` | The session tag (rule 5) | an empty tag |
+| `node=<CALL[-SSID]>` | The sender's own DAPPS node callsign. On an incoming call, use this identity only when its base callsign matches the AX.25 source; otherwise ignore it and log why. Matching remains exact on call+SSID | use the AX.25 source, including its SSID |
 | `hold=<s>` | Seconds of quiet to keep the link up for. The session holds for the lower of the two | 0 |
 | `inline=<bytes>` | Largest payload, as it goes on air, it takes unasked as `msg`. Bigger ones are offered with `ihave` first. The reference daemon says 256 | 0: offer everything first |
 | `max=<bytes>` | Largest message (`len`) it takes at all. Bigger ones are neither sent nor offered to it | no limit |
 | `z=<list>` | Compression dictionaries it holds, e.g. `z=1` | plain only |
+
+`node` is optional and needs no negotiation: older nodes ignore it as an unknown key. Its value is a valid `CALL[-SSID]`, identifying the caller once its first `exchange` arrives; the reference daemon atomically moves the inbound dial-guard lease from the AX.25 source to that identity before making the session available for queued mail. A dial of our own already knows its neighbour and keeps that identity. This helps SSIDs changed by BPQ or NET/ROM only after the calling node has been upgraded; until then, configure the neighbour with the source SSID that actually arrives.
 
 Unknown keys are ignored. `inline` binds the sender: a receiver takes a `msg` over its own limit that arrives anyway, since its payload has already crossed the air. A node can still refuse any message with `no`: an offer before its payload goes on air, or a small unasked one after it arrives (not stored or passed on). A node that wants to judge every message before any payload is sent says `inline=0`.
 

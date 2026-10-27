@@ -69,6 +69,7 @@ public sealed class Dappsv1SessionBackhaulTests
         result.Accepted.Should().BeTrue();
         var written = Encoding.UTF8.GetString(await transport.WrittenAsync());
         written.Should().StartWith("exchange id=");
+        ExchangeRules.Parse(written.Split('\n')[0]).Node.Should().Be("N0SRC");
         written.Should().Contain("msg mid0001 ");
         written.Should().Contain("ttl=60");
         written.Should().Contain("dst=app@N0DEST");

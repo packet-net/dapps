@@ -28,7 +28,7 @@ public sealed record ExchangeSettings(int HoldSeconds = 0, bool Compress = false
 /// Anything a line leaves out takes the value that asks the least of
 /// the other end: no hold, offer everything first, plain only.
 /// </summary>
-public sealed record ExchangeRules(string Tag, int HoldSeconds, int Inline, int? MaxBytes, IReadOnlyList<int> Dictionaries)
+public sealed record ExchangeRules(string Tag, int HoldSeconds, int Inline, int? MaxBytes, IReadOnlyList<int> Dictionaries, string? Node = null)
 {
     public const string Verb = "exchange";
 
@@ -45,6 +45,11 @@ public sealed record ExchangeRules(string Tag, int HoldSeconds, int Inline, int?
         sb.Append(" inline=").Append(Inline.ToString(CultureInfo.InvariantCulture));
         if (MaxBytes is { } max) sb.Append(" max=").Append(max.ToString(CultureInfo.InvariantCulture));
         if (Dictionaries.Count > 0) sb.Append(" z=").Append(string.Join(',', Dictionaries));
+        if (Node is not null)
+        {
+            if (MessageFields.CallsignError(Node) is { } error) throw new ArgumentException(error, nameof(Node));
+            sb.Append(" node=").Append(Node);
+        }
         sb.Append('\n');
         return sb.ToString();
     }
@@ -57,6 +62,7 @@ public sealed record ExchangeRules(string Tag, int HoldSeconds, int Inline, int?
         var hold = 0;
         var inline = 0;
         int? max = null;
+        string? node = null;
         var dictionaries = new List<int>();
         foreach (var token in line.Split(' ', StringSplitOptions.RemoveEmptyEntries).Skip(1))
         {
@@ -69,6 +75,7 @@ public sealed record ExchangeRules(string Tag, int HoldSeconds, int Inline, int?
                 case "hold": hold = NonNegative(value) ?? 0; break;
                 case "inline": inline = NonNegative(value) ?? 0; break;
                 case "max": max = NonNegative(value); break;
+                case "node": node = MessageFields.CallsignError(value) is null ? value.ToUpperInvariant() : null; break;
                 case "z":
                     foreach (var v in value.Split(',', StringSplitOptions.RemoveEmptyEntries))
                     {
@@ -77,7 +84,7 @@ public sealed record ExchangeRules(string Tag, int HoldSeconds, int Inline, int?
                     break;
             }
         }
-        return new ExchangeRules(tag, hold, inline, max, dictionaries);
+        return new ExchangeRules(tag, hold, inline, max, dictionaries, node);
     }
 
     private static int? NonNegative(string value) =>
