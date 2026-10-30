@@ -1878,6 +1878,45 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DoRun_MailHeldBackForABusyLink_TakesOneLinksSnapshotOfIt_WithoutWaitingForTheNode()
+    {
+        // #425: what the node says about the link the mail is waiting for.
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA" });
+            c.Insert(new DbNeighbour { Callsign = "N0BBB", BearerPort = 1, ConnectVia = "N0VIA" });
+        }
+        var answer = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var asked = 0;
+        var prompt = new AnsweringPrompt(_ => { Interlocked.Increment(ref asked); return answer.Task; });
+        var logs = new CapturingLoggerFactory();
+        var diagnostics = new NodeDiagnostics(prompt, _ => Task.FromResult<IReadOnlyCollection<string>>([]), optionsMonitor,
+            new Microsoft.Extensions.Logging.Logger<NodeDiagnostics>(logs));
+        var bearer = new GatedBackhaul(holdFor: "N0AAA");
+        var clock = new FakeTimeProvider();
+        var m = new OutboundMessageManager(database, NullLoggerFactory.Instance, optionsMonitor, [bearer], routingAlgorithm, routingContext,
+            nodeDiagnostics: diagnostics) { TimeProvider = clock };
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+        InsertMessage(id: "bbb0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: "app@N0BBB");
+
+        await RunPastPatienceAsync(m, bearer, clock, ct);
+        await m.DoRun(ct).WaitAsync(TimeSpan.FromSeconds(5), ct);
+        await m.DoRun(ct).WaitAsync(TimeSpan.FromSeconds(5), ct);
+
+        asked.Should().Be(1, "the node is asked once per link in ten minutes, and the runs don't wait for its answer");
+        answer.SetResult("LOC:G9LOC} Links\rN0VIA     N0CALL     S=5 P=1 T=2 V=2 Q=0\r");
+        await Task.WhenAll(diagnostics.Snapshots).WaitAsync(TimeSpan.FromSeconds(5), ct);
+        logs.Entries.Select(e => e.Message).Should().Contain("Node LINKS while the link to N0VIA is busy: N0VIA N0CALL S=5 P=1 T=2 V=2 Q=0");
+        bearer.Gate.SetResult(BackhaulSendResult.Ok());
+    }
+
+    private sealed class AnsweringPrompt(Func<string, Task<string>> answer) : INodePrompt
+    {
+        public Task<string> AskAsync(string command, CancellationToken ct) => answer(command);
+    }
+
+    [Fact]
     public async Task DoRun_TheNodeANeighbourIsReachedThroughNeverAnswers_TheOthersReachedThroughItWaitOutTheCooldownToo()
     {
         using (var c = DbInfo.GetConnection())

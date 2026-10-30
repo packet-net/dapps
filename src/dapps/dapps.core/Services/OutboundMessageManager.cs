@@ -34,7 +34,8 @@ public class OutboundMessageManager(
     OutboundDestinationBackoff? destinationBackoff = null,
     PeerSessionRegistry? peerSessions = null,
     SessionDirectory? openSessions = null,
-    ForwarderWakeup? wakeup = null)
+    ForwarderWakeup? wakeup = null,
+    NodeDiagnostics? nodeDiagnostics = null)
 {
     private readonly ILogger logger = loggerFactory.CreateLogger<OutboundMessageManager>();
     private readonly IReadOnlyList<IDappsBackhaul> backhauls = backhauls.ToList();
@@ -393,6 +394,8 @@ public class OutboundMessageManager(
             logger.LogDebug(
                 "Leaving {0} message(s) for {1} queued: a send through {2} from an earlier run is still going",
                 batch.Count, route.Callsign, route.DialCallsign);
+            // #425: what the node says about that link (in the background).
+            nodeDiagnostics?.LinkBusy(route, optionsValue.Callsign);
             return;
         }
 
@@ -422,6 +425,7 @@ public class OutboundMessageManager(
             logger.LogInformation(
                 "Deferring {0} message(s) for {1}: an {2} session with it is already open, dialling now would reset it",
                 batch.Count, route.Callsign, openDirection);
+            nodeDiagnostics?.LinkBusy(route, optionsValue.Callsign);
             return;
         }
 
