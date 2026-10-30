@@ -61,6 +61,21 @@ public sealed class EarlyGiveWayTests : IDisposable
 
     private static bool SaidQuit(WriteRecordingStream wire) => wire.Writes.Any(w => w.Contains("quit\n", StringComparison.Ordinal));
 
+    /// <summary>
+    /// Moves the clock on and checks the session's one timer neither ran out
+    /// nor was replaced: a timer that runs out does so inside
+    /// <see cref="Microsoft.Extensions.Time.Testing.FakeTimeProvider.Advance"/>, so until the next move nothing can
+    /// make the session say <c>quit</c>.
+    /// </summary>
+    private static void AdvanceWithoutTimersRunningOut(WatchedClock clock, TimeSpan by, string because)
+    {
+        var armed = clock.Armed;
+        clock.Pending.Should().Be(1, "the session is waiting on its timer");
+        clock.Advance(by);
+        clock.Armed.Should().Be(armed, because);
+        clock.Pending.Should().Be(1, because);
+    }
+
     [Fact]
     public async Task AQuietSessionAskedToGiveWay_EndsAfterTenSecondsOfQuiet_NotTheHold()
     {
@@ -73,8 +88,8 @@ public sealed class EarlyGiveWayTests : IDisposable
         session.RequestYield("mail for N0BBB is waiting for the link to N0VIA").Should().BeTrue();
         await clock.WaitForArmedAsync(armed + 1, Ct);   // back waiting, on the shorter spell
 
-        clock.Advance(TimeSpan.FromSeconds(9));
-        SaidQuit(wire).Should().BeFalse("only 9 s of quiet so far");
+        AdvanceWithoutTimersRunningOut(clock, TimeSpan.FromSeconds(9), "only 9 s of quiet so far");
+        SaidQuit(wire).Should().BeFalse();
 
         clock.Advance(TimeSpan.FromSeconds(1));
         (await peer.ReadLineAsync(Ct)).Should().Be("quit", "10 s of quiet is the protocol's minimum, and other mail waits");
@@ -92,8 +107,8 @@ public sealed class EarlyGiveWayTests : IDisposable
         var (_, peer, run, wire) = await CallerAsync(clock);
         await EstablishAsync(peer, clock);
 
-        clock.Advance(TimeSpan.FromSeconds(119));
-        SaidQuit(wire).Should().BeFalse("the agreed hold is 120 s");
+        AdvanceWithoutTimersRunningOut(clock, TimeSpan.FromSeconds(119), "the agreed hold is 120 s");
+        SaidQuit(wire).Should().BeFalse();
 
         clock.Advance(TimeSpan.FromSeconds(1));
         (await peer.ReadLineAsync(Ct)).Should().Be("quit");
@@ -129,17 +144,20 @@ public sealed class EarlyGiveWayTests : IDisposable
         await peer.ReadWithPayloadAsync(Ct);
         await clock.WaitUntilPendingAsync(Ct);
 
+        var beforeNudge = clock.Armed;
         session.RequestYield("mail for N0BBB is waiting").Should().BeTrue();
-        clock.Advance(TimeSpan.FromSeconds(30));
+        await clock.WaitForArmedAsync(beforeNudge + 1, Ct);
         await clock.WaitUntilPendingAsync(Ct);
-        SaidQuit(wire).Should().BeFalse("ours is still unanswered: giving way never cuts a session short while it is busy");
+        AdvanceWithoutTimersRunningOut(clock, TimeSpan.FromSeconds(30), "ours is still unanswered: giving way never cuts a session short while it is busy");
+        SaidQuit(wire).Should().BeFalse();
 
         var armed = clock.Armed;
         await peer.WriteLineAsync($"ack {ours.Id}", Ct);
         await batch.WaitForOutcomesAsync(1, Ct);
         await clock.WaitForArmedAsync(armed + 1, Ct);
-        clock.Advance(TimeSpan.FromSeconds(9));
-        SaidQuit(wire).Should().BeFalse("the quiet spell runs from the ack");
+        await clock.WaitUntilPendingAsync(Ct);
+        AdvanceWithoutTimersRunningOut(clock, TimeSpan.FromSeconds(9), "the quiet spell runs from the ack");
+        SaidQuit(wire).Should().BeFalse();
 
         clock.Advance(TimeSpan.FromSeconds(1));
         (await peer.ReadLineAsync(Ct)).Should().Be("quit");
@@ -222,14 +240,13 @@ public sealed class EarlyGiveWayTests : IDisposable
         var (sb, peer, wire) = await OpenToAaaAsync(clock);
 
         sb.YieldSessionsHolding(ToAaa, "x").Should().Be(0, "mail for N0AAA itself goes on its session");
-        sb.YieldSessionsHolding(ToBbb with { BearerPort = 2 }, "x").Should().Be(0, "another port is another link");
         sb.YieldSessionsHolding(ToBbb with { ConnectVia = "N0OTHER" }, "x").Should().Be(0, "another node is another link");
         sb.YieldSessionsHolding(new BackhaulRoute("N0BBB", BearerPort: 1), "x").Should().Be(0, "a direct neighbour is another link");
-        clock.Advance(TimeSpan.FromSeconds(60));
-        await clock.WaitUntilPendingAsync(Ct);
-        SaidQuit(wire).Should().BeFalse("nothing waits for its link, so it holds");
+        AdvanceWithoutTimersRunningOut(clock, TimeSpan.FromSeconds(60), "nothing waits for its link, so it holds");
+        SaidQuit(wire).Should().BeFalse();
 
-        sb.YieldSessionsHolding(ToBbb, "mail for N0BBB is waiting").Should().Be(1);
+        sb.YieldSessionsHolding(ToBbb with { BearerPort = 2 }, "mail for N0BBB is waiting").Should().Be(1,
+            "the node's lease on N0VIA is per callsign, so mail for any port through it waits on this session");
 
         (await peer.ReadLineAsync(Ct)).Should().Be("quit", "it had been quiet for over 10 s already");
         await peer.WriteLineAsync("bye", Ct);
@@ -243,12 +260,16 @@ public sealed class EarlyGiveWayTests : IDisposable
         var clock = new WatchedClock();
         var (sb, peer, wire) = await OpenToAaaAsync(clock);
         var forBbb = new RecordingBatch(Message("for bbb", "app@N0BBB"));
+        var armed = clock.Armed;
 
         await sb.SendBatchAsync(ToBbb, Us, forBbb, Ct);
 
         forBbb.Outcomes.Single().Result.Deferred.Should().BeTrue("nothing failed; it waits for the link");
-        SaidQuit(wire).Should().BeFalse("only 0 s of quiet so far");
-        clock.Advance(TenSeconds);
+        await clock.WaitForArmedAsync(armed + 1, Ct);   // the session took the request and waits again
+        await clock.WaitUntilPendingAsync(Ct);
+        AdvanceWithoutTimersRunningOut(clock, TimeSpan.FromSeconds(9), "only 9 s of quiet so far");
+        SaidQuit(wire).Should().BeFalse();
+        clock.Advance(TimeSpan.FromSeconds(1));
         (await peer.ReadLineAsync(Ct)).Should().Be("quit");
         await peer.WriteLineAsync("bye", Ct);
         await WaitForAsync(() => sb.OpenPeers.Count == 0);

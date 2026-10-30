@@ -370,8 +370,8 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
 
     /// <summary>
     /// #425: mail for <paramref name="waiting"/> is held back because the
-    /// link it dials (<see cref="BackhaulRoute.DialCallsign"/> on the same
-    /// port) is taken by a session of ours with another neighbour. Each such
+    /// node it dials (<see cref="BackhaulRoute.DialCallsign"/>) is taken by
+    /// a session of ours with another neighbour. Each such
     /// session we dialled is asked to give way
     /// (<see cref="ExchangeSession.RequestYield"/>): it ends once it has been
     /// quiet for <see cref="MinQuiet"/>, rather than after the whole hold.
@@ -384,8 +384,9 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         var count = 0;
         foreach (var (session, route) in dialledSessions)
         {
+            // The node's lease on the call it dials is per callsign, whatever
+            // the port (PeerSessionRegistry), so any port's session holds it.
             if (!string.Equals(route.DialCallsign, waiting.DialCallsign, StringComparison.OrdinalIgnoreCase)) continue;
-            if (route.BearerPort != waiting.BearerPort) continue;
             if (string.Equals(route.Callsign, waiting.Callsign, StringComparison.OrdinalIgnoreCase)) continue;
             if (session.RequestYield(reason)) count++;
         }

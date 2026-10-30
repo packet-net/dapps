@@ -2237,6 +2237,26 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         bearer.YieldsFor.Should().Equal(["N0VIA"]);
     }
 
+    [Theory]
+    [InlineData("N0AAA", "N0VIA", "N0AAA")]   // a session with the neighbour itself is opening: its mail goes there
+    [InlineData("N0VIA", null, "N0VIA")]      // the node's own call to us is opening
+    public async Task DoRun_MailWaitingForASessionWithItsOwnNeighbour_AsksNothingElseToGiveWay(string neighbour, string? via, string leaseOn)
+    {
+        using (var c = DbInfo.GetConnection()) c.Insert(new DbNeighbour { Callsign = neighbour, BearerPort = 1, ConnectVia = via });
+        var peers = new PeerSessionRegistry();
+        var bearer = new GatedBackhaul(holdFor: "nobody");
+        var m = MakeManager(bearer, peers: peers);
+        InsertMessage(id: "wait001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: $"app@{neighbour}");
+
+        using (peers.Acquire(leaseOn, "inbound"))
+        {
+            await m.DoRun(TestContext.Current.CancellationToken);
+        }
+
+        bearer.Batches.Should().BeEmpty();
+        bearer.YieldsFor.Should().BeEmpty("the mail waits for a session with its own neighbour, not for one of ours through the node");
+    }
+
     [Fact]
     public async Task DoRun_NoOtherMailWaiting_AsksNothingToGiveWay()
     {

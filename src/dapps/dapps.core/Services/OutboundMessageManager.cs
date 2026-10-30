@@ -435,7 +435,13 @@ public class OutboundMessageManager(
                 "Deferring {0} message(s) for {1}: an {2} session with it is already open, dialling now would reset it",
                 batch.Count, route.Callsign, openDirection);
             nodeDiagnostics?.LinkBusy(route, optionsValue.Callsign);
-            GiveWay(backhaul, route);
+            // #425: mail for a node we dial directly, whose lease is held only
+            // by sessions of ours through it to other neighbours. With any
+            // session the node itself opened, the mail goes on that one.
+            if (ViaOf(route) is null && peerSessions!.Sessions(route.Callsign).All(s => s.Direction == "outbound"))
+            {
+                GiveWay(backhaul, route);
+            }
             return;
         }
 
