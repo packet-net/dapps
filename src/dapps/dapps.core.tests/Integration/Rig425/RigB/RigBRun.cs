@@ -59,6 +59,8 @@ internal sealed record RigBResult
     public int? Srejs { get; init; }
     /// <summary>DISCs between the two node calls: the node-to-node link (carrying NET/ROM) reset.</summary>
     public int? NodeLinkResets { get; init; }
+    /// <summary>The LinBPQ image when not the test pin, plus " v2.0" with OnlyVer2point0; null for the stock pin on its defaults.</summary>
+    public string? Bpq { get; init; }
     public string? Failure { get; init; }
 }
 
@@ -161,6 +163,12 @@ internal sealed class RigBRun(RigBNetwork rig, RigBArm arm, RigBWorkload workloa
         }
 
         var logs = daemons.ToDictionary(d => d.Name, d => d.Log);
+        try
+        {
+            logs["LinBPQ MB7NPW debug"] = await rig.DebugLogAsync(rig.Mb7npw, snapFrom, CancellationToken.None);
+            logs["LinBPQ CALNE debug"] = await rig.DebugLogAsync(rig.Calne, snapFrom, CancellationToken.None);
+        }
+        catch (Exception e) { logs["LinBPQ debug"] = e.Message; }
         foreach (var d in daemons)
         {
             try { await d.DisposeAsync(); } catch (Exception) { /* best effort */ }
@@ -222,6 +230,7 @@ internal sealed class RigBRun(RigBNetwork rig, RigBArm arm, RigBWorkload workloa
             Srejs = heard.Count(f => f.Type == "SREJ"),
             NodeLinkResets = heard.Count(f => f.Type == "D"
                 && ((f.From == rig.Mb7npw.Call && f.To == rig.Calne.Call) || (f.From == rig.Calne.Call && f.To == rig.Mb7npw.Call))),
+            Bpq = RigBNetwork.BpqLabel,
             Failure = failure,
         };
 
@@ -289,7 +298,7 @@ internal sealed class RigBRun(RigBNetwork rig, RigBArm arm, RigBWorkload workloa
         sb.AppendLine();
         sb.AppendLine($"{arm.Title}. {arm.HowItDials}");
         sb.AppendLine();
-        sb.AppendLine($"Radio port: BPQ {RigBNetwork.Radio}, AFSK 1200 on Dire Wolf, {RigBNetwork.PathLossDb} dB path loss. Seed {seed}. Host {Environment.MachineName}.");
+        sb.AppendLine($"Radio port: BPQ {RigBNetwork.Radio}, AFSK 1200 on Dire Wolf, {RigBNetwork.PathLossDb} dB path loss. Seed {seed}. Host {Environment.MachineName}. LinBPQ {RigBNetwork.BpqImage}{(RigBNetwork.OnlyV20 ? ", OnlyVer2point0=1" : "")}.");
         sb.AppendLine();
         sb.AppendLine("```");
         sb.AppendLine(JsonSerializer.Serialize(r, new JsonSerializerOptions { WriteIndented = true }));

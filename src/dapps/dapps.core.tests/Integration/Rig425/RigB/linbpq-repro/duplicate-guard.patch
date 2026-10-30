@@ -1,0 +1,29 @@
+--- a/L2Code.c
++++ b/L2Code.c
+@@ -2607,6 +2607,26 @@
+ 			goto CheckNSLoop;		// See if OK or we have another saved frame
+ 		}
+ 	
++		// Experiment for packet-net/dapps#425: an N(S) outside the receive
++		// window is a duplicate of a frame already received (a retransmission
++		// that crossed our ack), not a sign of a missing frame. Discard it,
++		// raise no REJ/SREJ, answer only a poll (AX.25 2.3 draft 4.4.2,
++		// X.25 2.4.6.4(a)). k = 4, half the modulus: valid while the peer's
++		// MAXFRAME is 4 or less, as on the rig.
++
++		if (((NS - LINK->LINKNR) & 7) >= 4)
++		{
++			Debugprintf("L2 discard duplicate N(S) %d, V(R) %d", NS, LINK->LINKNR);
++			if (CTL & PFBIT)
++			{
++				LINK->L2ACKREQ = 0;
++				SEND_RR_RESP(LINK, PFBIT);
++				LINK->LAST_F_TIME = REALTIMETICKS;
++			}
++			ReleaseBuffer(Buffer);
++			return;
++		}
++
+ 		//	BAD FRAME, SEND REJ (AFTER RESPTIME - OR WE MAY SEND LOTS!)
+ 
+ 		//	ALSO SAVE THE FRAME - NEXT TIME WE MAY GET A DIFFERENT SUBSET

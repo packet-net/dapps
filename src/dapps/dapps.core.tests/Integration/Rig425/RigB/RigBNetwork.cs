@@ -104,6 +104,36 @@ public sealed class RigBNetwork : IAsyncDisposable
 
     private WatchedContainer? netSim;
     private readonly List<WatchedContainer> bpqs = [];
+    private readonly Dictionary<RigBNode, WatchedContainer> bpqByNode = [];
+
+    /// <summary>
+    /// The LinBPQ image for all five nodes: the DAPPS test pin unless
+    /// DAPPS_RIG_425_B_BPQ_IMAGE names another (a patched build, say).
+    /// </summary>
+    public static string BpqImage => Environment.GetEnvironmentVariable("DAPPS_RIG_425_B_BPQ_IMAGE") is { Length: > 0 } i ? i : LinbpqIntegrationFixture.Image;
+
+    /// <summary>
+    /// DAPPS_RIG_425_B_BPQ_V20=1 sets OnlyVer2point0=1 on every node, so
+    /// LinBPQ's node-to-node links open with SABM (AX.25 2.0, REJ) instead of
+    /// XID (2.2, SREJ).
+    /// </summary>
+    public static bool OnlyV20 => Environment.GetEnvironmentVariable("DAPPS_RIG_425_B_BPQ_V20") == "1";
+
+    /// <summary>For the results file: the image when not the pin, plus " v2.0" with OnlyVer2point0; null for the stock pin on its defaults.</summary>
+    public static string? BpqLabel =>
+        (BpqImage == LinbpqIntegrationFixture.Image ? "" : BpqImage)
+        + (OnlyV20 ? " v2.0" : "") is { Length: > 0 } l ? l.Trim() : null;
+
+    /// <summary>LinBPQ's debug log (logs/NodeDebuglog_*.log) on one node, lines stamped from <paramref name="since"/> on (UTC, whole seconds).</summary>
+    public async Task<string> DebugLogAsync(RigBNode node, DateTime since, CancellationToken ct)
+    {
+        if (!bpqByNode.TryGetValue(node, out var c)) return "";
+        var r = await c.Container.ExecAsync(["sh", "-c", "cat /data/logs/NodeDebuglog_*.log 2>/dev/null"], ct);
+        var from = since.ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+        return string.Join('\n', r.Stdout.Replace("\r", "").Split('\n')
+            .Where(l => l.Length > 8 && string.CompareOrdinal(l[..8], from) >= 0)
+            .Where(l => !l.Contains("without semaphore", StringComparison.Ordinal)));
+    }
     private readonly Action<string> note;
 
     public RigBNetwork(RigBProfile profile, Action<string> note)
@@ -143,13 +173,16 @@ public sealed class RigBNetwork : IAsyncDisposable
         foreach (var n in Nodes)
         {
             var bpq = new WatchedContainer($"BPQ {n.Role}", new ContainerBuilder()
-                .WithImage(LinbpqIntegrationFixture.Image)
+                .WithImage(BpqImage)
                 .WithResourceMapping(Encoding.UTF8.GetBytes(BpqConfig(n)), "/data/bpq32.cfg")
+                // LinBPQ writes its debug log (Debugprintf) to logs/ only if the directory exists.
+                .WithResourceMapping(Array.Empty<byte>(), "/data/logs/.keep")
                 .WithCreateParameterModifier(p => p.HostConfig.NetworkMode = $"container:{netSim.Container.Id}")
                 .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(n.InsideAgwPort))
                 .Build());
             await bpq.StartAsync();
             bpqs.Add(bpq);
+            bpqByNode[n] = bpq;
         }
         note("five LinBPQs up");
 
@@ -215,7 +248,7 @@ public sealed class RigBNetwork : IAsyncDisposable
             NODECALL={node.Call}
             NODEALIAS={node.Alias}
             LOCATOR=NONE
-            IDINTERVAL=0
+            IDINTERVAL=0{(OnlyV20 ? "\nOnlyVer2point0=1" : "")}
             BTINTERVAL=0
             NODESINTERVAL={NodesIntervalMinutes}
             MINQUAL=1
