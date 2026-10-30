@@ -106,7 +106,10 @@ public sealed class AgwFrameTransport
     /// between them, or none goes: the TX gate and the limits are checked
     /// for all of them first.
     /// </summary>
-    public async Task WriteDataAsync(byte port, string callFrom, string callTo, ReadOnlyMemory<byte> data, CancellationToken ct)
+    /// <param name="nodeLocal">The frames go to the node itself and never
+    /// on air (a LinBPQ node-prompt session, <see cref="AgwLink.OpenNodeSessionAsync"/>),
+    /// so the TX gate does not apply.</param>
+    public async Task WriteDataAsync(byte port, string callFrom, string callTo, ReadOnlyMemory<byte> data, CancellationToken ct, bool nodeLocal = false)
     {
         var bytes = new List<byte>(data.Length + (data.Length / MaxDataFrameBytes + 1) * AgwFrame.HeaderLength);
         AgwFrame? first = null;
@@ -115,13 +118,14 @@ public sealed class AgwFrameTransport
             var chunk = data.Slice(offset, Math.Min(MaxDataFrameBytes, data.Length - offset)).ToArray();
             var frame = new AgwFrame(port, 'D', 0xF0, callFrom, callTo, chunk);
             first ??= frame;
-            bytes.AddRange(Encode(frame));
+            bytes.AddRange(Encode(frame, nodeLocal));
         }
-        if (first is not null) await SendAsync([.. bytes], first, ct, waitWhileGoing: true);
+        if (first is not null) await SendAsync([.. bytes], first, ct, waitWhileGoing: true, nodeLocal);
     }
 
-    public async Task WriteFrameAsync(AgwFrame frame, CancellationToken ct) =>
-        await SendAsync(Encode(frame), frame, ct, waitWhileGoing: true);
+    /// <param name="nodeLocal">As for <see cref="WriteDataAsync"/>.</param>
+    public async Task WriteFrameAsync(AgwFrame frame, CancellationToken ct, bool nodeLocal = false) =>
+        await SendAsync(Encode(frame, nodeLocal), frame, ct, waitWhileGoing: true, nodeLocal);
 
     /// <summary>
     /// As <see cref="WriteFrameAsync"/>, but the caller stops waiting
@@ -134,7 +138,7 @@ public sealed class AgwFrameTransport
 
     /// <summary>The frame's bytes, once it has passed BPQ's limits and the
     /// TX gate; otherwise throws, and nothing is sent.</summary>
-    private byte[] Encode(AgwFrame frame)
+    private byte[] Encode(AgwFrame frame, bool nodeLocal = false)
     {
         var length = frame.Payload?.Length ?? 0;
         if (frame.Port > MaxPort)
@@ -153,7 +157,7 @@ public sealed class AgwFrameTransport
                 $"AGW UNPROTO frame with {length} bytes: BPQ sends at most {MaxUnprotoBytes} and drops the rest without a word", nameof(frame));
         }
 
-        if (IsRfEmitting(frame.Kind) && !txGate.TxAllowed) throw TxStopped(frame);
+        if (!nodeLocal && IsRfEmitting(frame.Kind) && !txGate.TxAllowed) throw TxStopped(frame);
 
         return frame.ToBytes();
     }
@@ -166,7 +170,7 @@ public sealed class AgwFrameTransport
     /// if the gate stops it.</param>
     /// <param name="waitWhileGoing">Once the writer has started the
     /// write, wait for it whatever <paramref name="ct"/> says.</param>
-    private async Task SendAsync(byte[] bytes, AgwFrame first, CancellationToken ct, bool waitWhileGoing)
+    private async Task SendAsync(byte[] bytes, AgwFrame first, CancellationToken ct, bool waitWhileGoing, bool nodeLocal = false)
     {
         if (queue is null)
         {
@@ -183,7 +187,7 @@ public sealed class AgwFrameTransport
             return;
         }
 
-        var write = new QueuedWrite(bytes, IsRfEmitting(first.Kind) ? first : null);
+        var write = new QueuedWrite(bytes, !nodeLocal && IsRfEmitting(first.Kind) ? first : null);
         try
         {
             await queue.Writer.WriteAsync(write, ct);

@@ -96,6 +96,17 @@ A remote node can `c <your-callsign>` and lands at the XRouter node prompt, but 
 - The DAPPS callsign is **not** declared in any `APPL` block, `NODECALL`, `CONSOLECALL`, or `CHATCALL` in `XROUTER.CFG`. XRouter claims those callsigns for its own internal use; DAPPS's runtime bind would fail.
 - Authentication: if XRouter requires it, `DAPPS_RHP_USER` / `DAPPS_RHP_PASS` must match an entry the RHPv2 listener accepts.
 
+### Mail for neighbours behind one node goes one at a time
+
+When several neighbours share a Connect via node, DAPPS checks with your own node how it can reach that node. At start-up it types `NODES` at your node's prompt (nothing goes on air) and logs one line per Connect via:
+
+- `CALNE is in the node's NODES list as CALNE:G4XYZ-7; sessions through it can go by NET/ROM`
+- `CALNE isn't in the node's NODES list; sessions through it go by L2, one at a time`
+
+When mail waits because a link is busy, it also logs what `LINKS` says about that link, at most once every 10 minutes per link, for example `Node LINKS while the link to CALNE is busy: G4XYZ-7 MB7NPW S=5 P=2 T=3 V=2.2 Q=0`.
+
+This works on LinBPQ over AGW and on XRouter (AGW or RHPv2). pdn has no way to its prompt over RHPv2, so DAPPS says it can't ask: type `NODES` at the node's console instead. Use what these lines show when reporting slow mail through a shared node.
+
 ## Discovery / routing problems
 
 ### "list_discovered_peers / list_neighbours empty, no traffic moving"

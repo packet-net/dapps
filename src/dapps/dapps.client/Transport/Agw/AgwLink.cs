@@ -149,6 +149,7 @@ public sealed class AgwLink : IAsyncDisposable
     private Exception? writeFault;
     private AgwPortList? latestPorts;
     private TaskCompletionSource<AgwPortList>? portsWanted;
+    private TaskCompletionSource<(int Major, int Minor)>? versionWanted;
     private Task readerTask = Task.CompletedTask;
     private int disposed;
 
@@ -450,6 +451,13 @@ public sealed class AgwLink : IAsyncDisposable
             portsWanted = null;
         }
         portsWaiting?.TrySetException(new IOException("AGW: the connection to the node closed while asking it for its ports"));
+        TaskCompletionSource<(int, int)>? versionWaiting;
+        lock (gate)
+        {
+            versionWaiting = versionWanted;
+            versionWanted = null;
+        }
+        versionWaiting?.TrySetException(new IOException("AGW: the connection to the node closed while asking it for its version"));
 
         // Stop the keepalive before tearing down sessions to avoid
         // a doomed write racing the socket close.
@@ -510,8 +518,12 @@ public sealed class AgwLink : IAsyncDisposable
     /// sends every call from that one, and keys what comes back on the
     /// one in the 'C'.</param>
     /// <param name="dialLogger">Where the dial's own lines go.</param>
-    public async Task<AgwDial> DialAsync(
-        byte port, string local, string remote, TimeSpan deadline, CancellationToken ct, ILogger? dialLogger = null)
+    public Task<AgwDial> DialAsync(
+        byte port, string local, string remote, TimeSpan deadline, CancellationToken ct, ILogger? dialLogger = null) =>
+        DialCoreAsync(port, local, remote, deadline, ct, dialLogger, nodeLocal: false);
+
+    private async Task<AgwDial> DialCoreAsync(
+        byte port, string local, string remote, TimeSpan deadline, CancellationToken ct, ILogger? dialLogger, bool nodeLocal)
     {
         if (ListenOnly)
         {
@@ -524,7 +536,7 @@ public sealed class AgwLink : IAsyncDisposable
                 $"AGW: this link is registered as {Callsign}, so it cannot call from {local}", nameof(local));
         }
         var log = dialLogger ?? logger;
-        var dial = new PendingDial(this, port, local, remote, log);
+        var dial = new PendingDial(this, port, local, remote, log) { NodeLocal = nodeLocal };
 
         // The dial and its monitor watcher are in place before the 'C'
         // goes out, so nothing the node says about it can be missed.
@@ -540,10 +552,11 @@ public sealed class AgwLink : IAsyncDisposable
 
         try
         {
-            log.LogInformation("AGW: requesting {local}->{remote} on port {p}", local, remote, port);
+            if (nodeLocal) log.LogDebug("AGW: opening a session to the node's prompt as {0}", remote);
+            else log.LogInformation("AGW: requesting {local}->{remote} on port {p}", local, remote, port);
             try
             {
-                await framing.WriteFrameAsync(new AgwFrame(port, 'C', 0xF0, local, remote, []), ct);
+                await framing.WriteFrameAsync(new AgwFrame(port, 'C', 0xF0, local, remote, []), ct, nodeLocal);
             }
             catch
             {
@@ -578,7 +591,8 @@ public sealed class AgwLink : IAsyncDisposable
                 throw;
             }
 
-            log.LogInformation("AGW: connect confirmed ({0})", dial.ConfirmText);
+            if (nodeLocal) log.LogDebug("AGW: connect confirmed ({0})", dial.ConfirmText);
+            else log.LogInformation("AGW: connect confirmed ({0})", dial.ConfirmText);
             return new AgwDial(session, dial, log);
         }
         catch
@@ -752,6 +766,10 @@ public sealed class AgwLink : IAsyncDisposable
                 OnPortList(frame);
                 break;
 
+            case 'R':
+                OnVersion(frame);
+                break;
+
             default:
                 logger.LogDebug("AGW inbound: ignoring frame kind '{0}'", frame.Kind);
                 break;
@@ -842,6 +860,105 @@ public sealed class AgwLink : IAsyncDisposable
         {
             if (ReferenceEquals(portsWanted, answer)) portsWanted = null;
         }
+    }
+
+    /// <summary>The AGW version LinBPQ reports in answer to an 'R'
+    /// (AGWAPI.c). XRouter says 2000.20, Dire Wolf something else again.</summary>
+    public static readonly (int Major, int Minor) LinbpqVersion = (2003, 999);
+
+    /// <summary>
+    /// The callsign a node-prompt session is opened to. LinBPQ's AGW takes
+    /// a 'C' to any call starting SWITCH as a session at its own command
+    /// prompt, and sends nothing on air (AGWAPI.c checks the first six
+    /// letters). Each such session needs a key of its own (#425, Rig A);
+    /// this SSID is one an operator's own SWITCH-n via is unlikely to use.
+    /// </summary>
+    public const string NodeSessionCallsign = "SWITCH-15";
+
+    /// <summary>
+    /// The node's AGW version, from its answer to an 'R'. Fails with a
+    /// <see cref="TimeoutException"/> when it has not answered within
+    /// <see cref="PortQueryTimeout"/>, and with an
+    /// <see cref="IOException"/> if the link closes first.
+    /// </summary>
+    public async Task<(int Major, int Minor)> QueryVersionAsync(CancellationToken ct)
+    {
+        TaskCompletionSource<(int Major, int Minor)> answer;
+        var ask = false;
+        lock (gate)
+        {
+            if (ended) throw new IOException("AGW: the connection to the node has closed");
+            if (versionWanted is null)
+            {
+                versionWanted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                ask = true;
+            }
+            answer = versionWanted;
+        }
+        if (ask)
+        {
+            try
+            {
+                await framing.WriteFrameAsync(new AgwFrame(0, 'R', 0, "", "", []), ct);
+            }
+            catch
+            {
+                lock (gate)
+                {
+                    if (ReferenceEquals(versionWanted, answer)) versionWanted = null;
+                }
+                throw;
+            }
+        }
+        try
+        {
+            return await answer.Task.WaitAsync(PortQueryTimeout, clock, ct);
+        }
+        catch (TimeoutException)
+        {
+            lock (gate)
+            {
+                if (ReferenceEquals(versionWanted, answer)) versionWanted = null;
+            }
+            throw new TimeoutException($"AGW: the node did not answer a version query within {PortQueryTimeout.TotalSeconds:F0}s");
+        }
+    }
+
+    private void OnVersion(AgwFrame frame)
+    {
+        TaskCompletionSource<(int Major, int Minor)>? waiting;
+        lock (gate)
+        {
+            waiting = versionWanted;
+            versionWanted = null;
+        }
+        if (frame.Payload.Length < 8)
+        {
+            waiting?.TrySetException(new IOException($"AGW: the node's version reply was {frame.Payload.Length} bytes, not 8"));
+            return;
+        }
+        waiting?.TrySetResult((BitConverter.ToInt32(frame.Payload, 0), BitConverter.ToInt32(frame.Payload, 4)));
+    }
+
+    /// <summary>
+    /// A session at the node's own command prompt, for asking it things
+    /// (NODES, LINKS): an AGW 'C' to <see cref="NodeSessionCallsign"/> on
+    /// port 0, which LinBPQ answers at once without going on air. Only on
+    /// a node that says it is LinBPQ (<see cref="LinbpqVersion"/>): any
+    /// other AGW host would send a SABM to a station called SWITCH, so
+    /// this throws <see cref="NotSupportedException"/> there, having sent
+    /// nothing. The TX gate does not apply, as nothing is transmitted.
+    /// Otherwise as <see cref="DialAsync"/>; dispose the result to close it.
+    /// </summary>
+    public async Task<AgwDial> OpenNodeSessionAsync(TimeSpan deadline, CancellationToken ct, ILogger? dialLogger = null)
+    {
+        var version = await QueryVersionAsync(ct);
+        if (version != LinbpqVersion)
+        {
+            throw new NotSupportedException(
+                $"the node's AGW reports version {version.Major}.{version.Minor}, not LinBPQ's {LinbpqVersion.Major}.{LinbpqVersion.Minor}, so it has no AGW way to its prompt");
+        }
+        return await DialCoreAsync(0, Callsign, NodeSessionCallsign, deadline, ct, dialLogger, nodeLocal: true);
     }
 
     /// <summary>BPQ confirms our own call with "*** CONNECTED With
@@ -968,7 +1085,7 @@ public sealed class AgwLink : IAsyncDisposable
         // under the same key is replaced: the link is our call's now. It
         // is not told so here; the peer registry retires it when the dial
         // reports in (and it sends nothing more from now on, rule 3).
-        var session = new AgwLinkSession(this, dial.Port, dial.Local, dial.Remote, outbound: true);
+        var session = new AgwLinkSession(this, dial.Port, dial.Local, dial.Remote, outbound: true, nodeLocal: dial.NodeLocal);
         if (sessions.ContainsKey(session.Key))
         {
             dial.Log.LogInformation("AGW: our call to {0} connected over the session it had opened with us", dial.Remote);
@@ -1151,13 +1268,13 @@ public sealed class AgwLink : IAsyncDisposable
     internal bool MaySend(AgwLinkSession session) =>
         !sessions.TryGetValue(session.Key, out var holder) || ReferenceEquals(holder, session);
 
-    internal Task WriteDataAsync(byte port, string local, string remote, byte[] data)
+    internal Task WriteDataAsync(byte port, string local, string remote, byte[] data, bool nodeLocal = false)
     {
         if (ended)
         {
             throw new IOException("AGW: the connection to the node has closed");
         }
-        return framing.WriteDataAsync(port, local, remote, data, stopping);
+        return framing.WriteDataAsync(port, local, remote, data, stopping, nodeLocal);
     }
 
     /// <summary>Sends a 'd' for (port, local, remote), and expects for a
@@ -1260,6 +1377,10 @@ public sealed class AgwLink : IAsyncDisposable
         public TaskCompletionSource<AgwLinkSession> Outcome { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Task CrossedCall => crossed.Task;
         public string ConfirmText { get; set; } = "";
+
+        /// <summary>A session to the node's own prompt: nothing it sends
+        /// goes on air (<see cref="OpenNodeSessionAsync"/>).</summary>
+        public bool NodeLocal { get; init; }
 
         // Set by the dialler once the 'C' is written, read by the reader.
         public volatile bool CallSent;
@@ -1385,7 +1506,7 @@ public sealed class AgwLinkSession
     // already seen its token cancelled and started tearing down.
     private CancellationToken silenced;
 
-    internal AgwLinkSession(AgwLink link, byte port, string local, string remote, bool outbound)
+    internal AgwLinkSession(AgwLink link, byte port, string local, string remote, bool outbound, bool nodeLocal = false)
     {
         this.link = link;
         Port = port;
@@ -1403,7 +1524,7 @@ public sealed class AgwLinkSession
             writeOutgoing: async (data, _) =>
             {
                 if (silenced.IsCancellationRequested || !link.MaySend(this)) return;
-                await link.WriteDataAsync(port, local, remote, data);
+                await link.WriteDataAsync(port, local, remote, data, nodeLocal);
             },
             sendRemoteDisconnect: async c =>
             {
