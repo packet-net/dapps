@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Summarise Rig B runs (#425): median and range per arm and workload.
 
-Usage: rigb-summarise.py rigb-results.jsonl [more.jsonl ...]
+Usage: rigb-summarise.py [--per-arm] rigb-results.jsonl [more.jsonl ...]
 
 Reads the JSON lines RigBTests writes and prints one markdown table per
 workload, a row per measure and a column per arm, each cell
@@ -32,6 +32,8 @@ MEASURES = [
     ("L2 timeouts (BPQ, both ends)", lambda r: r["L2TimeoutsA"] + r["L2TimeoutsB"]),
     ("L4 frames resent (BPQ, both ends)", lambda r: r["L4ResentA"] + r["L4ResentB"]),
     ("Retry-outs", lambda r: r["RetryOuts"]),
+    ("SREJs", lambda r: r.get("Srejs")),
+    ("Node-to-node link resets (DISC)", lambda r: r.get("NodeLinkResets")),
     ("L2 connects on air (SABM)", lambda r: r["L2Connects"]),
     ("NET/ROM connects on air", lambda r: r["NetRomConnects"]),
     ("DAPPS sessions", lambda r: r["DappsSessions"]),
@@ -53,7 +55,25 @@ def cell(values):
     return fmt(med) if lo == hi else f"{fmt(med)} ({fmt(lo)} to {fmt(hi)})"
 
 
+def per_arm(by, failed):
+    arms = sorted({a for _, a in by} | {a for _, a in failed})
+    workloads = sorted({w for w, _ in by} | {w for w, _ in failed})
+    for arm in arms:
+        print(f"### Arm {arm}\n")
+        print("| | " + " | ".join(workloads) + " |")
+        print("|---|" + "---|" * len(workloads))
+        for name, get in MEASURES:
+            if get is None:
+                row = [f"{len(by[(w, arm)])}" + (f" (+{failed[(w, arm)]} failed)" if failed[(w, arm)] else "") for w in workloads]
+            else:
+                row = [cell([get(r) for r in by[(w, arm)]]) for w in workloads]
+            print(f"| {name} | " + " | ".join(row) + " |")
+        print()
+
+
 def main(paths):
+    arm_tables = "--per-arm" in paths
+    paths = [p for p in paths if p != "--per-arm"]
     runs = []
     for p in paths:
         with open(p) as f:
@@ -65,6 +85,9 @@ def main(paths):
             failed[(r["Workload"], r["Arm"])] += 1
             continue
         by[(r["Workload"], r["Arm"])].append(r)
+    if arm_tables:
+        per_arm(by, failed)
+        return
     for workload in sorted({w for w, _ in by} | {w for w, _ in failed}):
         arms = sorted({a for w, a in by if w == workload} | {a for w, a in failed if w == workload})
         print(f"### {workload}\n")

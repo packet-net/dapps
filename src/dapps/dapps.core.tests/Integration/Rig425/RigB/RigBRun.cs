@@ -55,6 +55,10 @@ internal sealed record RigBResult
     /// <summary>DAPPS sessions the peers took (their "Inbound session from" lines).</summary>
     public int DappsSessions { get; init; }
     public int NodesFrames { get; init; }
+    /// <summary>SREJs heard on air (LinBPQ's node-to-node links negotiate AX.25 2.2).</summary>
+    public int? Srejs { get; init; }
+    /// <summary>DISCs between the two node calls: the node-to-node link (carrying NET/ROM) reset.</summary>
+    public int? NodeLinkResets { get; init; }
     public string? Failure { get; init; }
 }
 
@@ -215,6 +219,9 @@ internal sealed class RigBRun(RigBNetwork rig, RigBArm arm, RigBWorkload workloa
             NetRomConnects = heard.Count(f => f.Text.Contains("C REQ", StringComparison.Ordinal) || f.Text.Contains("CON REQ", StringComparison.Ordinal) || f.Text.Contains("<CONN REQ", StringComparison.Ordinal)),
             DappsSessions = logs.Where(kv => kv.Key != "rigb-NPW").Sum(kv => Regex.Matches(kv.Value, "Inbound session from").Count),
             NodesFrames = heard.Count(f => f.To == "NODES"),
+            Srejs = heard.Count(f => f.Type == "SREJ"),
+            NodeLinkResets = heard.Count(f => f.Type == "D"
+                && ((f.From == rig.Mb7npw.Call && f.To == rig.Calne.Call) || (f.From == rig.Calne.Call && f.To == rig.Mb7npw.Call))),
             Failure = failure,
         };
 
