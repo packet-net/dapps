@@ -244,6 +244,17 @@ builder.Services.AddSingleton<OutboundDestinationBackoff>();
 // the forwarder reads it so it never dials into a live link (which
 // resets the link at both ends and lands the caller on the node prompt).
 builder.Services.AddSingleton<PeerSessionRegistry>();
+// #425: asks the node (NODES at start-up, LINKS when a link is busy) and
+// logs whether sessions through a Connect via can go by NET/ROM.
+builder.Services.AddSingleton<INodePrompt, NodePrompt>();
+builder.Services.AddSingleton(sp => new NodeDiagnostics(
+    sp.GetRequiredService<INodePrompt>(),
+    async _ => NodeDiagnostics.DistinctVias(await sp.GetRequiredService<Database>().GetNeighbours()),
+    sp.GetRequiredService<IOptionsMonitor<SystemOptions>>(),
+    sp.GetRequiredService<ILogger<NodeDiagnostics>>(),
+    sp.GetRequiredService<IAgwLinkSource>(),
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<NodeDiagnostics>());
 builder.Services.AddSingleton<OutboundMessageManager>();
 // B5 routing seam - IRoutingAlgorithm is the strategy, IRoutingContext
 // is the slice of node state it reads. Two stacks shipped today;
