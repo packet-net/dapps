@@ -3,6 +3,9 @@ using System.Threading.Channels;
 using AwesomeAssertions;
 using dapps.client.Transport.Agw;
 using dapps.client.Tx;
+using dapps.core.Models;
+using dapps.core.Services;
+using Microsoft.Extensions.Logging;
 
 namespace dapps.core.tests;
 
@@ -63,6 +66,44 @@ public sealed class AgwNodeSessionTests
         var buffer = new byte[512];
         var n = await session.Stream.ReadAsync(buffer, ct).AsTask().WaitAsync(FakeAgwHost.FrameTimeout, ct);
         Encoding.ASCII.GetString(buffer, 0, n).Should().Be(NodeTableTextTests.BpqNodes);
+    }
+
+    private sealed class OneLinkSource(AgwLink link) : IAgwLinkSource
+    {
+        public AgwLinkState State => AgwLinkState.Open;
+        public AgwLink? TryGetLink() => link;
+        public Task<AgwLink?> GetLinkAsync(TimeSpan wait, CancellationToken ct) => Task.FromResult<AgwLink?>(link);
+        public Task<AgwLink?> ReopenAsync(TimeSpan wait, CancellationToken ct) => Task.FromResult<AgwLink?>(link);
+        public IDisposable SubscribeUi(Action<AgwFrame> onUi) => new MemoryStream();
+    }
+
+    [Fact]
+    public async Task OnLinbpq_NodesIsAskedWithAStar_SoHiddenNodesAreListedToo()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var host = new FakeAgwHost();
+        var (link, node) = await OpenAsync(host, ct);
+        await using var _ = link;
+        using var __ = node;
+        var prompt = new NodePrompt(
+            new StaticOptionsMonitor<SystemOptions>(new SystemOptions { Callsign = Local, NodeBearer = "agw" }),
+            new OneLinkSource(link), new Logger<NodePrompt>(logs));
+
+        var asking = prompt.AskAsync("NODES", ct);
+        // Asked once to choose the way in, and again before the 'C'.
+        await node.ReadUntilAsync('R', ct);
+        await node.WriteAsync(ct, VersionReply(2003, 999));
+        await node.ReadUntilAsync('R', ct);
+        await node.WriteAsync(ct, VersionReply(2003, 999));
+        await node.ReadUntilAsync('C', ct);
+        await node.WriteAsync(ct, new AgwFrame(0, 'C', 0, AgwLink.NodeSessionCallsign, Local,
+            Encoding.ASCII.GetBytes($"*** CONNECTED With Station {AgwLink.NodeSessionCallsign}\0")));
+
+        (await node.ReadTextAsync(ct)).Should().Be("NODES *\r", "LinBPQ's plain NODES hides '#' aliases");
+        await node.WriteAsync(ct, FakeAgwSocket.Data(AgwLink.NodeSessionCallsign, Local, 0, "LOC:G9LOC} Nodes\r#CAL:G9CAL          \r"));
+        var reply = await asking.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        NodeTableText.Find(NodeTableText.ParseNodes(reply), "#CAL")!.ToString().Should().Be("#CAL:G9CAL");
     }
 
     [Fact]

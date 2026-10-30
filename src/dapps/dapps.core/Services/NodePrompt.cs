@@ -98,7 +98,7 @@ public sealed class NodePrompt(
         {
             throw new NodePromptUnavailableException($"the node didn't say which AGW host it is ({ex.Message})", ex);
         }
-        if (version == AgwLink.LinbpqVersion) return await AskOverAgwAsync(link, command, ct);
+        if (version == AgwLink.LinbpqVersion) return await AskOverAgwAsync(link, LinbpqCommand(command), ct);
 
         AgwPortList ports;
         try
@@ -116,6 +116,15 @@ public sealed class NodePrompt(
         throw new NodePromptUnavailableException(
             $"the AGW host (version {version.Major}.{version.Minor}) is neither LinBPQ nor XRouter, so DAPPS has no way to its prompt", forGood: true);
     }
+
+    /// <summary>
+    /// What to type at LinBPQ's prompt for <paramref name="command"/>.
+    /// LinBPQ's plain NODES leaves out nodes whose alias starts with '#'
+    /// when HIDENODES is set (Cmd.c, CMDN00); <c>NODES *</c> lists them
+    /// too, so a hidden Connect via isn't reported as missing.
+    /// </summary>
+    internal static string LinbpqCommand(string command) =>
+        string.Equals(command, "NODES", StringComparison.OrdinalIgnoreCase) ? "NODES *" : command;
 
     private async Task<string> AskOverAgwAsync(AgwLink link, string command, CancellationToken ct)
     {
