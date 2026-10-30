@@ -70,7 +70,7 @@ For most setups, leave `passive-flood` on. Switch to `meshcore` if you have a re
 
 Every session with a neighbour carries traffic both ways, whoever dialled, so mail usually rides a call one end made for its own traffic. Two knobs:
 
-- **Link hold** (`DAPPS_SESSION_TAIL_SECONDS`, default **120**) - keep the link to a neighbour open until it has been quiet this long, so a follow-up in either direction goes at once instead of after a new connect. The link is held for the lower of both ends' values. Worth raising on a quiet point-to-point link where messages come in conversations; lower it, or set 0 for that neighbour on the Topology page, where a node is short of circuits or drops idle ones sooner.
+- **Link hold** (`DAPPS_SESSION_TAIL_SECONDS`, default **120**) - keep the link to a neighbour open until it has been quiet this long, so a follow-up in either direction goes at once instead of after a new connect. The link is held for the lower of both ends' values. Worth raising on a quiet point-to-point link where messages come in conversations; lower it, or set 0 for that neighbour on the Topology page, where a node is short of circuits or drops idle ones sooner. When mail for another neighbour is waiting for the same link (a neighbour reached through the same Connect via node, say), DAPPS doesn't wait out the hold: the quiet session ends after 10 seconds, and the waiting mail goes straight after.
 - **Scheduled poll** (`DAPPS_SCHEDULED_POLL_ENABLED`, default **false**) - periodically call every neighbour, just so it can send what it holds for us. Use this where peers can't reach you reliably (asymmetric link, peer behind NAT, peer that doesn't know our bearer hint), or on a node that rarely sends anything itself.
 
 ## Heartbeat cadence

@@ -394,8 +394,11 @@ public class OutboundMessageManager(
             logger.LogDebug(
                 "Leaving {0} message(s) for {1} queued: a send through {2} from an earlier run is still going",
                 batch.Count, route.Callsign, route.DialCallsign);
-            // #425: what the node says about that link (in the background).
+            // #425: what the node says about that link (in the background),
+            // and a session of ours holding it for another neighbour ends
+            // once quiet rather than after its whole hold.
             nodeDiagnostics?.LinkBusy(route, optionsValue.Callsign);
+            GiveWay(backhaul, route);
             return;
         }
 
@@ -426,6 +429,7 @@ public class OutboundMessageManager(
                 "Deferring {0} message(s) for {1}: an {2} session with it is already open, dialling now would reset it",
                 batch.Count, route.Callsign, openDirection);
             nodeDiagnostics?.LinkBusy(route, optionsValue.Callsign);
+            GiveWay(backhaul, route);
             return;
         }
 
@@ -444,6 +448,27 @@ public class OutboundMessageManager(
                 return;
             }
             LeaveInBackground(batch, send);
+        }
+    }
+
+    /// <summary>
+    /// #425: mail for <paramref name="route"/> is held back because its link
+    /// is taken. A session we dialled to another neighbour over that link
+    /// ends once it has been quiet for the protocol's minimum, instead of
+    /// holding the link for the whole agreed hold. When it ends, its lease
+    /// (or the send left in the background) going wakes the forwarder, and
+    /// this mail goes then. Nothing changes otherwise: with no other mail
+    /// waiting, a session holds as long as it always did.
+    /// </summary>
+    private void GiveWay(IDappsBackhaul backhaul, BackhaulRoute route)
+    {
+        try
+        {
+            backhaul.YieldSessionsHolding(route, $"mail for {route.Callsign} is waiting for the link to {route.DialCallsign}");
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Couldn't ask the sessions holding the link to {0} to give way", route.DialCallsign);
         }
     }
 
