@@ -372,8 +372,9 @@ public abstract class Rig425Mesh : IAsyncLifetime
 
     /// <summary>
     /// Wait until LOCAL's NET/ROM table holds both peers (at most 6 minutes).
-    /// BPQ is asked over an AGW node session ('N'); pdn over its web API;
-    /// XRouter over an RHPv2... it has no easy view, so a fixed four minutes.
+    /// BPQ is asked over an AGW node session ('N'), pdn over its web API and
+    /// XRouter over its telnet console. If they never arrive the rig carries
+    /// on and says so in every report (<see cref="NetRomIncomplete"/>).
     /// </summary>
     private async Task WaitForNetRomAsync()
     {
@@ -419,9 +420,8 @@ public abstract class Rig425Mesh : IAsyncLifetime
 
     /// <summary>
     /// Type one command at a node's prompt and return what comes back in a
-    /// few seconds. BPQ: an AGW session to SWITCH. XRouter and pdn: telnet is
-    /// not used; XRouter has no node session over AGW, so this goes over
-    /// RHPv2 to its own call where it can.
+    /// few seconds. BPQ: an AGW session to SWITCH. XRouter: its telnet
+    /// console (XRouter's AGW has no way to its own prompt).
     /// </summary>
     public async Task<string> NodeCommandAsync(RigNode node, string command)
     {
