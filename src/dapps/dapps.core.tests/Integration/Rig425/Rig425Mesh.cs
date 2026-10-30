@@ -17,7 +17,7 @@ public enum RigKind { Bpq, Xrouter, Pdn }
 /// also answers <see cref="NetRomAppCall"/>, which BPQ advertises on
 /// NET/ROM so a circuit can end at it.
 /// </summary>
-public sealed record RigNode(string Role, RigKind Kind, int Index, string Call, string Alias, string? AppCall)
+public sealed record RigNode(string Role, RigKind Kind, int Index, string Call, string Alias, string? AppCall, int Base = 18500)
 {
     public string? NetRomAppCall => AppCall is not null && Role.StartsWith("PEER", StringComparison.Ordinal) && Kind == RigKind.Bpq
         ? Call + "-5"
@@ -25,10 +25,10 @@ public sealed record RigNode(string Role, RigKind Kind, int Index, string Call, 
 
     public IEnumerable<string> AppCalls => new[] { AppCall, NetRomAppCall }.OfType<string>();
 
-    public int AgwPort => 18500 + Index;
-    public int RhpPort => 18510 + Index;
-    public int HttpPort => 18520 + Index;
-    public int TelnetPort => 18530 + Index;
+    public int AgwPort => Base + Index;
+    public int RhpPort => Base + 10 + Index;
+    public int HttpPort => Base + 20 + Index;
+    public int TelnetPort => Base + 30 + Index;
 
     /// <summary>BPQ's one AXIP port listens here for every neighbour.</summary>
     public int BpqAxipPort => 19500 + Index;
@@ -81,6 +81,9 @@ public abstract class Rig425Mesh : IAsyncLifetime
 
     public abstract string Name { get; }
 
+    /// <summary>First host port this rig publishes (it uses 40 from here), so rigs can run side by side.</summary>
+    protected abstract int PortBase { get; }
+
     public RigNode Local { get; private set; } = null!;
     public RigNode Calne { get; private set; } = null!;
     public RigNode Peer1 { get; private set; } = null!;
@@ -93,16 +96,19 @@ public abstract class Rig425Mesh : IAsyncLifetime
     private readonly List<IContainer> containers = [];
     private readonly Dictionary<RigNode, IContainer> byNode = [];
 
+    /// <summary>Null when LOCAL learnt CALNE and both peers over NET/ROM; otherwise what it had.</summary>
+    public string? NetRomIncomplete { get; private set; }
+
     /// <summary>How long NET/ROM took to reach LOCAL, for the report.</summary>
     public TimeSpan SettleTime { get; private set; }
 
     public async ValueTask InitializeAsync()
     {
         if (!Wanted) return;
-        Local = new RigNode("LOCAL", LocalKind, 0, "G9LOC", "LOC", null);
-        Calne = new RigNode("CALNE", CalneKind, 1, "G9CAL", "CAL", "G9CAL-3");
-        Peer1 = new RigNode("PEER1", Peer1Kind, 2, "G9PRA", "PRA", "G9PRA-3");
-        Peer2 = new RigNode("PEER2", Peer2Kind, 3, "G9PRB", "PRB", "G9PRB-3");
+        Local = new RigNode("LOCAL", LocalKind, 0, "G9LOC", "LOC", null, PortBase);
+        Calne = new RigNode("CALNE", CalneKind, 1, "G9CAL", "CAL", "G9CAL-3", PortBase);
+        Peer1 = new RigNode("PEER1", Peer1Kind, 2, "G9PRA", "PRA", "G9PRA-3", PortBase);
+        Peer2 = new RigNode("PEER2", Peer2Kind, 3, "G9PRB", "PRB", "G9PRB-3", PortBase);
 
         string? netns = null;
         foreach (var node in Nodes)
@@ -179,12 +185,12 @@ public abstract class Rig425Mesh : IAsyncLifetime
         }
         if (netns is null)
         {
-            foreach (var n in new[] { 0, 1, 2, 3 })
+            foreach (var n in Nodes)
             {
-                b = b.WithPortBinding(18500 + n, 18500 + n)
-                    .WithPortBinding(18510 + n, 18510 + n)
-                    .WithPortBinding(18520 + n, 18520 + n)
-                    .WithPortBinding(18530 + n, 18530 + n);
+                b = b.WithPortBinding(n.AgwPort, n.AgwPort)
+                    .WithPortBinding(n.RhpPort, n.RhpPort)
+                    .WithPortBinding(n.HttpPort, n.HttpPort)
+                    .WithPortBinding(n.TelnetPort, n.TelnetPort);
             }
         }
         else
@@ -385,7 +391,8 @@ public abstract class Rig425Mesh : IAsyncLifetime
             }
             await Task.Delay(TimeSpan.FromSeconds(10));
         }
-        throw new TimeoutException($"{Name}: LOCAL never learnt both peers over NET/ROM. Last table:\n{last}");
+        // Carry on: rows that need the missing routes fail and say so.
+        NetRomIncomplete = $"LOCAL never learnt both peers over NET/ROM in 6 minutes. Its table: {last.Replace("\r", " | ")}";
     }
 
     /// <summary>A node's NET/ROM destinations as text, best effort.</summary>
@@ -438,6 +445,7 @@ public abstract class Rig425Mesh : IAsyncLifetime
 
 public sealed class Rig425AllBpq : Rig425Mesh
 {
+    protected override int PortBase => 18500;
     protected override RigKind LocalKind => RigKind.Bpq;
     protected override RigKind CalneKind => RigKind.Bpq;
     protected override RigKind Peer1Kind => RigKind.Bpq;
@@ -447,6 +455,7 @@ public sealed class Rig425AllBpq : Rig425Mesh
 
 public sealed class Rig425AllXrouter : Rig425Mesh
 {
+    protected override int PortBase => 18600;
     protected override RigKind LocalKind => RigKind.Xrouter;
     protected override RigKind CalneKind => RigKind.Xrouter;
     protected override RigKind Peer1Kind => RigKind.Xrouter;
@@ -456,6 +465,7 @@ public sealed class Rig425AllXrouter : Rig425Mesh
 
 public sealed class Rig425AllPdn : Rig425Mesh
 {
+    protected override int PortBase => 18700;
     protected override RigKind LocalKind => RigKind.Pdn;
     protected override RigKind CalneKind => RigKind.Pdn;
     protected override RigKind Peer1Kind => RigKind.Pdn;
@@ -466,6 +476,7 @@ public sealed class Rig425AllPdn : Rig425Mesh
 /// <summary>The mixed chain: LinBPQ local, XRouter CALNE, a LinBPQ and a pdn peer.</summary>
 public sealed class Rig425Mixed : Rig425Mesh
 {
+    protected override int PortBase => 18800;
     protected override RigKind LocalKind => RigKind.Bpq;
     protected override RigKind CalneKind => RigKind.Xrouter;
     protected override RigKind Peer1Kind => RigKind.Bpq;

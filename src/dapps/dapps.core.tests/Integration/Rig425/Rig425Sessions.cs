@@ -80,13 +80,15 @@ public sealed class AgwSession(AgwRig agw, byte port, string from, string to) : 
 public sealed class BpqRhpSession(BpqRhpRig rhp, string local) : RigSession
 {
     public int Handle { get; private set; }
+    private int start;
 
-    public override bool Connected => Handle > 0 && rhp.Received(Handle).Contains("Connected to RHP Server", StringComparison.Ordinal);
-    public override bool Closed => Handle > 0 && rhp.SawClose(Handle);
-    public override string Text => Handle > 0 ? rhp.Received(Handle) : "";
+    public override bool Connected => Handle > 0 && rhp.Received(Handle, start).Contains("Connected to RHP Server", StringComparison.Ordinal);
+    public override bool Closed => Handle > 0 && rhp.SawClose(Handle, start);
+    public override string Text => Handle > 0 ? rhp.Received(Handle, start) : "";
 
     public override async Task OpenAsync(CancellationToken ct)
     {
+        start = rhp.Messages.Count;
         var (h, reply) = await rhp.OpenAsync(local, "SWITCH", 1, ct);
         Handle = h;
         if (h <= 0) Error = reply;

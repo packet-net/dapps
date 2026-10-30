@@ -15,9 +15,17 @@ public sealed class RigLog
     private readonly Stopwatch clock = Stopwatch.StartNew();
     private readonly List<string> lines = [];
 
+    /// <summary>With DAPPS_RIG_425_LIVE set to a file, every line also goes there as it happens, to see where a run is.</summary>
+    private static readonly string? Live = Environment.GetEnvironmentVariable("DAPPS_RIG_425_LIVE");
+
     public void Note(string text)
     {
-        lock (lines) lines.Add($"{clock.Elapsed.TotalSeconds,7:F2}  {text}");
+        var line = $"{clock.Elapsed.TotalSeconds,7:F2}  {text}";
+        lock (lines)
+        {
+            lines.Add(line);
+            if (Live is { Length: > 0 }) File.AppendAllText(Live, line + "\n");
+        }
     }
 
     public string Text()
@@ -265,6 +273,8 @@ public sealed class BpqRhpRig : IAsyncDisposable
     public static async Task<BpqRhpRig> OpenAsync(string name, string host, int httpPort, Action<string> note, CancellationToken ct)
     {
         var rig = new BpqRhpRig(name, note);
+        // No WebSocket pings: BPQ closes the connection on any opcode but text and close.
+        rig.ws.Options.KeepAliveInterval = TimeSpan.Zero;
         await rig.ws.ConnectAsync(new Uri($"ws://{host}:{httpPort}/rhp"), ct);
         _ = rig.PumpAsync();
         return rig;
@@ -294,11 +304,12 @@ public sealed class BpqRhpRig : IAsyncDisposable
     public async Task CloseAsync(int handle, CancellationToken ct) =>
         await SendRawAsync($"{{\"type\":\"close\",\"handle\":{handle},\"id\":{nextId++}}}", ct);
 
-    public string Received(int handle) => string.Concat(Messages
+    /// <summary>What arrived on <paramref name="handle"/> from message <paramref name="from"/> on (BPQ reuses handles).</summary>
+    public string Received(int handle, int from = 0) => string.Concat(Messages.Skip(from)
         .Where(m => Type(m) == "recv" && Int(m, "handle") == handle)
         .Select(m => m.GetProperty("data").GetString()));
 
-    public bool SawClose(int handle) => Messages.Any(m => Type(m) == "close" && Int(m, "handle") == handle);
+    public bool SawClose(int handle, int from = 0) => Messages.Skip(from).Any(m => Type(m) == "close" && Int(m, "handle") == handle);
 
     /// <summary>Send any JSON as it stands, for probing what BPQ answers.</summary>
     public Task SendRawForTestAsync(string json, CancellationToken ct) => SendRawAsync(json, ct);
@@ -439,8 +450,17 @@ public sealed class RhpRig : IAsyncDisposable
     }
 
     /// <summary>socket, bind, listen; returns the listener handle or the error.</summary>
-    public async Task<(int Handle, string? Error)> ListenAsync(string local, string? port, CancellationToken ct)
+    private static CancellationTokenSource Limit(CancellationToken ct)
     {
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(15));
+        return cts;
+    }
+
+    public async Task<(int Handle, string? Error)> ListenAsync(string local, string? port, CancellationToken outer)
+    {
+        using var limit = Limit(outer);
+        var ct = limit.Token;
         try
         {
             var h = await rhp.SocketAsync(RhpV2.Client.Protocol.ProtocolFamily.Ax25, SocketMode.Stream, ct);
@@ -454,15 +474,26 @@ public sealed class RhpRig : IAsyncDisposable
             note($"{Name}: listen as {local} refused: error {e.ErrorCode} {e.Message}");
             return (0, $"error {e.ErrorCode}: {e.Message}");
         }
+        catch (OperationCanceledException) when (!outer.IsCancellationRequested)
+        {
+            note($"{Name}: listen as {local}: no reply in 15 s");
+            return (0, "no reply in 15 s");
+        }
     }
 
-    public async Task<string?> SendAsync(int handle, string text, CancellationToken ct)
+    public async Task<string?> SendAsync(int handle, string text, CancellationToken outer)
     {
         note($"{Name}: send on handle {handle}: {RigLog.Clean(text)}");
+        using var limit = Limit(outer);
         try
         {
-            await rhp.SendOnHandleAsync(handle, text, ct);
+            await rhp.SendOnHandleAsync(handle, text, limit.Token);
             return null;
+        }
+        catch (OperationCanceledException) when (!outer.IsCancellationRequested)
+        {
+            note($"{Name}: send on {handle}: no reply in 15 s");
+            return "no reply in 15 s";
         }
         catch (RhpServerException e)
         {
@@ -473,7 +504,8 @@ public sealed class RhpRig : IAsyncDisposable
 
     public async Task CloseAsync(int handle, CancellationToken ct)
     {
-        try { await rhp.CloseAsync(handle, ct); }
+        using var limit = Limit(ct);
+        try { await rhp.CloseAsync(handle, limit.Token); }
         catch (Exception e) { note($"{Name}: close {handle}: {e.Message}"); }
     }
 
@@ -511,7 +543,7 @@ public sealed class EchoApp : IAsyncDisposable
     private readonly List<string> callers = [];
 
     public string Call => node.AppCall!;
-    private IReadOnlyList<string> Calls => [.. node.AppCalls];
+    public IReadOnlyList<string> Calls => [.. node.AppCalls];
 
     private EchoApp(RigNode node, Action<string> note)
     {

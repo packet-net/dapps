@@ -2,7 +2,7 @@ namespace dapps.core.tests.Integration.Rig425;
 
 /// <summary>
 /// Brings a rig up and holds it for DAPPS_RIG_425_HOLD minutes, for poking
-/// at by hand (ports 18500-18533 on 127.0.0.1). Only with DAPPS_RIG_425_HOLD set.
+/// at by hand (on 127.0.0.1: 18500 up for all BPQ, 18600 XRouter, 18700 pdn, 18800 mixed). Only with DAPPS_RIG_425_HOLD set.
 /// </summary>
 public abstract class Rig425Hold(Rig425Mesh mesh)
 {

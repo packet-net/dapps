@@ -48,9 +48,14 @@ public abstract class Rig425Experiments(Rig425Mesh mesh) : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         if (!Rig425Mesh.Wanted) return;
-        foreach (var c in clients) await c.DisposeAsync();
-        foreach (var a in apps) await a.DisposeAsync();
-        if (air is not null) await air.DisposeAsync();
+        static async Task Drop(IAsyncDisposable d)
+        {
+            try { await d.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)); }
+            catch (Exception) { /* best effort */ }
+        }
+        foreach (var c in clients) await Drop(c);
+        foreach (var a in apps) await Drop(a);
+        if (air is not null) await Drop(air);
         // Let links and circuits finish closing before the next test.
         await Task.Delay(8000);
     }
@@ -71,9 +76,10 @@ public abstract class Rig425Experiments(Rig425Mesh mesh) : IAsyncLifetime
         {
             await SecondSessionAsync(row, () => L2Session(row, App3, target, "S1"), () => L2Session(row, App3, target, "S2"), target);
         }
-        foreach (var row in NodeRows())
+        foreach (var row in NodeRows().Where(r => r.StartsWith("BPQ", StringComparison.Ordinal)))
         {
             // From LOCAL's own prompt: "C <port> G9CAL-3" twice, from two node sessions.
+            // Only BPQ gives an application a session at its own node's prompt.
             var cmd = $"C {mesh.PortTo(Local, Calne)} {target}";
             await SecondSessionAsync(row + $", typing '{cmd}'",
                 () => NodeSessionTyping(row, App3, cmd, 0, "S1"), () => NodeSessionTyping(row, App3, cmd, 1, "S2"), target);
@@ -100,39 +106,50 @@ public abstract class Rig425Experiments(Rig425Mesh mesh) : IAsyncLifetime
     /// </summary>
     private async Task SecondSessionAsync(string row, Func<Task<RigSession>> first, Func<Task<RigSession>> second, string target)
     {
-        Note($"=== {row}");
-        var s1 = await first();
-        if (!s1.Connected)
+        try
         {
-            Observe(row, $"first session failed: {s1.Error}");
-            return;
+            Note($"=== {row}");
+            var farApp = apps.FirstOrDefault(a => a.Calls.Contains(target));
+            var farBefore = farApp?.Callers.Count ?? 0;
+            var s1 = await first();
+            if (!s1.Connected)
+            {
+                Observe(row, $"first session failed: {s1.Error}");
+                return;
+            }
+            // An app echoes the line; a node answers a command it doesn't know.
+            var isApp = target.Contains('-');
+            async Task<(bool OnSelf, bool OnOther)> Try(RigSession self, RigSession other, string line)
+            {
+                var (a, b) = (self.Text.Length, other.Text.Length);
+                await self.TypeAsync(line, Ct);
+                return isApp
+                    ? (self.Echoed(line), !ReferenceEquals(self, other) && other.Echoed(line))
+                    : (self.Text.Length > a, !ReferenceEquals(self, other) && other.Text.Length > b);
+            }
+            var (firstWorks, _) = await Try(s1, s1, "firstprobe");
+            var s2 = await second();
+            await Task.Delay(4000, Ct);
+            var s2State = s2.Error is not null ? $"refused ({Short(s2.Error)})" : s2.Closed ? "closed" : s2.Connected ? "accepted" : "no answer";
+            string whereS2;
+            if (s2.Error is not null || !s2.Connected) whereS2 = "-";
+            else if (SameKey(s1, s2)) whereS2 = "S2 has S1's AGW key (port, from, to), so the node can't tell their data apart";
+            else if (!s2.Closed)
+            {
+                var (self, other) = await Try(s2, s1, "twoprobe");
+                whereS2 = self ? "S2 carries data" : other ? "S2's data answered on S1" : "S2's data not answered";
+            }
+            else whereS2 = "-";
+            var (after, afterOnS2) = await Try(s1, s2, "afterprobe");
+            var s1After = s1.Closed ? "S1 closed" : after ? "S1 still works" : afterOnS2 ? "S1's data now answered on S2" : "S1 silent";
+            var far = farApp is null ? "" : $"; far app saw {farApp.Callers.Count - farBefore} connect(s)";
+            Observe(row, $"first works: {Yes(firstWorks)}; second: {s2State}; {whereS2}; {s1After}{far}");
+            await CloseAsync(s1, s2);
         }
-        // An app echoes the line; a node answers a command it doesn't know.
-        var isApp = target.Contains('-');
-        async Task<(bool OnSelf, bool OnOther)> Try(RigSession self, RigSession other, string line)
+        catch (Exception e) when (e is not OperationCanceledException || !Ct.IsCancellationRequested)
         {
-            var (a, b) = (self.Text.Length, other.Text.Length);
-            await self.TypeAsync(line, Ct);
-            return isApp
-                ? (self.Echoed(line), !ReferenceEquals(self, other) && other.Echoed(line))
-                : (self.Text.Length > a, !ReferenceEquals(self, other) && other.Text.Length > b);
+            Observe(row, $"harness error: {e.GetType().Name}: {Short(e.Message)}");
         }
-        var (firstWorks, _) = await Try(s1, s1, "firstprobe");
-        var s2 = await second();
-        await Task.Delay(4000, Ct);
-        var s2State = s2.Error is not null ? $"refused ({Short(s2.Error)})" : s2.Closed ? "closed" : s2.Connected ? "accepted" : "no answer";
-        string whereS2;
-        if (SameKey(s1, s2)) whereS2 = "S2 has S1's AGW key (port, from, to), so the node can't tell their data apart";
-        else if (s2.Connected && s2.Error is null && !s2.Closed)
-        {
-            var (self, other) = await Try(s2, s1, "twoprobe");
-            whereS2 = self ? "S2 carries data" : other ? "S2's data answered on S1" : "S2's data not answered";
-        }
-        else whereS2 = "-";
-        var (after, _) = await Try(s1, s1, "afterprobe");
-        var s1After = s1.Closed ? "S1 closed" : after ? "S1 still works" : "S1 silent";
-        Observe(row, $"first works: {Yes(firstWorks)}; second: {s2State}; {whereS2}; {s1After}");
-        await CloseAsync(s1, s2);
     }
 
     // ---------------------------------------------------------------- Q2
@@ -205,26 +222,33 @@ public abstract class Rig425Experiments(Rig425Mesh mesh) : IAsyncLifetime
     /// <summary>Open two sessions (i = 0 to PEER1, 1 to PEER2), then send three lines on each, alternately.</summary>
     private async Task TwoAtOnceAsync(string row, Func<int, Task<RigSession>> open)
     {
-        Note($"=== {row}");
-        var a = await open(0);
-        var b = await open(1);
-        for (var n = 0; n < 3; n++)
+        try
         {
-            if (a.Connected) await a.SendAsync($"one-{n}\r", Ct);
-            if (b.Connected) await b.SendAsync($"two-{n}\r", Ct);
-            await Task.Delay(200, Ct);
+            Note($"=== {row}");
+            var a = await open(0);
+            var b = await open(1);
+            for (var n = 0; n < 3; n++)
+            {
+                if (a.Connected) await a.SendAsync($"one-{n}\r", Ct);
+                if (b.Connected) await b.SendAsync($"two-{n}\r", Ct);
+                await Task.Delay(200, Ct);
+            }
+            await Task.Delay(5000, Ct);
+            string Of(RigSession s, string tag, RigNode peer)
+            {
+                if (!s.Connected || s.Error is not null) return $"{tag}: {(s.Error is not null ? $"refused ({Short(s.Error)})" : "not up")}";
+                var reached = s.Sightings().FirstOrDefault(x => x.EndsWith(">" + peer.AppCall, StringComparison.Ordinal) || x.EndsWith(">" + peer.NetRomAppCall, StringComparison.Ordinal));
+                var echoes = Enumerable.Range(0, 3).Count(n => s.Echoed($"{tag}-{n}"));
+                return $"{tag}: {(reached is not null ? $"reached {peer.Role}" : $"did not reach {peer.Role}")}, {echoes}/3 echoed";
+            }
+            var both = a.Connected && b.Connected && !a.Closed && !b.Closed;
+            Observe(row, $"{Of(a, "one", Peer1)}; {Of(b, "two", Peer2)}; both up together: {Yes(both)}");
+            await CloseAsync(a, b);
         }
-        await Task.Delay(5000, Ct);
-        string Of(RigSession s, string tag, RigNode peer)
+        catch (Exception e) when (e is not OperationCanceledException || !Ct.IsCancellationRequested)
         {
-            if (!s.Connected || s.Error is not null) return $"{tag}: {(s.Error is not null ? $"refused ({Short(s.Error)})" : "not up")}";
-            var reached = s.Sightings().FirstOrDefault(x => x.EndsWith(">" + peer.AppCall, StringComparison.Ordinal) || x.EndsWith(">" + peer.NetRomAppCall, StringComparison.Ordinal));
-            var echoes = Enumerable.Range(0, 3).Count(n => s.Echoed($"{tag}-{n}"));
-            return $"{tag}: {(reached is not null ? $"reached {peer.Role}" : $"did not reach {peer.Role}")}, {echoes}/3 echoed";
+            Observe(row, $"harness error: {e.GetType().Name}: {Short(e.Message)}");
         }
-        var both = a.Connected && b.Connected && !a.Closed && !b.Closed;
-        Observe(row, $"{Of(a, "one", Peer1)}; {Of(b, "two", Peer2)}; both up together: {Yes(both)}");
-        await CloseAsync(a, b);
     }
 
     // ---------------------------------------------------------------- Q3
@@ -247,6 +271,8 @@ public abstract class Rig425Experiments(Rig425Mesh mesh) : IAsyncLifetime
                 var replies = new List<string>();
                 foreach (var call in new[] { App3, App4, App5 }) replies.Add($"{call} {await agw.RegisterAsync(call, Ct):X2}");
                 Observe($"{row}: 'X' replies", string.Join(", ", replies));
+                var calneApp = apps.First(a => a.Calls.Contains(target));
+                var calneBefore = calneApp.Callers.Count;
                 var outs = new List<AgwSession>();
                 foreach (var from in new[] { App4, App5 })
                 {
@@ -255,7 +281,9 @@ public abstract class Rig425Experiments(Rig425Mesh mesh) : IAsyncLifetime
                     outs.Add(s);
                 }
                 await Task.Delay(3000, Ct);
-                Observe($"{row}: dial out from -4 and -5 at once", string.Join("; ", outs.Select(s => $"from {s.From}: {(s.Connected ? $"far app sees {Seen(s)}" : $"failed ({s.Error})")}")));
+                // Which AGW key the far app's greeting lands on varies from run to run; what reaches the far app doesn't.
+                Observe($"{row}: dial out from -4 and -5 at once", string.Join("; ", outs.Select(s => $"from {s.From}: {(s.Connected ? "'C' confirmed" : $"failed ({s.Error})")}"))
+                    + $"; far app got {calneApp.Callers.Count - calneBefore} connect(s): {string.Join(", ", calneApp.Callers.Skip(calneBefore))}");
                 foreach (var s in outs) await s.CloseAsync(Ct);
                 await Task.Delay(4000, Ct);
                 foreach (var call in new[] { App3, App4, App5 })
@@ -265,6 +293,10 @@ public abstract class Rig425Experiments(Rig425Mesh mesh) : IAsyncLifetime
                     var got = agw.Events.Skip(before).FirstOrDefault(e => e.Kind == 'C' && e.To == call);
                     Observe($"{row}: CALNE calls {call}", $"{result}; {(got is not null ? $"delivered on this socket as 'C' {got.From}->{got.To}" : "nothing on this socket")}");
                 }
+                // Let go of the calls before the RHP part: XRouter gives an inbound call to whichever client claimed the callsign.
+                clients.Remove(agw);
+                await agw.DisposeAsync();
+                await Task.Delay(3000, Ct);
                 break;
             }
             case RigKind.Pdn:
@@ -324,6 +356,9 @@ public abstract class Rig425Experiments(Rig425Mesh mesh) : IAsyncLifetime
         }
     }
 
+    private RhpRig? calneRhp;
+    private AgwRig? calneAgw;
+
     /// <summary>CALNE's own client (G9CAL-7) makes an L2 call to <paramref name="to"/> on LOCAL and says hello.</summary>
     private async Task<string> CallFromCalneAsync(string to)
     {
@@ -331,16 +366,23 @@ public abstract class Rig425Experiments(Rig425Mesh mesh) : IAsyncLifetime
         RigSession s;
         if (Calne.Kind == RigKind.Pdn)
         {
-            var rhp = await RhpRig.OpenAsync("CALNE caller", mesh.Host, Calne.RhpPort, log.Note, Ct);
-            clients.Add(rhp);
-            s = new RhpSession(rhp, "ax25", mesh.PortTo(Calne, Local).ToString(), from, to) { Label = $"CALNE {from}->{to}" };
+            if (calneRhp is null)
+            {
+                calneRhp = await RhpRig.OpenAsync("CALNE caller", mesh.Host, Calne.RhpPort, log.Note, Ct);
+                clients.Add(calneRhp);
+            }
+            s = new RhpSession(calneRhp, "ax25", mesh.PortTo(Calne, Local).ToString(), from, to) { Label = $"CALNE {from}->{to}" };
         }
         else
         {
-            var agw = await AgwRig.OpenAsync("CALNE caller", mesh.Host, Calne.AgwPort, log.Note, Ct);
-            clients.Add(agw);
-            await agw.RegisterAsync(from, Ct);
-            s = new AgwSession(agw, mesh.AgwPortTo(Calne, Local), from, to) { Label = $"CALNE {from}->{to}" };
+            // One socket for every call: XRouter refuses a second registration of G9CAL-7.
+            if (calneAgw is null)
+            {
+                calneAgw = await AgwRig.OpenAsync("CALNE caller", mesh.Host, Calne.AgwPort, log.Note, Ct);
+                clients.Add(calneAgw);
+                await calneAgw.RegisterAsync(from, Ct);
+            }
+            s = new AgwSession(calneAgw, mesh.AgwPortTo(Calne, Local), from, to) { Label = $"CALNE {from}->{to}" };
         }
         await s.OpenAsync(Ct);
         var result = s.Connected && s.Error is null ? "connected" : $"not connected ({Short(s.Error)})";
@@ -386,11 +428,18 @@ public abstract class Rig425Experiments(Rig425Mesh mesh) : IAsyncLifetime
 
     private async Task SeenAsync(string row, Func<Task<RigSession>> open)
     {
-        Note($"=== {row}");
-        var s = await open();
-        await Task.Delay(1000, Ct);
-        Observe(row, s.Error is not null ? $"failed ({Short(s.Error)})" : $"far app sees {Seen(s)}");
-        await CloseAsync(s);
+        try
+        {
+            Note($"=== {row}");
+            var s = await open();
+            await Task.Delay(1000, Ct);
+            Observe(row, s.Error is not null ? $"failed ({Short(s.Error)})" : $"far app sees {Seen(s)}");
+            await CloseAsync(s);
+        }
+        catch (Exception e) when (e is not OperationCanceledException || !Ct.IsCancellationRequested)
+        {
+            Observe(row, $"harness error: {e.GetType().Name}: {Short(e.Message)}");
+        }
     }
 
     // ---------------------------------------------------------------- rows and sessions
@@ -418,7 +467,8 @@ public abstract class Rig425Experiments(Rig425Mesh mesh) : IAsyncLifetime
         RigSession s;
         if (row.Contains("AGW", StringComparison.Ordinal))
         {
-            var key = row.Contains("second socket", StringComparison.Ordinal) ? row + label : row;
+            // One socket per row and app call: BPQ dials as the first call a socket registered.
+            var key = (row.Contains("second socket", StringComparison.Ordinal) ? row + label : row) + from;
             if (!agwByRow.TryGetValue(key, out var agw))
             {
                 agw = await LocalAgw(key);
@@ -468,10 +518,10 @@ public abstract class Rig425Experiments(Rig425Mesh mesh) : IAsyncLifetime
         RigSession s;
         if (row.StartsWith("BPQ AGW", StringComparison.Ordinal))
         {
-            if (!agwByRow.TryGetValue(row, out var agw))
+            if (!agwByRow.TryGetValue(row + from, out var agw))
             {
                 agw = await LocalAgw(row);
-                agwByRow[row] = agw;
+                agwByRow[row + from] = agw;
             }
             await agw.RegisterAsync(from, Ct);
             // Each node session needs its own AGW key: SWITCH, SWITCH-1, ... (BPQ only checks the first six letters).
@@ -573,6 +623,7 @@ public abstract class Rig425Experiments(Rig425Mesh mesh) : IAsyncLifetime
         var sb = new StringBuilder();
         sb.AppendLine($"# Rig A (#425), {mesh.Name}: {test}");
         sb.AppendLine();
+        if (mesh.NetRomIncomplete is not null) sb.AppendLine($"NET/ROM did not settle: {mesh.NetRomIncomplete}").AppendLine();
         sb.AppendLine("| Row | Observed |");
         sb.AppendLine("|---|---|");
         foreach (var (row, obs) in observed) sb.AppendLine($"| {row} | {obs} |");
