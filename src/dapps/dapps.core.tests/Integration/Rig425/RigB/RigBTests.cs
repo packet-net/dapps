@@ -14,7 +14,7 @@ namespace dapps.core.tests.Integration.Rig425.RigB;
 /// Opt-in, never in normal CI: skipped unless DAPPS_RIG_425_B is set. It
 /// runs in real time (an hour or more per arm), so run it on our own
 /// machines. Settings:
-/// DAPPS_RIG_425_B_ARMS (default 1,2,3,4), DAPPS_RIG_425_B_REPS (3),
+/// DAPPS_RIG_425_B_ARMS (default 1,2,3,4,5,6), DAPPS_RIG_425_B_REPS (3),
 /// DAPPS_RIG_425_B_WORKLOADS (burst,spread), DAPPS_RIG_425_B_PER_PEER (6
 /// messages a peer), DAPPS_RIG_425_B_SPREAD_MINUTES (8), and the
 /// DAPPS_RIG_425_B_PROTO_* settings of arm P. With DAPPS_RIG_425_LIVE set to

@@ -28,6 +28,24 @@ internal sealed record RigBArm(
             Script: new dapps.client.ConnectScript([new dapps.client.ConnectScriptStep($"C {RigBNetwork.CalneAxipPort} {peer.DappsCall}", "DAPPSv1>", 60)]),
             ConnectVia: rig.Calne.Call);
 
+    /// <summary>
+    /// The option 1 plan's config-only prototype: the via is a key at
+    /// MB7NPW's own prompt (SWITCH, SWITCH-1, ...; LinBPQ checks only the
+    /// first six letters), so each peer gets its own AGW key, lease and link
+    /// key; the script reaches CALNE by NET/ROM, then the peer as today.
+    /// </summary>
+    private static DappsDaemon.Neighbour ViaSwitch(RigBNetwork rig, RigBNode peer, int? holdSeconds = null)
+    {
+        var i = rig.Peers.ToList().IndexOf(peer);
+        return new(peer.DappsCall!, RigBNetwork.RfAgwPort,
+            SessionTailSeconds: holdSeconds,
+            Script: new dapps.client.ConnectScript([
+                new dapps.client.ConnectScriptStep($"C {rig.Calne.Alias}", "Connected to", 180),
+                new dapps.client.ConnectScriptStep($"C {RigBNetwork.CalneAxipPort} {peer.DappsCall}", "DAPPSv1>", 60),
+            ]),
+            ConnectVia: i == 0 ? "SWITCH" : $"SWITCH-{i}");
+    }
+
     /// <summary>Dial the peer's DAPPS call itself; LinBPQ routes it by its node table.</summary>
     private static DappsDaemon.Neighbour Direct(RigBNode peer) => new(peer.DappsCall!, RigBNetwork.RfAgwPort);
 
@@ -45,6 +63,14 @@ internal sealed record RigBArm(
         new("4", "Prototype of option 1: a NET/ROM circuit straight to each peer", RigBProfile.NetRomApps,
             (_, peer) => Direct(peer),
             "PROTOTYPE, test configuration only: each peer's LinBPQ advertises its DAPPS call on NET/ROM, and MB7NPW dials the peer's call with no connect script. LinBPQ makes each a NET/ROM circuit through CALNE, and DAPPS sees three different links, so the busy guard does not serialise them. Stands in for option 1 (sessions multiplexed as NET/ROM circuits) without code changes; 120 s hold.",
+            Prototype: true),
+        new("5", "Prototype of option 1 as the plan describes: each session from its own SWITCH key, NET/ROM to CALNE", RigBProfile.NetRom,
+            (rig, peer) => ViaSwitch(rig, peer),
+            "PROTOTYPE, test configuration only, arm C of the option 1 plan: each neighbour's Connect via is its own key at MB7NPW's own prompt (SWITCH, SWITCH-1, SWITCH-2), and its script is `C CALNE` (NET/ROM, 180 s) then `C 3 <peer>` at CALNE. The AGW key, DAPPS's lease and the busy guard's link key all differ per peer, so the three run at once with no code change. 120 s hold.",
+            Prototype: true),
+        new("6", "Prototype of option 1 (as arm 5) with a 10 s hold", RigBProfile.NetRom,
+            (rig, peer) => ViaSwitch(rig, peer, holdSeconds: 10),
+            "PROTOTYPE, arm C2 of the option 1 plan: arm 5 with each neighbour's session hold set to 10 s.",
             Prototype: true),
         // A build from another branch, to try a design without touching this
         // tree: DAPPS_RIG_425_B_PROTO_DLL points at its dapps.core.dll,
@@ -72,10 +98,10 @@ internal sealed record RigBArm(
         return d;
     }
 
-    /// <summary>The arms DAPPS_RIG_425_B_ARMS names (comma separated), default 1 to 4.</summary>
+    /// <summary>The arms DAPPS_RIG_425_B_ARMS names (comma separated), default 1 to 6.</summary>
     public static IReadOnlyList<RigBArm> Selected()
     {
-        var ids = (Environment.GetEnvironmentVariable("DAPPS_RIG_425_B_ARMS") is { Length: > 0 } s ? s : "1,2,3,4")
+        var ids = (Environment.GetEnvironmentVariable("DAPPS_RIG_425_B_ARMS") is { Length: > 0 } s ? s : "1,2,3,4,5,6")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return [.. ids.Select(id => All.SingleOrDefault(a => a.Id == id) ?? throw new ArgumentException($"DAPPS_RIG_425_B_ARMS: no arm {id}"))];
     }

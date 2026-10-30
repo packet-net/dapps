@@ -205,7 +205,7 @@ internal sealed class RigBRun(RigBNetwork rig, RigBArm arm, RigBWorkload workloa
             IFrames = heard.Count(f => f.Type == "I"),
             Retransmissions = RigBAir.Retransmissions(heard),
             Rejs = heard.Count(f => f.Type == "REJ"),
-            Polls = heard.Count(f => f.Poll && f.Type is "RR" or "RNR" or "REJ" or "I"),
+            Polls = heard.Count(f => f.Poll && f.Type is "RR" or "RNR" or "REJ"),
             RetryOuts = RigBAir.RetryOuts(heard, RigBNetwork.Radio.Retries),
             L2TimeoutsA = StatDiff(statsBeforeA, statsAfterA, "L2 Timeouts"),
             L2TimeoutsB = StatDiff(statsBeforeB, statsAfterB, "L2 Timeouts"),

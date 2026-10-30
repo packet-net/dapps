@@ -439,6 +439,10 @@ public sealed class RigBNetwork : IAsyncDisposable
         await RigLog.WaitAsync(() => Seen().Contains("password", StringComparison.OrdinalIgnoreCase), TimeSpan.FromSeconds(5), ct);
         await Send("test");
         await Task.Delay(1500, ct);
+        // A SYSOP user's session is secure, but LinBPQ still wants
+        // PASSWORD typed (it answers Ok without asking for one).
+        await Send("PASSWORD");
+        await Task.Delay(1000, ct);
         var before = Seen().Length;
         await Send(command);
         await Task.Delay(2000, ct);
