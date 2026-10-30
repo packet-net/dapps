@@ -170,6 +170,63 @@ public sealed class NodeDiagnosticsTests
     }
 
     [Fact]
+    public async Task AtStartup_ANodeThatSaysNothing_IsNotTakenAsAnEmptyList()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var prompt = Answering("", "");
+
+        await StartupAsync(Make(prompt, "CAL", "CALNE"), ct);
+
+        Lines.Should().Equal("Node check: the node didn't answer NODES; type NODES at the node's console to check");
+    }
+
+    [Fact]
+    public async Task ALinkBusy_WhenTheNodeSaysNothing_SaysSo()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var diag = Make(Answering("", " \r"));
+
+        diag.LinkBusy(Via("GB7AGM-3", "CALNE"), Us);
+        await Task.WhenAll(diag.Snapshots).WaitAsync(FakeAgwHost.FrameTimeout, ct);
+
+        Lines.Should().Equal("Node LINKS while the link to CALNE is busy: the node didn't answer LINKS");
+    }
+
+    [Fact]
+    public async Task ANodeWithNoWayToItsPrompt_IsNotAskedAgain()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var prompt = new ScriptedPrompt(_ => throw new NodePromptUnavailableException("the node's RHPv2 has no way to its prompt", forGood: true));
+        var diag = Make(prompt, "CALNE");
+        await StartupAsync(diag, ct);
+
+        diag.LinkBusy(Via("GB7AGM-3", "CALNE"), Us);
+        clock.Advance(TimeSpan.FromMinutes(10));
+        diag.LinkBusy(Via("GB7AGM-3", "CALNE"), Us);
+        await Task.WhenAll(diag.Snapshots).WaitAsync(FakeAgwHost.FrameTimeout, ct);
+
+        prompt.Asked.Should().Equal("NODES");
+        Lines.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task ANodeThatCantBeAskedForNow_IsAskedAgainLater()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var prompt = new ScriptedPrompt(_ => throw new NodePromptUnavailableException("the AGW connection to the node isn't open"));
+        var diag = Make(prompt);
+
+        diag.LinkBusy(Via("GB7AGM-3", "CALNE"), Us);
+        await Task.WhenAll(diag.Snapshots).WaitAsync(FakeAgwHost.FrameTimeout, ct);
+        clock.Advance(TimeSpan.FromMinutes(10));
+        diag.LinkBusy(Via("GB7AGM-3", "CALNE"), Us);
+        await Task.WhenAll(diag.Snapshots).WaitAsync(FakeAgwHost.FrameTimeout, ct);
+
+        prompt.Asked.Should().HaveCount(2);
+        diag.Snapshots.Count.Should().BeLessThanOrEqualTo(1, "finished snapshots aren't kept");
+    }
+
+    [Fact]
     public void DistinctVias_AreUpperCasedAndDeduplicated_LeavingOutAViaThatIsTheNeighbourItself()
     {
         NodeDiagnostics.DistinctVias([

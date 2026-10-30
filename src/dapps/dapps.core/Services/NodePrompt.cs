@@ -17,8 +17,13 @@ public interface INodePrompt
     Task<string> AskAsync(string command, CancellationToken ct);
 }
 
-/// <summary>The node's prompt can't be reached; the message says why.</summary>
-public sealed class NodePromptUnavailableException(string message, Exception? inner = null) : Exception(message, inner);
+/// <summary>The node's prompt can't be reached; the message says why.
+/// <see cref="ForGood"/> when asking again won't help: the node has no way
+/// to its prompt at all.</summary>
+public sealed class NodePromptUnavailableException(string message, Exception? inner = null, bool forGood = false) : Exception(message, inner)
+{
+    public bool ForGood { get; } = forGood;
+}
 
 /// <summary>
 /// Reaches the local node's own command prompt, for the node check
@@ -109,7 +114,7 @@ public sealed class NodePrompt(
             return await AskOverRhpAsync(opts, command, ct);
         }
         throw new NodePromptUnavailableException(
-            $"the AGW host (version {version.Major}.{version.Minor}) is neither LinBPQ nor XRouter, so DAPPS has no way to its prompt");
+            $"the AGW host (version {version.Major}.{version.Minor}) is neither LinBPQ nor XRouter, so DAPPS has no way to its prompt", forGood: true);
     }
 
     private async Task<string> AskOverAgwAsync(AgwLink link, string command, CancellationToken ct)
@@ -196,7 +201,7 @@ public sealed class NodePrompt(
                 catch (RhpServerException ex) when (ex.ErrorCode == RhpErrorCode.OperationNotSupported)
                 {
                     // pdn: "family 'unix' is not implemented yet (ax25 only)".
-                    throw new NodePromptUnavailableException($"the node's RHPv2 has no way to its prompt (pdn has none: {ex.Message})", ex);
+                    throw new NodePromptUnavailableException($"the node's RHPv2 has no way to its prompt (pdn has none: {ex.Message})", ex, forGood: true);
                 }
                 catch (RhpServerException ex)
                 {

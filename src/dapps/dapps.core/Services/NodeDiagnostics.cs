@@ -18,7 +18,8 @@ namespace dapps.core.Services;
 /// <see cref="LinkBusy"/> takes a LINKS snapshot and logs the lines about
 /// that link, at most once per link every <see cref="SnapshotEvery"/>.
 /// Both run in the background and never hold up the forwarder; a failure
-/// is one log line and is otherwise ignored.
+/// is one log line and is otherwise ignored. Once the node turns out to
+/// have no way to its prompt at all, it isn't asked again.
 /// </summary>
 public sealed class NodeDiagnostics(
     INodePrompt prompt,
@@ -41,6 +42,10 @@ public sealed class NodeDiagnostics(
     private readonly ConcurrentDictionary<string, DateTimeOffset> lastSnapshot = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> viaNodeCalls = new(StringComparer.OrdinalIgnoreCase);
     private CancellationToken stopping;
+
+    // Set once the node has no way to its prompt at all: asking again
+    // would only repeat the same line.
+    private volatile bool cantAsk;
 
     /// <summary>LINKS snapshots started, for tests to wait on.</summary>
     internal ConcurrentQueue<Task> Snapshots { get; } = new();
@@ -76,7 +81,14 @@ public sealed class NodeDiagnostics(
             }
             catch (NodePromptUnavailableException ex)
             {
+                if (ex.ForGood) cantAsk = true;
                 logger.LogInformation("Node check: can't ask the node about Connect via nodes: {0}; type NODES at the node's console to check", ex.Message);
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(reply))
+            {
+                // Saying each via isn't listed would mislead.
+                logger.LogInformation("Node check: the node didn't answer NODES; type NODES at the node's console to check");
                 return;
             }
 
@@ -125,6 +137,7 @@ public sealed class NodeDiagnostics(
     /// </summary>
     public void LinkBusy(BackhaulRoute route, string ourCallsign)
     {
+        if (cantAsk) return;
         var dial = route.DialCallsign;
         var key = $"{dial}|{route.BearerPort}";
         var now = time.GetUtcNow();
@@ -139,6 +152,8 @@ public sealed class NodeDiagnostics(
             return now;
         });
         if (!due) return;
+        // Only the ones still going are kept, so this doesn't grow.
+        while (Snapshots.TryPeek(out var head) && head.IsCompleted) Snapshots.TryDequeue(out _);
         Snapshots.Enqueue(Task.Run(() => SnapshotAsync(dial, ourCallsign, stopping), CancellationToken.None));
     }
 
@@ -153,7 +168,13 @@ public sealed class NodeDiagnostics(
             }
             catch (NodePromptUnavailableException ex)
             {
+                if (ex.ForGood) cantAsk = true;
                 logger.LogInformation("Node LINKS while the link to {0} is busy: can't ask the node: {1}", dial, ex.Message);
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(reply))
+            {
+                logger.LogInformation("Node LINKS while the link to {0} is busy: the node didn't answer LINKS", dial);
                 return;
             }
 
