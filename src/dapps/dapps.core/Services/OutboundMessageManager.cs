@@ -396,9 +396,15 @@ public class OutboundMessageManager(
                 batch.Count, route.Callsign, route.DialCallsign);
             // #425: what the node says about that link (in the background),
             // and a session of ours holding it for another neighbour ends
-            // once quiet rather than after its whole hold.
+            // once quiet rather than after its whole hold. Not for mail that
+            // couldn't go anyway: cutting that session short would only cost
+            // its own follow-ups a new connect.
             nodeDiagnostics?.LinkBusy(route, optionsValue.Callsign);
-            GiveWay(backhaul, route);
+            if (!destinationBackoff.IsInCooldown(route.Callsign, out _)
+                && !(ViaOf(route) is { } busyVia && destinationBackoff.IsInCooldown(busyVia, out _)))
+            {
+                GiveWay(backhaul, route);
+            }
             return;
         }
 
