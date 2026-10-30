@@ -54,6 +54,17 @@ internal sealed record RigBResult
     public int NetRomConnects { get; init; }
     /// <summary>DAPPS sessions the peers took (their "Inbound session from" lines).</summary>
     public int DappsSessions { get; init; }
+    /// <summary>DAPPS sessions MB7NPW took from the peers (the both workload).</summary>
+    public int NpwInboundSessions { get; init; }
+    /// <summary>MB7NPW's sessions that ended early for other mail (#425 give-way: "before its ... hold").</summary>
+    public int GiveWays { get; init; }
+    /// <summary>MB7NPW's deferrals because a dial would have reset a session already open.</summary>
+    public int BusyDeferrals { get; init; }
+    /// <summary>Messages the peers sent MB7NPW (the both workload).</summary>
+    public int BackMessages { get; init; }
+    /// <summary>How many peers had mail (DAPPS_RIG_425_B_MAIL_PEERS), of how many in the rig.</summary>
+    public int MailPeers { get; init; }
+    public int RigPeers { get; init; }
     public int NodesFrames { get; init; }
     /// <summary>SREJs heard on air (LinBPQ's node-to-node links negotiate AX.25 2.2).</summary>
     public int? Srejs { get; init; }
@@ -97,10 +108,18 @@ internal sealed class RigBRun(RigBNetwork rig, RigBArm arm, RigBWorkload workloa
         DateTime snapFrom = DateTime.UtcNow, snapTo = DateTime.UtcNow;
         try
         {
+            var sendsBack = messages.Any(m => m.Back);
             foreach (var p in rig.Peers)
             {
+                // When the peers send too, MB7NPW is their neighbour: through
+                // CALNE (`C 2 <MB7NPW>` at its prompt), or direct over AXUDP.
+                DappsDaemon.Neighbour[] back = !sendsBack ? []
+                    : p.Direct ? [new(rig.Mb7npw.DappsCall!, RigBNetwork.PeerAgwPort)]
+                    : [new(rig.Mb7npw.DappsCall!, RigBNetwork.PeerAgwPort,
+                        Script: new dapps.client.ConnectScript([new dapps.client.ConnectScriptStep($"C {RigBNetwork.CalneRadioPort} {rig.Mb7npw.DappsCall}", "DAPPSv1>", 60)]),
+                        ConnectVia: rig.Calne.Call)];
                 var d = await DappsDaemon.StartAsync($"rigb-{p.Alias}", p.DappsCall!,
-                    NodeAttachment.Agw(rig.Host, rig.AgwPort(p), RigBNetwork.PeerAgwPort), [], settings: null, ct);
+                    NodeAttachment.Agw(rig.Host, rig.AgwPort(p), RigBNetwork.PeerAgwPort), back, settings: null, ct);
                 daemons.Add(d);
                 peers[p] = d;
             }
@@ -123,7 +142,8 @@ internal sealed class RigBRun(RigBNetwork rig, RigBArm arm, RigBWorkload workloa
             t0 = DateTime.UtcNow;
             clock.Start();
             var pumps = peers.Select(kv => PumpAsync(kv.Value, clock, stopPump.Token)).ToList();
-            var submitting = SubmitAsync(npw, messages, clock, ct);
+            if (sendsBack) pumps.Add(PumpAsync(npw, clock, stopPump.Token));
+            var submitting = SubmitAsync(npw, peers, messages, clock, ct);
 
             while (clock.Elapsed < workload.Deadline && deliveredAt.Count < messages.Count && rig.Died is null && !pumps.Any(p => p.IsFaulted))
             {
@@ -140,7 +160,8 @@ internal sealed class RigBRun(RigBNetwork rig, RigBArm arm, RigBWorkload workloa
             {
                 await Task.Delay(1000, ct);
                 var lastFrame = air.Between(t0, DateTime.UtcNow).Select(f => f.At).DefaultIfEmpty(t0).Max();
-                if (DateTime.UtcNow - lastFrame > TimeSpan.FromSeconds(15) && await npw.PendingOutboundAsync(ct) == 0) break;
+                if (DateTime.UtcNow - lastFrame > TimeSpan.FromSeconds(15) && await npw.PendingOutboundAsync(ct) == 0
+                    && (!sendsBack || (await Task.WhenAll(peers.Values.Select(p => p.PendingOutboundAsync(ct)))).All(n => n == 0))) break;
             }
             quietAt = clock.Elapsed;
             await stopPump.CancelAsync();
@@ -218,7 +239,7 @@ internal sealed class RigBRun(RigBNetwork rig, RigBArm arm, RigBWorkload workloa
             Retransmissions = RigBAir.Retransmissions(heard),
             Rejs = heard.Count(f => f.Type == "REJ"),
             Polls = heard.Count(f => f.Poll && f.Type is "RR" or "RNR" or "REJ"),
-            RetryOuts = RigBAir.RetryOuts(heard, RigBNetwork.Radio.Retries),
+            RetryOuts = RigBAir.RetryOuts(heard, rig.RadioSettings.Retries),
             L2TimeoutsA = StatDiff(statsBeforeA, statsAfterA, "L2 Timeouts"),
             L2TimeoutsB = StatDiff(statsBeforeB, statsAfterB, "L2 Timeouts"),
             L4ResentA = L4Resent(statsAfterA) - L4Resent(statsBeforeA),
@@ -226,6 +247,12 @@ internal sealed class RigBRun(RigBNetwork rig, RigBArm arm, RigBWorkload workloa
             L2Connects = heard.Count(f => f.Type == "C"),
             NetRomConnects = heard.Count(f => f.Text.Contains("C REQ", StringComparison.Ordinal) || f.Text.Contains("CON REQ", StringComparison.Ordinal) || f.Text.Contains("<CONN REQ", StringComparison.Ordinal)),
             DappsSessions = logs.Where(kv => kv.Key != "rigb-NPW").Sum(kv => Regex.Matches(kv.Value, "Inbound session from").Count),
+            NpwInboundSessions = Regex.Matches(logs.GetValueOrDefault("rigb-NPW") ?? "", "Inbound session from").Count,
+            GiveWays = Regex.Matches(logs.GetValueOrDefault("rigb-NPW") ?? "", @"of quiet, before its \d+s hold").Count,
+            BusyDeferrals = Regex.Matches(logs.GetValueOrDefault("rigb-NPW") ?? "", "dialling now would reset it").Count,
+            BackMessages = messages.Count(m => m.Back),
+            MailPeers = messages.Select(m => m.Peer).Distinct().Count(),
+            RigPeers = rig.Peers.Count,
             NodesFrames = heard.Count(f => f.To == "NODES"),
             Srejs = heard.Count(f => f.Type == "SREJ"),
             NodeLinkResets = heard.Count(f => f.Type == "D"
@@ -240,14 +267,15 @@ internal sealed class RigBRun(RigBNetwork rig, RigBArm arm, RigBWorkload workloa
         return result;
     }
 
-    private async Task SubmitAsync(DappsDaemon npw, IReadOnlyList<RigBMessage> messages, Stopwatch clock, CancellationToken ct)
+    private async Task SubmitAsync(DappsDaemon npw, Dictionary<RigBNode, DappsDaemon> peers, IReadOnlyList<RigBMessage> messages, Stopwatch clock, CancellationToken ct)
     {
         foreach (var m in messages)
         {
             var wait = m.At - clock.Elapsed;
             if (wait > TimeSpan.Zero) await Task.Delay(wait, ct);
             lock (submittedAt) submittedAt[m.Tag] = clock.Elapsed;
-            await npw.SubmitAsync(RigBWorkload.App, m.Peer.DappsCall!, m.Payload, ct, ttl: 3600);
+            if (m.Back) await peers[m.Peer].SubmitAsync(RigBWorkload.App, rig.Mb7npw.DappsCall!, m.Payload, ct, ttl: 3600);
+            else await npw.SubmitAsync(RigBWorkload.App, m.Peer.DappsCall!, m.Payload, ct, ttl: 3600);
         }
     }
 
@@ -298,7 +326,7 @@ internal sealed class RigBRun(RigBNetwork rig, RigBArm arm, RigBWorkload workloa
         sb.AppendLine();
         sb.AppendLine($"{arm.Title}. {arm.HowItDials}");
         sb.AppendLine();
-        sb.AppendLine($"Radio port: BPQ {RigBNetwork.Radio}, AFSK 1200 on Dire Wolf, {RigBNetwork.PathLossDb} dB path loss. Seed {seed}. Host {Environment.MachineName}. LinBPQ {RigBNetwork.BpqImage}{(RigBNetwork.OnlyV20 ? ", OnlyVer2point0=1" : "")}.");
+        sb.AppendLine($"Radio port: BPQ {rig.RadioSettings}, AFSK 1200 on Dire Wolf, {rig.PathLoss} dB path loss. Seed {seed}. Host {Environment.MachineName}. LinBPQ {RigBNetwork.BpqImage}{(RigBNetwork.OnlyV20 ? ", OnlyVer2point0=1" : "")}.");
         sb.AppendLine();
         sb.AppendLine("```");
         sb.AppendLine(JsonSerializer.Serialize(r, new JsonSerializerOptions { WriteIndented = true }));

@@ -19,7 +19,10 @@ namespace dapps.core.tests.Integration.Rig425.RigB;
 /// messages a peer), DAPPS_RIG_425_B_SPREAD_MINUTES (8), and the
 /// DAPPS_RIG_425_B_PROTO_* settings of arm P. DAPPS_RIG_425_B_BPQ_IMAGE runs
 /// another LinBPQ build on all five nodes, and DAPPS_RIG_425_B_BPQ_V20=1 sets
-/// OnlyVer2point0 on them (the node-link SREJ study, linbpq-repro/). With DAPPS_RIG_425_LIVE set to
+/// OnlyVer2point0 on them (the node-link SREJ study, linbpq-repro/). Arms G,
+/// G3 and Gs run MB7NPW on the build at DAPPS_RIG_425_B_GIVEWAY_DLL;
+/// DAPPS_RIG_425_B_MAIL_PEERS gives mail to only the first N peers; the both
+/// workload has the peers send MB7NPW mail at the same moment. With DAPPS_RIG_425_LIVE set to
 /// a file, progress lines go there as they happen.
 ///
 ///     cd src/dapps/dapps.core.tests
@@ -48,7 +51,7 @@ public sealed class RigBTests
         {
             if (arm.DaemonDll is not null && arm.DaemonDll() is not { Length: > 0 })
             {
-                failures.Add($"arm {arm.Id}: no DAPPS_RIG_425_B_PROTO_DLL");
+                failures.Add($"arm {arm.Id}: no daemon build given (DAPPS_RIG_425_B_PROTO_DLL or DAPPS_RIG_425_B_GIVEWAY_DLL)");
                 continue;
             }
             log.Note($"arm {arm.Id}: {arm.Title}; starting the {arm.Profile.Id} rig");

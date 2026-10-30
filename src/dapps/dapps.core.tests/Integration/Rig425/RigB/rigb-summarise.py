@@ -18,6 +18,7 @@ MEASURES = [
     ("Last delivery PEER1, s", lambda r: r["LastDeliveryByPeer"].get("PEER1")),
     ("Last delivery PEER2, s", lambda r: r["LastDeliveryByPeer"].get("PEER2")),
     ("Last delivery PEER3, s", lambda r: r["LastDeliveryByPeer"].get("PEER3")),
+    ("Last delivery PEER4, s", lambda r: r["LastDeliveryByPeer"].get("PEER4")),
     ("After the last message was handed in, s", lambda r: None if r["LastDelivery"] is None else r["LastDelivery"] - r["LastSubmitted"]),
     ("Message latency median, s", lambda r: r["LatencyMedian"]),
     ("Message latency worst, s", lambda r: r["LatencyMax"]),
@@ -37,6 +38,9 @@ MEASURES = [
     ("L2 connects on air (SABM)", lambda r: r["L2Connects"]),
     ("NET/ROM connects on air", lambda r: r["NetRomConnects"]),
     ("DAPPS sessions", lambda r: r["DappsSessions"]),
+    ("DAPPS sessions the peers dialled", lambda r: r.get("NpwInboundSessions")),
+    ("Sessions ended early for other mail (give-way)", lambda r: r.get("GiveWays")),
+    ("Deferrals: dialling would reset an open session", lambda r: r.get("BusyDeferrals")),
     ("Messages lost", lambda r: r["Lost"]),
     ("Duplicates", lambda r: r["Duplicates"]),
 ]
@@ -71,6 +75,12 @@ def per_arm(by, failed):
         print()
 
 
+def label(r):
+    """The arm, marked when only some peers had mail."""
+    mp, rp = r.get("MailPeers"), r.get("RigPeers")
+    return r["Arm"] + (f" ({mp} peer{'s' if mp != 1 else ''})" if mp and rp and mp < rp else "")
+
+
 def main(paths):
     arm_tables = "--per-arm" in paths
     paths = [p for p in paths if p != "--per-arm"]
@@ -82,9 +92,9 @@ def main(paths):
     failed = defaultdict(int)
     for r in runs:
         if r.get("Failure"):
-            failed[(r["Workload"], r["Arm"])] += 1
+            failed[(r["Workload"], label(r))] += 1
             continue
-        by[(r["Workload"], r["Arm"])].append(r)
+        by[(r["Workload"], label(r))].append(r)
     if arm_tables:
         per_arm(by, failed)
         return

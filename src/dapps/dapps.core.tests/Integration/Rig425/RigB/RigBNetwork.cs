@@ -16,7 +16,10 @@ namespace dapps.core.tests.Integration.Rig425.RigB;
 /// <param name="PeerAppsAdvertised">Each peer's LinBPQ advertises its DAPPS
 /// call on NET/ROM (APPLICATION quality 200), so MB7NPW's LinBPQ makes a
 /// NET/ROM circuit straight to it.</param>
-public sealed record RigBProfile(string Id, bool NetRomOnRf, bool PeerAppsAdvertised)
+/// <param name="SlowVia">#419's layout: the radio link to CALNE is poor (near
+/// the edge of range), two peers are behind CALNE, and two more are direct
+/// neighbours of MB7NPW over AXUDP (no airtime).</param>
+public sealed record RigBProfile(string Id, bool NetRomOnRf, bool PeerAppsAdvertised, bool SlowVia = false)
 {
     /// <summary>No NET/ROM anywhere: every connect is plain L2.</summary>
     public static readonly RigBProfile L2 = new("l2", NetRomOnRf: false, PeerAppsAdvertised: false);
@@ -27,11 +30,15 @@ public sealed record RigBProfile(string Id, bool NetRomOnRf, bool PeerAppsAdvert
     /// <summary>NET/ROM, and the peers' DAPPS calls advertised on it.</summary>
     public static readonly RigBProfile NetRomApps = new("netrom-apps", NetRomOnRf: true, PeerAppsAdvertised: true);
 
-    public static RigBProfile Parse(string id) => new[] { L2, NetRom, NetRomApps }.Single(p => p.Id == id);
+    /// <summary>#419's slow-link case: two peers through a poor via, two direct neighbours. No NET/ROM.</summary>
+    public static readonly RigBProfile SlowViaLayout = new("slowvia", NetRomOnRf: false, PeerAppsAdvertised: false, SlowVia: true);
+
+    public static RigBProfile Parse(string id) => new[] { L2, NetRom, NetRomApps, SlowViaLayout }.Single(p => p.Id == id);
 }
 
-/// <summary>One LinBPQ node in Rig B. <see cref="DappsCall"/> is null on CALNE, which runs no DAPPS.</summary>
-public sealed record RigBNode(string Role, int Index, string Call, string Alias, string? DappsCall)
+/// <summary>One LinBPQ node in Rig B. <see cref="DappsCall"/> is null on CALNE, which runs no DAPPS.
+/// <see cref="Direct"/>: a peer linked to MB7NPW itself over AXUDP, not behind CALNE (the slowvia profile).</summary>
+public sealed record RigBNode(string Role, int Index, string Call, string Alias, string? DappsCall, bool Direct = false)
 {
     /// <summary>LinBPQ's AGW port inside net-sim's network namespace.</summary>
     public int InsideAgwPort => 18300 + Index;
@@ -75,6 +82,16 @@ public sealed class RigBNetwork : IAsyncDisposable
 
     public const double PathLossDb = 120;
 
+    /// <summary>The slowvia profile's poor link: just above the FM threshold, as
+    /// <see cref="NetSimNoisyAfsk1200Fixture"/> (13% of full frames lost), with its longer TXDELAY.</summary>
+    public const double SlowPathLossDb = 156.5;
+
+    /// <summary>This rig's path loss each way, dB.</summary>
+    public double PathLoss => Profile.SlowVia ? SlowPathLossDb : PathLossDb;
+
+    /// <summary>This rig's BPQ radio-port settings.</summary>
+    public NetSimTwoBpqFixture.BpqRadio RadioSettings => Profile.SlowVia ? Radio with { TxDelayMs = 300 } : Radio;
+
     /// <summary>NODES every hour on every port, as a quiet real network would; the rig sends the first round itself.</summary>
     public const int NodesIntervalMinutes = 60;
 
@@ -84,12 +101,7 @@ public sealed class RigBNetwork : IAsyncDisposable
 
     public RigBNode Mb7npw { get; } = new("MB7NPW", 0, "N0NPW", "NPW", "N0NPW-3");
     public RigBNode Calne { get; } = new("CALNE", 1, "N0CAL", "CALNE", null);
-    public IReadOnlyList<RigBNode> Peers { get; } =
-    [
-        new("PEER1", 2, "N0AGM", "AGM", "N0AGM-3"),
-        new("PEER2", 3, "N0LOX", "LOX", "N0LOX-3"),
-        new("PEER3", 4, "N0EIK", "EIK", "N0EIK-3"),
-    ];
+    public IReadOnlyList<RigBNode> Peers { get; }
 
     public IEnumerable<RigBNode> Nodes => new[] { Mb7npw, Calne }.Concat(Peers);
 
@@ -101,6 +113,12 @@ public sealed class RigBNetwork : IAsyncDisposable
 
     /// <summary>A peer's AGW port byte for its AXIP port (BPQ port 2).</summary>
     public const int PeerAgwPort = 1;
+
+    /// <summary>MB7NPW's AGW port byte for its AXIP port (BPQ port 3), in the slowvia profile.</summary>
+    public const int NpwAxipAgwPort = 2;
+
+    /// <summary>CALNE's BPQ port number for its radio port, as typed at its prompt.</summary>
+    public const int CalneRadioPort = 2;
 
     private WatchedContainer? netSim;
     private readonly List<WatchedContainer> bpqs = [];
@@ -140,6 +158,20 @@ public sealed class RigBNetwork : IAsyncDisposable
     {
         Profile = profile;
         this.note = note;
+        Peers = profile.SlowVia
+            ?
+            [
+                new("PEER1", 2, "N0AGM", "AGM", "N0AGM-3"),
+                new("PEER2", 3, "N0LOX", "LOX", "N0LOX-3"),
+                new("PEER3", 4, "N0NBH", "NBH", "N0NBH-4", Direct: true),
+                new("PEER4", 5, "N0EIK", "EIK", "N0EIK-3", Direct: true),
+            ]
+            :
+            [
+                new("PEER1", 2, "N0AGM", "AGM", "N0AGM-3"),
+                new("PEER2", 3, "N0LOX", "LOX", "N0LOX-3"),
+                new("PEER3", 4, "N0EIK", "EIK", "N0EIK-3"),
+            ];
     }
 
     /// <summary>Where a node's AGW port is on the host.</summary>
@@ -184,7 +216,7 @@ public sealed class RigBNetwork : IAsyncDisposable
             bpqs.Add(bpq);
             bpqByNode[n] = bpq;
         }
-        note("five LinBPQs up");
+        note($"{bpqs.Count} LinBPQs up");
 
         await WaitUntilHeardAsync(Mb7npw, Calne, ct);
         await WaitUntilHeardAsync(Calne, Mb7npw, ct);
@@ -231,16 +263,17 @@ public sealed class RigBNetwork : IAsyncDisposable
         links:
           - from: a.radio
             to: b.radio
-            path_loss_db: {PathLossDb.ToString(System.Globalization.CultureInfo.InvariantCulture)}
+            path_loss_db: {PathLoss.ToString(System.Globalization.CultureInfo.InvariantCulture)}
           - from: b.radio
             to: a.radio
-            path_loss_db: {PathLossDb.ToString(System.Globalization.CultureInfo.InvariantCulture)}
+            path_loss_db: {PathLoss.ToString(System.Globalization.CultureInfo.InvariantCulture)}
 
         """;
 
     private string BpqConfig(RigBNode node)
     {
         var netRom = Profile.NetRomOnRf;
+        var Radio = RadioSettings;
         var quality = netRom ? 200 : 0;
         var sb = new StringBuilder();
         sb.Append($"""
@@ -305,13 +338,16 @@ public sealed class RigBNetwork : IAsyncDisposable
 
                 """);
         }
-        if (node != Mb7npw)
+        if (node != Mb7npw || Peers.Any(p => p.Direct))
         {
-            // AXIP: CALNE to each peer. The far end's node and DAPPS calls
-            // are mapped; AUTOADDQUIET learns the rest (the SSID-flipped
-            // calls of a downlink).
+            // AXIP: CALNE to each peer behind it, and MB7NPW to each direct
+            // peer. The far end's node and DAPPS calls are mapped;
+            // AUTOADDQUIET learns the rest (the SSID-flipped calls of a downlink).
             var maps = new StringBuilder();
-            foreach (var far in node == Calne ? Peers : [Calne])
+            IEnumerable<RigBNode> fars = node == Calne ? Peers.Where(p => !p.Direct)
+                : node == Mb7npw ? Peers.Where(p => p.Direct)
+                : [node.Direct ? Mb7npw : Calne];
+            foreach (var far in fars)
             {
                 maps.Append($" MAP {far.Call} 127.0.0.1 UDP {far.AxipUdpPort}{(netRom ? " B" : "")}\n");
                 if (far.DappsCall is { } call) maps.Append($" MAP {call} 127.0.0.1 UDP {far.AxipUdpPort}\n");

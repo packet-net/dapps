@@ -46,16 +46,32 @@ internal sealed record RigBArm(
             ConnectVia: i == 0 ? "SWITCH" : $"SWITCH-{i}");
     }
 
+    /// <summary>
+    /// The operator's configuration as Kevin has it: a peer behind CALNE by
+    /// <see cref="ViaCalne"/>, and (slowvia profile) a direct neighbour by
+    /// its own call on MB7NPW's AXUDP port.
+    /// </summary>
+    private static DappsDaemon.Neighbour AsConfigured(RigBNetwork rig, RigBNode peer, int? holdSeconds = null) =>
+        peer.Direct
+            ? new(peer.DappsCall!, RigBNetwork.NpwAxipAgwPort, SessionTailSeconds: holdSeconds)
+            : ViaCalne(rig, peer, holdSeconds);
+
+    /// <summary>The early give-way build (#425 plan PR 3): DAPPS_RIG_425_B_GIVEWAY_DLL.</summary>
+    private static string? GiveWayDll() => Environment.GetEnvironmentVariable("DAPPS_RIG_425_B_GIVEWAY_DLL");
+
+    private const string GiveWayHow =
+        "MB7NPW runs the early give-way build (DAPPS_RIG_425_B_GIVEWAY_DLL): a quiet session it dialled ends after 10 s, not the 120 s hold, when mail for another neighbour waits for the link it holds. The peers run this tree's build.";
+
     /// <summary>Dial the peer's DAPPS call itself; LinBPQ routes it by its node table.</summary>
     private static DappsDaemon.Neighbour Direct(RigBNode peer) => new(peer.DappsCall!, RigBNetwork.RfAgwPort);
 
     public static readonly IReadOnlyList<RigBArm> All =
     [
         new("1", "Today: L2 to CALNE, connect script, 120 s hold", RigBProfile.L2,
-            (rig, peer) => ViaCalne(rig, peer),
+            (rig, peer) => AsConfigured(rig, peer),
             "AGW connect to CALNE (plain L2, no NET/ROM on air), then `C 3 <peer>` at CALNE's prompt; default 120 s session hold."),
         new("2", "Short hold: as today with a 10 s hold", RigBProfile.L2,
-            (rig, peer) => ViaCalne(rig, peer, holdSeconds: 10),
+            (rig, peer) => AsConfigured(rig, peer, holdSeconds: 10),
             "As arm 1, with each neighbour's session hold set to 10 s."),
         new("3", "L4 to CALNE, connect script, 120 s hold", RigBProfile.NetRom,
             (rig, peer) => ViaCalne(rig, peer),
@@ -72,6 +88,21 @@ internal sealed record RigBArm(
             (rig, peer) => ViaSwitch(rig, peer, holdSeconds: 10),
             "PROTOTYPE, arm C2 of the option 1 plan: arm 5 with each neighbour's session hold set to 10 s.",
             Prototype: true),
+        new("G", "Early give-way (#425 PR 3): as arm 1, MB7NPW on the give-way build", RigBProfile.L2,
+            (rig, peer) => AsConfigured(rig, peer),
+            "As arm 1 (L2 to CALNE, `C 3 <peer>`, 120 s hold). " + GiveWayHow,
+            DaemonDll: GiveWayDll),
+        new("G3", "Early give-way (#425 PR 3): as arm 3, MB7NPW on the give-way build", RigBProfile.NetRom,
+            (rig, peer) => AsConfigured(rig, peer),
+            "As arm 3 (NET/ROM to CALNE, `C 3 <peer>`, 120 s hold), Kevin's set-up as MB7NPW's 0.56.1 logs show it. " + GiveWayHow,
+            DaemonDll: GiveWayDll),
+        new("1s", "#419's slow via, today: two peers through a poor link to CALNE, two direct neighbours", RigBProfile.SlowViaLayout,
+            (rig, peer) => AsConfigured(rig, peer),
+            "slowvia layout (156.5 dB to CALNE, TXDELAY 300): PEER1 and PEER2 by L2 to CALNE then `C 3 <peer>`, PEER3 and PEER4 dialled directly over MB7NPW's AXUDP port; 120 s hold; this tree's build."),
+        new("Gs", "#419's slow via, early give-way build", RigBProfile.SlowViaLayout,
+            (rig, peer) => AsConfigured(rig, peer),
+            "As arm 1s. " + GiveWayHow,
+            DaemonDll: GiveWayDll),
         // A build from another branch, to try a design without touching this
         // tree: DAPPS_RIG_425_B_PROTO_DLL points at its dapps.core.dll,
         // DAPPS_RIG_425_B_PROTO_PROFILE picks the rig (l2, netrom,
@@ -107,8 +138,9 @@ internal sealed record RigBArm(
     }
 }
 
-/// <summary>One message the workload sends: to which peer, when (from the start), how big.</summary>
-internal sealed record RigBMessage(string Tag, RigBNode Peer, TimeSpan At, byte[] Payload);
+/// <summary>One message the workload sends: to which peer, when (from the start), how big.
+/// <see cref="Back"/>: sent by that peer to MB7NPW instead.</summary>
+internal sealed record RigBMessage(string Tag, RigBNode Peer, TimeSpan At, byte[] Payload, bool Back = false);
 
 /// <summary>
 /// What MB7NPW is asked to send. Each peer gets the same mix: four small
@@ -142,11 +174,38 @@ internal sealed record RigBWorkload(string Id, string Title, Func<RigBNetwork, i
             return Messages(rig, seed, _ => TimeSpan.FromSeconds(rng.NextDouble() * SpreadWindow.TotalSeconds));
         }, SpreadWindow + TimeSpan.FromMinutes(20));
 
+    /// <summary>
+    /// The burst, and at the same moment each peer that has mail sends
+    /// MB7NPW two of its own (180 and 2000 bytes): sessions both ways at
+    /// once, crossed calls and inbound sessions included.
+    /// </summary>
+    public static readonly RigBWorkload Both = new("both", "All queued at once, and the peers sending back at the same moment",
+        (rig, seed) =>
+        {
+            var list = Messages(rig, seed, _ => TimeSpan.Zero);
+            var rng = new Random(seed ^ 0xbac);
+            foreach (var peer in MailPeers(rig))
+            {
+                for (var i = 0; i < 2; i++)
+                {
+                    var tag = $"rigb-{seed:x8}-{peer.Alias}-back{i}";
+                    list.Add(new RigBMessage(tag, peer, TimeSpan.Zero, Text(rng, tag, rig.Mb7npw, i == 0 ? 180 : 2000), Back: true));
+                }
+            }
+            return list;
+        }, TimeSpan.FromMinutes(25));
+
     public static IReadOnlyList<RigBWorkload> Selected()
     {
         var ids = (Environment.GetEnvironmentVariable("DAPPS_RIG_425_B_WORKLOADS") is { Length: > 0 } s ? s : "burst,spread").Split(',', StringSplitOptions.TrimEntries);
-        return [.. ids.Select(id => new[] { Burst, Spread }.Single(w => w.Id == id))];
+        return [.. ids.Select(id => new[] { Burst, Spread, Both }.Single(w => w.Id == id))];
     }
+
+    /// <summary>The peers that get mail: all of them, or the first DAPPS_RIG_425_B_MAIL_PEERS.</summary>
+    public static IReadOnlyList<RigBNode> MailPeers(RigBNetwork rig) =>
+        int.TryParse(Environment.GetEnvironmentVariable("DAPPS_RIG_425_B_MAIL_PEERS"), out var n) && n > 0
+            ? [.. rig.Peers.Take(n)]
+            : rig.Peers;
 
     /// <summary>Messages interleaved peer by peer, as mail for three places would queue.</summary>
     private static List<RigBMessage> Messages(RigBNetwork rig, int seed, Func<int, TimeSpan> at)
@@ -156,7 +215,7 @@ internal sealed record RigBWorkload(string Id, string Title, Func<RigBNetwork, i
         var k = 0;
         for (var i = 0; i < Sizes.Length; i++)
         {
-            foreach (var peer in rig.Peers)
+            foreach (var peer in MailPeers(rig))
             {
                 var tag = $"rigb-{seed:x8}-{peer.Alias}-{i}";
                 list.Add(new RigBMessage(tag, peer, at(k++), Text(rng, tag, peer, Sizes[i])));
