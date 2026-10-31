@@ -56,9 +56,11 @@ namespace dapps.core.Services;
 /// the AX.25 source until an inbound exchange declares its node identity.
 /// A session from one of our Dial as callsigns (#431) is another AX.25
 /// link, so it is keyed on that callsign too and never meets one from our
-/// own callsign: not in the dial guard, not in retirement. Every method
-/// takes that callsign as <c>local</c>; null is our own callsign, and
-/// everything keyed that way works exactly as before.
+/// own callsign in retirement, nor does it hold back a dial from our own
+/// callsign. One exception: a dial from a Dial as callsign waits while the
+/// peer has a session it opened with our own callsign (<see cref="TryAcquire(string, string, out string?, out string?, int?, string?)"/>).
+/// Every method takes that callsign as <c>local</c>; null is our own
+/// callsign, and everything keyed that way works exactly as before.
 /// Reference-counted so an entry being retired while its replacement
 /// registers (rule 2 in <see cref="dapps.client.Transport.Agw.AgwLink"/>) never reads as
 /// idle in between. A session whose peer vanished without a disconnect
@@ -170,7 +172,23 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null,
     /// <see cref="BearerSwitchingOutboundTransport"/> immediately before
     /// the dial - the last point at which declining still means we
     /// never sent a frame.</summary>
-    public PeerSessionLease? TryAcquire(string peerCallsign, string direction, out string? openDirection, int? linkPort = null, string? local = null)
+    public PeerSessionLease? TryAcquire(string peerCallsign, string direction, out string? openDirection, int? linkPort = null, string? local = null) =>
+        TryAcquire(peerCallsign, direction, out openDirection, out _, linkPort, local);
+
+    /// <summary>
+    /// <see cref="TryAcquire(string, string, out string?, int?, string?)"/>,
+    /// also saying which of our callsigns holds the peer when it returns
+    /// null: <paramref name="heldBy"/> is the Dial as callsign, or null
+    /// for our own.
+    ///
+    /// #431: a dial from a Dial as callsign also waits while the peer has
+    /// a session it opened with our own callsign. The two would be separate
+    /// links, but the peer would then hold two sessions with us at once,
+    /// and once ours names us (node=) it files both under our callsign and
+    /// retires the older one: a live session lost. The peer's mail, and
+    /// ours, goes on its session instead, as before.
+    /// </summary>
+    public PeerSessionLease? TryAcquire(string peerCallsign, string direction, out string? openDirection, out string? heldBy, int? linkPort = null, string? local = null)
     {
         peerCallsign = DestinationParser.StationKey(peerCallsign);
         local = LocalKey(local);
@@ -180,9 +198,19 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null,
             if (open.TryGetValue(key, out var existing) && existing.Count > 0)
             {
                 openDirection = existing[0].Direction;
+                heldBy = local;
+                return null;
+            }
+            if (local is not null
+                && open.TryGetValue(peerCallsign, out var theirs)
+                && theirs.FirstOrDefault(l => l.Direction == "inbound") is { } peersCall)
+            {
+                openDirection = peersCall.Direction;
+                heldBy = null;
                 return null;
             }
             openDirection = null;
+            heldBy = null;
             var lease = new PeerSessionLease(this, peerCallsign, direction, linkPort, clock.GetUtcNow(), local);
             open[key] = [lease];
             Signal();

@@ -25,7 +25,8 @@ public interface IAgwDialAsLinks
 /// the 'C' frame says, so a call from another callsign needs a connection
 /// of its own. Each is registered ('X') with its callsign, opened on first
 /// use, and closed once nothing has used it for <see cref="IdleClose"/>;
-/// the next call opens it again.
+/// the next call opens it again, once the old one has closed (XRouter
+/// refuses an 'X' for a callsign another connection still holds).
 ///
 /// These connections only make calls (<see cref="AgwLink.RefusesCalls"/>):
 /// DAPPS answers on its own callsign alone, on the main AGW connection,
@@ -61,6 +62,10 @@ public sealed class AgwDialAsLinks(
     private readonly CancellationTokenSource lifetime = new();
     private readonly Lock gate = new();
     private readonly Dictionary<string, Entry> entries = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The close of each callsign's last connection, still going
+    /// or done: a reopen waits for it, as XRouter refuses an 'X' for a
+    /// callsign another connection still holds.</summary>
+    private readonly Dictionary<string, Task> closing = new(StringComparer.OrdinalIgnoreCase);
     private bool disposed;
 
     /// <summary>The Dial as callsigns with a connection open or opening, for tests and logs.</summary>
@@ -84,12 +89,14 @@ public sealed class AgwDialAsLinks(
                 entries.Remove(key);
                 stale = existing;
                 existing = null;
+                CloseLater(stale);
             }
             if (existing is null)
             {
                 existing = new Entry(key, opts.NodeHost, opts.AgwPort);
                 entries[key] = existing;
-                existing.Opening = Task.Run(() => OpenAsync(existing));
+                var previous = closing.GetValueOrDefault(key);
+                existing.Opening = Task.Run(() => OpenAsync(existing, previous));
             }
             entry = existing;
             entry.Users++;
@@ -99,7 +106,6 @@ public sealed class AgwDialAsLinks(
         if (stale is not null)
         {
             logger.LogInformation("AGW: the node's address has changed; closing the Dial as {0} connection to the old one", key);
-            _ = CloseAsync(stale);
         }
 
         try
@@ -114,10 +120,13 @@ public sealed class AgwDialAsLinks(
         }
     }
 
-    private async Task<AgwLink> OpenAsync(Entry entry)
+    private async Task<AgwLink> OpenAsync(Entry entry, Task? previous)
     {
         try
         {
+            // The last connection for this callsign, if one is still
+            // closing, goes first (CloseAsync never faults).
+            if (previous is not null) await previous.WaitAsync(OpenWait, lifetime.Token);
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
             bounded.CancelAfter(OpenWait);
             logger.LogInformation("AGW: opening a connection to the node for Dial as {0}", entry.Callsign);
@@ -180,9 +189,25 @@ public sealed class AgwDialAsLinks(
             if (entry.Users > 0) return;
             if (!entries.TryGetValue(entry.Callsign, out var held) || !ReferenceEquals(held, entry)) return;
             entries.Remove(entry.Callsign);
+            CloseLater(entry);
         }
         logger.LogInformation("AGW: closing the Dial as {0} connection: no call on it for {1:F0}s", entry.Callsign, Linger.TotalSeconds);
-        _ = CloseAsync(entry);
+    }
+
+    /// <summary>Closes <paramref name="entry"/>'s connection, off the
+    /// lock, and records it for a reopen to wait on; under <see cref="gate"/>.</summary>
+    private void CloseLater(Entry entry)
+    {
+        Task? done = null;
+        done = Task.Run(async () =>
+        {
+            await CloseAsync(entry);
+            lock (gate)
+            {
+                if (closing.TryGetValue(entry.Callsign, out var latest) && ReferenceEquals(latest, done)) closing.Remove(entry.Callsign);
+            }
+        });
+        closing[entry.Callsign] = done;
     }
 
     private static async Task CloseAsync(Entry entry)

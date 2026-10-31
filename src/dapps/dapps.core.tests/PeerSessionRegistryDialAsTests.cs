@@ -43,13 +43,45 @@ public sealed class PeerSessionRegistryDialAsTests
     [Fact]
     public void ConnectingOnOneLink_NeverRetiresTheOther()
     {
+        // The calls crossed: ours from the Dial as callsign went out, then
+        // the peer's call to our own callsign arrived.
         var registry = new PeerSessionRegistry();
-        using var inbound = registry.Acquire("GB7AGM-3", "inbound", linkPort: 2);
         using var dialAs = registry.TryAcquire("GB7AGM-3", "outbound", out _, linkPort: 2, local: "MB7NPW-4")!;
+        using var inbound = registry.Acquire("GB7AGM-3", "inbound", linkPort: 2);
 
+        registry.OwnCallsSettledAsync(inbound).IsCompleted.Should().BeTrue("our call is on another link");
         registry.Connected(dialAs).Should().BeFalse("nothing else was on that link");
         inbound.Retired.IsCancellationRequested.Should().BeFalse("the peer's call to our own callsign is another link");
-        registry.OwnCallsSettledAsync(inbound).IsCompleted.Should().BeTrue();
+        dialAs.Retired.IsCancellationRequested.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ADialFromADialAsCallsign_WaitsWhileThePeersCallToUsIsOpen()
+    {
+        // Otherwise the peer holds two sessions with us, and retires one
+        // once ours names us (node=).
+        var registry = new PeerSessionRegistry();
+        var inbound = registry.Acquire("GB7AGM-3", "inbound", linkPort: 2);
+
+        registry.TryAcquire("GB7AGM-3", "outbound", out var direction, out var heldBy, linkPort: 2, local: "MB7NPW-4")
+            .Should().BeNull();
+        direction.Should().Be("inbound");
+        heldBy.Should().BeNull("the peer's call is to our own callsign");
+
+        inbound.Dispose();
+        using var dialAs = registry.TryAcquire("GB7AGM-3", "outbound", out _, out _, linkPort: 2, local: "MB7NPW-4");
+        dialAs.Should().NotBeNull();
+        registry.TryAcquire("GB7AGM-3", "outbound", out _, out heldBy, linkPort: 2, local: "MB7NPW-4").Should().BeNull();
+        heldBy.Should().Be("MB7NPW-4");
+    }
+
+    [Fact]
+    public void OurOwnCallsignsOutboundLink_DoesNotHoldBackADialAsDial()
+    {
+        var registry = new PeerSessionRegistry();
+        using var own = registry.Acquire("GB7AGM-3", "outbound", linkPort: 2);
+        using var dialAs = registry.TryAcquire("GB7AGM-3", "outbound", out _, linkPort: 2, local: "MB7NPW-4");
+        dialAs.Should().NotBeNull("only the peer's own call to us holds it back");
     }
 
     [Fact]

@@ -125,6 +125,22 @@ public sealed class BearerSwitchingDialAsTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task WhileThePeerHasASessionOpenWithOurOwnCallsign_ACallFromADialAsCallsign_IsDeferred_WithNothingSent()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var host = new FakeAgwHost();
+        var peers = new PeerSessionRegistry();
+        var (transport, pool) = Make(host, peers);
+        using var theirs = peers.Acquire(Remote, "inbound", linkPort: 0);
+
+        var busy = await FluentActions.Awaiting(() => transport.ConnectAsync("G0LOCAL-4", Remote, 1, ct))
+            .Should().ThrowAsync<PeerSessionBusyException>();
+        busy.Which.OpenDirection.Should().Be("inbound");
+        busy.Which.LocalCallsign.Should().BeNull("the session holding it is with our own callsign");
+        pool.Open.Should().BeEmpty("no connection was opened for the Dial as callsign");
+    }
+
+    [Fact]
     public async Task WithTxStopped_ACallFromADialAsCallsign_SendsNothing()
     {
         // The Dial as connections go through the same TX gate as the main
@@ -233,6 +249,33 @@ public sealed class BearerSwitchingDialAsTests : IAsyncDisposable
         call.Should().Be("G0LOCAL-4");
         using var third = await reopening;
         third.Link.Should().NotBeSameAs(use.Link);
+    }
+
+    [Fact]
+    public async Task ACallJustAsTheIdleConnectionCloses_OpensTheNewOneOnlyOnceTheOldIsClosed()
+    {
+        // XRouter refuses an 'X' for a callsign another connection holds.
+        var ct = TestContext.Current.CancellationToken;
+        using var host = new FakeAgwHost();
+        var clock = new FakeTimeProvider();
+        var options = new StaticOptionsMonitor<SystemOptions>(new SystemOptions { NodeHost = "127.0.0.1", AgwPort = host.Port, Callsign = Us });
+        var pool = new AgwDialAsLinks(options, NullLogger<AgwDialAsLinks>.Instance, clock: clock);
+        owned.Add(pool);
+
+        var acquiring = pool.AcquireAsync("G0LOCAL-4", ct);
+        await AcceptAsync(host, ct);
+        var first = await acquiring;
+        first.Dispose();
+        clock.Advance(AgwDialAsLinks.IdleClose);
+
+        var reopening = pool.AcquireAsync("G0LOCAL-4", ct);
+        var socket = await host.AcceptAsync(ct);
+        sockets.Add(socket);
+        first.Link.Closed.IsCompleted.Should().BeTrue("the old connection is closed before the new one connects");
+        await socket.ExpectRegisterAsync(ct);
+        await socket.WriteAsync(ct, FakeAgwSocket.RegisterReply(1));
+        using var second = await reopening;
+        second.Link.Should().NotBeSameAs(first.Link);
     }
 
     [Fact]

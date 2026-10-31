@@ -130,10 +130,12 @@ public sealed class BearerSwitchingOutboundTransport(
             // Only AGW links take part in retirement (see PeerSessionRegistry).
             // The lease knows the link by the node's own port number (#233),
             // as the inbound side does.
-            lease = peerSessions.TryAcquire(remoteCallsign, "outbound", out var openDirection, linkPort: isRhpv2 ? null : bearerPort, local: dialAs);
+            // #431: from a Dial as callsign, the peer's own call to us holds
+            // it too (PeerSessionRegistry.TryAcquire); heldBy says which.
+            lease = peerSessions.TryAcquire(remoteCallsign, "outbound", out var openDirection, out var heldBy, linkPort: isRhpv2 ? null : bearerPort, local: dialAs);
             if (lease is null)
             {
-                throw new PeerSessionBusyException(remoteCallsign, openDirection!, dialAs);
+                throw new PeerSessionBusyException(remoteCallsign, openDirection!, heldBy);
             }
         }
 
