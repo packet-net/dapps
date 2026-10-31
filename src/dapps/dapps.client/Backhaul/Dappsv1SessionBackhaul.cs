@@ -43,6 +43,11 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     /// <summary>Sessions we dialled that are established, by peer callsign.</summary>
     private readonly ConcurrentDictionary<string, OpenSession> open = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Every session we dialled that is still running, established
+    /// or not, with the route it dialled: what <see cref="YieldSessionsHolding"/>
+    /// looks through.</summary>
+    private readonly ConcurrentDictionary<ExchangeSession, BackhaulRoute> dialledSessions = new();
+
     // When the node first refused a dial because its last link to the peer
     // was still closing; cleared when a dial gets through.
     private readonly ConcurrentDictionary<string, DateTimeOffset> closingSince = new(StringComparer.OrdinalIgnoreCase);
@@ -194,6 +199,10 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             logger.LogInformation(
                 "Deferring {0}: {1} already has an {2} session open, dialling now would reset it",
                 first.Id, ex.PeerCallsign, ex.OpenDirection);
+            // #425: a session of ours to another neighbour through the same
+            // node may be what holds it. It ends once quiet, not after the
+            // whole hold, and its lease going wakes the forwarder.
+            YieldSessionsHolding(route, $"mail for {route.Callsign} is waiting for the link to {route.DialCallsign}");
             await batch.CompleteAsync(first, BackhaulSendResult.Defer(
                 $"{ex.PeerCallsign} already has an {ex.OpenDirection} session open"), sw.Elapsed, ct);
             return;
@@ -307,6 +316,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
 
         var tracked = new TrackedBatch(batch, first, TimeProvider);
         session.TryTake(tracked);
+        dialledSessions[session] = route;
         var run = RunAsync(session, route, connection, stream, ct);
         while (!tracked.Done.IsCompleted && !run.IsCompleted)
         {
@@ -358,6 +368,31 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
     /// <summary>Peers this bearer has an established session with.</summary>
     public IReadOnlyCollection<string> OpenPeers => [.. open.Keys];
 
+    /// <summary>
+    /// #425: mail for <paramref name="waiting"/> is held back because the
+    /// node it dials (<see cref="BackhaulRoute.DialCallsign"/>) is taken by
+    /// a session of ours with another neighbour. Each such
+    /// session we dialled is asked to give way
+    /// (<see cref="ExchangeSession.RequestYield"/>): it ends once it has been
+    /// quiet for <see cref="MinQuiet"/>, rather than after the whole hold.
+    /// A session with the neighbour the mail is for is left alone (the mail
+    /// goes on it), and so is any session the peer dialled: only the caller
+    /// ends a session. Returns how many sessions will give way.
+    /// </summary>
+    public int YieldSessionsHolding(BackhaulRoute waiting, string reason)
+    {
+        var count = 0;
+        foreach (var (session, route) in dialledSessions)
+        {
+            // The node's lease on the call it dials is per callsign, whatever
+            // the port (PeerSessionRegistry), so any port's session holds it.
+            if (!string.Equals(route.DialCallsign, waiting.DialCallsign, StringComparison.OrdinalIgnoreCase)) continue;
+            if (string.Equals(route.Callsign, waiting.Callsign, StringComparison.OrdinalIgnoreCase)) continue;
+            if (session.RequestYield(reason)) count++;
+        }
+        return count;
+    }
+
     private void OnOpened(BackhaulRoute route, ExchangeSession session)
     {
         if (!open.TryAdd(route.Callsign, new OpenSession(route, session)))
@@ -384,6 +419,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         }
         finally
         {
+            dialledSessions.TryRemove(session, out _);
             foreach (var kv in open.Where(kv => ReferenceEquals(kv.Value.Session, session)))
             {
                 open.TryRemove(kv);

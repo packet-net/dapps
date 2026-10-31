@@ -90,6 +90,14 @@ public sealed class ExchangeSession
     /// <summary>Our pings on the wire, by token, waiting for their <c>pong</c>.</summary>
     private readonly Dictionary<string, Ping> pingsOut = new(StringComparer.Ordinal);
 
+    /// <summary>Wakes the loop when someone outside asks it to give way
+    /// (<see cref="RequestYield"/>), so the shorter quiet spell takes
+    /// effect without waiting for the old timer.</summary>
+    private readonly Channel<bool> nudges = Channel.CreateBounded<bool>(
+        new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite });
+
+    private volatile string? yieldReason;
+
     private volatile SessionStatus? status;
 
     private IBackhaulBatch? current;
@@ -260,6 +268,34 @@ public sealed class ExchangeSession
     public bool TryTake(IBackhaulBatch batch) => work.Writer.TryWrite(batch);
 
     /// <summary>
+    /// Asks a session we dialled to give way: other mail is waiting for
+    /// the link it holds (#425). Once nothing is unanswered either way and
+    /// nothing more is queued, it ends after <see cref="MinQuiet"/> of
+    /// quiet instead of the agreed hold, with <paramref name="reason"/> in
+    /// the log line. The request sticks for the rest of the session: mail
+    /// that comes for this peer meanwhile still goes on it, and the quiet
+    /// spell counts from the last of it. Nothing changes on the wire: the
+    /// caller says <c>quit</c> as it always does, only sooner. The
+    /// answering node never ends a session itself, so there it does
+    /// nothing. Safe to call from any thread. True when the session will
+    /// give way.
+    /// </summary>
+    public bool RequestYield(string reason)
+    {
+        if (!dialled || done) return false;
+        if (Interlocked.CompareExchange(ref yieldReason, reason, null) is null)
+        {
+            logger.LogInformation("The session with {0} will end after {1:F0}s of quiet instead of the hold: {2}",
+                peer, MinQuiet.TotalSeconds, reason);
+            nudges.Writer.TryWrite(true);
+        }
+        return true;
+    }
+
+    /// <summary>Someone asked this session to give way (<see cref="RequestYield"/>).</summary>
+    public bool YieldRequested => yieldReason is not null;
+
+    /// <summary>
     /// Where the session stands, as of the last turn of its loop: safe to
     /// read from any thread.
     /// </summary>
@@ -359,6 +395,7 @@ public sealed class ExchangeSession
         done = true;
         work.Writer.TryComplete();
         pings.Writer.TryComplete();
+        nudges.Writer.TryComplete();
     }
 
     /// <summary>
@@ -459,7 +496,12 @@ public sealed class ExchangeSession
     /// <summary>The agreed hold: the lower of the two ends' values.</summary>
     private TimeSpan Hold => TimeSpan.FromSeconds(Math.Min(OwnRules.HoldSeconds, PeerRules?.HoldSeconds ?? 0));
 
-    private TimeSpan Quiet => Hold > MinQuiet ? Hold : MinQuiet;
+    /// <summary>
+    /// How long a caller waits in quiet before it says <c>quit</c>: the
+    /// agreed hold, never less than <see cref="MinQuiet"/>. Only
+    /// <see cref="MinQuiet"/> once asked to give way.
+    /// </summary>
+    private TimeSpan Quiet => yieldReason is not null || Hold <= MinQuiet ? MinQuiet : Hold;
 
     private TimeSpan Inactivity => Established && Hold + TimeSpan.FromSeconds(30) > InactivityTimeout
         ? Hold + TimeSpan.FromSeconds(30)
@@ -596,7 +638,9 @@ public sealed class ExchangeSession
         }
         if (Idle && now - lastTraffic >= Quiet)
         {
-            BeginQuit($"after {Quiet.TotalSeconds:F0}s of quiet");
+            BeginQuit(yieldReason is { } why && Hold > MinQuiet
+                ? $"after {Quiet.TotalSeconds:F0}s of quiet, before its {Hold.TotalSeconds:F0}s hold: {why}"
+                : $"after {Quiet.TotalSeconds:F0}s of quiet");
             return true;
         }
         return false;
@@ -655,11 +699,13 @@ public sealed class ExchangeSession
             var waits = new List<Task> { data, Task.Delay(delay, TimeProvider, waiting.Token) };
             if (CanSend) waits.Add(work.Reader.WaitToReadAsync(waiting.Token).AsTask());
             waits.Add(pings.Reader.WaitToReadAsync(waiting.Token).AsTask());
+            waits.Add(nudges.Reader.WaitToReadAsync(waiting.Token).AsTask());
             if (dialled && !ownSent && !awaitingRoutes && CrossedCall is { IsCompleted: false } crossed) waits.Add(crossed);
             await Task.WhenAny(waits);
             await waiting.CancelAsync();
         }
         ct.ThrowIfCancellationRequested();
+        while (nudges.Reader.TryRead(out _)) { }
 
         if (data.IsFaulted) await data;     // the link failed under us
         if (!data.IsCompletedSuccessfully) return;
