@@ -389,24 +389,8 @@ public class OutboundMessageManager(
             return;
         }
 
-        if (backgroundSends.ContainsKey(LinkKey(route)))
-        {
-            logger.LogDebug(
-                "Leaving {0} message(s) for {1} queued: a send through {2} from an earlier run is still going",
-                batch.Count, route.Callsign, route.DialCallsign);
-            // #425: what the node says about that link (in the background),
-            // and a session of ours holding it for another neighbour ends
-            // once quiet rather than after its whole hold. Not for mail that
-            // couldn't go anyway: cutting that session short would only cost
-            // its own follow-ups a new connect.
-            nodeDiagnostics?.LinkBusy(route, optionsValue.Callsign);
-            if (!destinationBackoff.IsInCooldown(route.Callsign, out _)
-                && !(ViaOf(route) is { } busyVia && destinationBackoff.IsInCooldown(busyVia, out _)))
-            {
-                GiveWay(backhaul, route);
-            }
-            return;
-        }
+        // Rig-only variant B (#425): no per-link busy guard; the run waits
+        // for every send, so no send is ever left in the background.
 
         if (destinationBackoff.IsInCooldown(route.Callsign, out var nextRetryAtUtc))
         {
@@ -445,22 +429,9 @@ public class OutboundMessageManager(
             return;
         }
 
-        // Not linked to stoppingToken: when that's cancelled, the send
-        // ends with it, and goes the usual way. The wait starts before the
-        // send does, so it's running by the time the bearer is.
-        using (var waiting = new CancellationTokenSource())
-        {
-            var patience = Task.Delay(SendPatience, TimeProvider, waiting.Token);
-            var send = SendAndCompleteAsync(backhaul, batch, optionsValue, stoppingToken);
-            var finished = await Task.WhenAny(send, patience);
-            await waiting.CancelAsync();
-            if (finished == send)
-            {
-                await send;
-                return;
-            }
-            LeaveInBackground(batch, send);
-        }
+        // Rig-only variant B (#425): the run waits for this send to
+        // finish before going on, as before #419 (no SendPatience).
+        await SendAndCompleteAsync(backhaul, batch, optionsValue, stoppingToken);
     }
 
     /// <summary>
@@ -870,15 +841,7 @@ public class OutboundMessageManager(
 
         foreach (var route in flood.Routes)
         {
-            if (RidesASession(route) && backgroundSends.TryGetValue(LinkKey(route), out var busy))
-            {
-                // A send left in the background still has this link: a
-                // copy now would only be turned away, and lost. It goes
-                // once that send has ended, and holds the link till then.
-                logger.LogInformation("Flood of {0}: the link to {1} is still busy; its copy goes when it's free", message.Id, route.Callsign);
-                TrackInBackground(route, FloodCopyWhenFreeAsync(busy, message, flood, originator, route, optionsValue, stoppingToken));
-                continue;
-            }
+            // Rig-only variant B (#425): every flood copy goes inline.
             await SendFloodCopyAsync(message, flood, residualTtl, originator, route, optionsValue, stoppingToken);
         }
 
