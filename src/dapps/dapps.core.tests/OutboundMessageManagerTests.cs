@@ -1877,6 +1877,116 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         bearer.Batches.Select(b => b.Route.Callsign).Should().Equal(["N0AAA", "N0BBB"]);
     }
 
+    [Theory]
+    // #431: each neighbour through N0VIA called from its own Dial as
+    // callsign, or one from a Dial as callsign and one from ours: separate
+    // links, so the second neighbour's mail goes while the first's send
+    // is still going.
+    [InlineData("N0CALL-4", "N0CALL-5")]
+    [InlineData("N0CALL-4", null)]
+    [InlineData(null, "N0CALL-5")]
+    public async Task DoRun_NeighboursThroughOneNode_CalledFromDifferentCallsigns_GoAtOnce(string? dialAsA, string? dialAsB)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA", DialAs = dialAsA });
+            c.Insert(new DbNeighbour { Callsign = "N0BBB", BearerPort = 1, ConnectVia = "N0VIA", DialAs = dialAsB });
+        }
+        var bearer = new GatedBackhaul(holdFor: "N0AAA");
+        var clock = new FakeTimeProvider();
+        var m = MakeManager(bearer);
+        m.TimeProvider = clock;
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+        InsertMessage(id: "bbb0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: "app@N0BBB");
+
+        await RunPastPatienceAsync(m, bearer, clock, ct);
+
+        bearer.Batches.Select(b => b.Route.Callsign).Should().Equal(["N0AAA", "N0BBB"],
+            "N0BBB is called from another callsign, so it doesn't wait for N0AAA's link to N0VIA");
+        bearer.Batches.Select(b => b.Route.DialAs).Should().Equal([dialAsA, dialAsB]);
+        bearer.YieldsFor.Should().BeEmpty("nothing waited for a link, so nothing was asked to give way");
+        (await database.GetPendingOutboundMessages()).Select(r => r.Id).Should().Equal(["aaa0001"]);
+        bearer.Gate.SetResult(BackhaulSendResult.Ok());
+    }
+
+    [Fact]
+    public async Task DoRun_NeighboursThroughOneNode_SharingOneDialAsCallsign_WaitAsBefore()
+    {
+        // #431: one Dial as callsign for both is one link, as our own
+        // callsign is (#419), and the session holding it gives way (#428).
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA", DialAs = "N0CALL-4" });
+            c.Insert(new DbNeighbour { Callsign = "N0BBB", BearerPort = 1, ConnectVia = "N0VIA", DialAs = "n0call-4" });
+        }
+        var bearer = new GatedBackhaul(holdFor: "N0AAA");
+        var clock = new FakeTimeProvider();
+        var m = MakeManager(bearer);
+        m.TimeProvider = clock;
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+        InsertMessage(id: "bbb0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: "app@N0BBB");
+
+        await RunPastPatienceAsync(m, bearer, clock, ct);
+        await m.DoRun(ct);
+
+        bearer.Batches.Select(b => b.Route.Callsign).Should().Equal(["N0AAA"]);
+        bearer.YieldsFor.Should().Contain("N0BBB");
+
+        bearer.Gate.SetResult(BackhaulSendResult.Ok());
+        await WaitUntilAsync(async () =>
+        {
+            await m.DoRun(ct);
+            return (await database.GetPendingOutboundMessages()).Count == 0;
+        }, ct);
+        bearer.Batches.Select(b => b.Route.Callsign).Should().Equal(["N0AAA", "N0BBB"]);
+    }
+
+    [Fact]
+    public async Task DoRun_ADirectNeighbourCalledFromADialAsCallsign_IsNotHeldBackBySessionsThroughItFromOurs()
+    {
+        // #431: our own callsign's session to N0VIA (for a neighbour behind
+        // it) is another link than the Dial as callsign's to N0VIA itself.
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0VIA", BearerPort = 1, DialAs = "N0CALL-4" });
+        }
+        var peers = new PeerSessionRegistry();
+        using var throughIt = peers.TryAcquire("N0VIA", "outbound", out _, linkPort: 1)!;
+        var bearer = new GatedBackhaul(holdFor: "nobody");
+        var m = MakeManager(bearer, peers: peers);
+        InsertMessage(id: "via0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: "app@N0VIA");
+
+        await m.DoRun(ct);
+
+        bearer.Batches.Select(b => b.Route.Callsign).Should().Equal(["N0VIA"]);
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task DoRun_ADirectNeighbourCalledFromADialAsCallsign_StillWaitsForItsOwnCallToUs()
+    {
+        // #431: the neighbour's call to us is another link, but it is the
+        // session its mail goes on: no second session alongside it.
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, DialAs = "N0CALL-4" });
+        }
+        var peers = new PeerSessionRegistry();
+        using var itsCall = peers.Acquire("N0AAA", "inbound", 1);
+        var bearer = new GatedBackhaul(holdFor: "nobody");
+        var m = MakeManager(bearer, peers: peers);
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: "app@N0AAA");
+
+        await m.DoRun(ct);
+
+        bearer.Batches.Should().BeEmpty();
+        (await database.GetPendingOutboundMessages()).Select(r => r.Id).Should().Equal(["aaa0001"]);
+    }
+
     [Fact]
     public async Task DoRun_MailHeldBackForABusyLink_TakesOneLinksSnapshotOfIt_WithoutWaitingForTheNode()
     {

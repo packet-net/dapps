@@ -239,8 +239,8 @@ public sealed class EarlyGiveWayTests : IDisposable
     /// answering DAPPS node played by the test, and whose later dials are
     /// refused as the node's lease for N0VIA would refuse them.
     /// </summary>
-    private static Dappsv1SessionBackhaul Backhaul(Stream ours, WatchedClock clock) =>
-        new(new FirstThenBusyTransport(ours), NullLoggerFactory.Instance, inbox: null,
+    private static Dappsv1SessionBackhaul Backhaul(Stream ours, WatchedClock clock, FirstThenBusyTransport? transport = null) =>
+        new(transport ?? new FirstThenBusyTransport(ours), NullLoggerFactory.Instance, inbox: null,
             settingsFor: (_, _) => Task.FromResult(new ExchangeSettings(HoldSeconds: 120)))
         {
             TimeProvider = clock,
@@ -249,16 +249,19 @@ public sealed class EarlyGiveWayTests : IDisposable
         };
 
     /// <summary>Dials N0AAA through N0VIA and has its one message acked, leaving the session open and quiet.</summary>
-    private async Task<(Dappsv1SessionBackhaul Backhaul, LinePeer Peer, WriteRecordingStream Wire)> OpenToAaaAsync(WatchedClock clock)
+    private async Task<(Dappsv1SessionBackhaul Backhaul, LinePeer Peer, WriteRecordingStream Wire)> OpenToAaaAsync(
+        WatchedClock clock, BackhaulRoute? route = null, FirstThenBusyTransport? transport = null, Action<string>? exchangeLine = null)
     {
         var (ours, theirs) = await LoopbackPairAsync(Ct);
         var wire = new WriteRecordingStream(ours);
-        var sb = Backhaul(wire, clock);
+        var sb = Backhaul(wire, clock, transport?.On(wire));
         var peer = new LinePeer(theirs);
         var m = Message("for aaa", "app@N0AAA");
-        var send = sb.SendBatchAsync(ToAaa, Us, new RecordingBatch(m), Ct);
+        var send = sb.SendBatchAsync(route ?? ToAaa, Us, new RecordingBatch(m), Ct);
         await peer.WriteAsync(Encoding.UTF8.GetBytes("DAPPSv1>\n" + Rules(120) + "\n"), Ct);
-        (await peer.ReadLineAsync(Ct)).Should().StartWith("exchange ");
+        var exchange = await peer.ReadLineAsync(Ct);
+        exchange.Should().StartWith("exchange ");
+        exchangeLine?.Invoke(exchange!);
         await peer.ReadWithPayloadAsync(Ct);
         await peer.WriteLineAsync($"ack {m.Id}", Ct);
         await send.WaitAsync(Patience, Ct);
@@ -286,6 +289,43 @@ public sealed class EarlyGiveWayTests : IDisposable
         await peer.WriteLineAsync("bye", Ct);
         await WaitForAsync(() => sb.OpenPeers.Count == 0);
         sb.YieldSessionsHolding(ToBbb, "x").Should().Be(0, "an ended session is forgotten");
+    }
+
+    [Fact]
+    public async Task ASessionFromADialAsCallsign_DialsFromIt_DeclaresOurOwnCallsign_AndGivesWayOnlyForItsOwnLink()
+    {
+        // #431: the link is from the neighbour's Dial as callsign; the
+        // exchange still says node= with ours. Only mail waiting for that
+        // same link (the same Dial as callsign to the same node) asks it to
+        // give way.
+        var clock = new WatchedClock();
+        var transport = new FirstThenBusyTransport(null);
+        string? exchange = null;
+        var (sb, peer, _) = await OpenToAaaAsync(clock, ToAaa with { DialAs = "N0CALL-4" }, transport, line => exchange = line);
+
+        transport.From.Should().Equal(["N0CALL-4"]);
+        exchange.Should().Contain(" node=N0CALL");
+        exchange.Should().NotContain("node=N0CALL-4");
+
+        sb.YieldSessionsHolding(ToBbb, "x").Should().Be(0, "from our own callsign it's another link");
+        AdvanceWithoutTimersRunningOut(clock, TimeSpan.FromSeconds(60), "nothing waits for its link, so it holds");
+        sb.YieldSessionsHolding(ToBbb with { DialAs = "N0CALL-5" }, "x").Should().Be(0, "from another Dial as callsign it's another link");
+        sb.YieldSessionsHolding(ToBbb with { DialAs = "n0call-4" }, "mail for N0BBB is waiting").Should().Be(1, "the same Dial as callsign to N0VIA is the same link");
+
+        (await peer.ReadLineAsync(Ct)).Should().Be("quit");
+        await peer.WriteLineAsync("bye", Ct);
+        await WaitForAsync(() => sb.OpenPeers.Count == 0);
+    }
+
+    [Fact]
+    public async Task ASessionFromOurOwnCallsign_IsNotAskedToGiveWayForADialAsLink()
+    {
+        var clock = new WatchedClock();
+        var (sb, _, wire) = await OpenToAaaAsync(clock);
+
+        sb.YieldSessionsHolding(ToBbb with { DialAs = "N0CALL-4" }, "x").Should().Be(0, "#431: a Dial as callsign's link to N0VIA is another link");
+        AdvanceWithoutTimersRunningOut(clock, TimeSpan.FromSeconds(60), "nothing waits for its link, so it holds");
+        SaidQuit(wire).Should().BeFalse();
     }
 
     [Fact]
@@ -319,14 +359,27 @@ public sealed class EarlyGiveWayTests : IDisposable
         }
     }
 
-    private sealed class FirstThenBusyTransport(Stream stream) : IDappsOutboundTransport
+    private sealed class FirstThenBusyTransport(Stream? stream) : IDappsOutboundTransport
     {
         private int dials;
+        private Stream? wire = stream;
 
-        public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken) =>
-            Interlocked.Increment(ref dials) == 1
-                ? Task.FromResult<IDappsConnection>(new Connection(stream))
+        /// <summary>Callsigns each dial was from, in order.</summary>
+        public List<string> From { get; } = [];
+
+        public FirstThenBusyTransport On(Stream onto)
+        {
+            wire = onto;
+            return this;
+        }
+
+        public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken)
+        {
+            lock (From) From.Add(localCallsign);
+            return Interlocked.Increment(ref dials) == 1
+                ? Task.FromResult<IDappsConnection>(new Connection(wire!))
                 : throw new PeerSessionBusyException(remoteCallsign, "outbound");
+        }
 
         private sealed class Connection(Stream stream) : IDappsConnection
         {

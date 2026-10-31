@@ -119,6 +119,20 @@ public sealed class F3PollSchedulerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PollAndRecord_ANeighbourWithADialAsCallsign_IsCalledFromIt()
+    {
+        // #431: a poll calls the neighbour the way the forwarder does.
+        await database.UpsertNeighbour("N0EMPTY-9", bearerPort: 1, dialAs: "N0US-4");
+        var transport = new RecordingPollTransport(("N0EMPTY-9", Hello));
+
+        var sched = MakeScheduler(transport, new RecordingInbox());
+        var row = await sched.PollAndRecordAsync("N0US", "N0EMPTY-9", 1, CancellationToken.None);
+
+        row.LastSuccessAt.Should().NotBeNull();
+        transport.From.Should().Equal(["N0US-4"]);
+    }
+
+    [Fact]
     public async Task PollAndRecord_OneQueuedMessage_DrainsAndIncrementsCount()
     {
         await database.UpsertNeighbour("N0HASMAIL-9", bearerPort: 2);
@@ -223,10 +237,12 @@ public sealed class F3PollSchedulerTests : IAsyncLifetime
     {
         private readonly Queue<(string Remote, string Reply)> _queue = new(cannedByCallsign);
         public List<(string Remote, int Port)> Connects { get; } = new();
+        public List<string> From { get; } = new();
 
         public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken)
         {
             Connects.Add((remoteCallsign, bearerPort));
+            From.Add(localCallsign);
             string reply = "";
             if (_queue.Count > 0)
             {
