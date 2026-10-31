@@ -2170,6 +2170,273 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
         (await wakeup.WaitAsync(TimeSpan.FromSeconds(5), TimeProvider.System, ct)).Should().BeTrue();
     }
 
+    [Fact]
+    public async Task DoRun_MailHeldBackForALinkStillBusyInTheBackground_AsksTheSessionsHoldingItToGiveWay()
+    {
+        // #425: N0BBB's mail waits for N0VIA, which N0AAA's session holds.
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA" });
+            c.Insert(new DbNeighbour { Callsign = "N0BBB", BearerPort = 1, ConnectVia = "N0VIA" });
+        }
+        var bearer = new GatedBackhaul(holdFor: "N0AAA");
+        var clock = new FakeTimeProvider();
+        var m = MakeManager(bearer);
+        m.TimeProvider = clock;
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+        InsertMessage(id: "bbb0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: "app@N0BBB");
+
+        await RunPastPatienceAsync(m, bearer, clock, ct);
+
+        bearer.YieldsFor.Should().Equal(["N0BBB"]);
+        bearer.Gate.SetResult(BackhaulSendResult.Ok());
+    }
+
+    [Fact]
+    public async Task DoRun_MailHeldBackForABusyLink_ThatIsInCooldownAnyway_AsksNothingToGiveWay()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA" });
+            c.Insert(new DbNeighbour { Callsign = "N0BBB", BearerPort = 1, ConnectVia = "N0VIA" });
+        }
+        var backoff = new OutboundDestinationBackoff();
+        backoff.RecordFailure("N0BBB");
+        var bearer = new GatedBackhaul(holdFor: "N0AAA");
+        var clock = new FakeTimeProvider();
+        var m = MakeManager(bearer, backoff: backoff);
+        m.TimeProvider = clock;
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+        InsertMessage(id: "bbb0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: "app@N0BBB");
+
+        await RunPastPatienceAsync(m, bearer, clock, ct);
+
+        bearer.YieldsFor.Should().BeEmpty("N0BBB's mail couldn't go yet anyway");
+        bearer.Gate.SetResult(BackhaulSendResult.Ok());
+    }
+
+    [Fact]
+    public async Task DoRun_MailHeldBackForABusyLink_WhoseNodeIsInCooldown_AsksNothingToGiveWay()
+    {
+        // N0VIA went into cooldown after N0AAA's send through it was left in
+        // the background: N0BBB's mail couldn't be dialled through it anyway.
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA" });
+            c.Insert(new DbNeighbour { Callsign = "N0BBB", BearerPort = 1, ConnectVia = "N0VIA" });
+        }
+        var backoff = new OutboundDestinationBackoff();
+        var bearer = new GatedBackhaul(holdFor: "N0AAA");
+        var clock = new FakeTimeProvider();
+        var m = MakeManager(bearer, backoff: backoff);
+        m.TimeProvider = clock;
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+        await RunPastPatienceAsync(m, bearer, clock, ct);
+
+        backoff.RecordFailure("N0VIA");
+        InsertMessage(id: "bbb0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: "app@N0BBB");
+        await m.DoRun(ct);
+
+        bearer.YieldsFor.Should().BeEmpty("N0BBB is reached through N0VIA, which is in cooldown");
+        bearer.Gate.SetResult(BackhaulSendResult.Ok());
+    }
+
+    [Fact]
+    public async Task DoRun_MailForANodeWhoseLinkASessionThroughItHolds_AsksThatSessionToGiveWay()
+    {
+        // #425: the session to N0AAA through N0VIA holds N0VIA's lease, so
+        // mail for N0VIA itself is held back by it.
+        using (var c = DbInfo.GetConnection()) c.Insert(new DbNeighbour { Callsign = "N0VIA", BearerPort = 1 });
+        var peers = new PeerSessionRegistry();
+        var bearer = new GatedBackhaul(holdFor: "nobody");
+        var m = MakeManager(bearer, peers: peers);
+        InsertMessage(id: "via0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: "app@N0VIA");
+
+        using (peers.Acquire("N0VIA", "outbound"))
+        {
+            await m.DoRun(TestContext.Current.CancellationToken);
+        }
+
+        bearer.Batches.Should().BeEmpty();
+        bearer.YieldsFor.Should().Equal(["N0VIA"]);
+    }
+
+    [Theory]
+    [InlineData("N0AAA", "N0VIA", "N0AAA")]   // a session with the neighbour itself is opening: its mail goes there
+    [InlineData("N0VIA", null, "N0VIA")]      // the node's own call to us is opening
+    public async Task DoRun_MailWaitingForASessionWithItsOwnNeighbour_AsksNothingElseToGiveWay(string neighbour, string? via, string leaseOn)
+    {
+        using (var c = DbInfo.GetConnection()) c.Insert(new DbNeighbour { Callsign = neighbour, BearerPort = 1, ConnectVia = via });
+        var peers = new PeerSessionRegistry();
+        var bearer = new GatedBackhaul(holdFor: "nobody");
+        var m = MakeManager(bearer, peers: peers);
+        InsertMessage(id: "wait001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: $"app@{neighbour}");
+
+        using (peers.Acquire(leaseOn, "inbound"))
+        {
+            await m.DoRun(TestContext.Current.CancellationToken);
+        }
+
+        bearer.Batches.Should().BeEmpty();
+        bearer.YieldsFor.Should().BeEmpty("the mail waits for a session with its own neighbour, not for one of ours through the node");
+    }
+
+    [Fact]
+    public async Task DoRun_NoOtherMailWaiting_AsksNothingToGiveWay()
+    {
+        using (var c = DbInfo.GetConnection()) c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA" });
+        var bearer = new GatedBackhaul(holdFor: "nobody");
+        var m = MakeManager(bearer);
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+
+        await m.DoRun(TestContext.Current.CancellationToken);
+
+        bearer.Batches.Should().ContainSingle();
+        bearer.YieldsFor.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// #425 end to end in one process: the forwarder, the real session
+    /// backhaul, and a node that allows one session through N0VIA at a
+    /// time (its lease, as <see cref="BearerSwitchingOutboundTransport"/>
+    /// takes it), on a fake clock. Each call through N0VIA reaches a DAPPS
+    /// node that answers with a 120 s hold.
+    /// </summary>
+    private sealed class GiveWayRig : IAsyncDisposable
+    {
+        public readonly WatchedClock Clock = new();
+        public readonly ForwarderWakeup Wakeup = new();
+        public readonly PeerSessionRegistry Peers;
+        public readonly RecordingInbox FarInbox = new();
+        public readonly ViaNodeTransport Transport;
+        public readonly Dappsv1SessionBackhaul Backhaul;
+        public readonly OutboundMessageManager Manager;
+        private readonly CancellationTokenSource lifetime;
+
+        public GiveWayRig(OutboundMessageManagerTests t, CancellationToken ct)
+        {
+            lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            Peers = new PeerSessionRegistry(Wakeup, Clock);
+            Transport = new ViaNodeTransport(Peers, FarInbox, Clock, lifetime.Token);
+            Backhaul = new Dappsv1SessionBackhaul(Transport, NullLoggerFactory.Instance, inbox: null,
+                settingsFor: (_, _) => Task.FromResult(new ExchangeSettings(HoldSeconds: 120)), sessionOpened: Wakeup.Wake)
+            {
+                TimeProvider = Clock,
+                PromptWait = TimeSpan.FromSeconds(10),
+                MinQuiet = TimeSpan.FromSeconds(10),
+            };
+            Manager = new OutboundMessageManager(t.database, NullLoggerFactory.Instance, t.optionsMonitor, [Backhaul], t.routingAlgorithm,
+                t.routingContext, peerSessions: Peers, wakeup: Wakeup) { TimeProvider = Clock };
+        }
+
+        public Task RunAsync() => Manager.DoRun(lifetime.Token);
+
+        /// <summary>Consumes any wake already pending.</summary>
+        public async Task DrainWakesAsync()
+        {
+            while (await Wakeup.WaitAsync(TimeSpan.Zero, TimeProvider.System, lifetime.Token)) { }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await lifetime.CancelAsync();
+            lifetime.Dispose();
+        }
+    }
+
+    /// <summary>One session through each dialled node at a time, as the
+    /// node's lease allows; each call reaches a DAPPS node answering on a
+    /// loopback pair.</summary>
+    private sealed class ViaNodeTransport(PeerSessionRegistry peers, RecordingInbox farInbox, TimeProvider clock, CancellationToken lifetime)
+        : IDappsOutboundTransport
+    {
+        private int connects;
+        public int Connects => Volatile.Read(ref connects);
+
+        public async Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken)
+        {
+            var lease = peers.TryAcquire(remoteCallsign, "outbound", out var openDirection, linkPort: bearerPort)
+                ?? throw new PeerSessionBusyException(remoteCallsign, openDirection!);
+            Interlocked.Increment(ref connects);
+            peers.Connected(lease);
+            var (ours, theirs) = await ExchangeTestKit.LoopbackPairAsync(lifetime);
+            var far = new ExchangeSession(theirs, localCallsign, dialled: false, new ExchangeSettings(HoldSeconds: 120), farInbox,
+                NullLoggerFactory.Instance) { TimeProvider = clock, OutOfStepHistory = new OutOfStepMemory() };
+            _ = far.RunAsync(lifetime);
+            return new Connection(ours, lease);
+        }
+
+        private sealed class Connection(Stream stream, PeerSessionLease lease) : IDappsConnection
+        {
+            public Stream Stream => stream;
+            public ValueTask DisposeAsync()
+            {
+                stream.Dispose();
+                lease.Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
+    }
+
+    [Fact]
+    public async Task TwoNeighboursThroughOneNode_TheSecondGoesTenSecondsAfterTheFirstGoesQuiet_NotAfterTheHold()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA" });
+            c.Insert(new DbNeighbour { Callsign = "N0BBB", BearerPort = 1, ConnectVia = "N0VIA" });
+        }
+        await using var rig = new GiveWayRig(this, ct);
+        InsertHashedMessage("for aaa", DateTime.UtcNow.AddSeconds(-10), "app@N0AAA");
+        var bbb = InsertHashedMessage("for bbb", DateTime.UtcNow.AddSeconds(-5), "app@N0BBB");
+
+        await rig.RunAsync();
+
+        (await database.GetPendingOutboundMessages()).Select(r => r.Id).Should().Equal([bbb],
+            "N0AAA's session holds N0VIA, so N0BBB's mail waits");
+        rig.Backhaul.OpenPeers.Should().Equal(["N0AAA"]);
+        await rig.DrainWakesAsync();
+
+        rig.Clock.Advance(TimeSpan.FromSeconds(10));
+
+        (await rig.Wakeup.WaitAsync(ExchangeTestKit.Patience, TimeProvider.System, ct)).Should().BeTrue(
+            "N0AAA's session ended after 10 s of quiet, and its lease going woke the forwarder");
+        await WaitUntilAsync(async () =>
+        {
+            await rig.RunAsync();
+            return (await database.GetPendingOutboundMessages()).Count == 0;
+        }, ct);
+        rig.Transport.Connects.Should().Be(2);
+        rig.FarInbox.Messages.Select(x => x.Id).Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task OneNeighbour_TheHoldStillCarriesFollowUpMail_OnTheSameSession()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection()) c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA" });
+        await using var rig = new GiveWayRig(this, ct);
+        InsertHashedMessage("for aaa", DateTime.UtcNow.AddSeconds(-10), "app@N0AAA");
+
+        await rig.RunAsync();
+        (await database.GetPendingOutboundMessages()).Should().BeEmpty();
+
+        rig.Clock.Advance(TimeSpan.FromSeconds(60));
+        await rig.Clock.WaitUntilPendingAsync(ct);
+        rig.Backhaul.OpenPeers.Should().Equal(["N0AAA"], "nothing else waits for N0VIA, so the 120 s hold stands");
+
+        InsertHashedMessage("more for aaa", DateTime.UtcNow, "app@N0AAA");
+        await rig.RunAsync();
+        await rig.FarInbox.WaitForAsync(2, ct);
+
+        rig.FarInbox.Messages.Should().HaveCount(2);
+        rig.Transport.Connects.Should().Be(1, "the follow-up rode the session already open");
+    }
+
     /// <summary>Routes each message by a rule.</summary>
     private sealed class ByDestinationAlgorithm(Func<DbMessage, RouteDecision> decide) : IRoutingAlgorithm
     {
@@ -2210,6 +2477,20 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
 
         public bool CanHandle(BackhaulRoute route) => true;
 
+        private readonly List<string> yieldsFor = [];
+
+        /// <summary>Whose waiting mail asked the sessions holding its link to give way (#425).</summary>
+        public IReadOnlyList<string> YieldsFor
+        {
+            get { lock (yieldsFor) return [.. yieldsFor]; }
+        }
+
+        public int YieldSessionsHolding(BackhaulRoute waiting, string reason)
+        {
+            lock (yieldsFor) yieldsFor.Add(waiting.Callsign);
+            return 0;
+        }
+
         private readonly List<(string Id, string Callsign)> floodCopies = [];
 
         /// <summary>Flood copies sent, one message at a time.</summary>
@@ -2243,6 +2524,21 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
                 if (!result.Accepted) return;
             }
         }
+    }
+
+    /// <summary>A message whose id is the hash of its payload, as a real
+    /// DAPPS session at the far end checks. Returns the id.</summary>
+    private static string InsertHashedMessage(string text, DateTime createdAt, string destination)
+    {
+        var payload = Encoding.UTF8.GetBytes(text);
+        var id = DappsMessage.ComputeHash(payload, 1L)[..7];
+        using var c = DbInfo.GetConnection();
+        c.Insert(new DbMessage
+        {
+            Id = id, Payload = payload, Salt = 1L, Destination = destination, SourceCallsign = "N0CALL",
+            AdditionalProperties = "{}", CreatedAt = createdAt,
+        });
+        return id;
     }
 
     private static void InsertMessage(string id, int? ttl, DateTime createdAt, string destination = "app@N0DEST")

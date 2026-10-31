@@ -50,6 +50,16 @@ public interface IDappsBackhaul
     bool TryHandToOpenSession(BackhaulRoute route, IBackhaulBatch batch) => false;
 
     /// <summary>
+    /// Mail for <paramref name="waiting"/> is being held back because the
+    /// link it needs is taken by a session this bearer holds open to another
+    /// neighbour: ask that session to end once it goes quiet instead of
+    /// holding the link for the whole agreed hold (#425). Returns how many
+    /// sessions will give way. Only bearers that hold sessions open
+    /// between batches override this.
+    /// </summary>
+    int YieldSessionsHolding(BackhaulRoute waiting, string reason) => 0;
+
+    /// <summary>
     /// Forward every message <paramref name="batch"/> hands out to
     /// <paramref name="route"/>, reporting each outcome back to it.
     /// Stops at the first message that isn't accepted; the rest stay

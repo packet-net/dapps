@@ -107,6 +107,8 @@ When mail waits because a link is busy, it also logs what `LINKS` says about tha
 
 This works on LinBPQ over AGW and on XRouter (AGW or RHPv2). pdn has no way to its prompt over RHPv2, so DAPPS says it can't ask: type `NODES` at the node's console instead. Use what these lines show when reporting slow mail through a shared node.
 
+The waiting mail doesn't sit out the whole link hold. The session holding the link ends once it has been quiet for 10 seconds, logging `Ending the session with GB7AGM after 10s of quiet, before its 120s hold: mail for GB7LOX is waiting for the link to CALNE`, and the waiting mail goes straight after.
+
 ## Discovery / routing problems
 
 ### "list_discovered_peers / list_neighbours empty, no traffic moving"
