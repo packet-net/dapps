@@ -161,11 +161,15 @@ internal sealed record RigBWorkload(string Id, string Title, Func<RigBNetwork, i
         return [.. Enumerable.Range(0, n).Select(i => pattern[i % pattern.Length])];
     }
 
+    /// <summary>How long a burst run waits for every message: 25 minutes, or DAPPS_RIG_425_B_DEADLINE_MINUTES.</summary>
+    public static TimeSpan BurstDeadline =>
+        TimeSpan.FromMinutes(double.TryParse(Environment.GetEnvironmentVariable("DAPPS_RIG_425_B_DEADLINE_MINUTES"), System.Globalization.CultureInfo.InvariantCulture, out var m) && m > 0 ? m : 25);
+
     public static TimeSpan SpreadWindow =>
         TimeSpan.FromMinutes(double.TryParse(Environment.GetEnvironmentVariable("DAPPS_RIG_425_B_SPREAD_MINUTES"), System.Globalization.CultureInfo.InvariantCulture, out var m) && m > 0 ? m : 8);
 
     public static readonly RigBWorkload Burst = new("burst", "All queued at once",
-        (rig, seed) => Messages(rig, seed, _ => TimeSpan.Zero), TimeSpan.FromMinutes(25));
+        (rig, seed) => Messages(rig, seed, _ => TimeSpan.Zero), BurstDeadline);
 
     public static readonly RigBWorkload Spread = new("spread", "Arriving spread over time",
         (rig, seed) =>
@@ -193,7 +197,7 @@ internal sealed record RigBWorkload(string Id, string Title, Func<RigBNetwork, i
                 }
             }
             return list;
-        }, TimeSpan.FromMinutes(25));
+        }, BurstDeadline);
 
     public static IReadOnlyList<RigBWorkload> Selected()
     {
