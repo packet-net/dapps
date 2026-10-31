@@ -30,8 +30,9 @@ public sealed class BearerSwitchingDialAsTests : IAsyncDisposable
         foreach (var s in sockets) s.Dispose();
     }
 
-    private (BearerSwitchingOutboundTransport Transport, AgwDialAsLinks Pool) Make(FakeAgwHost host, PeerSessionRegistry? peers = null, TimeProvider? clock = null)
+    private (BearerSwitchingOutboundTransport Transport, AgwDialAsLinks Pool) Make(FakeAgwHost host, PeerSessionRegistry? peers = null, TimeProvider? clock = null, IDappsTxGate? gate = null)
     {
+        gate ??= AlwaysOpenTxGate.Instance;
         var options = new StaticOptionsMonitor<SystemOptions>(new SystemOptions
         {
             NodeBearer = "agw",
@@ -40,11 +41,11 @@ public sealed class BearerSwitchingDialAsTests : IAsyncDisposable
             Callsign = Us,
         });
         var links = new StandaloneAgwLinkSource("127.0.0.1", host.Port, Us, NullLoggerFactory.Instance);
-        var pool = new AgwDialAsLinks(options, NullLogger<AgwDialAsLinks>.Instance, AlwaysOpenTxGate.Instance, clock);
+        var pool = new AgwDialAsLinks(options, NullLogger<AgwDialAsLinks>.Instance, gate, clock);
         owned.Add(pool);
         owned.Add(links);
         var transport = new BearerSwitchingOutboundTransport(
-            options, NullLoggerFactory.Instance, AlwaysOpenTxGate.Instance, TimeProvider.System, TimeSpan.Zero,
+            options, NullLoggerFactory.Instance, gate, TimeProvider.System, TimeSpan.Zero,
             peerSessions: peers, linkSettleSpread: TimeSpan.Zero, agwLinks: links,
             portMaps: new FixedPortMaps(NodePortMap.Plain(3)), dialAsLinks: pool);
         return (transport, pool);
@@ -121,6 +122,29 @@ public sealed class BearerSwitchingDialAsTests : IAsyncDisposable
             .Should().ThrowAsync<PeerSessionBusyException>();
         busy.Which.LocalCallsign.Should().Be("G0LOCAL-4");
         busy.Which.Message.Should().Contain("from G0LOCAL-4");
+    }
+
+    [Fact]
+    public async Task WithTxStopped_ACallFromADialAsCallsign_SendsNothing()
+    {
+        // The Dial as connections go through the same TX gate as the main
+        // one, so the kill switch and Stop TX cover them.
+        var ct = TestContext.Current.CancellationToken;
+        using var host = new FakeAgwHost();
+        var (transport, _) = Make(host, gate: new StoppedGate());
+
+        var connecting = transport.ConnectAsync("G0LOCAL-4", Remote, 1, ct);
+        await AcceptAsync(host, ct);
+        var (own, _) = await AcceptAsync(host, ct);
+
+        await FluentActions.Awaiting(() => connecting).Should().ThrowAsync<TxStoppedException>();
+        (await own.DrainAsync(ct)).Should().NotContain(f => f.Kind == 'C');
+    }
+
+    private sealed class StoppedGate : IDappsTxGate
+    {
+        public bool TxAllowed => false;
+        public string? BlockReason => "stopped for the test";
     }
 
     [Fact]
