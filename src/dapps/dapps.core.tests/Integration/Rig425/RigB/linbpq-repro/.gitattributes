@@ -1,0 +1,2 @@
+# L2Code.c has CRLF line endings, so the patches must keep theirs.
+*.patch -text

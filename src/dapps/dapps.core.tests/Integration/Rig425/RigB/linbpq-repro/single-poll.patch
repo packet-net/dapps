@@ -1,0 +1,28 @@
+--- a/L2Code.c
++++ b/L2Code.c
+@@ -3433,16 +3433,22 @@
+ 
+ 			// if at limit, or no more to send, set P)
+ 	
++			// Experiment for packet-net/dapps#425: only one outstanding poll per direction (AX.25 2.2).
++			// A second P before the first is answered makes the late F look like the answer
++			// to this batch, and SFRAME then resends frames the other end already has.
+ 			if (Outstanding >= LINK->LINKWINDOW || LINK->FRAMES[LINK->LINKNS] == NULL)
+ 			{
+-				CTL |= PFBIT;
+-				LINK->L2FLAGS |= POLLSENT;
++				if ((LINK->L2FLAGS & POLLSENT) == 0)
++				{
++					CTL |= PFBIT;
++					LINK->L2FLAGS |= POLLSENT;
++					LINK->lastPSent = GetTickCount();
++				}
+ 				LINK->L2TIMER = ONEMINUTE;	// (RE)SET TIMER
+ 
+ 				// FLAG BUFFER TO CAUSE TIMER TO BE RESET AFTER SEND (or ACK if ACKMODE)
+ 
+ 				Buffer->Linkptr = LINK;
+-				LINK->lastPSent = GetTickCount();
+ 			}
+ 		}
+ 	
