@@ -62,6 +62,16 @@ internal sealed record RigBArm(
     private const string GiveWayHow =
         "MB7NPW runs the early give-way build (DAPPS_RIG_425_B_GIVEWAY_DLL): a quiet session it dialled ends after 10 s, not the 120 s hold, when mail for another neighbour waits for the link it holds. The peers run this tree's build.";
 
+    private static string? With419Dll() => Environment.GetEnvironmentVariable("DAPPS_RIG_425_B_WITH419_DLL");
+
+    private static string? No419Dll() => Environment.GetEnvironmentVariable("DAPPS_RIG_425_B_NO419_DLL");
+
+    private const string With419How =
+        "MB7NPW runs 0.57.0 as released (DAPPS_RIG_425_B_WITH419_DLL): a run waits at most 10 s on one send and leaves it in the background, and leaves that link alone until it ends.";
+
+    private const string No419How =
+        "MB7NPW runs 0.57.0 with #419's background sends removed (DAPPS_RIG_425_B_NO419_DLL, branch rig/425-variant-b-without-419-do-not-merge): a run waits for each send to finish, flood copies go inline; the via cooldown, the dial guard and the early give-way are unchanged.";
+
     /// <summary>Dial the peer's DAPPS call itself; LinBPQ routes it by its node table.</summary>
     private static DappsDaemon.Neighbour Direct(RigBNode peer) => new(peer.DappsCall!, RigBNetwork.RfAgwPort);
 
@@ -103,6 +113,28 @@ internal sealed record RigBArm(
             (rig, peer) => AsConfigured(rig, peer),
             "As arm 1s. " + GiveWayHow,
             DaemonDll: GiveWayDll),
+        // #419 earns its keep? MB7NPW on 0.57.0 as released (W: with #419)
+        // and on 0.57.0 with #419's background sends taken out (N: the rig-only
+        // branch rig/425-variant-b-without-419-do-not-merge), in #419's own
+        // layout and in Kevin's, L2 and NET/ROM to CALNE.
+        new("W1s", "#419's slow via, 0.57.0 (with #419)", RigBProfile.SlowViaLayout,
+            (rig, peer) => AsConfigured(rig, peer),
+            "As arm 1s. " + With419How, DaemonDll: With419Dll),
+        new("N1s", "#419's slow via, 0.57.0 without #419", RigBProfile.SlowViaLayout,
+            (rig, peer) => AsConfigured(rig, peer),
+            "As arm 1s. " + No419How, DaemonDll: No419Dll),
+        new("W1", "Kevin's layout, L2 to CALNE, 0.57.0 (with #419)", RigBProfile.L2,
+            (rig, peer) => AsConfigured(rig, peer),
+            "As arm 1. " + With419How, DaemonDll: With419Dll),
+        new("N1", "Kevin's layout, L2 to CALNE, 0.57.0 without #419", RigBProfile.L2,
+            (rig, peer) => AsConfigured(rig, peer),
+            "As arm 1. " + No419How, DaemonDll: No419Dll),
+        new("W3", "Kevin's layout, NET/ROM to CALNE, 0.57.0 (with #419)", RigBProfile.NetRom,
+            (rig, peer) => AsConfigured(rig, peer),
+            "As arm 3. " + With419How, DaemonDll: With419Dll),
+        new("N3", "Kevin's layout, NET/ROM to CALNE, 0.57.0 without #419", RigBProfile.NetRom,
+            (rig, peer) => AsConfigured(rig, peer),
+            "As arm 3. " + No419How, DaemonDll: No419Dll),
         // A build from another branch, to try a design without touching this
         // tree: DAPPS_RIG_425_B_PROTO_DLL points at its dapps.core.dll,
         // DAPPS_RIG_425_B_PROTO_PROFILE picks the rig (l2, netrom,

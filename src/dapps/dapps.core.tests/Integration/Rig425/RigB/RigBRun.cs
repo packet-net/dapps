@@ -60,6 +60,11 @@ internal sealed record RigBResult
     public int GiveWays { get; init; }
     /// <summary>MB7NPW's deferrals because a dial would have reset a session already open.</summary>
     public int BusyDeferrals { get; init; }
+    /// <summary>Dials MB7NPW's DAPPS asked its node for ("AGW: requesting"), and how many the node confirmed.</summary>
+    public int? Dials { get; init; }
+    public int? DialsConfirmed { get; init; }
+    /// <summary>MB7NPW's failed sends ("Failed to forward message": a dial or connect script that failed, each one a cooldown).</summary>
+    public int? SendFailures { get; init; }
     /// <summary>Messages the peers sent MB7NPW (the both workload).</summary>
     public int BackMessages { get; init; }
     /// <summary>How many peers had mail (DAPPS_RIG_425_B_MAIL_PEERS), of how many in the rig.</summary>
@@ -250,6 +255,9 @@ internal sealed class RigBRun(RigBNetwork rig, RigBArm arm, RigBWorkload workloa
             NpwInboundSessions = Regex.Matches(logs.GetValueOrDefault("rigb-NPW") ?? "", "Inbound session from").Count,
             GiveWays = Regex.Matches(logs.GetValueOrDefault("rigb-NPW") ?? "", @"of quiet, before its \d+s hold").Count,
             BusyDeferrals = Regex.Matches(logs.GetValueOrDefault("rigb-NPW") ?? "", "dialling now would reset it").Count,
+            Dials = Regex.Matches(logs.GetValueOrDefault("rigb-NPW") ?? "", "AGW: requesting").Count,
+            DialsConfirmed = Regex.Matches(logs.GetValueOrDefault("rigb-NPW") ?? "", "AGW: connect confirmed").Count,
+            SendFailures = Regex.Matches(logs.GetValueOrDefault("rigb-NPW") ?? "", "Failed to forward message").Count,
             BackMessages = messages.Count(m => m.Back),
             MailPeers = messages.Select(m => m.Peer).Distinct().Count(),
             RigPeers = rig.Peers.Count,
