@@ -81,7 +81,7 @@ What it says:
 - **The 30 s "no answer to routes" limit is tight** on a channel shared three ways. It fired once on a healthy, busy channel.
 - **Nothing was lost or duplicated** in any run.
 
-Rig B modelled MB7NPW to CALNE as a busy AFSK 1200 channel (about 120 s of airtime for 18 messages); the CALNE to peer links were AXUDP. MB7NPW's real first hop is a much faster NPR link, so the absolute times are pessimistic. Use them for comparing setups only.
+Rig B modelled MB7NPW to CALNE as a busy AFSK 1200 channel (about 120 s of airtime for 18 messages), and CALNE to each peer as AXUDP. The real network differs both ways: the first hop is a much faster NPR link, but every session then crosses CALNE's shared 70 cm 4k8 channel (see the survey below). Use the times for comparing setups only.
 
 A later Rig B run checked [#419](https://github.com/packet-net/dapps/pull/419) (a slow dial no longer holds up every other neighbour). In Kevin's layout it made no difference once 0.57.0's give-way was in; with a slow via and direct neighbours it kept the direct neighbours' burst at 13 to 15 s instead of about 77 s. It stays.
 
@@ -120,7 +120,19 @@ MB7NPW (alias PEWSEY) runs LinBPQ. Its ports:
 - **EI7KX** is not in MB7NPW's NODES at all.
 - **The DAPPS application calls** (GB7AGM-3, GB7LOX-6, EI7KX-3) are not in NODES.
 
-That is why Kevin's connect scripts go via CALNE: they force the fast NPR path, and EI7KX can only be reached that way. GB7AGM calls in as GB7AGM-12 (LinBPQ's 15 minus SSID flip). CALNE's own links to each peer haven't been surveyed yet ([#433](https://github.com/packet-net/dapps/issues/433)).
+GB7AGM calls in as GB7AGM-12 (LinBPQ's 15 minus SSID flip).
+
+CALNE was surveyed the same day, one hop further ([#433](https://github.com/packet-net/dapps/issues/433)). It has **no direct link to any of the three peers**. Its only neighbours are:
+
+| CALNE port | Neighbour |
+|---|---|
+| 1 | MB7NPW, over NPR |
+| 2 | GB7BDH (SWINDN, XRouter), 70 cm 4k8 NinoTNC, shared with user access |
+| 5 | G8PZT (KIDDER), AXUDP over the internet |
+
+From CALNE, the best route to GB7AGM is back via MB7NPW (3 hops), and to GB7LOX via GB7BDH on port 2 (3 hops). EI7KX isn't in CALNE's nodes either, so how the scripts reach it from CALNE is unknown; Kevin's actual scripts would settle it.
+
+So going via CALNE avoids MB7NPW's own slow 4 m link to GB7BDH, but the path is not NPR end to end: every session still crosses a shared 4k8 radio channel beyond CALNE.
 
 ## What has shipped
 
@@ -140,7 +152,7 @@ That is why Kevin's connect scripts go via CALNE: they force the fast NPR path, 
 - [#430](https://github.com/packet-net/dapps/issues/430): a lab replica of MB7NPW's network, with the real link speeds.
 - [#431](https://github.com/packet-net/dapps/issues/431): dial a neighbour from its own source SSID (option 1).
 - [#432](https://github.com/packet-net/dapps/issues/432): ask LinBPQ to honour Remote and Port on RHPv2 open.
-- [#433](https://github.com/packet-net/dapps/issues/433): survey CALNE's links to each peer.
+- How the via-CALNE scripts reach EI7KX (not in CALNE's nodes); Kevin's scripts would settle it.
 - [M0LTE/linbpq#82](https://github.com/M0LTE/linbpq/issues/82): the LinBPQ L2 faults, for G8BPQ.
 - XRouter and pdn didn't exchange NODES in Rig A's mixed chain (XRouter counted every pdn broadcast as an L3 error). Not yet investigated.
 
