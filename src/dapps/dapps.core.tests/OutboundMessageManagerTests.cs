@@ -2218,6 +2218,33 @@ public sealed class OutboundMessageManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DoRun_MailHeldBackForABusyLink_WhoseNodeIsInCooldown_AsksNothingToGiveWay()
+    {
+        // N0VIA went into cooldown after N0AAA's send through it was left in
+        // the background: N0BBB's mail couldn't be dialled through it anyway.
+        var ct = TestContext.Current.CancellationToken;
+        using (var c = DbInfo.GetConnection())
+        {
+            c.Insert(new DbNeighbour { Callsign = "N0AAA", BearerPort = 1, ConnectVia = "N0VIA" });
+            c.Insert(new DbNeighbour { Callsign = "N0BBB", BearerPort = 1, ConnectVia = "N0VIA" });
+        }
+        var backoff = new OutboundDestinationBackoff();
+        var bearer = new GatedBackhaul(holdFor: "N0AAA");
+        var clock = new FakeTimeProvider();
+        var m = MakeManager(bearer, backoff: backoff);
+        m.TimeProvider = clock;
+        InsertMessage(id: "aaa0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-10), destination: "app@N0AAA");
+        await RunPastPatienceAsync(m, bearer, clock, ct);
+
+        backoff.RecordFailure("N0VIA");
+        InsertMessage(id: "bbb0001", ttl: null, createdAt: DateTime.UtcNow.AddSeconds(-5), destination: "app@N0BBB");
+        await m.DoRun(ct);
+
+        bearer.YieldsFor.Should().BeEmpty("N0BBB is reached through N0VIA, which is in cooldown");
+        bearer.Gate.SetResult(BackhaulSendResult.Ok());
+    }
+
+    [Fact]
     public async Task DoRun_MailForANodeWhoseLinkASessionThroughItHolds_AsksThatSessionToGiveWay()
     {
         // #425: the session to N0AAA through N0VIA holds N0VIA's lease, so

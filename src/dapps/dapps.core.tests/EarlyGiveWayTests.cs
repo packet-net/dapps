@@ -167,6 +167,40 @@ public sealed class EarlyGiveWayTests : IDisposable
     }
 
     [Fact]
+    public async Task AFollowUpForThePeerDuringTheShortSpell_GoesOnTheSessionOnce_AndTheSpellRunsFromIt()
+    {
+        var clock = new WatchedClock();
+        var (session, peer, run, wire) = await CallerAsync(clock);
+        await EstablishAsync(peer, clock);
+        var armed = clock.Armed;
+        session.RequestYield("mail for N0BBB is waiting").Should().BeTrue();
+        await clock.WaitForArmedAsync(armed + 1, Ct);
+        await clock.WaitUntilPendingAsync(Ct);
+        AdvanceWithoutTimersRunningOut(clock, TimeSpan.FromSeconds(5), "only 5 s of quiet so far");
+
+        var followUp = Message("follow-up", "app@N0AAA");
+        var batch = new RecordingBatch(followUp);
+        session.TryTake(batch).Should().BeTrue("a session giving way still takes mail for its own peer");
+        (await peer.ReadWithPayloadAsync(Ct)).Line.Should().StartWith($"msg {followUp.Id}");
+        await clock.WaitUntilPendingAsync(Ct);
+        armed = clock.Armed;
+        await peer.WriteLineAsync($"ack {followUp.Id}", Ct);
+        await batch.WaitForOutcomesAsync(1, Ct);
+        await clock.WaitForArmedAsync(armed + 1, Ct);
+        await clock.WaitUntilPendingAsync(Ct);
+
+        AdvanceWithoutTimersRunningOut(clock, TimeSpan.FromSeconds(9), "the quiet spell runs from the ack, not from the request");
+        SaidQuit(wire).Should().BeFalse();
+        clock.Advance(TimeSpan.FromSeconds(1));
+        (await peer.ReadLineAsync(Ct)).Should().Be("quit");
+        await peer.WriteLineAsync("bye", Ct);
+        await run.WaitAsync(Patience, Ct);
+
+        batch.Outcomes.Single().Result.Accepted.Should().BeTrue();
+        wire.Writes.Count(w => w.Contains($"msg {followUp.Id}", StringComparison.Ordinal)).Should().Be(1, "it went once");
+    }
+
+    [Fact]
     public async Task ARequestBeforeTheExchange_Sticks()
     {
         var clock = new WatchedClock();
