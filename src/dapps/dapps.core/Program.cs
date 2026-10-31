@@ -178,6 +178,10 @@ builder.Services.AddSingleton<AgwInboundService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AgwInboundService>());
 // The daemon's one AGW connection, published for those that use it.
 builder.Services.AddSingleton<IAgwLinkSource>(sp => sp.GetRequiredService<AgwInboundService>());
+// #431: one AGW connection per neighbour's Dial as callsign, opened as
+// calls need them; they make calls only.
+builder.Services.AddSingleton<AgwDialAsLinks>();
+builder.Services.AddSingleton<IAgwDialAsLinks>(sp => sp.GetRequiredService<AgwDialAsLinks>());
 builder.Services.AddSingleton<Rhpv2InboundService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Rhpv2InboundService>());
 builder.Services.AddHostedService<TtlSweeperService>();

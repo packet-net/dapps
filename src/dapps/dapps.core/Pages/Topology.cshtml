@@ -32,6 +32,9 @@
             <div class="field"><label>Connect via (optional)</label><input name="connectVia" placeholder="GB7ABC" />
                 <span class="hint">only if the peer can't be dialled directly: the node to dial instead</span>
             </div>
+            <div class="field"><label>Dial as (optional)</label><input name="dialAs" placeholder="@(string.IsNullOrWhiteSpace(Model.Options.Callsign) ? "MYCALL" : Model.Options.Callsign.Split('-')[0])-4" />
+                <span class="hint">only for several peers behind one node: an SSID of your callsign to call this one from, so their sessions can run at once</span>
+            </div>
             <div class="field" data-port-picker="bearerPort">
                 <label>Radio port</label>
                 <select name="bearerPort">
@@ -280,6 +283,7 @@ else
             UdpEndpoint: f.udpEndpoint.value || null,
             ConnectScript: f.connectScript.value || null,
             ConnectVia: f.connectVia.value || null,
+            DialAs: f.dialAs.value || null,
             CompressionEnabled: compression,
             SessionTailSeconds: f.sessionTail.value === '' ? null : parseInt(f.sessionTail.value, 10),
             // Set while editing a row, so a changed callsign renames it.
@@ -310,6 +314,7 @@ else
         f.sessionTail.value = n.sessionTailSeconds == null ? '' : String(n.sessionTailSeconds);
         f.connectScript.value = connectScriptLines(n.connectScriptJson);
         f.connectVia.value = n.connectVia || '';
+        f.dialAs.value = n.dialAs || '';
         // The port picker may still be filling from BPQ (or swapping to a
         // text input); wait for it so the saved port can be selected.
         await loadAgwPorts();
@@ -618,7 +623,7 @@ else
                 body.innerHTML = '<tr><td colspan="7" class="empty" style="text-align:center;">No neighbours yet. Add one above.</td></tr>';
             } else {
                 body.innerHTML = ns.map(n => `<tr>
-                    <td><code>${escape(n.callsign)}</code>${ssidNote(n)}</td>
+                    <td><code>${escape(n.callsign)}</code>${n.dialAs ? '<div class="muted">dialled as <code>' + escape(n.dialAs) + '</code></div>' : ''}${ssidNote(n)}</td>
                     <td>${fmtPort(n)}</td>
                     <td>${n.udpEndpoint ? '<code>' + escape(n.udpEndpoint) + '</code>' : '<span class="muted">-</span>'}</td>
                     <td>${fmtCompression(n.compressionEnabled)}</td>

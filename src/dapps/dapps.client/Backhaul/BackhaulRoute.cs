@@ -14,6 +14,11 @@ namespace dapps.client.Backhaul;
 /// KISS, etc.) further fields go here. Each backhaul reads what's
 /// relevant and ignores the rest; the queue/router layer doesn't have
 /// to know which bearer a given route maps to.
+///
+/// <see cref="DialAs"/> (#431) is the callsign the node bearer calls from
+/// for this neighbour, an SSID of our own callsign; null calls from our
+/// own. Each one is a separate AX.25 link, so neighbours reached through
+/// one node from different Dial as callsigns don't share a link.
 /// </summary>
 public sealed record BackhaulRoute(
     string Callsign,
@@ -22,8 +27,22 @@ public sealed record BackhaulRoute(
     ConnectScript? ConnectScript = null,
     string? MeshCoreChannel = null,
     string? ConnectVia = null,
-    bool PortHeld = false)
+    bool PortHeld = false,
+    string? DialAs = null)
 {
+    /// <summary>The callsign the node bearer calls from: <see cref="DialAs"/>,
+    /// or <paramref name="ourCallsign"/> when there is none.</summary>
+    public string SourceCallsign(string ourCallsign) => DialAs ?? ourCallsign;
+
+    /// <summary>
+    /// True when <paramref name="other"/> dials the same AX.25 link at our
+    /// node: the same callsign to call, from the same callsign (both our
+    /// own, or the same Dial as callsign). The port isn't compared.
+    /// </summary>
+    public bool SharesLinkWith(BackhaulRoute other) =>
+        string.Equals(DialCallsign, other.DialCallsign, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(DialAs ?? "", other.DialAs ?? "", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// The callsign the node bearer dials: <see cref="ConnectVia"/> when
     /// the peer is reached through another node (whose prompt the

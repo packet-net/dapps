@@ -22,6 +22,12 @@ namespace dapps.core.Services;
 /// outbound connects already go through here, so the gate sees every
 /// redial - and, for the same reason, this is where every outbound
 /// link is registered with <see cref="PeerSessionRegistry"/> (#178).
+///
+/// A call from a callsign other than ours is from a neighbour's Dial as
+/// callsign (#431). It is another AX.25 link, so its lease is keyed on that
+/// callsign as well as the one called, and on AGW it goes out on that
+/// callsign's own connection (<see cref="IAgwDialAsLinks"/>). Nothing is
+/// called from a callsign that isn't an SSID of ours.
 /// </summary>
 public sealed class BearerSwitchingOutboundTransport(
     IOptionsMonitor<SystemOptions> options,
@@ -33,7 +39,8 @@ public sealed class BearerSwitchingOutboundTransport(
     TimeSpan? linkSettleSpread = null,
     TimeSpan? peersCallWait = null,
     IAgwLinkSource? agwLinks = null,
-    INodePortMaps? portMaps = null) : IDappsOutboundTransport
+    INodePortMaps? portMaps = null,
+    IAgwDialAsLinks? dialAsLinks = null) : IDappsOutboundTransport
 {
     /// <summary>
     /// How long to wait, after the node refuses a dial because something
@@ -94,6 +101,17 @@ public sealed class BearerSwitchingOutboundTransport(
         }
         await settle.WaitAsync(key, stoppingToken);
 
+        // #431: calling from a Dial as callsign, not our own.
+        string? dialAs = null;
+        if (!string.IsNullOrWhiteSpace(opts.Callsign) && !DestinationParser.SameStation(localCallsign, opts.Callsign))
+        {
+            if (DialAsCallsign.StillOurs(localCallsign, opts.Callsign) is { } notOurs)
+            {
+                throw new InvalidOperationException($"{notOurs}; {remoteCallsign} was not called");
+            }
+            dialAs = DestinationParser.StationKey(localCallsign);
+        }
+
 
         // #178/#185: register the link so the forwarder leaves this peer
         // alone until it is torn down (a scheduled poll or probe can be
@@ -112,10 +130,10 @@ public sealed class BearerSwitchingOutboundTransport(
             // Only AGW links take part in retirement (see PeerSessionRegistry).
             // The lease knows the link by the node's own port number (#233),
             // as the inbound side does.
-            lease = peerSessions.TryAcquire(remoteCallsign, "outbound", out var openDirection, linkPort: isRhpv2 ? null : bearerPort);
+            lease = peerSessions.TryAcquire(remoteCallsign, "outbound", out var openDirection, linkPort: isRhpv2 ? null : bearerPort, local: dialAs);
             if (lease is null)
             {
-                throw new PeerSessionBusyException(remoteCallsign, openDirection!);
+                throw new PeerSessionBusyException(remoteCallsign, openDirection!, dialAs);
             }
         }
 
@@ -142,8 +160,28 @@ public sealed class BearerSwitchingOutboundTransport(
                 // ports (NodePortMap). An unknown port sends nothing.
                 if (agwLinks is null) throw new AgwLinkDownException(remoteCallsign, AgwLinkState.Idle);
                 var agwPort = await ResolveAgwPortAsync(agwLinks, remoteCallsign, bearerPort, stoppingToken);
-                var agw = new AgwOutboundTransport(agwLinks, loggerFactory);
-                inner = await agw.ConnectAsync(localCallsign, remoteCallsign, agwPort, stoppingToken);
+                if (dialAs is not null && dialAsLinks is not null)
+                {
+                    // #431: LinBPQ calls from the first callsign a connection
+                    // registered, so this one goes on the Dial as callsign's
+                    // own connection. The port byte is the same node's.
+                    var use = await dialAsLinks.AcquireAsync(dialAs, stoppingToken);
+                    try
+                    {
+                        var agw = new AgwOutboundTransport(use.Source, loggerFactory);
+                        inner = new HeldConnection(await agw.ConnectAsync(dialAs, remoteCallsign, agwPort, stoppingToken), use);
+                    }
+                    catch
+                    {
+                        use.Dispose();
+                        throw;
+                    }
+                }
+                else
+                {
+                    var agw = new AgwOutboundTransport(agwLinks, loggerFactory);
+                    inner = await agw.ConnectAsync(localCallsign, remoteCallsign, agwPort, stoppingToken);
+                }
             }
         }
         catch (PeerLinkAlreadyUpException ex) when (ex.HeldByPeersCall is null)
@@ -157,7 +195,9 @@ public sealed class BearerSwitchingOutboundTransport(
             bool peersCall;
             try
             {
-                peersCall = peerSessions is not null
+                // From a Dial as callsign the peer's call to us is another
+                // link, so it can't be what holds this one (#431).
+                peersCall = peerSessions is not null && dialAs is null
                     && await peerSessions.WaitForInboundAsync(remoteCallsign, peersCallWait ?? DefaultPeersCallWait, timeProvider, stoppingToken);
             }
             finally
@@ -222,6 +262,27 @@ public sealed class BearerSwitchingOutboundTransport(
                   $"AGW: the node's port numbers could not be read (XRouter: check RHPPORT and DAPPS's RHPv2 settings); {remoteCallsign} was not called");
         return map.ToAgwPort(portNumber)
             ?? throw new AgwLinkDownException($"AGW: the node has no port {portNumber} ({map}); {remoteCallsign} was not called");
+    }
+
+    /// <summary>A connection on a Dial as callsign's AGW connection, which
+    /// stays open until this is closed (#431).</summary>
+    private sealed class HeldConnection(IDappsConnection inner, AgwDialAsUse use) : IDappsConnection
+    {
+        public Stream Stream => inner.Stream;
+        public CancellationToken Retired => inner.Retired;
+        public Task CrossedCall => inner.CrossedCall;
+
+        public async ValueTask AbandonAsync()
+        {
+            try { await inner.AbandonAsync(); }
+            finally { use.Dispose(); }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            try { await inner.DisposeAsync(); }
+            finally { use.Dispose(); }
+        }
     }
 
     /// <summary>

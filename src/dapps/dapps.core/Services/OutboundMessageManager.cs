@@ -103,11 +103,15 @@ public class OutboundMessageManager(
     /// </summary>
     private readonly ConcurrentDictionary<string, Task> backgroundSends = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>The node a route dials, and on which port. Neighbours
-    /// reached through the same <see cref="BackhaulRoute.ConnectVia"/>
-    /// share it.</summary>
+    /// <summary>The node a route dials, on which port, and from which
+    /// callsign. Neighbours reached through the same
+    /// <see cref="BackhaulRoute.ConnectVia"/> share it, unless they are
+    /// dialled from different Dial as callsigns (#431): those are separate
+    /// AX.25 links. Without one, the same key as before.</summary>
     private static string LinkKey(BackhaulRoute route) =>
-        string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{route.DialCallsign}|{route.BearerPort}");
+        route.DialAs is { } dialAs
+            ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{dialAs.ToUpperInvariant()}>{route.DialCallsign}|{route.BearerPort}")
+            : string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{route.DialCallsign}|{route.BearerPort}");
 
     /// <summary>Outcomes arrive from background sessions as well as from
     /// the run itself; routing and metrics see them one at a time.</summary>
@@ -438,7 +442,7 @@ public class OutboundMessageManager(
             // #425: mail for a node we dial directly, whose lease is held only
             // by sessions of ours through it to other neighbours. With any
             // session the node itself opened, the mail goes on that one.
-            if (ViaOf(route) is null && peerSessions!.Sessions(route.Callsign).All(s => s.Direction == "outbound"))
+            if (ViaOf(route) is null && OpenSessionsBlocking(route).All(s => s.Direction == "outbound"))
             {
                 GiveWay(backhaul, route);
             }
@@ -847,6 +851,7 @@ public class OutboundMessageManager(
                 && x.UdpEndpoint == y.UdpEndpoint
                 && x.MeshCoreChannel == y.MeshCoreChannel
                 && string.Equals(x.ConnectVia, y.ConnectVia, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(x.DialAs, y.DialAs, StringComparison.OrdinalIgnoreCase)
                 && (x.ConnectScript?.Steps ?? []).SequenceEqual(y.ConnectScript?.Steps ?? []);
         }
 
@@ -1093,7 +1098,28 @@ public class OutboundMessageManager(
     {
         openDirection = null;
         if (peerSessions is null || !RidesASession(route)) return false;
-        return peerSessions.IsActive(route.Callsign, out openDirection);
+        if (route.DialAs is null) return peerSessions.IsActive(route.Callsign, out openDirection);
+        var blocking = OpenSessionsBlocking(route);
+        openDirection = blocking.FirstOrDefault()?.Direction;
+        return blocking.Count > 0;
+    }
+
+    /// <summary>
+    /// The open sessions that hold <paramref name="route"/> back, oldest
+    /// first: every session with the neighbour. #431: for a neighbour
+    /// dialled from a Dial as callsign, our own callsign's links are
+    /// another link, so only a session the neighbour opened with us (its
+    /// mail goes on that one) and, when we dial it directly, the sessions
+    /// on the Dial as link to it. One through a Connect via node is left
+    /// to the transport's own check, as before.
+    /// </summary>
+    private IReadOnlyList<OpenSessionInfo> OpenSessionsBlocking(BackhaulRoute route)
+    {
+        if (peerSessions is null) return [];
+        if (route.DialAs is not { } dialAs) return peerSessions.Sessions(route.Callsign);
+        var inbound = peerSessions.Sessions(route.Callsign).Where(s => s.Direction == "inbound");
+        IEnumerable<OpenSessionInfo> ours = ViaOf(route) is null ? peerSessions.Sessions(route.Callsign, dialAs) : [];
+        return [.. inbound.Concat(ours).OrderBy(s => s.Since)];
     }
 
     /// <summary>AGW and RHP routes ride a connected-mode session; UDP and

@@ -109,7 +109,8 @@ public sealed class PollSchedulerService(
         var nb = await database.GetNeighbour(remoteCallsign);
         var connectScript = dapps.client.ConnectScript.FromJson(nb?.ConnectScriptJson);
         var result = await poller.PollAsync(localCallsign, remoteCallsign, bearerPort, ct, connectScript,
-            connectVia: connectScript is null ? null : nb?.ConnectVia);
+            connectVia: connectScript is null ? null : nb?.ConnectVia,
+            dialAs: string.IsNullOrWhiteSpace(nb?.DialAs) ? null : nb.DialAs);
         sw.Stop();
         var row = await RecordResultAsync(result);
         if (transmissionAudit is { } ta)
