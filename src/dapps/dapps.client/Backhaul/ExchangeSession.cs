@@ -20,7 +20,10 @@ namespace dapps.client.Backhaul;
 /// and on AX.25 a frame. That holds for a long message too: it can span
 /// several of the peer's transmissions, and writing into those turns
 /// had both ends' nodes streaming at once, which at the edge of range
-/// made BPQ drop the link every minute or two.
+/// made BPQ drop the link every minute or two. Only while the peer's
+/// bytes keep coming, though: answers due go anyway once the rest of a
+/// line or a payload has stopped arriving for <see cref="AnswerHold"/>,
+/// as it may never come (#425).
 /// </para>
 ///
 /// <para>
@@ -191,6 +194,18 @@ public sealed class ExchangeSession
     /// before giving up on the link: the AX.25 T3 default. Longer once a
     /// hold has been agreed.</summary>
     public TimeSpan InactivityTimeout { get; init; } = TimeSpan.FromMinutes(3);
+
+    /// <summary>
+    /// How long answers due wait for the rest of a line or a payload that
+    /// has stopped arriving before they go anyway. While the peer's bytes
+    /// keep coming they wait for the lot, so they share a write and don't
+    /// go into the peer's stream (the class notes say why). But bytes a
+    /// node lost never come: LinBPQ can resend a NET/ROM fragment 20 bytes
+    /// short, and the ack of a message already taken waited behind the
+    /// next payload until the sender gave up on the link (#425). Well over
+    /// a <c>FRACK</c> and a retry, well under the peer's 3-minute patience.
+    /// </summary>
+    public TimeSpan AnswerHold { get; init; } = TimeSpan.FromSeconds(30);
 
     public int Window { get; init; } = DefaultWindow;
 
@@ -1492,23 +1507,45 @@ public sealed class ExchangeSession
 
     private async ValueTask<int> ReadWithTimeoutAsync(Memory<byte> buffer, CancellationToken ct)
     {
-        // What we have to say goes before we wait on the link: an answer
-        // already due mustn't wait for the rest of a line or a payload,
-        // which can be a long time coming or never come. LinBPQ can resend
-        // a NET/ROM fragment 20 bytes short, and the payload after a
-        // message we'd taken never completed: its ack waited with it, and
-        // the sender heard nothing until it gave up on the link (#425).
-        if (!link.HasBufferedData) await FlushAsync(ct);
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(Inactivity);
         try
         {
+            if (outgoing.Length > 0 && !link.HasBufferedData) await FlushIfStalledAsync(cts.Token, ct);
             return await link.ReadAsync(buffer, cts.Token);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             throw new TimeoutException($"no data from {peer} within {Inactivity.TotalSeconds:F0}s");
         }
+    }
+
+    /// <summary>
+    /// Partway through a line or a payload, with answers due: they go once
+    /// nothing more has come for <see cref="AnswerHold"/>. Not at once:
+    /// writing while a long message was still arriving had both nodes
+    /// streaming at each other, and at the edge of range BPQ dropped the
+    /// link every minute or two (docs-internal/end-to-end-tests.md, "Both
+    /// ends streaming at once"). Not never: the rest may never come (#425).
+    /// </summary>
+    /// <param name="reading">Ends with the read's own inactivity timeout.</param>
+    private async Task FlushIfStalledAsync(CancellationToken reading, CancellationToken ct)
+    {
+        using var hold = CancellationTokenSource.CreateLinkedTokenSource(reading);
+        hold.CancelAfter(AnswerHold);
+        try
+        {
+            // More came, or the link ended: the read says which.
+            await link.WaitForDataAsync(hold.Token);
+            return;
+        }
+        catch (OperationCanceledException) when (!reading.IsCancellationRequested)
+        {
+            // Nothing for the hold.
+        }
+        logger.LogInformation("Nothing from {0} for {1:F0}s mid-line or mid-payload; sending our answers now",
+            peer, AnswerHold.TotalSeconds);
+        await FlushAsync(ct);
     }
 
     /// <summary>A line as it can go in a log: printable ASCII only, and not too long.</summary>

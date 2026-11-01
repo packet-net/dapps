@@ -59,18 +59,30 @@ public sealed class ExchangeSessionTests : IDisposable
     private async Task<(ExchangeSession Session, LinePeer Peer, Task Run)> CalleeAsync(
         ExchangeSettings? settings = null, IBackhaulInbox? inbox = null, TimeSpan? inactivity = null, OutOfStepMemory? memory = null)
     {
+        var (session, peer, run, _) = await CalleeWithWireAsync(settings, inbox, inactivity, memory);
+        return (session, peer, run);
+    }
+
+    /// <summary>As <see cref="CalleeAsync"/>, with what the session writes
+    /// recorded write by write.</summary>
+    private async Task<(ExchangeSession Session, LinePeer Peer, Task Run, WriteRecordingStream Wire)> CalleeWithWireAsync(
+        ExchangeSettings? settings = null, IBackhaulInbox? inbox = null, TimeSpan? inactivity = null, OutOfStepMemory? memory = null,
+        TimeSpan? answerHold = null)
+    {
         var (ours, theirs) = await LoopbackPairAsync(Ct);
-        var session = new ExchangeSession(ours, Them, dialled: false, settings ?? new ExchangeSettings(), inbox ?? new RecordingInbox(), NullLoggerFactory.Instance)
+        var wire = new WriteRecordingStream(ours);
+        var session = new ExchangeSession(wire, Them, dialled: false, settings ?? new ExchangeSettings(), inbox ?? new RecordingInbox(), NullLoggerFactory.Instance)
         {
             MinQuiet = Short,
             InactivityTimeout = inactivity ?? TimeSpan.FromMinutes(3),
+            AnswerHold = answerHold ?? Short,
             OutOfStepHistory = memory ?? new OutOfStepMemory(),
         };
         var peer = new LinePeer(theirs);
         var run = session.RunAsync(Ct);
         (await peer.ReadLineAsync(Ct)).Should().Be("DAPPSv1>");
         (await peer.ReadLineAsync(Ct)).Should().StartWith("exchange ");
-        return (session, peer, run);
+        return (session, peer, run, wire);
     }
 
     /// <summary>Until <paramref name="condition"/> holds, or the test's patience runs out.</summary>
@@ -1257,8 +1269,8 @@ public sealed class ExchangeSessionTests : IDisposable
         // #425: LinBPQ resends a NET/ROM fragment 20 bytes short, so the
         // second payload of a turn never completes. The first was taken,
         // but its ack waited for the second, and the sender heard nothing
-        // at all until it gave up on the link 3 minutes later. What we have
-        // to say goes before we wait on the link.
+        // at all until it gave up on the link 3 minutes later. Answers due
+        // go once the payload has stopped for the hold.
         var inbox = new RecordingInbox();
         var (_, peer, _) = await CalleeAsync(inbox: inbox);
         var first = Message(new string('a', 300), $"app@{Us}", 1);
@@ -1284,7 +1296,7 @@ public sealed class ExchangeSessionTests : IDisposable
     public async Task AnAnswerIsSent_WhileTheRestOfALineIsStillComing()
     {
         // The same for a line cut in two by the link: answers already due
-        // don't wait for the rest of it.
+        // don't wait past the hold for the rest of it.
         var inbox = new RecordingInbox();
         var (_, peer, _) = await CalleeAsync(inbox: inbox);
         var m = Message("hello", $"app@{Us}", 1);
@@ -1295,6 +1307,34 @@ public sealed class ExchangeSessionTests : IDisposable
         (await peer.TryReadLineAsync(TimeSpan.FromSeconds(2), Ct)).Should().Be($"ack {m.Id}");
         await peer.WriteLineAsync("way", Ct);
         (await peer.ReadLineAsync(Ct)).Should().Be("pong halfway");
+    }
+
+    [Fact]
+    public async Task AnswersWaitForAPayloadStillArriving_AndGoInOneWrite()
+    {
+        // While the rest of a payload keeps coming, answers already due
+        // wait for it: written into a long message still arriving, they had
+        // both nodes streaming at once, and at the edge of range BPQ
+        // dropped the link every minute or two. Only a stall sends them.
+        var inbox = new RecordingInbox();
+        var (_, peer, _, wire) = await CalleeWithWireAsync(inbox: inbox, answerHold: TimeSpan.FromSeconds(30));
+        var first = Message("hello", $"app@{Us}", 1);
+        var second = Message(new string('b', 200), $"app@{Us}", 2);
+
+        await peer.WriteLineAsync(Rules(), Ct);
+        await peer.WriteAsync([.. Encoding.UTF8.GetBytes(Line("msg", first)), .. first.Payload,
+            .. Encoding.UTF8.GetBytes(Line("msg", second)), .. second.Payload[..50]], Ct);
+        for (var at = 50; at < 200; at += 50)
+        {
+            await Task.Delay(100, Ct);
+            await peer.WriteAsync(second.Payload[at..(at + 50)], Ct);
+        }
+
+        (await peer.ReadLineAsync(Ct)).Should().Be($"ack {first.Id}");
+        (await peer.ReadLineAsync(Ct)).Should().Be($"ack {second.Id}");
+        wire.Writes.Should().ContainSingle(w => w.Contains($"ack {first.Id}"))
+            .Which.Should().Be($"ack {first.Id}\nack {second.Id}\n", "the payload never stopped for the hold");
+        inbox.Texts.Should().Equal("hello", new string('b', 200));
     }
 
     // ---- Out of step (#207) ----
