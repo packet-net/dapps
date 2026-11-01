@@ -139,7 +139,10 @@ public sealed class NodeDiagnostics(
     {
         if (cantAsk) return;
         var dial = route.DialCallsign;
-        var key = $"{dial}|{route.BearerPort}";
+        // #431: a link from a Dial as callsign is another link, with its
+        // own snapshots, and its LINKS line names that callsign.
+        var source = route.SourceCallsign(ourCallsign);
+        var key = route.DialAs is null ? $"{dial}|{route.BearerPort}" : $"{source.ToUpperInvariant()}>{dial}|{route.BearerPort}";
         var now = time.GetUtcNow();
         var due = true;
         lastSnapshot.AddOrUpdate(key, now, (_, last) =>
@@ -154,10 +157,11 @@ public sealed class NodeDiagnostics(
         if (!due) return;
         // Only the ones still going are kept, so this doesn't grow.
         while (Snapshots.TryPeek(out var head) && head.IsCompleted) Snapshots.TryDequeue(out _);
-        Snapshots.Enqueue(Task.Run(() => SnapshotAsync(dial, ourCallsign, stopping), CancellationToken.None));
+        var label = route.DialAs is null ? dial : $"{dial} from {source}";
+        Snapshots.Enqueue(Task.Run(() => SnapshotAsync(dial, source, label, stopping), CancellationToken.None));
     }
 
-    private async Task SnapshotAsync(string dial, string ourCallsign, CancellationToken ct)
+    private async Task SnapshotAsync(string dial, string ourCallsign, string label, CancellationToken ct)
     {
         try
         {
@@ -169,12 +173,12 @@ public sealed class NodeDiagnostics(
             catch (NodePromptUnavailableException ex)
             {
                 if (ex.ForGood) cantAsk = true;
-                logger.LogInformation("Node LINKS while the link to {0} is busy: can't ask the node: {1}", dial, ex.Message);
+                logger.LogInformation("Node LINKS while the link to {0} is busy: can't ask the node: {1}", label, ex.Message);
                 return;
             }
             if (string.IsNullOrWhiteSpace(reply))
             {
-                logger.LogInformation("Node LINKS while the link to {0} is busy: the node didn't answer LINKS", dial);
+                logger.LogInformation("Node LINKS while the link to {0} is busy: the node didn't answer LINKS", label);
                 return;
             }
 
@@ -183,12 +187,12 @@ public sealed class NodeDiagnostics(
             var lines = NodeTableText.LinesNaming(reply, calls);
             if (lines.Count == 0)
             {
-                logger.LogInformation("Node LINKS while the link to {0} is busy: no line for {1}", dial, string.Join(" or ", calls.Distinct(StringComparer.OrdinalIgnoreCase)));
+                logger.LogInformation("Node LINKS while the link to {0} is busy: no line for {1}", label, string.Join(" or ", calls.Distinct(StringComparer.OrdinalIgnoreCase)));
                 return;
             }
             foreach (var line in lines)
             {
-                logger.LogInformation("Node LINKS while the link to {0} is busy: {1}", dial, line);
+                logger.LogInformation("Node LINKS while the link to {0} is busy: {1}", label, line);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -196,7 +200,7 @@ public sealed class NodeDiagnostics(
         }
         catch (Exception ex)
         {
-            logger.LogInformation("Node LINKS while the link to {0} is busy: asking the node failed: {1}", dial, ex.Message);
+            logger.LogInformation("Node LINKS while the link to {0} is busy: asking the node failed: {1}", label, ex.Message);
         }
     }
 

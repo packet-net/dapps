@@ -54,6 +54,13 @@ namespace dapps.core.Services;
 ///
 /// Keyed on the peer's full callsign (SSID included), case-insensitive:
 /// the AX.25 source until an inbound exchange declares its node identity.
+/// A session from one of our Dial as callsigns (#431) is another AX.25
+/// link, so it is keyed on that callsign too and never meets one from our
+/// own callsign in retirement, nor does it hold back a dial from our own
+/// callsign. One exception: a dial from a Dial as callsign waits while the
+/// peer has a session it opened with our own callsign (<see cref="TryAcquire(string, string, out string?, out string?, int?, string?)"/>).
+/// Every method takes that callsign as <c>local</c>; null is our own
+/// callsign, and everything keyed that way works exactly as before.
 /// Reference-counted so an entry being retired while its replacement
 /// registers (rule 2 in <see cref="dapps.client.Transport.Agw.AgwLink"/>) never reads as
 /// idle in between. A session whose peer vanished without a disconnect
@@ -78,16 +85,19 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null,
     /// is harmless.</summary>
     /// <param name="linkPort">The AGW port the link is on; null for a
     /// bearer that takes no part in retirement.</param>
-    public PeerSessionLease Acquire(string peerCallsign, string direction, int? linkPort = null)
+    /// <param name="local">Our callsign on the link when it is a Dial as
+    /// callsign; null for our own.</param>
+    public PeerSessionLease Acquire(string peerCallsign, string direction, int? linkPort = null, string? local = null)
     {
         peerCallsign = DestinationParser.StationKey(peerCallsign);
-        var lease = new PeerSessionLease(this, peerCallsign, direction, linkPort, clock.GetUtcNow());
+        local = LocalKey(local);
+        var lease = new PeerSessionLease(this, peerCallsign, direction, linkPort, clock.GetUtcNow(), local);
         lock (gate)
         {
-            if (!open.TryGetValue(peerCallsign, out var leases))
+            if (!open.TryGetValue(lease.Key, out var leases))
             {
                 leases = [];
-                open[peerCallsign] = leases;
+                open[lease.Key] = leases;
             }
             leases.Add(lease);
             Signal();
@@ -98,12 +108,12 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null,
 
     /// <summary>True while at least one session with the peer is open.
     /// <paramref name="direction"/> is that of the longest-open one.</summary>
-    public bool IsActive(string peerCallsign, out string? direction)
+    public bool IsActive(string peerCallsign, out string? direction, string? local = null)
     {
-        peerCallsign = DestinationParser.StationKey(peerCallsign);
+        var key = KeyOf(DestinationParser.StationKey(peerCallsign), LocalKey(local));
         lock (gate)
         {
-            if (open.TryGetValue(peerCallsign, out var leases) && leases.Count > 0)
+            if (open.TryGetValue(key, out var leases) && leases.Count > 0)
             {
                 direction = leases[0].Direction;
                 return true;
@@ -118,12 +128,12 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null,
     /// open, oldest first: for a probe that finds the peer busy and has
     /// no running session to ask, so it can say what holds the peer.
     /// </summary>
-    public IReadOnlyList<OpenSessionInfo> Sessions(string peerCallsign)
+    public IReadOnlyList<OpenSessionInfo> Sessions(string peerCallsign, string? local = null)
     {
-        peerCallsign = DestinationParser.StationKey(peerCallsign);
+        var key = KeyOf(DestinationParser.StationKey(peerCallsign), LocalKey(local));
         lock (gate)
         {
-            return open.TryGetValue(peerCallsign, out var leases)
+            return open.TryGetValue(key, out var leases)
                 ? [.. leases.Select(l => new OpenSessionInfo(l.Direction, l.IsConnected, l.Since))]
                 : [];
         }
@@ -140,7 +150,7 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null,
         lock (gate)
         {
             return [.. open.SelectMany(kv => kv.Value.Where(l => !l.IsRetired).Select(l =>
-                (kv.Key, new OpenSessionInfo(l.Direction, l.IsConnected, l.Since))))];
+                (l.Peer, new OpenSessionInfo(l.Direction, l.IsConnected, l.Since))))];
         }
     }
 
@@ -162,19 +172,47 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null,
     /// <see cref="BearerSwitchingOutboundTransport"/> immediately before
     /// the dial - the last point at which declining still means we
     /// never sent a frame.</summary>
-    public PeerSessionLease? TryAcquire(string peerCallsign, string direction, out string? openDirection, int? linkPort = null)
+    public PeerSessionLease? TryAcquire(string peerCallsign, string direction, out string? openDirection, int? linkPort = null, string? local = null) =>
+        TryAcquire(peerCallsign, direction, out openDirection, out _, linkPort, local);
+
+    /// <summary>
+    /// <see cref="TryAcquire(string, string, out string?, int?, string?)"/>,
+    /// also saying which of our callsigns holds the peer when it returns
+    /// null: <paramref name="heldBy"/> is the Dial as callsign, or null
+    /// for our own.
+    ///
+    /// #431: a dial from a Dial as callsign also waits while the peer has
+    /// a session it opened with our own callsign. The two would be separate
+    /// links, but the peer would then hold two sessions with us at once,
+    /// and once ours names us (node=) it files both under our callsign and
+    /// retires the older one: a live session lost. The peer's mail, and
+    /// ours, goes on its session instead, as before.
+    /// </summary>
+    public PeerSessionLease? TryAcquire(string peerCallsign, string direction, out string? openDirection, out string? heldBy, int? linkPort = null, string? local = null)
     {
         peerCallsign = DestinationParser.StationKey(peerCallsign);
+        local = LocalKey(local);
+        var key = KeyOf(peerCallsign, local);
         lock (gate)
         {
-            if (open.TryGetValue(peerCallsign, out var existing) && existing.Count > 0)
+            if (open.TryGetValue(key, out var existing) && existing.Count > 0)
             {
                 openDirection = existing[0].Direction;
+                heldBy = local;
+                return null;
+            }
+            if (local is not null
+                && open.TryGetValue(peerCallsign, out var theirs)
+                && theirs.FirstOrDefault(l => l.Direction == "inbound") is { } peersCall)
+            {
+                openDirection = peersCall.Direction;
+                heldBy = null;
                 return null;
             }
             openDirection = null;
-            var lease = new PeerSessionLease(this, peerCallsign, direction, linkPort, clock.GetUtcNow());
-            open[peerCallsign] = [lease];
+            heldBy = null;
+            var lease = new PeerSessionLease(this, peerCallsign, direction, linkPort, clock.GetUtcNow(), local);
+            open[key] = [lease];
             Signal();
             return lease;
         }
@@ -194,7 +232,7 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null,
         {
             lease.IsConnected = true;
             lease.ConnectedOrder = ++connectedOrder;
-            retiring = lease.LinkPort is { } port && open.TryGetValue(lease.Peer, out var leases)
+            retiring = lease.LinkPort is { } port && open.TryGetValue(lease.Key, out var leases)
                 ? [.. leases.Where(l => !ReferenceEquals(l, lease) && l.LinkPort == port && l.IsConnected && !l.IsRetired)]
                 : [];
             foreach (var old in retiring) old.IsRetired = true;
@@ -227,7 +265,7 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null,
     {
         lock (gate)
         {
-            if (lease.LinkPort is not { } port || !open.TryGetValue(lease.Peer, out var leases)) return Task.CompletedTask;
+            if (lease.LinkPort is not { } port || !open.TryGetValue(lease.Key, out var leases)) return Task.CompletedTask;
             var pending = leases
                 .Where(l => !ReferenceEquals(l, lease) && l.LinkPort == port && !l.IsConnected)
                 .Select(l => l.Settled)
@@ -298,14 +336,14 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null,
         lock (gate)
         {
             if (lease.Direction != "inbound" || string.Equals(lease.Peer, peerCallsign, StringComparison.OrdinalIgnoreCase)) return;
-            if (!open.TryGetValue(lease.Peer, out var previous) || !previous.Remove(lease)) return;
+            if (!open.TryGetValue(lease.Key, out var previous) || !previous.Remove(lease)) return;
             if (previous.Count == 0)
             {
-                open.Remove(lease.Peer);
+                open.Remove(lease.Key);
                 forwarderWakeup?.Wake();
             }
             lease.Peer = peerCallsign;
-            if (!open.TryGetValue(peerCallsign, out var leases)) open[peerCallsign] = leases = [];
+            if (!open.TryGetValue(lease.Key, out var leases)) open[lease.Key] = leases = [];
             leases.Add(lease);
             leases.Sort((a, b) => a.Since.CompareTo(b.Since));
             // The identity arrives late; the winning link is still the last one connected, not the last one identified.
@@ -324,10 +362,10 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null,
         lease.Settle();
         lock (gate)
         {
-            if (!open.TryGetValue(lease.Peer, out var leases) || !leases.Remove(lease)) return;
+            if (!open.TryGetValue(lease.Key, out var leases) || !leases.Remove(lease)) return;
             if (leases.Count == 0)
             {
-                open.Remove(lease.Peer);
+                open.Remove(lease.Key);
                 // The forwarder held back anything for this peer while the
                 // session was open; it can go now.
                 forwarderWakeup?.Wake();
@@ -335,6 +373,14 @@ public sealed class PeerSessionRegistry(ForwarderWakeup? forwarderWakeup = null,
             Signal();
         }
     }
+
+    /// <summary>Where the sessions between <paramref name="peer"/> and
+    /// <paramref name="local"/> are kept: the peer alone for our own
+    /// callsign (null), as always.</summary>
+    internal static string KeyOf(string peer, string? local) => local is null ? peer : $"{local}>{peer}";
+
+    private static string? LocalKey(string? local) =>
+        string.IsNullOrWhiteSpace(local) ? null : DestinationParser.StationKey(local);
 
     /// <summary>Wakes any <see cref="WaitUntilIdleAsync"/>; called under <see cref="gate"/>.</summary>
     private void Signal()
@@ -358,17 +404,25 @@ public sealed class PeerSessionLease : IDisposable
     private readonly CancellationTokenSource retired = new();
     private readonly TaskCompletionSource settled = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    internal PeerSessionLease(PeerSessionRegistry owner, string peer, string direction, int? linkPort, DateTimeOffset since)
+    internal PeerSessionLease(PeerSessionRegistry owner, string peer, string direction, int? linkPort, DateTimeOffset since, string? local = null)
     {
         Since = since;
         this.owner = owner;
         Peer = peer;
         Direction = direction;
         LinkPort = linkPort;
+        Local = local;
     }
 
     public string Peer { get; internal set; }
     public string Direction { get; }
+
+    /// <summary>Our callsign on the link when it is a Dial as callsign
+    /// (#431); null for our own.</summary>
+    public string? Local { get; }
+
+    /// <summary>Where the registry keeps this lease.</summary>
+    internal string Key => PeerSessionRegistry.KeyOf(Peer, Local);
 
     public void Rekey(string peerCallsign) => owner.Rekey(this, peerCallsign);
 

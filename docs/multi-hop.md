@@ -120,6 +120,8 @@ When the outbound forwarder picks a message destined for C:
 
 If any step times out (default 30s) or the stream closes, the script aborts and the forward fails like any other transport failure. The route's failure counter increments; after enough consecutive failures, the daemon falls back to whatever else is available.
 
+Mail for several neighbours reached through the same Connect via node goes one neighbour at a time, as they share one link from your callsign. To have their sessions open at once, give each its own Dial as callsign: see [Tune: several peers behind one node](tune.md#several-peers-behind-one-node).
+
 ### Bidirectional setup
 
 Connect-scripts are one-sided: configuring A's script for C lets A push to C. For C to reach A, C also needs a connect-script (for the reverse chain) - configured by the operator at C, the same way.

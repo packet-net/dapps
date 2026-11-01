@@ -8,7 +8,7 @@ namespace dapps.core.Routing;
 /// Single source of truth for building a <see cref="BackhaulRoute"/>
 /// from a <see cref="DbNeighbour"/>. Routing algorithms call this
 /// instead of constructing routes inline so all bearer hints
-/// (BearerPort, UdpEndpoint, ConnectScript, ConnectVia) flow through automatically
+/// (BearerPort, UdpEndpoint, ConnectScript, ConnectVia, DialAs) flow through automatically
 /// when new ones are added to the neighbour row.
 /// </summary>
 public static class RouteBuilder
@@ -31,7 +31,8 @@ public static class RouteBuilder
             ConnectScript: ConnectScript.FromJson(neighbour.ConnectScriptJson),
             MeshCoreChannel: neighbour.MeshCoreChannel,
             ConnectVia: neighbour.ConnectVia,
-            PortHeld: held && neighbour.UdpEndpoint is null && neighbour.MeshCoreChannel is null);
+            PortHeld: held && neighbour.UdpEndpoint is null && neighbour.MeshCoreChannel is null,
+            DialAs: string.IsNullOrWhiteSpace(neighbour.DialAs) ? null : neighbour.DialAs);
     }
 
     /// <summary>The port a stored neighbour is called on, or null while it

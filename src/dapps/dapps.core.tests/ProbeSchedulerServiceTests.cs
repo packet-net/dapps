@@ -141,6 +141,18 @@ public sealed class ProbeSchedulerServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ProbeAndRecord_ANeighbourWithADialAsCallsign_IsCalledFromIt()
+    {
+        // #431: a probe calls the neighbour the way the forwarder does.
+        await database.UpsertNeighbour("N0THEM-9", bearerPort: 2, dialAs: "N0US-4");
+        var transport = new RecordingTransport();
+
+        await MakeScheduler(transport).ProbeAndRecordAsync("N0US", "N0THEM-9", 2, CancellationToken.None);
+
+        transport.From.Should().Equal(["N0US-4"]);
+    }
+
+    [Fact]
     public async Task EnumerateTargets_AHeldDefault_HoldsNeighboursWithoutAPortOfTheirOwn()
     {
         await database.UpsertNeighbour("N0NULL-9", bearerPort: null);
@@ -727,10 +739,12 @@ public sealed class ProbeSchedulerServiceTests : IAsyncLifetime
     {
         private readonly Queue<(string Remote, string Reply)> _queue = new(cannedByCallsign);
         public List<(string Remote, int Port)> Connects { get; } = new();
+        public List<string> From { get; } = new();
 
         public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken)
         {
             Connects.Add((remoteCallsign, bearerPort));
+            From.Add(localCallsign);
             // Best-effort: prefer the next-in-queue entry that matches
             // the requested remote, falling back to "no prompt" so the
             // prober reports failure rather than wedging on EOF.

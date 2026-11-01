@@ -52,6 +52,11 @@ public sealed class ThreeInstanceLinbpqFixture : IAsyncLifetime
     public string ApplCallB => "N0BBB-9";
     public string ApplCallC => "N0CCC-9";
 
+    /// <summary>SSIDs of A's callsign its DAPPS can call from (#431).
+    /// Neither is an APPLICATION callsign on BPQ-A.</summary>
+    public string DialAsA1 => "N0AAA-10";
+    public string DialAsA2 => "N0AAA-11";
+
     /// <summary>AGW port byte (0-indexed) that points at the AXIP carrier
     /// port on any of the three BPQs - port 1 is Telnet, port 2 is AXIP,
     /// hence index 1. Same convention as <see cref="TwoInstanceLinbpqFixture"/>.</summary>
@@ -73,7 +78,10 @@ public sealed class ThreeInstanceLinbpqFixture : IAsyncLifetime
             nodeCall: CallsignB, nodeAlias: "BBB", applCall: ApplCallB, applAlias: "APPLB",
             agwInsidePort: InsideAgwPortB, axipInsidePort: InsideAxipPortB,
             telnetInsidePort: 18012, httpInsidePort: 18022, netromInsidePort: 18032, fbbInsidePort: 18042, apiInsidePort: 18052,
-            peers: [(CallsignA, ApplCallA, InsideAxipPortA), (CallsignC, ApplCallC, InsideAxipPortC)]));
+            peers: [(CallsignA, ApplCallA, InsideAxipPortA), (CallsignC, ApplCallC, InsideAxipPortC)],
+            // A's Dial as callsigns (#431), for a call from them that reaches
+            // B by L2 rather than NET/ROM: B has to know where they are.
+            replyVia: ([DialAsA1, DialAsA2], InsideAxipPortA)));
 
         var configC = Encoding.UTF8.GetBytes(RenderConfig(
             nodeCall: CallsignC, nodeAlias: "CCC", applCall: ApplCallC, applAlias: "APPLC",
@@ -84,7 +92,9 @@ public sealed class ThreeInstanceLinbpqFixture : IAsyncLifetime
             // B, #242) comes from N0AAA-6: BPQ inverts the SSID of A's
             // N0AAA-9 for the downlink. C only answers it knowing where to
             // send the replies: back to B. A still can't reach C straight.
-            replyVia: (["N0AAA-6"], InsideAxipPortB)));
+            // The same for A's Dial as callsigns N0AAA-10 and -11 (#431),
+            // which arrive as N0AAA-5 and N0AAA-4.
+            replyVia: (["N0AAA-6", "N0AAA-5", "N0AAA-4"], InsideAxipPortB)));
 
         // A publishes all three AGW ports. B and C share A's netns, so
         // their AGW ports are reachable on the host via A's mappings too.

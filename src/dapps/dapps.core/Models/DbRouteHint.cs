@@ -63,6 +63,17 @@ public class DbNeighbour
     public string? ConnectVia { get; set; }
 
     /// <summary>
+    /// Optional callsign to call this neighbour from (#431): an SSID of
+    /// this node's own callsign, other than the one DAPPS answers on. Each
+    /// is its own AX.25 link, so several neighbours reached through one
+    /// node, each with its own, can have sessions open at once. Null =
+    /// call from this node's callsign, as always. The exchange still
+    /// declares this node's own callsign (node=). (sqlite-net adds this
+    /// column on upgrade.)
+    /// </summary>
+    public string? DialAs { get; set; }
+
+    /// <summary>
     /// Optional MeshCore channel name. When set, this neighbour is reachable over
     /// the MeshCore bearer (#154): the backhaul broadcasts on the configured
     /// private channel and this neighbour self-selects by destination callsign.

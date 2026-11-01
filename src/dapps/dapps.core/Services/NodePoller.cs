@@ -50,7 +50,8 @@ public sealed class NodePoller(
         int bearerPort,
         CancellationToken ct,
         ConnectScript? connectScript = null,
-        string? connectVia = null)
+        string? connectVia = null,
+        string? dialAs = null)
     {
         var at = timeProvider.GetUtcNow().UtcDateTime;
         // Refused before dialling, so nothing goes on the air (#309).
@@ -60,8 +61,10 @@ public sealed class NodePoller(
         }
         try
         {
+            // #431: from the neighbour's Dial as callsign, if it has one;
+            // the exchange still names our own (node=).
             await using var connection = await transport.ConnectAsync(
-                localCallsign: localCallsign,
+                localCallsign: dialAs ?? localCallsign,
                 remoteCallsign: connectVia ?? remoteCallsign,
                 bearerPort: bearerPort,
                 stoppingToken: ct);

@@ -927,7 +927,7 @@ public class Database(
     /// updated instead and takes <paramref name="callsign"/> as its new
     /// one; the caller checks that no other row already has it.
     /// </summary>
-    internal async Task UpsertNeighbour(string callsign, int? bearerPort, string? udpEndpoint = null, string? connectScriptJson = null, bool? compressionEnabled = null, int? sessionTailSeconds = null, string? connectVia = null, string? previousCallsign = null)
+    internal async Task UpsertNeighbour(string callsign, int? bearerPort, string? udpEndpoint = null, string? connectScriptJson = null, bool? compressionEnabled = null, int? sessionTailSeconds = null, string? connectVia = null, string? previousCallsign = null, string? dialAs = null)
     {
         var connection = DbInfo.GetAsyncConnection();
         var existing = await connection.FindWithQueryAsync<DbNeighbour>(
@@ -941,6 +941,7 @@ public class Database(
                 UdpEndpoint = udpEndpoint,
                 ConnectScriptJson = connectScriptJson,
                 ConnectVia = connectVia,
+                DialAs = dialAs,
                 CompressionEnabled = compressionEnabled,
                 SessionTailSeconds = sessionTailSeconds,
             });
@@ -956,6 +957,7 @@ public class Database(
             existing.UdpEndpoint = udpEndpoint;
             existing.ConnectScriptJson = connectScriptJson;
             existing.ConnectVia = connectVia;
+            existing.DialAs = dialAs;
             existing.CompressionEnabled = compressionEnabled;
             existing.SessionTailSeconds = sessionTailSeconds;
             await connection.UpdateAsync(existing);
