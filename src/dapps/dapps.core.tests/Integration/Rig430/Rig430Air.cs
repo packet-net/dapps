@@ -423,12 +423,17 @@ public sealed class LinkCounts
     public int UserFrames { get; init; }
     /// <summary>A SABM for a pair whose link was up (a reset), or a DM or FRMR on an up link.</summary>
     public int Resets { get; init; }
+    /// <summary>DISCs between two node calls (no SSID, or CSNODE's): a node-to-node link dropped, with every circuit on it.</summary>
+    public int NodeLinkDiscs { get; init; }
     /// <summary>Retries+1 polls or SABMs in a row from one end, nothing back.</summary>
     public int RetryOuts { get; init; }
+
+    private static bool IsNodeCall(string call) => !call.Contains('-') || call == "G9NDH-2";
 
     public static LinkCounts From(IReadOnlyList<HeardFrame> heard, int retries)
     {
         var up = new HashSet<(string, string)>();
+        var asked = new HashSet<(string, string)>();
         var resets = 0;
         var recent = new Dictionary<(string, string), Queue<(int, string)>>();
         var repeated = 0;
@@ -442,13 +447,16 @@ public sealed class LinkCounts
             {
                 case "SABM" or "SABME":
                     if (up.Contains(pair)) { resets++; up.Remove(pair); }
+                    asked.Add(pair);
                     recent.Remove((f.From, f.To));
                     break;
                 case "UA":
-                    up.Add(pair);
+                    // Only a UA to a SABM brings a link up; one to a DISC doesn't.
+                    if (asked.Remove(pair)) up.Add(pair);
                     break;
                 case "DISC":
                     up.Remove(pair);
+                    asked.Remove(pair);
                     break;
                 case "DM" or "FRMR":
                     if (up.Remove(pair)) resets++;
@@ -497,6 +505,7 @@ public sealed class LinkCounts
             Nodes = heard.Count(h => h.Frame.IsNodes),
             UserFrames = heard.Count(h => h.Frame.From == Rig430Network.UserCall),
             Resets = resets,
+            NodeLinkDiscs = heard.Count(h => h.Frame.Type == "DISC" && IsNodeCall(h.Frame.From) && IsNodeCall(h.Frame.To)),
             RetryOuts = retryOuts,
         };
     }

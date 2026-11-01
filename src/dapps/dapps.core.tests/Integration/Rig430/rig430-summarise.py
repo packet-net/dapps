@@ -98,8 +98,10 @@ def main(paths):
         row("NPR frames", lambda rs: spread([link(r, "npr", "Frames") for r in rs]))
         row("I-frames repeated (all links)", lambda rs: spread([total(r, "IFramesRepeated") for r in rs]))
         row("REJ + SREJ", lambda rs: spread([total(r, "Rej") + total(r, "Srej") for r in rs]))
-        row("Link resets", lambda rs: spread([total(r, "Resets") for r in rs]))
+        row("Node-to-node link drops (DISC)", lambda rs: spread([total(r, "NodeLinkDiscs") for r in rs]))
+        row("Other link resets", lambda rs: spread([total(r, "Resets") for r in rs]))
         row("Retry-outs", lambda rs: spread([total(r, "RetryOuts") for r in rs]))
+        row("Sessions stalled 180 s", lambda rs: spread([r.get("Stalls") for r in rs]))
         row("Give-ways", lambda rs: spread([r["GiveWays"] for r in rs]))
         row("Failed sends", lambda rs: spread([r["SendFailures"] for r in rs]))
 

@@ -95,8 +95,16 @@ internal sealed class Rig430Run(Rig430Network rig, Rig430Arm arm, Rig430Workload
         {
             foreach (var p in rig.Peers)
             {
+                // A peer reached through a node sees MB7NPW under another
+                // SSID, so its own row doesn't apply: the hold it offers is
+                // its system-wide setting, seeded before it starts.
                 var d = await DappsDaemon.StartAsync($"r430-{p.Real}", p.DappsCall!, rig.Attachment(p, Rig430Network.PeerBearerPort(p)),
-                    [Rig430Arm.BackToNpw(rig, p)], settings: null, ct);
+                    [Rig430Arm.BackToNpw(rig, p, arm.PeerHold)], settings: null, ct,
+                    seed: arm.PeerHold is { } hold ? db =>
+                    {
+                        db.CreateTable<dapps.core.Models.DbSystemOption>();
+                        db.InsertOrReplace(new dapps.core.Models.DbSystemOption { Option = "SessionTailSeconds", Value = hold.ToString(System.Globalization.CultureInfo.InvariantCulture) });
+                    } : null);
                 daemons.Add(d);
                 peers[p] = d;
             }

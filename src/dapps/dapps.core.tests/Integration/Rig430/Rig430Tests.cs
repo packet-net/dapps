@@ -13,8 +13,8 @@ namespace dapps.core.tests.Integration.Rig430;
 ///
 /// Opt-in, never in normal CI: skipped unless DAPPS_RIG_430 is set. Real
 /// time, about half an hour per repetition of both workloads, so run it on
-/// our own machines. Settings: DAPPS_RIG_430_ARMS (A,L; S needs
-/// DAPPS_RIG_430_DIALAS_DLL), DAPPS_RIG_430_REPS (5),
+/// our own machines. Settings: DAPPS_RIG_430_ARMS (A,LL; L, LL, S and SL
+/// in Rig430Arm.All, S and SL need DAPPS_RIG_430_DIALAS_DLL), DAPPS_RIG_430_REPS (5),
 /// DAPPS_RIG_430_WORKLOADS (im,burst), DAPPS_RIG_430_IM_MINUTES (10),
 /// DAPPS_RIG_430_IM_GAP_SECONDS (60), DAPPS_RIG_430_USER_GAP_SECONDS (45),
 /// DAPPS_RIG_430_BPQ_IMAGE (LinBPQ for MB7NPW, GB7LOX and EI7KX),

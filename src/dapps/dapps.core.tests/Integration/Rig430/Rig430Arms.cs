@@ -11,13 +11,16 @@ namespace dapps.core.tests.Integration.Rig430;
 /// <param name="Columns">Extra neighbour columns to seed for a build whose
 /// database has them (a dial-as callsign, say), keyed by column name.</param>
 /// <param name="DaemonDll">A dapps.core.dll for MB7NPW instead of this tree's (0.57.0) build, or null.</param>
+/// <param name="PeerHold">The session hold the peers offer (their system-wide setting and their row for
+/// MB7NPW), or null for their default 120 s. A session is held for the lower of the two ends' values.</param>
 internal sealed record Rig430Arm(
     string Id,
     string Title,
     string How,
     Func<Rig430Network, Rig430Node, DappsDaemon.Neighbour> NeighbourFor,
     Func<Rig430Network, Rig430Node, IReadOnlyDictionary<string, object>>? Columns = null,
-    Func<string?>? DaemonDll = null)
+    Func<string?>? DaemonDll = null,
+    int? PeerHold = null)
 {
     /// <summary>Long hold: the most a neighbour's session hold can be set to (600 s).</summary>
     public const int LongHold = 600;
@@ -65,16 +68,16 @@ internal sealed record Rig430Arm(
     /// (a reply otherwise rides MB7NPW's open session): back the way MB7NPW
     /// came, ending with an L2 downlink from CALNE over NPR.
     /// </summary>
-    public static DappsDaemon.Neighbour BackToNpw(Rig430Network rig, Rig430Node peer)
+    public static DappsDaemon.Neighbour BackToNpw(Rig430Network rig, Rig430Node peer, int? hold = null)
     {
         var last = Step($"C {Rig430Network.CalNprPort} {rig.Npw.DappsCall}", "DAPPSv1>", 90);
         var bearer = Rig430Network.PeerBearerPort(peer);
         if (peer == rig.Agm)
-            return new(rig.Npw.DappsCall!, bearer, Script: new([Step($"C {rig.Cal.Call}", ConnectedTo(rig.Cal), 120), last]), ConnectVia: rig.Bdh.Call);
+            return new(rig.Npw.DappsCall!, bearer, SessionTailSeconds: hold, Script: new([Step($"C {rig.Cal.Call}", ConnectedTo(rig.Cal), 120), last]), ConnectVia: rig.Bdh.Call);
         if (peer == rig.Lox)
-            return new(rig.Npw.DappsCall!, bearer, Script: new([last]), ConnectVia: rig.Cal.Call);
+            return new(rig.Npw.DappsCall!, bearer, SessionTailSeconds: hold, Script: new([last]), ConnectVia: rig.Cal.Call);
         if (peer == rig.Eik)
-            return new(rig.Npw.DappsCall!, bearer, Script: new([Step($"C {rig.Cal.Call}", ConnectedTo(rig.Cal), 120), last]), ConnectVia: rig.Pzt.Call);
+            return new(rig.Npw.DappsCall!, bearer, SessionTailSeconds: hold, Script: new([Step($"C {rig.Cal.Call}", ConnectedTo(rig.Cal), 120), last]), ConnectVia: rig.Pzt.Call);
         throw new ArgumentException($"no route back from {peer}");
     }
 
@@ -90,18 +93,22 @@ internal sealed record Rig430Arm(
     [
         new("A", "0.57.0 as is", "MB7NPW on 0.57.0 (this tree), each peer Connect via CALNE with its script, default 120 s hold; a quiet session gives way after 10 s when mail for another peer waits.",
             (rig, peer) => ViaCalne(rig, peer)),
-        new("L", "0.57.0, long holds", $"As A with each peer's session hold at {LongHold} s, the most the dashboard allows.",
+        new("L", "0.57.0, long holds at MB7NPW only", $"As A with MB7NPW's hold for each peer at {LongHold} s, the most the dashboard allows. The peers keep their default 120 s, and a session is held for the lower of the two, so this is A again.",
             (rig, peer) => ViaCalne(rig, peer, LongHold)),
+        new("LL", "0.57.0, long holds at both ends", $"As A with a {LongHold} s hold at MB7NPW and at the peers (their default and their row for MB7NPW).",
+            (rig, peer) => ViaCalne(rig, peer, LongHold), PeerHold: LongHold),
         // #431 (dial a neighbour from its own source SSID): the build at
-        // DAPPS_RIG_430_DIALAS_DLL, each peer dialled as G9NPW-4, -5, -6, long holds.
-        new("S", "#431 dial-as SSIDs, long holds", $"MB7NPW on the #431 build (DAPPS_RIG_430_DIALAS_DLL): each peer dialled from its own SSID (G9NPW-4, -5, -6) on its own AGW connection, {LongHold} s holds.",
+        // DAPPS_RIG_430_DIALAS_DLL, each peer dialled as G9NPW-4, -5, -6.
+        new("S", "#431 dial-as SSIDs, long holds at MB7NPW only", $"MB7NPW on the #431 build (DAPPS_RIG_430_DIALAS_DLL): each peer dialled from its own SSID (G9NPW-4, -5, -6) on its own AGW connection, {LongHold} s holds at MB7NPW; the peers keep 120 s, which wins.",
             (rig, peer) => ViaCalne(rig, peer, LongHold), Columns: (rig, peer) => new Dictionary<string, object> { [DialAsColumn] = DialAs(rig, peer) }, DaemonDll: DialAsDll),
+        new("SL", "#431 dial-as SSIDs, long holds at both ends", $"As S with a {LongHold} s hold at the peers too.",
+            (rig, peer) => ViaCalne(rig, peer, LongHold), Columns: (rig, peer) => new Dictionary<string, object> { [DialAsColumn] = DialAs(rig, peer) }, DaemonDll: DialAsDll, PeerHold: LongHold),
     ];
 
-    /// <summary>The arms DAPPS_RIG_430_ARMS names (comma separated), default A,L.</summary>
+    /// <summary>The arms DAPPS_RIG_430_ARMS names (comma separated), default A,LL.</summary>
     public static IReadOnlyList<Rig430Arm> Selected()
     {
-        var ids = (Environment.GetEnvironmentVariable("DAPPS_RIG_430_ARMS") is { Length: > 0 } s ? s : "A,L")
+        var ids = (Environment.GetEnvironmentVariable("DAPPS_RIG_430_ARMS") is { Length: > 0 } s ? s : "A,LL")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return [.. ids.Select(id => All.SingleOrDefault(a => a.Id == id) ?? throw new ArgumentException($"DAPPS_RIG_430_ARMS: no arm {id}"))];
     }
