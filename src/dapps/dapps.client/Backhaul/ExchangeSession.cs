@@ -202,10 +202,14 @@ public sealed class ExchangeSession
     /// go into the peer's stream (the class notes say why). But bytes a
     /// node lost never come: LinBPQ can resend a NET/ROM fragment 20 bytes
     /// short, and the ack of a message already taken waited behind the
-    /// next payload until the sender gave up on the link (#425). Well over
-    /// a <c>FRACK</c> and a retry, well under the peer's 3-minute patience.
+    /// next payload until the sender gave up on the link (#425). A minute:
+    /// at the edge of range on AFSK 1200 a BPQ link often stalls for 30 to
+    /// 45 s and then carries on, and answers sent into that had both ends
+    /// streaming at once (the soak, #438); a stall that long either picked
+    /// up again or ended with the link. That still leaves the peer two of
+    /// its 3 minutes to hear the answer.
     /// </summary>
-    public TimeSpan AnswerHold { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan AnswerHold { get; init; } = TimeSpan.FromSeconds(60);
 
     public int Window { get; init; } = DefaultWindow;
 
