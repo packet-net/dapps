@@ -1448,6 +1448,7 @@ public sealed class ExchangeSession
             {
                 // Only reached after skipping line endings: don't wait
                 // here for a line that may be a long time coming.
+                await FlushAsync(ct);
                 if (!await link.WaitForDataAsync(ct)) return null;
                 if (!link.HasBufferedData) return "";
             }
@@ -1491,6 +1492,13 @@ public sealed class ExchangeSession
 
     private async ValueTask<int> ReadWithTimeoutAsync(Memory<byte> buffer, CancellationToken ct)
     {
+        // What we have to say goes before we wait on the link: an answer
+        // already due mustn't wait for the rest of a line or a payload,
+        // which can be a long time coming or never come. LinBPQ can resend
+        // a NET/ROM fragment 20 bytes short, and the payload after a
+        // message we'd taken never completed: its ack waited with it, and
+        // the sender heard nothing until it gave up on the link (#425).
+        if (!link.HasBufferedData) await FlushAsync(ct);
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(Inactivity);
         try

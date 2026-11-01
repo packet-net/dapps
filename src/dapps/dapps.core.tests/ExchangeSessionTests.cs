@@ -1251,6 +1251,52 @@ public sealed class ExchangeSessionTests : IDisposable
         inbox.Sources.Should().AllBe(Them);
     }
 
+    [Fact]
+    public async Task AMessageTakenIsAcked_WhileTheNextPayloadIsStillComing()
+    {
+        // #425: LinBPQ resends a NET/ROM fragment 20 bytes short, so the
+        // second payload of a turn never completes. The first was taken,
+        // but its ack waited for the second, and the sender heard nothing
+        // at all until it gave up on the link 3 minutes later. What we have
+        // to say goes before we wait on the link.
+        var inbox = new RecordingInbox();
+        var (_, peer, _) = await CalleeAsync(inbox: inbox);
+        var first = Message(new string('a', 300), $"app@{Us}", 1);
+        var second = Message(new string('b', 300), $"app@{Us}", 2);
+
+        await peer.WriteLineAsync(Rules(), Ct);
+        await peer.WriteAsync(Encoding.UTF8.GetBytes(Line("ihave", first) + Line("ihave", second)), Ct);
+        (await peer.ReadLineAsync(Ct)).Should().Be($"send {first.Id}");
+        (await peer.ReadLineAsync(Ct)).Should().Be($"send {second.Id}");
+        await peer.WriteAsync([.. Encoding.UTF8.GetBytes($"data {first.Id}\n"), .. first.Payload,
+            .. Encoding.UTF8.GetBytes($"data {second.Id}\n"), .. second.Payload[..280]], Ct);
+
+        (await peer.TryReadLineAsync(TimeSpan.FromSeconds(2), Ct)).Should().Be($"ack {first.Id}",
+            "the first message is in, whatever becomes of the second");
+        inbox.Texts.Should().Equal(new string('a', 300));
+
+        await peer.WriteAsync(second.Payload[280..], Ct);
+        (await peer.ReadLineAsync(Ct)).Should().Be($"ack {second.Id}");
+        inbox.Texts.Should().Equal(new string('a', 300), new string('b', 300));
+    }
+
+    [Fact]
+    public async Task AnAnswerIsSent_WhileTheRestOfALineIsStillComing()
+    {
+        // The same for a line cut in two by the link: answers already due
+        // don't wait for the rest of it.
+        var inbox = new RecordingInbox();
+        var (_, peer, _) = await CalleeAsync(inbox: inbox);
+        var m = Message("hello", $"app@{Us}", 1);
+
+        await peer.WriteLineAsync(Rules(), Ct);
+        await peer.WriteAsync([.. Encoding.UTF8.GetBytes(Line("msg", m)), .. m.Payload, .. "ping half"u8.ToArray()], Ct);
+
+        (await peer.TryReadLineAsync(TimeSpan.FromSeconds(2), Ct)).Should().Be($"ack {m.Id}");
+        await peer.WriteLineAsync("way", Ct);
+        (await peer.ReadLineAsync(Ct)).Should().Be("pong halfway");
+    }
+
     // ---- Out of step (#207) ----
 
     [Fact]
