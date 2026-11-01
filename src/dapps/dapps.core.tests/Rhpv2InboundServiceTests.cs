@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using AwesomeAssertions;
 using dapps.client.Backhaul;
 using dapps.core.Models;
@@ -315,6 +316,70 @@ public sealed class Rhpv2InboundServiceTests : IAsyncLifetime
             var again = WaitForFrames(target, count: before + expected.Length, TimeSpan.FromSeconds(5)).Skip(before).ToList();
             again.Select(f => f.GetType()).Should().Equal(expected, "the restarted cycle sets the listener up again");
             again.OfType<BindMessage>().Single().Local.Should().Be(changed.Callsign);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task AnInboundSessionsWrites_GoToTheNodeInSendsOfAtMost236Bytes()
+    {
+        // M0LTE/linbpq#85, packet-net/dapps#425: a write over 236 bytes is
+        // split into NET/ROM fragments, and LinBPQ cuts a resent one short.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.CreateTable<DbMessage>();
+            c.CreateTable<DbReceived>();
+        }
+        await using var server = new MockRhpServer
+        {
+            Handler = msg => msg is SendMessage send
+                ? new SendReplyMessage { Handle = send.Handle, ErrCode = RhpErrorCode.Ok, ErrText = "Ok" }
+                : null,
+        };
+        server.Start();
+        var opts = new MutableOptionsMonitor<SystemOptions>(new SystemOptions
+        {
+            Callsign = "G0DPB-1",
+            NodeBearer = "rhpv2",
+            NodeHost = server.Endpoint.Address.ToString(),
+            RhpPort = server.Endpoint.Port,
+        });
+        var service = new Rhpv2InboundService(
+            opts, NullLoggerFactory.Instance, NullLogger<Rhpv2InboundService>.Instance,
+            new Database(NullLogger<Database>.Instance, opts), new NoopInbox(), new OperationalMetrics(),
+            timeProvider: new ObservableTimeProvider());
+
+        var ct = TestContext.Current.CancellationToken;
+        await service.StartAsync(ct);
+        try
+        {
+            var listener = ((BindMessage)WaitForFrames(server, count: 3, TimeSpan.FromSeconds(5))[1]).Handle;
+            await AcceptAsync(server, listener, 601, "M0ABC-1", ct);
+
+            // A ping is answered with its id: a 300-byte id makes a pong
+            // line longer than one write may be.
+            var id = new string('p', 300);
+            await server.BroadcastAsync(new RecvMessage
+            {
+                Handle = 601,
+                Data = RhpDataEncoding.ToWireString(Encoding.ASCII.GetBytes($"exchange id=them01 hold=0 inline=256\nping {id}\n")),
+            }, ct);
+
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            List<byte[]> sends;
+            do
+            {
+                await Task.Delay(20, ct);
+                sends = server.ReceivedFrames.ToArray().OfType<SendMessage>().Where(m => m.Handle == 601)
+                    .Select(m => RhpDataEncoding.FromWireString(m.Data)).ToList();
+            }
+            while (!Encoding.ASCII.GetString(sends.SelectMany(b => b).ToArray()).Contains($"pong {id}\n") && DateTime.UtcNow < deadline);
+
+            Encoding.ASCII.GetString(sends.SelectMany(b => b).ToArray()).Should().Contain($"pong {id}\n");
+            sends.Select(b => b.Length).Should().AllSatisfy(n => n.Should().BeLessThanOrEqualTo(236));
         }
         finally
         {

@@ -8,7 +8,7 @@ Closed out on 2026-09-27. What shipped from each proposal:
 |---|---|---|
 | 1 | Batch pending messages per next hop | Shipped in 0.40.0 (#188) |
 | 2 | Check the queue again before disconnecting | Shipped in 0.40.0 (#188); a session picks up to 20 newly queued messages |
-| 3 | `data` line and payload in one write | Shipped in 0.40.0 (#188). BPQ drops an AGW data frame over 256 bytes, so since 0.41.1 (#192) writes are split into frames of that size; a short message still goes in one |
+| 3 | `data` line and payload in one write | Shipped in 0.40.0 (#188). BPQ drops an AGW data frame over 256 bytes, so since 0.41.1 (#192) writes are split into frames of that size; a short message still goes in one. Since #425 every write to the node (AGW or RHPv2) is at most 236 bytes, so LinBPQ never splits one into NET/ROM fragments, whose resends it cuts short (M0LTE/linbpq#85) |
 | 4 | Pipelined offers, or the payload with the offer | Not done |
 | 5 | Cumulative, delayed wps-repl acks | Done on the WPS side (`ackDelaySeconds`) |
 | 6 | T2/RESPTIME and MAXFRAME tuning docs | Not done |

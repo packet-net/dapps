@@ -106,6 +106,28 @@ public sealed class AgwLinkTests
     }
 
     [Fact]
+    public async Task ASessionWrite_ReachesTheNodeInFramesOfAtMost236Bytes()
+    {
+        // M0LTE/linbpq#85, packet-net/dapps#425: a write over 236 bytes is
+        // split into NET/ROM fragments, and LinBPQ cuts a resent one short.
+        var ct = TestContext.Current.CancellationToken;
+        using var host = new FakeAgwHost();
+        var (link, node) = await OpenAsync(host, ct);
+        await using var _ = link;
+        using var __ = node;
+
+        await node.WriteAsync(ct, FakeAgwSocket.Connect(Remote, Local, Port));
+        var session = await NextInboundAsync(ct);
+        var data = Enumerable.Range(0, 1000).Select(i => (byte)i).ToArray();
+        await session.Stream.WriteAsync(data, ct);
+
+        var frames = new List<AgwFrame>();
+        while (frames.Sum(f => f.Payload.Length) < data.Length) frames.Add(await node.ReadUntilAsync('D', ct));
+        frames.Select(f => f.Payload.Length).Should().AllSatisfy(n => n.Should().BeLessThanOrEqualTo(236));
+        frames.SelectMany(f => f.Payload).Should().Equal(data);
+    }
+
+    [Fact]
     public async Task AConnectForAKeyStillHeld_RetiresTheOldSession_WhichSendsNoDisconnect()
     {
         var ct = TestContext.Current.CancellationToken;

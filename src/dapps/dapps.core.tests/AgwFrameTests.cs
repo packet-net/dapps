@@ -11,12 +11,15 @@ public class AgwFrameTests
     [Theory]
     [InlineData(0, new int[0])]
     [InlineData(100, new[] { 100 })]
-    [InlineData(256, new[] { 256 })]
-    [InlineData(257, new[] { 256, 1 })]
-    [InlineData(600, new[] { 256, 256, 88 })]
-    public async Task WriteDataAsync_SplitsIntoFramesOfAtMost256Bytes(int length, int[] frameSizes)
+    [InlineData(236, new[] { 236 })]
+    [InlineData(237, new[] { 236, 1 })]
+    [InlineData(256, new[] { 236, 20 })]
+    [InlineData(600, new[] { 236, 236, 128 })]
+    public async Task WriteDataAsync_SplitsIntoFramesOfAtMost236Bytes(int length, int[] frameSizes)
     {
-        // BPQ drops an AGW data frame over 256 bytes without a word.
+        // BPQ drops an AGW data frame over 256 bytes without a word, and
+        // LinBPQ cuts short a resent NET/ROM fragment of one over 236
+        // (M0LTE/linbpq#85), so none is over 236.
         var wire = new MemoryStream();
         var transport = new dapps.client.Transport.Agw.AgwFrameTransport(wire);
         var data = Enumerable.Range(0, length).Select(i => (byte)i).ToArray();

@@ -171,6 +171,41 @@ public sealed class Rhpv2OutboundTransportTests
     }
 
     [Fact]
+    public async Task Stream_Write_GoesToTheNodeInSendsOfAtMost236Bytes()
+    {
+        // M0LTE/linbpq#85, packet-net/dapps#425: a write over 236 bytes is
+        // split into NET/ROM fragments, and LinBPQ cuts a resent one short.
+        await using var server = new MockRhpServer();
+        server.Start();
+        var transport = new Rhpv2OutboundTransport(
+            server.Endpoint.Address.ToString(), server.Endpoint.Port,
+            NullLogger<Rhpv2OutboundTransport>.Instance);
+        var ct = TestContext.Current.CancellationToken;
+        await using var conn = await transport.ConnectAsync("G0DPA-1", "G0DPB-1", 1, ct);
+        WaitForFrame<OpenMessage>(server, TimeSpan.FromSeconds(2));
+
+        var data = Enumerable.Range(0, 600).Select(i => (byte)i).ToArray();
+        await conn.Stream.WriteAsync(data, ct);
+
+        var sends = WaitForSends(server, data.Length, TimeSpan.FromSeconds(5));
+        sends.Select(b => b.Length).Should().Equal(236, 236, 128);
+        sends.SelectMany(b => b).Should().Equal(data);
+    }
+
+    private static List<byte[]> WaitForSends(MockRhpServer server, int bytes, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            var sends = server.ReceivedFrames.ToArray().OfType<SendMessage>()
+                .Select(m => RhpDataEncoding.FromWireString(m.Data)).ToList();
+            if (sends.Sum(b => b.Length) >= bytes) return sends;
+            Thread.Sleep(10);
+        }
+        throw new TimeoutException($"Did not observe {bytes} bytes sent within {timeout}");
+    }
+
+    [Fact]
     public async Task Stream_Read_ReceivesBytesFromMatchingHandle()
     {
         await using var server = new MockRhpServer();

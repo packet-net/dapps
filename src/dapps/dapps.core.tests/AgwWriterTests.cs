@@ -12,7 +12,7 @@ namespace dapps.core.tests;
 /// every session, call, beacon and keepalive shares it since #272, so a
 /// node that stops reading must end the link rather than hold them all,
 /// and nothing about what goes on the wire may change: order, whole
-/// frames, the 256-byte split and the TX gate.
+/// frames, the 236-byte split and the TX gate.
 /// </summary>
 public sealed class AgwWriterTests
 {
@@ -50,7 +50,7 @@ public sealed class AgwWriterTests
     }
 
     [Fact]
-    public async Task WritesGoInTheOrderMade_AndAMessagesFramesGoTogether_EachWithin256Bytes()
+    public async Task WritesGoInTheOrderMade_AndAMessagesFramesGoTogether_EachWithin236Bytes()
     {
         var ct = TestContext.Current.CancellationToken;
         var wire = new HeldStream();
@@ -69,7 +69,7 @@ public sealed class AgwWriterTests
         var frames = await wire.FramesAsync(ct);
         frames.Select(f => f.Kind).Should().Equal(['G', 'D', 'D', 'D', 'G', 'M'],
             "in the order made, and nothing between one message's frames");
-        frames.Where(f => f.Kind == 'D').Select(f => f.Payload.Length).Should().Equal(256, 256, 88);
+        frames.Where(f => f.Kind == 'D').Select(f => f.Payload.Length).Should().Equal(236, 236, 128);
         frames.Where(f => f.Kind == 'D').SelectMany(f => f.Payload).Should().Equal(Bytes(600, 'a'));
         await framing.StopWriterAsync();
     }
