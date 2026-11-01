@@ -425,10 +425,16 @@ public sealed class Rig430Network : IAsyncDisposable
 
     /// <summary>
     /// The NPR stand-in: holds every datagram for the given delay each way,
-    /// no loss, no rate limit, and logs it (whole seconds, direction, hex)
-    /// so the rig can count what crossed. Plain perl-base, as the LinBPQ
-    /// image has (no Time::HiRes): each datagram gets a child that waits
-    /// out the delay and sends it.
+    /// no loss, no rate limit, in order, and logs it (whole seconds,
+    /// direction, hex) so the rig can count what crossed. Plain perl-base,
+    /// as the LinBPQ image has (no Time::HiRes): each datagram gets a child
+    /// that waits out the delay and sends it. Children racing each other
+    /// used to deliver back-to-back datagrams out of order (about 1 in 70),
+    /// which real NPR doesn't, and the nodes answered with REJs, link
+    /// resets and NET/ROM resends (packet-net/dapps#425). So each child
+    /// also waits for the one before it in the same direction to have
+    /// sent: it holds the write end of a pipe the next child reads, and
+    /// closes it once it has sent.
     /// </summary>
     private const string RelayScript = """
         use strict; use warnings;
@@ -441,19 +447,28 @@ public sealed class Rig430Network : IAsyncDisposable
         my $destA = pack_sockaddr_in($toA, inet_aton('127.0.0.1'));
         my $destB = pack_sockaddr_in($toB, inet_aton('127.0.0.1'));
         my $sel = IO::Select->new($sa, $sb);
-        print "relay up: $pa <-> $pb, delay $delay s\n";
+        my %before;
+        print "relay up: $pa <-> $pb, delay $delay s, in order\n";
         while (1) {
             for my $s ($sel->can_read()) {
                 my $buf;
                 defined($s->recv($buf, 8192)) or next;
                 my ($out, $dest, $way) = $s == $sa ? ($sb, $destB, 'A>B') : ($sa, $destA, 'B>A');
                 printf "%d %s %s\n", time, $way, unpack('H*', $buf);
+                pipe(my $gone, my $going) or die "pipe: $!";
+                my $prev = $before{$way};
                 my $pid = fork();
                 if (defined $pid && $pid == 0) {
+                    close $gone;
                     select(undef, undef, undef, $delay);
+                    if ($prev) { my $x; sysread($prev, $x, 1); }
                     $out->send($buf, 0, $dest);
+                    close $going;
                     exit 0;
                 }
+                close $going;
+                close $prev if $prev;
+                $before{$way} = $gone;
             }
         }
 
