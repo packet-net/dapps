@@ -171,6 +171,31 @@ public sealed class Dappsv1SessionBackhaulTests
         result.Deferred.Should().BeFalse("the failure counts against the route and starts a cooldown");
     }
 
+    [Fact]
+    public async Task SendAsync_ADialAsThatIsNoLongerOurs_FailsWithOneLine_AndNoDialFailure()
+    {
+        // #431: our callsign changed after the neighbour was saved. Nothing
+        // went on air and the route did nothing wrong: one warning saying
+        // what to fix, no stack trace, nothing for the route to learn.
+        var logs = new CapturingLoggerFactory();
+        var sb = new Dappsv1SessionBackhaul(
+            new ThrowingTransport(new DialAsNotOursException("N0OLD-4", "N0SRC", "N0DEST-3")), logs);
+
+        var result = await sb.SendAsync(
+            new BackhaulMessage("mid0001", "app@N0DEST", null, null, "hi"u8.ToArray()),
+            new BackhaulRoute("N0DEST-3", BearerPort: 1, DialAs: "N0OLD-4"),
+            "N0SRC",
+            CancellationToken.None);
+
+        result.Accepted.Should().BeFalse();
+        result.Deferred.Should().BeFalse();
+        result.DialFailed.Should().BeFalse("nothing was dialled");
+        var line = logs.Warnings.Should().ContainSingle().Which;
+        line.Exception.Should().BeNull();
+        line.Message.Should().Contain("Dial as N0OLD-4 is not an SSID of this node's callsign N0SRC")
+            .And.Contain("edit the neighbour's Dial as");
+    }
+
     private sealed class ClosingLinkTransport : IDappsOutboundTransport
     {
         public Task<IDappsConnection> ConnectAsync(string localCallsign, string remoteCallsign, int bearerPort, CancellationToken stoppingToken) =>

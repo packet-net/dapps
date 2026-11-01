@@ -73,6 +73,27 @@ Every session with a neighbour carries traffic both ways, whoever dialled, so ma
 - **Link hold** (`DAPPS_SESSION_TAIL_SECONDS`, default **120**) - keep the link to a neighbour open until it has been quiet this long, so a follow-up in either direction goes at once instead of after a new connect. The link is held for the lower of both ends' values. Worth raising on a quiet point-to-point link where messages come in conversations; lower it, or set 0 for that neighbour on the Topology page, where a node is short of circuits or drops idle ones sooner. When mail for another neighbour is waiting for the same link (a neighbour reached through the same Connect via node, say), DAPPS doesn't wait out the hold: the quiet session ends after 10 seconds, and the waiting mail goes straight after.
 - **Scheduled poll** (`DAPPS_SCHEDULED_POLL_ENABLED`, default **false**) - periodically call every neighbour, just so it can send what it holds for us. Use this where peers can't reach you reliably (asymmetric link, peer behind NAT, peer that doesn't know our bearer hint), or on a node that rarely sends anything itself.
 
+## Several peers behind one node
+
+If you reach several DAPPS peers through the same node (the same Connect via), DAPPS talks to them one at a time: AX.25 has one link per pair of callsigns, and they are all called from your one DAPPS callsign. Give each of them its own **Dial as** callsign on **Topology -> Neighbours** (edit the row): an SSID of your callsign that nothing else on your node uses. DAPPS then calls each peer from its own, so their sessions run at the same time, and with a long link hold each peer keeps its session open and messages go in seconds.
+
+For example, MB7NPW runs DAPPS as MB7NPW-3 and reaches three peers through CALNE (M1BFP-1):
+
+| Neighbour | Connect via | Dial as |
+|---|---|---|
+| GB7AGM-3 | M1BFP-1 | MB7NPW-4 |
+| GB7LOX-3 | M1BFP-1 | MB7NPW-5 |
+| EI7KX-3 | M1BFP-1 | MB7NPW-6 |
+
+Good to know:
+
+- Pick SSIDs nothing else on your node uses: not the node's own callsign (usually the one with no SSID), your BBS's, chat's, or any other application's. DAPPS refuses a callsign that isn't an SSID of yours, one with no SSID, and a neighbour's callsign. On BPQ, using an application's callsign doesn't take that application's incoming calls (BPQ picks the application by its `APPLICATION` line before it looks at DAPPS's registration), but DAPPS's calls would go out as that application and could share its links.
+- If you change your DAPPS callsign to a different base callsign, edit each Dial as to match. Until then DAPPS doesn't call those neighbours at all (it won't fall back to your own callsign), and logs one line each time saying which to fix.
+- Nothing to add to `bpq32.cfg` or XRouter's config. A Dial as callsign only makes calls; peers keep calling your DAPPS callsign, and a call to a Dial as callsign is turned away. On AGW, DAPPS opens a connection to the node for each Dial as callsign while it's in use, and closes it after 2 minutes unused.
+- The peer sees the Dial as callsign on the link, or with its SSID flipped (MB7NPW-4 as MB7NPW-11) when the node before it makes the last hop. DAPPS 0.56.0 and later on the peer knows it's you anyway, from the exchange. An older peer takes the session as coming from that callsign: your mail still arrives, but it won't send you what it holds on that session; it calls you itself instead.
+- Probes and polls of that neighbour call from its Dial as callsign too.
+- Several sessions at once share the channel's airtime. They don't make the radio faster; they stop the peers waiting for each other.
+
 ## Heartbeat cadence
 
 `DAPPS_HEARTBEAT_INTERVAL_SECONDS` (≥ 10 s, default 60 s) controls how often the heartbeat is published to MQTT. On a quiet node, 60 s is fine. If you're scraping the heartbeat into a high-resolution monitoring system, drop to 10 to 30 s; if you're storage-constrained on the MQTT broker side and only want trends, raise to 300 s.

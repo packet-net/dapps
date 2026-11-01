@@ -1,6 +1,8 @@
 using dapps.client;
+using dapps.core.Models;
 using dapps.core.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace dapps.core.Controllers;
 
@@ -15,7 +17,7 @@ namespace dapps.core.Controllers;
 /// </summary>
 [ApiController]
 [Route("[controller]")]
-public class NeighboursController(Database database) : ControllerBase
+public class NeighboursController(Database database, IOptionsMonitor<SystemOptions>? options = null) : ControllerBase
 {
     [HttpGet]
     public async Task<IEnumerable<NeighbourModel>> List()
@@ -35,7 +37,8 @@ public class NeighboursController(Database database) : ControllerBase
                 CompressionEnabled: n.CompressionEnabled,
                 SessionTailSeconds: n.SessionTailSeconds,
                 ConnectVia: n.ConnectVia,
-                PortPending: n.PortPending == true);
+                PortPending: n.PortPending == true,
+                DialAs: n.DialAs);
         });
     }
 
@@ -117,6 +120,22 @@ public class NeighboursController(Database database) : ControllerBase
         {
             return BadRequest("Connect via needs a connect script: DAPPS lands at that node's prompt, and the script is what reaches the peer from there");
         }
+        // #431: an SSID of our own callsign to call this neighbour from.
+        var dialAs = DialAsCallsign.Normalise(neighbour.DialAs, options?.CurrentValue.Callsign, out var dialAsError);
+        if (dialAsError is not null) return BadRequest("Dial as: " + dialAsError);
+        if (dialAs is not null)
+        {
+            if (!string.IsNullOrWhiteSpace(neighbour.UdpEndpoint))
+            {
+                return BadRequest("Dial as: only for a neighbour called through the packet node (AGW or RHPv2), not over UDP.");
+            }
+            if (string.Equals(dialAs, callsign, StringComparison.OrdinalIgnoreCase)
+                || (await database.GetNeighbours()).Any(n => DestinationParser.SameStation(n.Callsign, dialAs)
+                    && !string.Equals(n.Callsign, previous ?? callsign, StringComparison.OrdinalIgnoreCase)))
+            {
+                return BadRequest($"Dial as: {dialAs} is a neighbour's callsign; pick an SSID nothing else uses.");
+            }
+        }
         await database.UpsertNeighbour(
             callsign,
             port,
@@ -125,7 +144,8 @@ public class NeighboursController(Database database) : ControllerBase
             compressionEnabled: neighbour.CompressionEnabled,
             sessionTailSeconds: neighbour.SessionTailSeconds is { } tail ? Math.Clamp(tail, 0, 600) : null,
             connectVia: connectVia,
-            previousCallsign: previous);
+            previousCallsign: previous,
+            dialAs: dialAs);
         return NoContent();
     }
 
@@ -188,6 +208,16 @@ public class NeighboursController(Database database) : ControllerBase
 /// </para>
 ///
 /// <para>
+/// <see cref="DialAs"/> (#431) is the callsign DAPPS calls this neighbour
+/// from: an SSID of this node's own callsign. Null, blank or this node's
+/// callsign calls from this node's callsign, as always. Give each of
+/// several neighbours reached through one node its own, and their
+/// sessions can be open at once. Refused (400) when it isn't an SSID of
+/// this node's callsign, has no SSID, is a neighbour's callsign, or the
+/// neighbour is reached over UDP.
+/// </para>
+///
+/// <para>
 /// <see cref="PreviousCallsign"/> (POST only) renames a neighbour: the
 /// row with that callsign is updated and takes <see cref="Callsign"/>.
 /// 404 if there is no such row, 409 if another row already has
@@ -208,4 +238,5 @@ public sealed record NeighbourModel(
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     string? PreviousCallsign = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    int? BearerPort = null);
+    int? BearerPort = null,
+    string? DialAs = null);

@@ -181,14 +181,18 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             return;
         }
         IDappsConnection connection;
+        // #431: the link may be from a Dial as callsign of ours; the
+        // exchange still names our own (node=), so the peer knows who we are.
+        var source = route.SourceCallsign(localCallsign);
+        var linkName = LinkName(route, localCallsign);
         try
         {
             connection = await transport.ConnectAsync(
-                localCallsign: localCallsign,
+                localCallsign: source,
                 remoteCallsign: route.DialCallsign,
                 bearerPort: route.BearerPort ?? 0,
                 stoppingToken: ct);
-            closingSince.TryRemove(route.DialCallsign, out _);
+            closingSince.TryRemove(linkName, out _);
         }
         catch (PeerSessionBusyException ex)
         {
@@ -197,8 +201,8 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             // forwarder's earlier check. Nothing failed, so no cooldown
             // and nothing for the route to learn from.
             logger.LogInformation(
-                "Deferring {0}: {1} already has an {2} session open, dialling now would reset it",
-                first.Id, ex.PeerCallsign, ex.OpenDirection);
+                "Deferring {0}: {1} already has an {2} session open{3}, dialling now would reset it",
+                first.Id, ex.PeerCallsign, ex.OpenDirection, ex.LocalCallsign is null ? "" : $" from {ex.LocalCallsign}");
             // #425: a session of ours to another neighbour through the same
             // node may be what holds it. It ends once quiet, not after the
             // whole hold, and its lease going wakes the forwarder.
@@ -212,7 +216,7 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             // The node still has the last link to this peer up, or is still
             // disconnecting it: nothing went on air and nothing failed. The
             // message waits for the next run, by when the link should be gone.
-            var since = closingSince.GetOrAdd(route.DialCallsign, _ => TimeProvider.GetUtcNow());
+            var since = closingSince.GetOrAdd(linkName, _ => TimeProvider.GetUtcNow());
             var stuckFor = TimeProvider.GetUtcNow() - since;
             if (stuckFor >= ClosingLinkWarnAfter)
             {
@@ -239,6 +243,14 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             // nobody has looked), it's a failed dial like any other, below.
             logger.LogInformation("Deferring {0}: {1}; it goes on that session", first.Id, ex.Message);
             await batch.CompleteAsync(first, BackhaulSendResult.Defer(ex.Message), sw.Elapsed, ct);
+            return;
+        }
+        catch (DialAsNotOursException ex) when (!ct.IsCancellationRequested)
+        {
+            // #431: nothing went on air, and it says nothing about the
+            // neighbour; the operator has to fix the setting. One line.
+            logger.LogWarning("Not sending {0} to {1}: {2}", first.Id, route.Callsign, ex.Message);
+            await batch.CompleteAsync(first, BackhaulSendResult.Fail(ex.Message), sw.Elapsed, ct);
             return;
         }
         catch (AgwLinkDownException ex) when (!ct.IsCancellationRequested)
@@ -386,12 +398,17 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
         {
             // The node's lease on the call it dials is per callsign, whatever
             // the port (PeerSessionRegistry), so any port's session holds it.
-            if (!string.Equals(route.DialCallsign, waiting.DialCallsign, StringComparison.OrdinalIgnoreCase)) continue;
+            // From another Dial as callsign it's another link (#431).
+            if (!route.SharesLinkWith(waiting)) continue;
             if (string.Equals(route.Callsign, waiting.Callsign, StringComparison.OrdinalIgnoreCase)) continue;
             if (session.RequestYield(reason)) count++;
         }
         return count;
     }
+
+    /// <summary>The link a route dials, from the callsign it dials from.</summary>
+    private static string LinkName(BackhaulRoute route, string ourCallsign) =>
+        $"{route.SourceCallsign(ourCallsign)}>{route.DialCallsign}";
 
     private void OnOpened(BackhaulRoute route, ExchangeSession session)
     {

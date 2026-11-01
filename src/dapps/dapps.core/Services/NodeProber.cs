@@ -79,7 +79,8 @@ public sealed class NodeProber(
         CancellationToken ct,
         bool fetchPeers = false,
         ConnectScript? connectScript = null,
-        string? connectVia = null)
+        string? connectVia = null,
+        string? dialAs = null)
     {
         var at = timeProvider.GetUtcNow().UtcDateTime;
         IReadOnlyList<DappsProtocolClient.DiscoveredPeerInfo> peers = [];
@@ -94,8 +95,10 @@ public sealed class NodeProber(
         }
         try
         {
+            // #431: from the neighbour's Dial as callsign, if it has one,
+            // as the forwarder calls it.
             await using var connection = await transport.ConnectAsync(
-                localCallsign: localCallsign,
+                localCallsign: dialAs ?? localCallsign,
                 remoteCallsign: connectVia ?? remoteCallsign,
                 bearerPort: bearerPort,
                 stoppingToken: ct);
@@ -177,7 +180,7 @@ public sealed class NodeProber(
         catch (PeerSessionBusyException ex)
         {
             // Held under the callsign dialled: the connect-script's node, if any.
-            return BusyResult(ex.PeerCallsign, bearerPort, at, remoteCallsign);
+            return BusyResult(ex.PeerCallsign, bearerPort, at, remoteCallsign, ex.LocalCallsign);
         }
         catch (TimeoutException ex)
         {
@@ -376,10 +379,10 @@ public sealed class NodeProber(
     /// <paramref name="held"/> is the callsign the session is held under
     /// (the dialled one), <paramref name="callsign"/> the probe's target.
     /// </summary>
-    private ProbeResult BusyResult(string heldCall, int bearerPort, DateTime at, string callsign)
+    private ProbeResult BusyResult(string heldCall, int bearerPort, DateTime at, string callsign, string? local = null)
     {
         var now = timeProvider.GetUtcNow();
-        var held = peerSessions?.Sessions(heldCall) ?? [];
+        var held = peerSessions?.Sessions(heldCall, local) ?? [];
         string error;
         if (held.Count == 0)
         {

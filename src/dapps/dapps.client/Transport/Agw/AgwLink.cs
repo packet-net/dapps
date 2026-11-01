@@ -76,6 +76,12 @@ namespace dapps.client.Transport.Agw;
 /// XRouter drops an 'M' from a socket that registered no callsign, so
 /// discovery sends those through the bearer instead. It never calls out,
 /// and an inbound call that reaches it all the same is disconnected.
+///
+/// A link opened to make calls only (<see cref="RefusesCalls"/>, a Dial as
+/// callsign's, #431) registers its callsign, which is what its calls go
+/// out from, but answers no call: one that reaches it is disconnected,
+/// unless a call of ours holds the same pair (the node then treats the two
+/// as one link, and a 'd' would end ours).
 /// </summary>
 public sealed class AgwLink : IAsyncDisposable
 {
@@ -155,8 +161,9 @@ public sealed class AgwLink : IAsyncDisposable
 
     private AgwLink(
         TcpClient tcp, AgwFrameTransport framing, string host, int tcpPort, string callsign, bool listenOnly, ILogger logger,
-        Action<AgwLinkSession> onInbound, PeriodicTimer keepalive, TimeProvider clock, CancellationToken stopping)
+        Action<AgwLinkSession> onInbound, PeriodicTimer keepalive, TimeProvider clock, CancellationToken stopping, bool refuseCalls = false)
     {
+        RefusesCalls = refuseCalls;
         this.tcp = tcp;
         Host = host;
         TcpPort = tcpPort;
@@ -223,6 +230,10 @@ public sealed class AgwLink : IAsyncDisposable
     /// callsign, takes no calls and makes none (class doc).</summary>
     public bool ListenOnly { get; }
 
+    /// <summary>True for a link that only makes calls (class doc): an
+    /// inbound call is disconnected, and <c>onInbound</c> is never called.</summary>
+    public bool RefusesCalls { get; }
+
     /// <summary>Completes (never faults) once the link has ended: the
     /// socket dropped or failed, or the link was disposed. By then every
     /// dial still waiting has failed and every session has been told the
@@ -272,8 +283,9 @@ public sealed class AgwLink : IAsyncDisposable
         Action? onRegisterSent = null,
         CancellationToken stopping = default,
         CancellationToken ct = default,
-        bool listenOnly = false) =>
-        OpenCoreAsync(host, port, callsign, onInbound, logger, txGate, clock, onRegisterSent, stopping, ct, listenOnly, writeClock: null);
+        bool listenOnly = false,
+        bool refuseCalls = false) =>
+        OpenCoreAsync(host, port, callsign, onInbound, logger, txGate, clock, onRegisterSent, stopping, ct, listenOnly, writeClock: null, refuseCalls);
 
     /// <summary><see cref="OpenAsync"/>, with the clock the writer times
     /// a stalled write on (<paramref name="writeClock"/>; the system clock
@@ -291,7 +303,8 @@ public sealed class AgwLink : IAsyncDisposable
         CancellationToken stopping,
         CancellationToken ct,
         bool listenOnly,
-        TimeProvider? writeClock)
+        TimeProvider? writeClock,
+        bool refuseCalls = false)
     {
         var tcp = new TcpClient();
         AgwLink? link = null;
@@ -347,7 +360,7 @@ public sealed class AgwLink : IAsyncDisposable
             }
             onRegisterSent?.Invoke();
 
-            link = new AgwLink(tcp, framing, host, port, callsign, listenOnly: false, logger, onInbound, keepalive, clock ?? TimeProvider.System, stopping);
+            link = new AgwLink(tcp, framing, host, port, callsign, listenOnly: false, logger, onInbound, keepalive, clock ?? TimeProvider.System, stopping, refuseCalls);
 
             // The reply to the 'X', under a timeout: a host that takes the
             // TCP connection and never answers (the AGW port setting
@@ -986,6 +999,27 @@ public sealed class AgwLink : IAsyncDisposable
                 remote, local, port);
             var refused = new AgwLinkSession(this, port, local, remote, outbound: false);
             _ = refused.Stream.DisposeAsync().AsTask();
+            return;
+        }
+
+        if (RefusesCalls)
+        {
+            var key = AgwSessionKey.For(local, remote, port);
+            bool ours;
+            lock (gate) ours = FindDial(key) is not null;
+            ours = ours || sessions.Keys.Any(k => k.SamePair(key));
+            if (ours)
+            {
+                logger.LogInformation(
+                    "AGW: {0} called {1} on port {2} while a call of ours holds that pair; leaving it to the node",
+                    remote, local, port);
+                return;
+            }
+            logger.LogWarning(
+                "AGW: {0} called {1} on port {2}, a Dial as callsign, which only makes calls; disconnecting it (DAPPS answers on its own callsign)",
+                remote, local, port);
+            var turnedAway = new AgwLinkSession(this, port, local, remote, outbound: false);
+            _ = turnedAway.Stream.DisposeAsync().AsTask();
             return;
         }
 

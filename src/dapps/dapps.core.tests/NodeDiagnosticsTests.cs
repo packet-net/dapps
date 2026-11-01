@@ -142,6 +142,25 @@ public sealed class NodeDiagnosticsTests
     }
 
     [Fact]
+    public async Task ALinkBusy_FromADialAsCallsign_IsALinkOfItsOwn_AndNamesThatCallsign()
+    {
+        // #431: each Dial as callsign's link to CALNE is another link, with
+        // its own snapshots.
+        var ct = TestContext.Current.CancellationToken;
+        var prompt = Answering("", NodeTableTextTests.BpqLinks);
+        var diag = Make(prompt);
+
+        diag.LinkBusy(Via("GB7AGM-3", "CALNE"), Us);
+        diag.LinkBusy(Via("GB7LOX-3", "CALNE") with { DialAs = "G9APP-4" }, Us);
+        diag.LinkBusy(Via("EI7KX-3", "CALNE") with { DialAs = "G9APP-5" }, Us);
+        diag.LinkBusy(Via("GB7NBH-3", "CALNE") with { DialAs = "g9app-5" }, Us);
+        await Task.WhenAll(diag.Snapshots).WaitAsync(FakeAgwHost.FrameTimeout, ct);
+
+        prompt.Asked.Should().HaveCount(3, "our own callsign's link and each Dial as callsign's link to CALNE");
+        Lines.Should().Contain("Node LINKS while the link to CALNE from G9APP-4 is busy: no line for CALNE or G9APP-4");
+    }
+
+    [Fact]
     public async Task ALinkBusy_ReturnsAtOnce_WhileTheNodeIsSlowToAnswer()
     {
         var ct = TestContext.Current.CancellationToken;
