@@ -94,6 +94,8 @@ Good to know:
 - Probes and polls of that neighbour call from its Dial as callsign too.
 - Several sessions at once share the channel's airtime. They don't make the radio faster; they stop the peers waiting for each other.
 
+[Sessions to several peers behind one node](sessions-through-one-node.md) has the background.
+
 ## Heartbeat cadence
 
 `DAPPS_HEARTBEAT_INTERVAL_SECONDS` (≥ 10 s, default 60 s) controls how often the heartbeat is published to MQTT. On a quiet node, 60 s is fine. If you're scraping the heartbeat into a high-resolution monitoring system, drop to 10 to 30 s; if you're storage-constrained on the MQTT broker side and only want trends, raise to 300 s.

@@ -109,6 +109,8 @@ This works on LinBPQ over AGW and on XRouter (AGW or RHPv2). pdn has no way to i
 
 The waiting mail doesn't sit out the whole link hold. The session holding the link ends once it has been quiet for 10 seconds, logging `Ending the session with GB7AGM after 10s of quiet, before its 120s hold: mail for GB7LOX is waiting for the link to CALNE`, and the waiting mail goes straight after.
 
+For why sessions through one node can or can't run at the same time, see [Sessions through one node](sessions-through-one-node.md).
+
 ## Discovery / routing problems
 
 ### "list_discovered_peers / list_neighbours empty, no traffic moving"
