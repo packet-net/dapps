@@ -245,6 +245,14 @@ public sealed class Dappsv1SessionBackhaul : IDappsBackhaul
             await batch.CompleteAsync(first, BackhaulSendResult.Defer(ex.Message), sw.Elapsed, ct);
             return;
         }
+        catch (DialAsNotOursException ex) when (!ct.IsCancellationRequested)
+        {
+            // #431: nothing went on air, and it says nothing about the
+            // neighbour; the operator has to fix the setting. One line.
+            logger.LogWarning("Not sending {0} to {1}: {2}", first.Id, route.Callsign, ex.Message);
+            await batch.CompleteAsync(first, BackhaulSendResult.Fail(ex.Message), sw.Elapsed, ct);
+            return;
+        }
         catch (AgwLinkDownException ex) when (!ct.IsCancellationRequested)
         {
             // Our own connection to the node is down: one line, no stack.

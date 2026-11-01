@@ -87,7 +87,8 @@ For example, MB7NPW runs DAPPS as MB7NPW-3 and reaches three peers through CALNE
 
 Good to know:
 
-- Pick SSIDs nothing else on your node uses: not the node's own callsign (usually the one with no SSID), your BBS's, chat's, or any other application's. DAPPS refuses a callsign that isn't an SSID of yours, one with no SSID, and a neighbour's callsign.
+- Pick SSIDs nothing else on your node uses: not the node's own callsign (usually the one with no SSID), your BBS's, chat's, or any other application's. DAPPS refuses a callsign that isn't an SSID of yours, one with no SSID, and a neighbour's callsign. On BPQ, using an application's callsign doesn't take that application's incoming calls (BPQ picks the application by its `APPLICATION` line before it looks at DAPPS's registration), but DAPPS's calls would go out as that application and could share its links.
+- If you change your DAPPS callsign to a different base callsign, edit each Dial as to match. Until then DAPPS doesn't call those neighbours at all (it won't fall back to your own callsign), and logs one line each time saying which to fix.
 - Nothing to add to `bpq32.cfg` or XRouter's config. A Dial as callsign only makes calls; peers keep calling your DAPPS callsign, and a call to a Dial as callsign is turned away. On AGW, DAPPS opens a connection to the node for each Dial as callsign while it's in use, and closes it after 2 minutes unused.
 - The peer sees the Dial as callsign on the link, or with its SSID flipped (MB7NPW-4 as MB7NPW-11) when the node before it makes the last hop. DAPPS 0.56.0 and later on the peer knows it's you anyway, from the exchange. An older peer takes the session as coming from that callsign: your mail still arrives, but it won't send you what it holds on that session; it calls you itself instead.
 - Probes and polls of that neighbour call from its Dial as callsign too.

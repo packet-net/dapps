@@ -171,7 +171,7 @@ public sealed class BearerSwitchingDialAsTests : IAsyncDisposable
         var (transport, pool) = Make(host);
 
         (await FluentActions.Awaiting(() => transport.ConnectAsync("G4ABC-4", Remote, 1, ct))
-            .Should().ThrowAsync<InvalidOperationException>())
+            .Should().ThrowAsync<DialAsNotOursException>())
             .Which.Message.Should().Contain("not an SSID of this node's callsign").And.Contain("was not called");
         await Task.Delay(300, ct);
         host.Pending().Should().BeFalse("no connection to the node was even opened");

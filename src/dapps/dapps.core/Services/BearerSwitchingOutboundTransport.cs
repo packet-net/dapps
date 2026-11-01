@@ -105,9 +105,9 @@ public sealed class BearerSwitchingOutboundTransport(
         string? dialAs = null;
         if (!string.IsNullOrWhiteSpace(opts.Callsign) && !DestinationParser.SameStation(localCallsign, opts.Callsign))
         {
-            if (DialAsCallsign.StillOurs(localCallsign, opts.Callsign) is { } notOurs)
+            if (DialAsCallsign.StillOurs(localCallsign, opts.Callsign) is not null)
             {
-                throw new InvalidOperationException($"{notOurs}; {remoteCallsign} was not called");
+                throw new DialAsNotOursException(DestinationParser.StationKey(localCallsign), opts.Callsign, remoteCallsign);
             }
             dialAs = DestinationParser.StationKey(localCallsign);
         }
