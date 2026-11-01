@@ -95,13 +95,13 @@ internal sealed record Rig430Arm(
             (rig, peer) => ViaCalne(rig, peer)),
         new("L", "0.57.0, long holds at MB7NPW only", $"As A with MB7NPW's hold for each peer at {LongHold} s, the most the dashboard allows. The peers keep their default 120 s, and a session is held for the lower of the two, so this is A again.",
             (rig, peer) => ViaCalne(rig, peer, LongHold)),
-        new("LL", "0.57.0, long holds at both ends", $"As A with a {LongHold} s hold at MB7NPW and at the peers (their default and their row for MB7NPW).",
+        new("LL", "0.57.0, long holds at both ends", $"As A with a {LongHold} s hold everywhere: MB7NPW's rows and default, the peers' default and their row for MB7NPW.",
             (rig, peer) => ViaCalne(rig, peer, LongHold), PeerHold: LongHold),
         // #431 (dial a neighbour from its own source SSID): the build at
         // DAPPS_RIG_430_DIALAS_DLL, each peer dialled as G9NPW-4, -5, -6.
         new("S", "#431 dial-as SSIDs, long holds at MB7NPW only", $"MB7NPW on the #431 build (DAPPS_RIG_430_DIALAS_DLL): each peer dialled from its own SSID (G9NPW-4, -5, -6) on its own AGW connection, {LongHold} s holds at MB7NPW; the peers keep 120 s, which wins.",
             (rig, peer) => ViaCalne(rig, peer, LongHold), Columns: (rig, peer) => new Dictionary<string, object> { [DialAsColumn] = DialAs(rig, peer) }, DaemonDll: DialAsDll),
-        new("SL", "#431 dial-as SSIDs, long holds at both ends", $"As S with a {LongHold} s hold at the peers too.",
+        new("SL", "#431 dial-as SSIDs, long holds at both ends", $"As S with a {LongHold} s hold everywhere, as LL.",
             (rig, peer) => ViaCalne(rig, peer, LongHold), Columns: (rig, peer) => new Dictionary<string, object> { [DialAsColumn] = DialAs(rig, peer) }, DaemonDll: DialAsDll, PeerHold: LongHold),
     ];
 

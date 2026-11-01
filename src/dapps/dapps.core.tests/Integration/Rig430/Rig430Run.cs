@@ -97,19 +97,20 @@ internal sealed class Rig430Run(Rig430Network rig, Rig430Arm arm, Rig430Workload
             {
                 // A peer reached through a node sees MB7NPW under another
                 // SSID, so its own row doesn't apply: the hold it offers is
-                // its system-wide setting, seeded before it starts.
+                // its system-wide setting, given as the first-start seed (a
+                // pre-made options table would look like an upgrade from
+                // 0.52 and renumber its ports).
                 var d = await DappsDaemon.StartAsync($"r430-{p.Real}", p.DappsCall!, rig.Attachment(p, Rig430Network.PeerBearerPort(p)),
-                    [Rig430Arm.BackToNpw(rig, p, arm.PeerHold)], settings: null, ct,
-                    seed: arm.PeerHold is { } hold ? db =>
-                    {
-                        db.CreateTable<dapps.core.Models.DbSystemOption>();
-                        db.InsertOrReplace(new dapps.core.Models.DbSystemOption { Option = "SessionTailSeconds", Value = hold.ToString(System.Globalization.CultureInfo.InvariantCulture) });
-                    } : null);
+                    [Rig430Arm.BackToNpw(rig, p, arm.PeerHold)],
+                    settings: arm.PeerHold is { } hold ? new Dictionary<string, string> { ["DAPPS_SESSION_TAIL_SECONDS"] = hold.ToString(System.Globalization.CultureInfo.InvariantCulture) } : null, ct);
                 daemons.Add(d);
                 peers[p] = d;
             }
             npw = await DappsDaemon.StartAsync("r430-MB7NPW", rig.Npw.DappsCall!, rig.Attachment(rig.Npw, Rig430Network.NpwNprPort - 1),
-                rig.Peers.Select(p => arm.NeighbourFor(rig, p)), settings: null, ct,
+                rig.Peers.Select(p => arm.NeighbourFor(rig, p)),
+                // With long holds at both ends, MB7NPW's default too: a peer
+                // calling in arrives under a flipped SSID, so not by its row.
+                settings: arm.PeerHold is { } npwHold ? new Dictionary<string, string> { ["DAPPS_SESSION_TAIL_SECONDS"] = npwHold.ToString(System.Globalization.CultureInfo.InvariantCulture) } : null, ct,
                 seed: arm.Columns is null ? null : db => SeedColumns(db, arm),
                 daemonDll: arm.DaemonDll?.Invoke());
             daemons.Add(npw);
