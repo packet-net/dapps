@@ -99,9 +99,10 @@ public sealed class AgwFrameTransport
 
     /// <summary>
     /// Send <paramref name="data"/> on a connected session as as many 'D'
-    /// frames as it takes to keep each within <see cref="MaxDataFrameBytes"/>.
-    /// The node packetises them onto the link as usual, so splitting here
-    /// costs nothing on air.
+    /// frames as it takes to keep each within <see cref="NodeSessionWrites.MaxBytes"/>
+    /// (236, under BPQ's <see cref="MaxDataFrameBytes"/>, so that LinBPQ
+    /// never splits one into NET/ROM fragments: see there).
+    /// The node packetises them onto the link as usual.
     /// The frames go out together, one after another, with nothing else
     /// between them, or none goes: the TX gate and the limits are checked
     /// for all of them first.
@@ -111,12 +112,11 @@ public sealed class AgwFrameTransport
     /// so the TX gate does not apply.</param>
     public async Task WriteDataAsync(byte port, string callFrom, string callTo, ReadOnlyMemory<byte> data, CancellationToken ct, bool nodeLocal = false)
     {
-        var bytes = new List<byte>(data.Length + (data.Length / MaxDataFrameBytes + 1) * AgwFrame.HeaderLength);
+        var bytes = new List<byte>(data.Length + (data.Length / NodeSessionWrites.MaxBytes + 1) * AgwFrame.HeaderLength);
         AgwFrame? first = null;
-        for (var offset = 0; offset < data.Length; offset += MaxDataFrameBytes)
+        foreach (var chunk in NodeSessionWrites.Split(data))
         {
-            var chunk = data.Slice(offset, Math.Min(MaxDataFrameBytes, data.Length - offset)).ToArray();
-            var frame = new AgwFrame(port, 'D', 0xF0, callFrom, callTo, chunk);
+            var frame = new AgwFrame(port, 'D', 0xF0, callFrom, callTo, chunk.ToArray());
             first ??= frame;
             bytes.AddRange(Encode(frame, nodeLocal));
         }

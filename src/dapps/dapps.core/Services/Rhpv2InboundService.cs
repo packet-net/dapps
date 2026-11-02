@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using dapps.client.Backhaul;
 using dapps.client.Transport.Agw;
+using dapps.client.Transport.Rhp;
 using dapps.client.Tx;
 using dapps.core.Models;
 using Microsoft.Extensions.Options;
@@ -228,20 +229,11 @@ public sealed class Rhpv2InboundService(
             logger.LogInformation("RHP inbound: ACCEPT child={child} from {remote}", child, remote);
             metrics.RecordInboundConnect(remote);
 
-            // RF-emitting: SendOnHandleAsync emits AX.25 I-frames on this
-            // accepted-inbound session. Gate each call so the box stops
-            // replying as soon as the operator hits the kill-switch.
+            // Writes are TX-gated, so the box stops replying as soon as the
+            // operator hits the kill-switch, and capped (RhpSessionWrites).
             // CloseAsync stays ungated so we can still tear down cleanly.
             var stream = new MultiplexedAgwSessionStream(
-                writeOutgoing: async (data, c) =>
-                {
-                    if (!txGate.TxAllowed)
-                    {
-                        throw new TxStoppedException(
-                            $"RHP inbound send on child {child}: {txGate.BlockReason ?? "(no reason)"}");
-                    }
-                    await rhp.SendOnHandleAsync(child, data, c);
-                },
+                writeOutgoing: RhpSessionWrites.Writer(rhp, () => child, txGate, "RHP inbound send on child"),
                 sendRemoteDisconnect: async c =>
                 {
                     try { await rhp.CloseAsync(child, c); }

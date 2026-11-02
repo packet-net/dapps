@@ -120,22 +120,11 @@ public sealed class Rhpv2OutboundTransport : IDappsOutboundTransport
 
             // Stream view of the handle. Reuses MultiplexedAgwSessionStream
             // (functionally generic - just a Pipe + 2 callbacks).
-            // RF-emitting: SendOnHandleAsync emits AX.25 I-frames. Gate
-            // each call so a session opened before TX-stop becomes
-            // silent the moment the operator hits the kill-switch.
+            // Writes are TX-gated and capped (RhpSessionWrites).
             // CloseAsync stays ungated to avoid leaking handles.
-            var gate = txGate;
             var handle = 0;
             var stream = new MultiplexedAgwSessionStream(
-                writeOutgoing: async (data, c) =>
-                {
-                    if (!gate.TxAllowed)
-                    {
-                        throw new TxStoppedException(
-                            $"RHP send on handle {handle}: {gate.BlockReason ?? "(no reason)"}");
-                    }
-                    await rhp.SendOnHandleAsync(handle, data, c);
-                },
+                writeOutgoing: RhpSessionWrites.Writer(rhp, () => handle, txGate, "RHP send on handle"),
                 sendRemoteDisconnect: async c =>
                 {
                     try { await rhp.CloseAsync(handle, c); }
