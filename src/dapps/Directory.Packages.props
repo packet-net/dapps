@@ -14,9 +14,9 @@
          is now out of scope. The .deb derives its libc6 floor from the shipped
          binaries, so apt refuses the install there rather than letting
          it fail in the dynamic loader. -->
-    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.11" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.11" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.15" />
 
     <!-- Storage / messaging. sqlite-net-pcl 1.11 moves to SQLitePCLRaw 3.x,
          whose native library comes from SourceGear.sqlite3 (still named
@@ -38,23 +38,23 @@
     <!-- AwesomeAssertions is a MIT-licensed community fork of FluentAssertions
          (FA 8.x switched to a paid Xceed licence; AA continues the MIT
          lineage). API-compatible drop-in for FA. -->
-    <PackageVersion Include="AwesomeAssertions" Version="9.4.0" />
+    <PackageVersion Include="AwesomeAssertions" Version="9.6.0" />
     <!-- FakeTimeProvider for cadence-sensitive tests. The non-test
          abstraction (System.TimeProvider) ships with the runtime. -->
-    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.9.0" />
+    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.11.0" />
     <!-- Testcontainers.NET for the linbpq integration fixtures. Replaces
          the previous raw `docker run` shell-out (closes #5) - same image
          (m0lte/linbpq:latest), generous wait strategy on AGW port
          readiness so BPQ's slow startup bind doesn't trip readiness. -->
     <!-- 4.15 also lifts SSH.NET to 2026.0.0, past GHSA-mggc-4xg6-vcxf
          and GHSA-q939-rpr3-3284. -->
-    <PackageVersion Include="Testcontainers" Version="4.15.0" />
+    <PackageVersion Include="Testcontainers" Version="4.16.0" />
 
     <!-- API explorer: native OpenAPI document generation plus the Scalar
          viewer at /scalar (Swagger UI never came back after the .NET 8
          rollback dropped both; re-added with the move to .NET 10). -->
-    <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
-    <PackageVersion Include="Scalar.AspNetCore" Version="2.17.8" />
+    <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.15" />
+    <PackageVersion Include="Scalar.AspNetCore" Version="2.20.0" />
 
     <!-- RHPv2 (Remote Host Protocol v2) client, used as DAPPS's bearer
          when the local packet node is XRouter or pdn. Multi-targets net8.0 +
@@ -65,7 +65,7 @@
     <!-- MeshCore bearer (Phase H1, #154): serial link to a MeshCore
          Companion radio, plus zstd dictionary compression of the
          backhaul payload. ZstdSharp.Port is a pure-managed zstd. -->
-    <PackageVersion Include="System.IO.Ports" Version="10.0.11" />
+    <PackageVersion Include="System.IO.Ports" Version="10.0.15" />
     <PackageVersion Include="ZstdSharp.Port" Version="0.8.8" />
 
     <!-- Playwright + WebApplicationFactory for the dapps.core.uitests
@@ -74,7 +74,7 @@
          in-memory TestServer doesn't speak to a browser). Browser
          install happens once via Microsoft.Playwright.Program.Main,
          no out-of-band setup. -->
-    <PackageVersion Include="Microsoft.Playwright" Version="1.62.0" />
+    <PackageVersion Include="Microsoft.Playwright" Version="1.64.1" />
   </ItemGroup>
 
 </Project>
