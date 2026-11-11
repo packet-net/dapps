@@ -1,0 +1,80 @@
+name: package upgrades
+
+# Daily and on demand: upgrade NuGet packages (same major version), then build and
+# test exactly as the unit job in ci.yml does, and push straight to master only if
+# that is green. If the full run fails, the security step pins only the vulnerable
+# packages and tries again, so a breaking upgrade never blocks a security fix.
+
+on:
+  schedule:
+    - cron: '41 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: package-upgrades
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Upgrade, build and test
+        id: full
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/bump-packages.py src/dapps/dapps.sln | tee "$RUNNER_TEMP/upgrades.txt"
+          dotnet restore src/dapps/dapps.sln
+          dotnet build src/dapps/dapps.sln --no-restore --configuration Release
+          scripts/ci-test.py "Unit tests" src/dapps/dapps.core.tests/bin/Release/net10.0/dapps.core.tests 3 --filter-not-trait Category=Integration
+
+      - name: Security fixes only
+        id: security
+        if: steps.full.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard
+          git clean -fdx -e .dotnet
+          python3 scripts/bump-packages.py src/dapps/dapps.sln --vulnerable-only | tee "$RUNNER_TEMP/upgrades.txt"
+          dotnet restore src/dapps/dapps.sln
+          dotnet build src/dapps/dapps.sln --no-restore --configuration Release
+          scripts/ci-test.py "Unit tests" src/dapps/dapps.core.tests/bin/Release/net10.0/dapps.core.tests 3 --filter-not-trait Category=Integration
+
+      - name: Commit and push
+        if: success()
+        shell: bash
+        env:
+          SECURITY_RAN: ${{ steps.security.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          git add -u
+          if git diff --cached --quiet; then
+            echo "nothing to upgrade"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ "$SECURITY_RAN" = "true" ]; then
+            subject="chore(deps): security package fixes"
+          else
+            subject="chore(deps): package upgrades"
+          fi
+          { echo "$subject"; echo; cat "$RUNNER_TEMP/upgrades.txt"; } > "$RUNNER_TEMP/commit-msg.txt"
+          git commit -F "$RUNNER_TEMP/commit-msg.txt"
+          git pull --rebase origin master
+          git push origin HEAD:master
