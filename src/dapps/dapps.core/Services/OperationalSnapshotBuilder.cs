@@ -82,8 +82,6 @@ public sealed class OperationalSnapshotBuilder(
         DashboardTables? tables = null;
         if (includeRows)
         {
-            var recent = (await database.GetRecentMessages(50)).ToList();
-            bool IsLocal(DbMessage m) => DestinationParser.IsLocal(m.Destination, opts.Callsign);
             var now = timeProvider.GetUtcNow().UtcDateTime;
             QueueRow Row(DbMessage m, string? appOverride = null) => new(
                 Id: m.Id,
@@ -95,7 +93,12 @@ public sealed class OperationalSnapshotBuilder(
                 Ttl: m.Ttl,
                 AgeSeconds: (int)Math.Max(0, (now - m.CreatedAt).TotalSeconds),
                 TtlRemaining: TtlMath.Residual(m.Ttl, m.CreatedAt, now));
-            var outbound = recent.Where(m => !m.Forwarded && !m.LocallyDelivered && !IsLocal(m)).Select(m => Row(m)).ToList();
+            // Read on its own, not picked out of the 50 most recent
+            // messages, so older queued mail still shows: the count said
+            // 145 pending while the table listed 5.
+            var outbound = (await database.GetPendingOutboundMessages(Controllers.EventsController.OutboundQueueRows))
+                .Select(m => Row(m))
+                .ToList();
             // The inbox is read on its own, not picked out of the 50 most
             // recent messages, so an old unacked message still shows (#389).
             var inbox = (await database.GetUndeliveredLocalMessages(Controllers.EventsController.LocalInboxRows))

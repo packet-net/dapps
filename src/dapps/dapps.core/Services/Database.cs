@@ -662,6 +662,20 @@ public class Database(
             local, local0, limit);
     }
 
+    /// <summary>Messages waiting to go to other nodes, oldest first, at
+    /// most <paramref name="limit"/>: the dashboard's outbound queue. Read
+    /// on their own rather than picked out of the most recent messages, so
+    /// mail that has sat in the queue a while still shows however much has
+    /// passed through since. Oldest first because that is the order they
+    /// go out in, and the oldest are the ones worth looking at.</summary>
+    public async Task<IReadOnlyList<DbMessage>> GetPendingOutboundMessages(int limit)
+    {
+        var (local, local0) = DestinationParser.LocalLikePatterns(options.CurrentValue.Callsign);
+        return await DbInfo.GetAsyncConnection().QueryAsync<DbMessage>(
+            "select * from messages where forwarded=0 and locallydelivered=0 and not (destination like ? escape '\\' or destination like ? escape '\\') order by CreatedAt asc limit ?",
+            local, local0, limit);
+    }
+
     /// <summary>
     /// Set by the inbox: drops an expired message for an app here that is
     /// on an ordered stream, under the stream's lock, and moves the stream

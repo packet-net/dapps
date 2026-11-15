@@ -200,6 +200,50 @@ public sealed class OperationalSnapshotBuilderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task BuildFullAsync_OutboundQueue_ListsOldQueuedMessages_OldestFirst()
+    {
+        // The Pending count said 145 while the outbound table listed 5: the
+        // table was picked out of the 50 most recent messages, so queued
+        // mail older than those never showed. It is now read on its own.
+        using (var c = DbInfo.GetConnection())
+        {
+            c.CreateTable<DbDroppedMessage>();
+            c.CreateTable<DbProbedNode>();
+            c.CreateTable<DbPolledNode>();
+        }
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-01T12:00:00Z"));
+        var opts = new TestOptionsMonitor<SystemOptions>(new SystemOptions
+        {
+            Callsign = "G7TST-9",
+            NodeHost = "127.0.0.1",
+            AgwPort = 1,
+            MqttPort = 1,
+        });
+        var db = new Database(NullLogger<Database>.Instance, opts, clock);
+        await db.SaveMessage("old0001", "x"u8.ToArray(), 1L, "chat@G7DEST", "G7FROM", "", ttl: null);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await db.SaveMessage("old0002", "x"u8.ToArray(), 2L, "chat@G7DEST", "G7FROM", "", ttl: null);
+        clock.Advance(TimeSpan.FromSeconds(1000));
+        // Newer traffic that is not queued to go: already forwarded, or for
+        // an app here.
+        for (var i = 0; i < 30; i++)
+        {
+            await db.SaveMessage($"fwd{i:D4}", "y"u8.ToArray(), 10L + i, "chat@G7DEST", "G7FROM", "", ttl: null);
+            await db.MarkMessageAsForwarded($"fwd{i:D4}");
+            await db.SaveMessage($"loc{i:D4}", "y"u8.ToArray(), 100L + i, "chat@G7TST-9", "G7FROM", "", ttl: null);
+        }
+
+        var builder = new OperationalSnapshotBuilder(
+            opts, new OperationalMetrics(clock), new AirtimeAccountant(opts, clock, NullLogger<AirtimeAccountant>.Instance), db,
+            updateChecker: BuildUpdateChecker(),
+            timeProvider: clock);
+        var full = await builder.BuildFullAsync(TestContext.Current.CancellationToken);
+
+        full.PendingOutboundCount.Should().Be(2);
+        full.Tables!.Outbound.Select(r => r.Id).Should().Equal("old0001", "old0002");
+    }
+
+    [Fact]
     public async Task BuildFullAsync_PopulatesPerRowTables()
     {
         // Schema for the per-row tables BuildFullAsync queries.

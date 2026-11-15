@@ -80,6 +80,9 @@ public sealed class EventsController(
     /// <summary>Most rows the dashboard's local inbox lists.</summary>
     internal const int LocalInboxRows = 200;
 
+    /// <summary>Most rows the dashboard's outbound queue lists.</summary>
+    internal const int OutboundQueueRows = 200;
+
     /// <summary>
     /// Snapshot of the two operational queues (outbound forwards
     /// pending; messages for local apps not yet ack'd) plus
@@ -89,11 +92,6 @@ public sealed class EventsController(
     [HttpGet("queue")]
     public async Task<QueueSnapshot> GetQueueSnapshot()
     {
-        var local = options.CurrentValue.Callsign;
-        var recent = (await database.GetRecentMessages(50)).ToList();
-
-        bool IsLocal(DbMessage m) => DestinationParser.IsLocal(m.Destination, local);
-
         var now = DateTime.UtcNow;
         QueueRow Row(DbMessage m, string? appOverride = null) => new(
             Id: m.Id,
@@ -106,7 +104,9 @@ public sealed class EventsController(
             AgeSeconds: (int)Math.Max(0, (now - m.CreatedAt).TotalSeconds),
             TtlRemaining: TtlMath.Residual(m.Ttl, m.CreatedAt, now));
 
-        var outbound = recent.Where(m => !m.Forwarded && !m.LocallyDelivered && !IsLocal(m)).Select(m => Row(m)).ToList();
+        var outbound = (await database.GetPendingOutboundMessages(OutboundQueueRows))
+            .Select(m => Row(m))
+            .ToList();
         var inbox = (await database.GetUndeliveredLocalMessages(LocalInboxRows))
             .Select(m => Row(m, m.Destination.Split('@')[0]))
             .ToList();
