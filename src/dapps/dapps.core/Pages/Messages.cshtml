@@ -23,7 +23,8 @@
 {
     <div class="panel">
         <h3>Outbound queue</h3>
-        <p class="panel-sub">Messages for other nodes, waiting to go. Sent as soon as queued, or within 30 s. Click an id for the payload.</p>
+        <p class="panel-sub">Messages for other nodes, waiting to go, oldest first. Sent as soon as queued, or within 30 s. Click an id for the payload.</p>
+        <p class="panel-sub" id="outbound-capped" hidden></p>
         <table>
             <thead>
                 <tr>
@@ -337,13 +338,20 @@ else
         const out = (s.tables?.outbound ?? []);
         const inb = (s.tables?.localInbox ?? []);
         const setCount = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n; };
-        setCount('cnt-outbound', out.length);
+        // The list stops at 200 rows; the badge shows the whole queue.
+        const outTotal = s.pendingOutboundCount ?? out.length;
+        setCount('cnt-outbound', outTotal);
         setCount('cnt-inbox', inb.length);
         setCount('cnt-dropped', dropped.length);
 
         if (tab === 'outbound') {
             const body = document.getElementById('outbound-body');
             if (!body) return;
+            const capped = document.getElementById('outbound-capped');
+            if (capped) {
+                capped.hidden = outTotal <= out.length;
+                capped.textContent = `Showing the oldest ${out.length} of ${outTotal} queued messages.`;
+            }
             if (out.length === 0) {
                 body.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center;">queue is empty</td></tr>';
                 return;
