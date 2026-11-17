@@ -48,7 +48,7 @@
          readiness so BPQ's slow startup bind doesn't trip readiness. -->
     <!-- 4.15 also lifts SSH.NET to 2026.0.0, past GHSA-mggc-4xg6-vcxf
          and GHSA-q939-rpr3-3284. -->
-    <PackageVersion Include="Testcontainers" Version="4.16.0" />
+    <PackageVersion Include="Testcontainers" Version="4.17.0" />
 
     <!-- API explorer: native OpenAPI document generation plus the Scalar
          viewer at /scalar (Swagger UI never came back after the .NET 8
