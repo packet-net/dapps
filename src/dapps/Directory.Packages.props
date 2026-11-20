@@ -41,7 +41,7 @@
     <PackageVersion Include="AwesomeAssertions" Version="9.6.0" />
     <!-- FakeTimeProvider for cadence-sensitive tests. The non-test
          abstraction (System.TimeProvider) ships with the runtime. -->
-    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.11.0" />
+    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.11.1" />
     <!-- Testcontainers.NET for the linbpq integration fixtures. Replaces
          the previous raw `docker run` shell-out (closes #5) - same image
          (m0lte/linbpq:latest), generous wait strategy on AGW port
